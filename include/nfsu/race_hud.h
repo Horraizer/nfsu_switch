@@ -15,7 +15,7 @@ namespace nfsu {
 // Retail texels are loaded from the user's installation at startup. This
 // atlas, and all geometry below, are transient and never serialized.
 constexpr std::uint32_t kRaceHudAtlasSize = 512;
-constexpr std::size_t kRaceHudMaxQuads = 128;
+constexpr std::size_t kRaceHudMaxQuads = 256;
 struct RaceHudTextGlyph {
     int x = 0, y = 0, width = 0, height = 0;
     int bearing_x = 0, bearing_y = 0, advance = 0;
@@ -45,6 +45,16 @@ struct RaceHudFrame {
     RaceLapHudPanel lap{};
 
 };
+
+// Completed presentation intervals, oldest to newest; no allocation/readback.
+struct RaceFpsHistory {
+    std::array<double,90> intervals{};
+    std::size_t count = 0;
+    void add(double milliseconds) noexcept;
+    double mean_ms() const noexcept;
+};
+void append_race_fps_overlay(const RaceHudAtlas& atlas, const RaceFpsHistory& history,
+                             unsigned width, unsigned height, RaceHudFrame& frame) noexcept;
 
 struct RaceHudDial {
     std::uint32_t lines_hash = 0;

@@ -1,4 +1,5 @@
 #include "nfsu/race_hud.h"
+#include <limits>
 #include "nfsu/arg_path.h"
 
 #include <algorithm>
@@ -495,6 +496,10 @@ int capture(const std::filesystem::path& root, const std::filesystem::path& out)
         nfsu::RaceHudFrame frame;
         nfsu::build_race_hud_frame_for_car(car,fixture.max,fixture.red,1280,720,frame);
         std::vector<unsigned char> pixels(1280*720*4,64);
+        nfsu::RaceFpsHistory history;
+        for (int i=0;i<90;++i) history.add(i==60 ? 50 : 1000.0/60);
+        nfsu::append_race_fps_overlay(atlas,history,1280,720,frame);
+        check(frame.quads< nfsu::kRaceHudMaxQuads,"FPS overlay fits fixed HUD capacity");
         nfsu::composite_race_hud(atlas,frame,pixels.data(),1280,720,1280*4);
         nfsu::FrameWriteResult written;
         if (!nfsu::write_rgba_tga(1280,720,pixels,
@@ -609,6 +614,16 @@ int main(int argc,char** argv) {
             return capture(nfsu::argument_path(argv[2]),nfsu::argument_path(argv[3]));
         std::fprintf(stderr,"Usage: nfsu_race_hud_tests [--capture RETAIL NEW_DIRECTORY]\n");
         return 1;
+    }
+    {
+        nfsu::RaceFpsHistory history;
+        history.add(0); history.add(-1); history.add(std::numeric_limits<double>::infinity());
+        check(history.count==0,"FPS rejects invalid intervals");
+        for (int i=0;i<90;++i) history.add(1000.0/60);
+        check(std::abs(1000/history.mean_ms()-60)<1e-9,"FPS uses complete presentation intervals");
+        history.add(100);
+        check(history.count==90 && history.intervals[89]==100 && history.mean_ms()>17,
+              "FPS retains a long stutter and evicts oldest sample");
     }
     test_dial();
     test_rpm();

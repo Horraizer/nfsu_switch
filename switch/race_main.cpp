@@ -366,7 +366,7 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 void run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
           bool car_shading, bool wet_road_reflections, TextureFilterMode texture_filter,
-          std::uint32_t requested_height, bool gpu_boost, bool hud_mode, bool hud_trace,
+          std::uint32_t requested_height, bool gpu_boost, bool hud_mode, bool hud_trace, bool fps_overlay,
           const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
           const nfsu::CarAssets& selected_car, Screen& screen, PadState& pad, bool free_drive = false,
           const nfsu::RaceCarDress* dress = nullptr, std::uint32_t event_number = 1) {
@@ -500,6 +500,8 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::uint64_t previous_driving_present = 0;
     std::uint64_t last_heap_sample = 0, timed_heap_samples = 0;
     RaceHudFrame hud_frame;
+    RaceFpsHistory fps_history;
+    std::uint64_t fps_previous_present=0;
     unsigned unpause_resets = 0;
     std::string failure;
     std::uint64_t display_frame = 0;
@@ -511,6 +513,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
 
         const bool now_docked = appletGetOperationMode() == AppletOperationMode_Console;
         if (now_docked != docked) {
+            fps_history={}; fps_previous_present=0;
             require(!ab_enabled,"AB invalid: operation mode changed");
             docked = now_docked;
             const auto next_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
@@ -700,9 +703,16 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         const auto present_start = armGetSystemTick();
         if (hud_mode) build_race_hud_frame(race.session(),hud_atlas,frame.commands.width,
                                            frame.commands.height,hud_frame);
+        if (fps_overlay && hud_mode)
+            append_race_fps_overlay(hud_atlas,fps_history,frame.commands.width,
+                                    frame.commands.height,hud_frame);
         require(renderer.present(error,ab_minimal?nullptr:&present,profile_frame ? &scene_frame : nullptr,
                                  hud_mode ? &hud_frame : nullptr),error);
         const auto present_end = armGetSystemTick();
+        if (fps_overlay) {
+            if (fps_previous_present) fps_history.add(ms(present_end-fps_previous_present));
+            fps_previous_present=present_end;
+        }
         const double ab_interval=ab_previous_present?ms(present_end-ab_previous_present):0;
         ab_previous_present=present_end;
         present_cpu = ms(present_end-present_start);
@@ -962,6 +972,11 @@ int main(int argc, char** argv) {
             bool hud = true;
             TextureFilterMode texture_filter=TextureFilterMode::legacy;
             bool hud_trace = false;
+#ifdef NFSU_RACE_FPS_OVERLAY
+            bool fps_overlay = true;
+#else
+            bool fps_overlay = false;
+#endif
             bool car_shading=false;
             std::string sky = "on";
             std::uint32_t scene_height = 0;
@@ -1000,6 +1015,8 @@ int main(int argc, char** argv) {
                 else if (arg == "--ab-replay") { ab_replay=true;profile_frame=true; }
                 else if (arg == "--ab-minimal") { ab_replay=true;ab_minimal=true;profile_frame=true; }
                 else if (arg == "--frontend-startup-trace") startup_trace=true;
+                else if (arg == "--fps-overlay") fps_overlay=true;
+                else if (arg == "--no-fps-overlay") fps_overlay=false;
                 else if (arg == "--hud-trace") hud_trace = true;
                 else if (arg == "--event" && i+1<argc) {
                 const std::string value=argv[++i];
@@ -1038,7 +1055,7 @@ int main(int argc, char** argv) {
                     wet_road_seen=true;
                 }
                 else if (!root_seen && arg.rfind("--",0) != 0) { root = arg; root_seen = true; }
-                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--event 1|8] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows|--glows=off] [--car NAME] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
+                else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--event 1|8] [--panel|--profile-frame] [--hud-trace] [--fps-overlay|--no-fps-overlay] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows|--glows=off] [--car NAME] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
             }
             require(event_number == 1 || selected, "--event 8 requires --live");
             require(!(ab_record && ab_replay),"choose one AB mode");
@@ -1060,6 +1077,8 @@ int main(int argc, char** argv) {
                     (unsigned long)scene_height,gpu_boost?"on":"off",profile_frame?"on":"off",path);
                 if(!startup_journal.mark("enabled",identity))throw std::runtime_error(startup_journal.error());
             }
+            require(!fps_overlay || (hud && !panel && !ab_record && !ab_replay),
+                    "FPS overlay requires direct HUD and no AB measurement");
             require(!hud_trace || (hud && !panel),"--hud-trace requires HUD and direct presentation");
             require(!(tuned && car_name!="240SX"),
                     "the --tuned preset is the 240SX's own part set; it cannot dress car type "+car_name);
@@ -1082,7 +1101,7 @@ int main(int argc, char** argv) {
             if (selected) {
                 run(root,replay,panel,profile_frame,particles_enabled,sky,
                     tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
-                    gpu_boost,hud,hud_trace,explicit_performance ? &performance : nullptr,
+                    gpu_boost,hud,hud_trace,fps_overlay,explicit_performance ? &performance : nullptr,
                     handling_telemetry,steering,selected_car,screen,pad,false,nullptr,event_number);
             } else {
                 std::string trace_error;
@@ -1203,7 +1222,7 @@ int main(int argc, char** argv) {
                             // keep the --car-shading argument's control.
                             run(root,false,false,profile_frame,particles_enabled,sky,
                                 tuned,glows,car_shading||(free_drive_resolved&&!car_shading_seen),wet_road_reflections,texture_filter,scene_height,
-                                gpu_boost,hud,false,explicit_performance ? &performance : nullptr,
+                                gpu_boost,hud,false,fps_overlay,explicit_performance ? &performance : nullptr,
                                 handling_telemetry,steering,
                                 free_drive_resolved ? free_drive_skyline.car : selected_car,
                                 screen,pad,true,

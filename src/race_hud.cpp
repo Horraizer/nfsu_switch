@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 #include <fstream>
 
 namespace nfsu {
@@ -146,7 +147,7 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
     const auto packs=load_texture_pack_set(root/"Languages/LanguageTextures.bin",bytes);
     if (!packs.complete || !packs.ok()) { error="lap HUD language texture pack invalid"; return false; }
     constexpr const char* names[]={"conduitmditc_tt14i","font_conduitmditctt38bi","lcd_let48"};
-    constexpr const char* needed[]={" 0123456789:./-hCurrentBest", " 0123456789/Laps", "0123456789"};
+    constexpr const char* needed[]={" 0123456789:./-hCurrentBestFPSms", " 0123456789/Laps", "0123456789"};
     int pack_x=256,pack_y=384,row_height=0;
     for (unsigned f=0;f<3;++f) {
         RaceLapHudFont font;
@@ -498,6 +499,50 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     for (const auto& letter : kUnits) {
         glyph_quad(frame,letter,x,units_pos[1],units_scale,{{150,190,255}});
         x+=letter.advance*units_scale;
+    }
+}
+
+void RaceFpsHistory::add(double milliseconds) noexcept {
+    if (!std::isfinite(milliseconds) || milliseconds <= 0) return;
+    if (count == intervals.size()) {
+        std::move(intervals.begin()+1, intervals.end(), intervals.begin());
+        --count;
+    }
+    intervals[count++] = milliseconds;
+}
+double RaceFpsHistory::mean_ms() const noexcept {
+    double sum=0;
+    for (std::size_t i=0;i<count;++i) sum+=intervals[i];
+    return count ? sum/count : 0;
+}
+void append_race_fps_overlay(const RaceHudAtlas& atlas, const RaceFpsHistory& history,
+                             unsigned width, unsigned height, RaceHudFrame& frame) noexcept {
+    if (!atlas.lap_ready || !width || !height || !history.count) return;
+    const float scale=std::min(width/1280.0F,height/720.0F);
+    const float x=24*scale, bottom=(height-28*scale), top=bottom-80*scale;
+    if (frame.lap_first_quad==kRaceHudMaxQuads) frame.lap_first_quad=frame.quads;
+    rect(frame,kLapWhite,x-6*scale,top-28*scale,230*scale,114*scale,{{0,0,0}},190);
+    // 60 Hz / 30 Hz thresholds; bars clip at 66.7 ms, text retains full values.
+    for (const double ms : {1000.0/60,1000.0/30})
+        rect(frame,kLapWhite,x,bottom-float(ms/66.6666667)*80*scale,180*scale,scale,
+             {{100,100,100}},255);
+    for (std::size_t i=0;i<history.count;++i) {
+        const double ms=history.intervals[i];
+        const float h=float(std::min(ms/66.6666667,1.0))*80*scale;
+        const std::array<unsigned char,3> color=ms>25 ? std::array<unsigned char,3>{{255,80,60}} :
+                                                       std::array<unsigned char,3>{{80,230,120}};
+        rect(frame,kLapWhite,x+float(i)*2*scale,bottom-h,1.5F*scale,h,color,255);
+    }
+    char text[80];
+    std::snprintf(text,sizeof text,"%.1f FPS  %.1f ms",1000/history.mean_ms(),
+                  history.intervals[history.count-1]);
+    float cursor=x;
+    for (const char* c=text;*c;++c) {
+        const auto& g=atlas.lap_fonts[0][unsigned(*c)];
+        if (g.width && g.height)
+            rect(frame,{g.x,g.y,g.width+2,g.height+2},cursor+g.bearing_x*scale,
+                 top-24*scale+g.bearing_y*scale,(g.width+2)*scale,(g.height+2)*scale);
+        cursor+=g.advance*scale;
     }
 }
 
