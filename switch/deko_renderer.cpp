@@ -113,6 +113,11 @@ struct DekoRenderer::Impl {
     DekoSceneTarget scene_target;
     bool fxaa_enabled=false;
     bool msaa_enabled=false;
+#if defined(NFSU_DEKO_DEBUG_DIAGNOSTICS)
+    bool msaa_first_frame=true;
+#else
+    bool msaa_first_frame=false;
+#endif
     dk::Image msaa_color;
     dk::Shader fxaa_vertex,fxaa_fragment;
     dk::MemBlock fxaa_descriptors;
@@ -1055,6 +1060,14 @@ struct DekoRenderer::Impl {
             std::printf("frontend GPU first frame: complete %s\n",pass);
             begin(slot);return true;
         };
+        const auto msaa_checkpoint=[&](const char* pass) {
+            if(!msaa_enabled || !msaa_first_frame)return true;
+            std::printf("MSAA PREFLIGHT submit %s\n",pass);
+            cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
+            if(!submit(error)) {error=std::string("MSAA first-frame ")+pass+": "+error;return false;}
+            std::printf("MSAA PREFLIGHT complete %s\n",pass);
+            begin(slot);return true;
+        };
         if (profile_enabled)
             cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*32);
         const auto mark_frontend=[&](unsigned point) {
@@ -1198,6 +1211,7 @@ struct DekoRenderer::Impl {
             if(!checkpoint("floor reflection"))return false;
         }
         mark_frontend(7);
+        if(!msaa_checkpoint("single-sample reflections"))return false;
         if (reflection_ready) cmd.bindTextures(DkStage_Fragment, 1,
             dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()+(frontend_cube_ready?1:0)), 2));
         dk::ImageView color_view{msaa_enabled?msaa_color:((scene_target.upscale || fxaa_enabled)?scene_colors[slot]:target)};
@@ -1214,6 +1228,7 @@ struct DekoRenderer::Impl {
         const auto* clear = commands->clear_color;
         cmd.clearColor(0, DkColorMask_RGBA, clear[0]/255.0F, clear[1]/255.0F, clear[2]/255.0F, clear[3]/255.0F);
         cmd.clearDepthStencil(true, 1, 0, 0);
+        if(!msaa_checkpoint("MSAA target clear"))return false;
         cmd.bindUniformBuffer(DkStage_Vertex, 0, base, sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Fragment, 0, base, sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Vertex,3,frontend_light_uniforms.getGpuAddr()+slot*256,sizeof(FrontendLighting));
@@ -1256,12 +1271,14 @@ struct DekoRenderer::Impl {
         if(frontend && frontend_profile_passes)
             cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);
         if(!checkpoint(previous_dynamic?previous_dynamic->program->name:"main scene"))return false;
+        if(!msaa_checkpoint("MSAA scene draw"))return false;
         if(msaa_enabled) {
             // Resolve at the original scene resolution, then use the same
             // linear upscale as the baseline. HUD is never multisampled.
             cmd.barrier(DkBarrier_Full,DkInvalidateFlags_L2Cache);
             dk::ImageView resolved_view{scene_target.upscale?scene_colors[slot]:target};
             cmd.resolveImage(color_view,resolved_view);
+            if(!msaa_checkpoint("MSAA resolve"))return false;
             cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
             cmd.bindMultisampleState(dk::MultisampleState{});
             if(!scene_target.upscale)cmd.bindRenderTargets(&resolved_view,nullptr);
@@ -1304,9 +1321,12 @@ struct DekoRenderer::Impl {
             cmd.setScissors(0, {{0, 0, commands->width, commands->height}});
         }
         mark_frontend(8);
+        if(!msaa_checkpoint("single-sample upscale"))return false;
         if (hud) emit_overlay(slot,hud->vertices.data(),hud->quads);
         if (frontend) emit_overlay(slot,frontend->vertices.data(),frontend->additive.size(),frontend->additive.data());
         if(!checkpoint("UI overlay"))return false;
+        if(!msaa_checkpoint("single-sample HUD"))return false;
+        msaa_first_frame=false;
         mark_frontend(9);
         if(diagnose)frontend_first_frame=false;
         cmd.barrier(DkBarrier_Fragments, 0);
