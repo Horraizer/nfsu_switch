@@ -1784,6 +1784,11 @@ add_test(NAME nfsu_race_effect_source_tests
     nfsu_enable_warnings(nfsu_deko_scene_target_tests)
     add_test(NAME nfsu_deko_scene_target_tests COMMAND nfsu_deko_scene_target_tests)
 
+    add_executable(nfsu_ab_route_tests tests/ab_route_tests.cpp)
+    target_include_directories(nfsu_ab_route_tests PRIVATE include)
+    nfsu_enable_warnings(nfsu_ab_route_tests)
+    add_test(NAME nfsu_ab_route_tests COMMAND nfsu_ab_route_tests)
+
     add_executable(nfsu_profile_pages_tests tests/profile_pages_tests.cpp)
     target_include_directories(nfsu_profile_pages_tests PRIVATE include ${CMAKE_CURRENT_BINARY_DIR}/generated)
     add_dependencies(nfsu_profile_pages_tests nfsu_shader_manifest)

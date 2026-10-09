@@ -61,6 +61,8 @@ struct DekoRenderer::Impl {
     std::array<dk::UniqueCmdBuf, 2> static_cmd;
     dk::MemBlock buffers, images, staging, uniforms, static_uniforms, descriptors, readback;
     dk::MemBlock query_memory,frontend_query_memory;
+    struct AbGpuRow { DekoSceneFrame frame; double total; std::array<double,7> stages; bool valid; };
+    std::vector<AbGpuRow> ab_rows;
     bool frontend_profile_passes=false;
     StartupJournal* startup_journal=nullptr;
     bool trace(const char* stage,std::string& error,const char* name="none",std::uint64_t bytes=0) {
@@ -495,7 +497,7 @@ struct DekoRenderer::Impl {
         if (!block(command_bytes[0], kDataFlags, "command memory", command_memory[0], error) ||
             (presentation && !block(command_bytes[1], kDataFlags, "second frame command memory",
                                     command_memory[1], error))) return false;
-        if (profile_enabled && !block(64,
+        if (profile_enabled && !block(320,
             DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuUncached,
             "GPU timestamp reports", query_memory, error))
             return false;
@@ -830,13 +832,22 @@ struct DekoRenderer::Impl {
         if (!query_pending[slot]) return;
         query_pending[slot] = false;
         if (!query_frames[slot].active || query_generations[slot] != profile_generation) return;
-        const auto* words = static_cast<const std::uint64_t*>(query_memory.getCpuAddr()) + slot*4;
+        const auto* words = static_cast<const std::uint64_t*>(query_memory.getCpuAddr()) + slot*20;
         const auto begin_timestamp = words[1], end_timestamp = words[3];
         if (!begin_timestamp || end_timestamp <= begin_timestamp) {
             ++gpu_profile.invalid; return;
         }
         const double value = dkTimestampToNs(end_timestamp-begin_timestamp)/1000000.0;
         gpu_profile.add_scene(value, query_frames[slot]);
+        if(query_frames[slot].ordinal && ab_rows.size()<6000) {
+            AbGpuRow row{query_frames[slot],value,{},true};
+            for(unsigned i=0;i<7;++i) {
+                const auto a=words[5+2*i],b=words[7+2*i];
+                if(!a || b<a)row.valid=false;
+                else row.stages[i]=dkTimestampToNs(b-a)/1000000.0;
+            }
+            ab_rows.push_back(row);
+        }
     }
 
     bool write_uniforms(const RecordedCommands& source, std::size_t slot, std::string& error) {
@@ -1170,7 +1181,14 @@ struct DekoRenderer::Impl {
             begin(slot);return true;
         };
         if (profile_enabled)
-            cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*32);
+            cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*160);
+        const auto mark_ab=[&](unsigned point) {
+            if(!profile_enabled || !query_frames[slot].ordinal)return;
+            if(point)cmd.barrier(DkBarrier_Fragments,0);
+            cmd.reportCounter(point?DkCounter_Timestamp:DkCounter_TimestampPipelineTop,
+                query_memory.getGpuAddr()+slot*160+32+point*16);
+        };
+        mark_ab(0);
         const auto mark_frontend=[&](unsigned point) {
             if(!frontend || !frontend_profile_passes)return;
             if(point)cmd.barrier(DkBarrier_Fragments,0);
@@ -1288,6 +1306,7 @@ struct DekoRenderer::Impl {
             cmd.barrier(DkBarrier_Fragments,DkInvalidateFlags_Image);
             cmd.bindTextures(DkStage_Fragment,1,dkMakeTextureHandle(static_cast<std::uint32_t>(handles.size()),2));
         }
+        mark_ab(1);
         if ((commands->frame.options[2] & 10U) != 0) {
             if (!reflection_ready || commands->reflection_draw_count() > reflection_limit) {
                 error = "reflection resources unavailable or capacity exceeded"; return false;
@@ -1311,6 +1330,7 @@ struct DekoRenderer::Impl {
             cmd.barrier(DkBarrier_Fragments, DkInvalidateFlags_Image);
             if(!checkpoint("floor reflection"))return false;
         }
+        mark_ab(2);
         mark_frontend(7);
         if(!msaa_checkpoint("single-sample reflections"))return false;
         if (reflection_ready) cmd.bindTextures(DkStage_Fragment, 1,
@@ -1372,6 +1392,7 @@ struct DekoRenderer::Impl {
         if(frontend && frontend_profile_passes)
             cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);
         if(!checkpoint(previous_dynamic?previous_dynamic->program->name:"main scene"))return false;
+        mark_ab(3);
         if(!msaa_checkpoint("MSAA scene draw"))return false;
         if(msaa_enabled) {
             // Resolve at the original scene resolution, then use the same
@@ -1432,6 +1453,7 @@ struct DekoRenderer::Impl {
             cmd.bindTextures(DkStage_Fragment,0,dkMakeTextureHandle(0,0));
             fullscreen(streak_copy_fragment,false);
         }
+        mark_ab(4);
         if(fxaa_enabled) {
             // Complete scene writes before sampling. Every slot has distinct
             // input/output images; its fence protects descriptors and contents.
@@ -1452,6 +1474,7 @@ struct DekoRenderer::Impl {
             cmd.bindDepthStencilState(depth);cmd.bindVtxAttribState(std::array<DkVtxAttribState,0>{});
             cmd.draw(DkPrimitive_Triangles,3,1,0,0);
         }
+        mark_ab(5);
         if (scene_target.upscale) {
             // Complete rendering before the 2D engine reads this slot. The
             // second full barrier includes its work in the timestamp span
@@ -1469,6 +1492,7 @@ struct DekoRenderer::Impl {
             cmd.setViewports(0, {{0, 0, source_width(), source_height(), 0, 1}});
             cmd.setScissors(0, {{0, 0, commands->width, commands->height}});
         }
+        mark_ab(6);
         mark_frontend(8);
         if(!msaa_checkpoint("single-sample upscale"))return false;
         if (hud) emit_overlay(slot,hud->vertices.data(),hud->quads);
@@ -1476,11 +1500,12 @@ struct DekoRenderer::Impl {
         if(!checkpoint("UI overlay"))return false;
         if(!msaa_checkpoint("single-sample HUD"))return false;
         msaa_first_frame=false;
+        mark_ab(7);
         mark_frontend(9);
         if(diagnose)frontend_first_frame=false;
         cmd.barrier(DkBarrier_Fragments, 0);
         if (profile_enabled)
-            cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*32+16);
+            cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*160+16);
         return true;
     }
 
@@ -1515,8 +1540,8 @@ struct DekoRenderer::Impl {
         }
         if (timing) timing->fence_wait_ms = elapsed_ms(stage);
         if (profile_enabled) {
-            auto* report = static_cast<unsigned char*>(query_memory.getCpuAddr()) + slot*32;
-            std::memset(report, 0, 32);
+            auto* report = static_cast<unsigned char*>(query_memory.getCpuAddr()) + slot*160;
+            std::memset(report, 0, 160);
             query_frames[slot] = scene_frame ? *scene_frame : DekoSceneFrame{};
             query_generations[slot] = profile_generation;
         }
@@ -1720,6 +1745,16 @@ bool DekoRenderer::present(std::string& error, DekoPresentTiming* timing,
                            const RaceHudFrame* hud_frame) {
     error.clear();
     return impl_->present(error, timing, scene_frame, hud_frame);
+}
+void DekoRenderer::prepare_ab_trace() { impl_->ab_rows.reserve(6000); }
+void DekoRenderer::dump_ab_trace() const {
+    std::puts("AB_GPU_COLUMNS frame,tick,valid,total_ms,cube_ms,road_ms,main_ms,streak_resolve_ms,fxaa_ms,upscale_ms,hud_ms");
+    for(const auto& r:impl_->ab_rows) {
+        std::printf("AB_GPU %llu,%llu,%u,%.6f",(unsigned long long)r.frame.ordinal,
+            (unsigned long long)r.frame.tick,unsigned(r.valid),r.total);
+        for(auto t:r.stages)std::printf(",%.6f",t);
+        std::putchar('\n');
+    }
 }
 void DekoRenderer::reset_gpu_profile() {
     ++impl_->profile_generation;

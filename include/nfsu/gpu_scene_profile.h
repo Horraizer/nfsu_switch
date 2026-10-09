@@ -11,6 +11,7 @@ struct DekoSceneFrame {
     std::uint32_t track_draws = 0;
     std::uint32_t car_draws = 0;
     bool active = false;
+    std::uint64_t ordinal = 0;
 };
 
 // Accumulates completed GPU scene pairs since the last explicit profile reset.

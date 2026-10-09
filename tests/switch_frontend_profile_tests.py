@@ -22,7 +22,7 @@ def check(root,renderer,main):
     assert 'fxaa_enabled=presentation && source.race_environment;' in renderer
     frame=renderer[renderer.index('bool record_frame('):renderer.index('bool present(std::string& error')]
     assert frame.index('if(fxaa_enabled) {')<frame.index('if (hud) emit_overlay(')
-    assert frame.index('if (hud) emit_overlay(')<frame.index('query_memory.getGpuAddr()+slot*32+16')
+    assert frame.index('if (hud) emit_overlay(')<frame.index('query_memory.getGpuAddr()+slot*160+16')
     assert 'sprites_end<car_end || words[17]<sprites_end' in renderer
     assert 'main_sprites=%.3f upscale=%.3f' in renderer
     assert 'consume_frontend_query(slot);' in renderer

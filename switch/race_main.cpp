@@ -1,5 +1,6 @@
 // Event 1 on the pad, with the desktop fixed-step simulation and GPU scene.
 #include "deko_renderer.h"
+#include "nfsu/ab_route.h"
 #include "profile_pages.h"
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/heap_usage.h"
@@ -31,6 +32,8 @@
 #include <stdexcept>
 
 namespace {
+bool ab_record=false,ab_replay=false;
+
 std::string selected_car_label = "STOCK";
 const char* car_shading_label="OFF";
 using namespace nfsu;
@@ -387,6 +390,25 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         const std::string text((std::istreambuf_iterator<char>(in)), {});
         require(bool(in) && replay.load(text,error,upgraded), "bundled replay: "+error);
     }
+    const bool ab_enabled=ab_record || ab_replay;
+    require(!ab_enabled || (!panel_mode && !replay_mode && !handling_telemetry && !hud_trace),
+            "AB needs direct live mode without per-tick logs");
+    AbRoute ab_route;
+    ab_route.context=std::to_string(event_number)+":"+selected_car.car_type_name+":"+
+        race_steering_name(steering)+":"+std::to_string(free_drive)+":"+
+        (performance?performance_levels_text(*performance):"legacy")+":"+
+        std::to_string(scene_height)+":"+sky+":"+std::to_string(hud_mode)+":"+
+        std::to_string(particles_enabled)+":"+std::to_string(tuned)+":"+std::to_string(glows)+":"+
+        std::to_string(car_shading)+":"+std::to_string(wet_road_reflections)+":"+
+        std::to_string(static_cast<unsigned>(texture_filter))+":"+std::to_string(dress!=nullptr);
+    if(ab_replay) {
+        std::ifstream route("sdmc:/switch/nfsu-ab-route.txt",std::ios::binary);
+        require(ab_route.load(route,ab_route.context),"AB route missing, malformed or different setup");
+    } else if(ab_record) ab_route.frames.reserve(AbRoute::limit);
+    std::vector<AbCpuRow> ab_cpu;
+    if(ab_enabled)ab_cpu.reserve(AbRoute::limit);
+    std::uint64_t ab_previous_present=0;
+    bool ab_cancelled=false;
     RaceGpuScene scene;
     require(scene.set_texture_filter(texture_filter), "invalid texture filter policy");
     std::printf("TEXTURE FILTER %s (world/car diffuse; sky/effects unchanged)\n",
@@ -461,6 +483,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     require(renderer.open(frame.commands,error,!panel_mode,scene.draw_capacity(),profile_frame,true,
                           sky == "early",scene_height,
                           hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
+    if(ab_enabled)renderer.prepare_ab_trace();
     const double initial_upload = ms(armGetSystemTick()-upload_start);
     std::unique_ptr<FrameProfileStats> profile_stats;
     if (profile_frame) profile_stats = std::make_unique<FrameProfileStats>();
@@ -481,8 +504,13 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
     std::uint64_t display_frame = 0;
     try {
     while (appletMainLoop()) {
+        if(ab_enabled && presented >= (ab_replay?ab_route.frames.size():AbRoute::limit))break;
+        AbFrame ab_frame;
+        const AbFrame* ab_expected=ab_replay?&ab_route.frames[presented]:nullptr;
+
         const bool now_docked = appletGetOperationMode() == AppletOperationMode_Console;
         if (now_docked != docked) {
+            require(!ab_enabled,"AB invalid: operation mode changed");
             docked = now_docked;
             const auto next_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
             if (next_height != scene_height) {
@@ -503,9 +531,10 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
         const auto sampled_us = armTicksToNs(armGetSystemTick())/1000;
         ++display_frame;
-        if (down & HidNpadButton_Plus) break;
+        if (down & HidNpadButton_Plus) { ab_cancelled=ab_replay; break; }
         bool just_unpaused = false;
-        if (down & HidNpadButton_Y) {
+        if ((down & HidNpadButton_Y) && !ab_replay) {
+            require(!ab_enabled,"AB invalid: pause requested");
             just_unpaused = paused;
             paused = !paused;
             clock.reset();
@@ -516,7 +545,7 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         }
         // A long OS suspend is an explicit pause, not thousands of live
         // control ticks using a newly sampled pad. Ordinary slow frames keep debt.
-        if (elapsed > 1000000) { paused = true; clock.reset(); }
+        if (elapsed > 1000000) { require(!ab_enabled,"AB invalid: OS suspend"); paused = true; clock.reset(); }
         const bool connected = padIsConnected(&pad);
         const bool running = race.session().timing().outcome == RaceOutcome::running;
         sound.set_suspended(paused);
@@ -528,15 +557,17 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         RaceFrameProfile record_profile;
         DekoUpdateTiming update_timing;
         unsigned ticks = 0;
-        while (!paused && race.session().timing().outcome == RaceOutcome::running && ticks < 8 && clock.take()) {
+        while (!paused && race.session().timing().outcome == RaceOutcome::running && ticks < 8 && (ab_replay ? ticks<ab_expected->count : clock.take())) {
             GamepadFrame input;
-            if (replay_mode) require(replay.next(race.session().timing().step,input,error),error);
+            if (ab_replay) input=ab_expected->inputs[ticks].unpack();
+            else if (replay_mode) require(replay.next(race.session().timing().step,input,error),error);
             else input = sample(pad,race.session().timing().step);
-            if (!replay_mode) {
+            if (!replay_mode && !ab_replay) {
                 input.sample_clock_available = true;
                 input.sample_time_us = sampled_us;
                 input.display_frame = display_frame;
             }
+            if(ab_record)ab_frame.inputs[ticks]=AbInput::pack(input);
             auto stage = armGetSystemTick();
             const auto consumed_us = armTicksToNs(stage)/1000;
             require(race.simulate(input,error),error);
@@ -563,6 +594,16 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
             stage = armGetSystemTick();
             require(renderer.update(frame.commands,error,profile_frame ? &update_timing : nullptr),error);
             upload = ms(armGetSystemTick()-stage);
+        }
+        if(ab_enabled) {
+            ab_frame.count=ticks;ab_frame.state=race.step_line();
+            const auto& c=frame.commands.frame;
+            auto hash=ab_hash(c.eye,sizeof c.eye);
+            hash=ab_hash(c.right,sizeof c.right,hash);hash=ab_hash(c.up,sizeof c.up,hash);
+            hash=ab_hash(c.forward,sizeof c.forward,hash);hash=ab_hash(c.projection,sizeof c.projection,hash);
+            ab_frame.camera=hash;
+            if(ab_replay)require(ticks==ab_expected->count && ab_frame.state==ab_expected->state &&
+                hash==ab_expected->camera,"AB state/camera mismatch at frame "+std::to_string(presented+1));
         }
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
         RaceFrameSample measured;
@@ -654,13 +695,15 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         } else {
         const DekoSceneFrame scene_frame{race.session().timing().step,
             static_cast<std::uint32_t>(frame.track_draws),
-            static_cast<std::uint32_t>(frame.car_draws),driving_before && !finished};
+            static_cast<std::uint32_t>(frame.car_draws),driving_before && !finished,ab_enabled?display_frame:0};
         const auto present_start = armGetSystemTick();
         if (hud_mode) build_race_hud_frame(race.session(),frame.commands.width,
                                            frame.commands.height,hud_frame);
         require(renderer.present(error,&present,profile_frame ? &scene_frame : nullptr,
                                  hud_mode ? &hud_frame : nullptr),error);
         const auto present_end = armGetSystemTick();
+        const double ab_interval=ab_previous_present?ms(present_end-ab_previous_present):0;
+        ab_previous_present=present_end;
         present_cpu = ms(present_end-present_start);
         if (driving_before && !finished) {
             if (previous_driving_present) {
@@ -696,6 +739,16 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         measured.fence_ms = present.fence_wait_ms;
         measured.command_ms = present.uniform_write_ms + present.record_ms + present.finish_ms;
         measured.submit_ms = present.submit_ms;
+        if(ab_enabled) {
+            AbCpuRow row{display_frame,race.session().timing().step,frame.triangles,ticks,
+                unsigned(frame.track_draws),unsigned(frame.car_draws),unsigned(frame.glow_draws),
+                unsigned(driving_before&&!finished),{}};
+            row.ms={frame_ms,ab_interval,simulation,residency,record,upload,present_cpu,
+                present.acquire_ms,present.fence_wait_ms,present.uniform_write_ms,present.record_ms,
+                present.finish_ms,present.submit_ms,mallinfo_ms};
+            ab_cpu.push_back(row);
+            if(ab_record)ab_route.frames.push_back(std::move(ab_frame));
+        }
         ++presented;
         if (!profile_frame && (presented == 1 || presented % 120 == 0 ||
                                (finished && !printed_final_perf))) {
@@ -811,6 +864,32 @@ void run(const std::string& root, bool replay_mode, bool panel_mode, bool profil
         if (!failure.empty()) failure += " | ";
         failure += "renderer close: " + close_error;
     }
+    if(ab_enabled) {
+        std::ostringstream ab_serialized;ab_route.save(ab_serialized);
+        const auto ab_text=ab_serialized.str();
+        std::printf("AB_ROUTE identity=%016llx frames=%llu context=%s\n",
+            (unsigned long long)ab_hash(ab_text.data(),ab_text.size()),
+            (unsigned long long)ab_route.frames.size(),ab_route.context.c_str());
+        bool saved=false;
+        if(ab_record && failure.empty() && !ab_route.frames.empty()) {
+            // Replace only the dedicated diagnostic recording, never retail data.
+            std::ofstream out("sdmc:/switch/nfsu-ab-route.txt",std::ios::binary|std::ios::trunc);
+            out<<ab_text;out.flush();saved=bool(out);
+            if(!saved)failure="AB route write failed";
+        }
+        std::printf("AB_RESULT mode=%s frames=%llu expected=%llu valid=%u saved=%u cancelled=%u error=%s\n",
+            ab_record?"record":"replay",(unsigned long long)presented,
+            (unsigned long long)ab_route.frames.size(),unsigned(!ab_route.frames.empty() && failure.empty()&&!ab_cancelled &&
+                (!ab_replay || presented==ab_route.frames.size())),unsigned(saved),unsigned(ab_cancelled),failure.c_str());
+        std::puts("AB_CPU_COLUMNS frame,tick,triangles,ticks,track,car,glow,active,work_ms,interval_ms,sim_ms,residency_ms,record_ms,update_ms,present_ms,acquire_ms,fence_ms,uniform_ms,command_ms,finish_ms,submit_ms,heap_ms");
+        for(const auto& r:ab_cpu) {
+            std::printf("AB_CPU %llu,%llu,%llu,%u,%u,%u,%u,%u",(unsigned long long)r.frame,
+                (unsigned long long)r.tick,(unsigned long long)r.triangles,r.ticks,r.track,r.car,r.glow,r.active);
+            for(auto t:r.ms)std::printf(",%.6f",t);
+            std::putchar('\n');
+        }
+        renderer.dump_ab_trace();std::fflush(stdout);
+    }
     if (profile_stats) {
         // close() drains the last asynchronous GPU reports before logging.
         static constexpr const char* names[] = {
@@ -915,6 +994,8 @@ int main(int argc, char** argv) {
                 }
                 else if (arg == "--panel") panel = true;
                 else if (arg == "--profile-frame") profile_frame = true;
+                else if (arg == "--ab-record") { ab_record=true;profile_frame=true; }
+                else if (arg == "--ab-replay") { ab_replay=true;profile_frame=true; }
                 else if (arg == "--frontend-startup-trace") startup_trace=true;
                 else if (arg == "--hud-trace") hud_trace = true;
                 else if (arg == "--event" && i+1<argc) {
@@ -957,6 +1038,7 @@ int main(int argc, char** argv) {
                 else throw std::runtime_error("Usage: nfsu_switch_race.nro [sdmc:/nfsu] [--live|--replay] [--event 1|8] [--panel|--profile-frame] [--hud-trace] [--no-hud] [--sky on|off|early] [--scene-height 720|540|450|360] [--gpu-boost on|off] [--particles=on|--particles=off] [--tuned] [--glows|--glows=off] [--car NAME] [--car-shading on|off] [--texture-filter legacy|linear] [--wet-road-reflections on|off]");
             }
             require(event_number == 1 || selected, "--event 8 requires --live");
+            require(!(ab_record && ab_replay),"choose one AB mode");
             require(!(panel && profile_frame),"--profile-frame requires direct presentation");
             require(!startup_trace || !selected,"--frontend-startup-trace requires menu startup");
             if(startup_trace) {
