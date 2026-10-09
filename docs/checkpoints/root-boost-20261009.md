@@ -72,3 +72,36 @@ Seal nfsu-boost-r1.nro with source SHA and content SHA in boost-r1-manifest.json
 Ask for current Netloader readiness before upload. Owner should compare launch,
 L hold/release, charge depletion and both tracks. Existing handling and original
 selection limits remain; passing scoped checks does not close whole gameplay.
+
+
+## Owner level-one successor: boost-r2
+
+Owner explicitly selected level1 induction and level1 nitrous for the combined
+map/turbo/nitrous hardware check. This supersedes boost-r1's level3 free-drive
+selection. The original two-bar NOS_2 artwork and FEng centers now follow the
+installed count2; the six-bar artwork remains for the earlier level3 setup.
+The generic turbo and nitrous producers are unchanged. Corrected minimap-r2,
+accepted rendering settings and previous integrated changes remain included.
+
+Validation from the actual workspace path:
+- cmake --build build -j4 --target nfsu_race_boost_tests
+  nfsu_freeride_skyline_tests nfsu_track_render: PASS.
+- ctest --test-dir build --output-on-failure -R
+  '^(nfsu_race_boost_tests|nfsu_freeride_skyline_tests)$': 2/2 PASS.
+- nfsu_race_boost_tests with retail root: PASS for genuine level1 Skyline
+  setup, integrated charge lifecycle and original two-bar HUD artwork.
+- Fresh PC full-scene/HUD event1 and event8 captures: PASS. The helper also
+  asserts the actual resolved free-drive preset selects both level1 upgrades.
+- Real SDK Release NRO build and the three existing NRO/shader/frontend
+  contract CTests: 3/3 PASS. FXAA on, MSAA off, FPS overlay on.
+- Changed source/helper byte and path scans: PASS before local commit;
+  whole-HEAD Bash ASCII/mode scan follows sealing.
+
+Evidence: boost-r2-native-build.log, boost-r2-native-tests.log,
+boost-r2-retail-boost.log, boost-r2-pc-event1/8.log and .png,
+boost-r2-pc-hud.png, boost-r2-sdk.log and boost-r2-manifest.json under the
+existing artifact directory. Previous seals and failed history are preserved.
+Local commit only, no source push/merge. No full matrix or independent review
+is claimed, per owner direction. Actual Switch acceptance remains pending.
+The sealed NRO has tag boost-r2; confirm current Netloader readiness before
+upload and check corrected map, automatic turbo and held L nitrous together.

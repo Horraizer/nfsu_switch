@@ -87,7 +87,7 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
                          bool boost = false);
 void append_race_boost_hud(const RaceHudAtlas& atlas, const NitrousSnapshot& nitrous,
                           bool turbo_installed, float turbo_pressure, unsigned width,
-                          unsigned height, RaceHudFrame& frame) noexcept;
+                          unsigned height, RaceHudFrame& frame, unsigned nitrous_count = 6) noexcept;
 // Writes fixed-capacity vertices, reading only the completed race state.
 // FEng local geometry under the measured anchor in docs/HUD_253.md.
 void build_race_hud_frame(const RaceSession& session,

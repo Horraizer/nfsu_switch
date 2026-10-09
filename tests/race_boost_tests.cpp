@@ -63,12 +63,13 @@ int main(int argc,char** argv) { try {
     for(unsigned i=0;i<160;++i)check(a.advance(boosted,error),"depletion");
     check(!a.nitrous().active&&a.nitrous().remaining==0,"empty bottle cannot boost");
     if(argc==2) {
-        VehicleUpgradeLevels stock,levels;levels.induction=levels.nitrous=3;
+        VehicleUpgradeLevels stock,levels;levels.induction=levels.nitrous=1;
         VehicleSpec before,after;
         const auto global=std::filesystem::path(argv[1])/"Global/GLOBALB.BUN";
         check(load_race_vehicle_spec(global,"SKYLINE",stock,before,error),error.c_str());
         check(load_race_vehicle_spec(global,"SKYLINE",levels,after,error),error.c_str());
         check(after.nitrous.installed&&after.nitrous.capacity_seconds>0&&after.nitrous.rate>0,"Skyline nitrous installed");
+        check(after.nitrous.count==2,"level one selects original two-bar NOS indicator");
         check(after.handling.torque!=before.handling.torque,"Skyline turbo changes original torque curve");
         check(after.handling.mass==before.handling.mass&&after.handling.gear_ratios==before.handling.gear_ratios,
               "boost upgrades preserve mass and gearbox");
@@ -76,8 +77,8 @@ int main(int argc,char** argv) { try {
         check(atlas.boost_ready&&atlas.lap_ready,"retail boost artwork loads");
         RaceHudFrame empty,full;
         build_race_hud_frame_for_car(a.car(),spec.handling.max_rpm,spec.handling.redline_rpm,1280,720,empty);full=empty;
-        append_race_boost_hud(atlas,{8000,0,false,false},true,0,1280,720,empty);
-        append_race_boost_hud(atlas,{8000,8000,false,true},true,0,1280,720,full);
+        append_race_boost_hud(atlas,{8000,0,false,false},true,0,1280,720,empty,after.nitrous.count);
+        append_race_boost_hud(atlas,{8000,8000,false,true},true,0,1280,720,full,after.nitrous.count);
         check(empty.quads==full.quads&&std::memcmp(empty.vertices.data(),full.vertices.data(),sizeof(empty.vertices))!=0,
               "charge must visibly change original NOS artwork");
         std::cout<<"Skyline capacity="<<after.nitrous.capacity_seconds<<" s count="<<after.nitrous.count

@@ -24,7 +24,7 @@ struct FreeDriveSkyline {
     StockSceneRequest request;
     StockFrameSkin skin;
     RaceCarDress dress;
-    // Port free-drive choice: level3 turbo/nitrous; other levels unchanged.
+    // Owner free-drive choice: level1 turbo/nitrous; other levels unchanged.
     VehicleUpgradeLevels performance;
 };
 // Reads FrontB.lzc and GLOBALB.BUN read-only and fills `out`. Fails, with

@@ -366,6 +366,10 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
             const auto name="SR_NOS_BAR6_"+std::to_string(k+1);
             if (!copy_texture(bytes,packs,{"Global/INGAMEB.BUN",bin_hash(name),{800+int(k)*32,270,32,32}},atlas,error)) return false;
         }
+        for (unsigned k=0;k<2;++k) {
+            const auto name="SR_NOS_BAR2_"+std::to_string(k+1);
+            if (!copy_texture(bytes,packs,{"Global/INGAMEB.BUN",bin_hash(name),{800+int(k)*64,310,64,64}},atlas,error)) return false;
+        }
         atlas.boost_ready=true;
     }
     return load_lap_fonts(root,atlas,error);
@@ -386,7 +390,8 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                           RaceHudFrame& frame) noexcept {
     build_race_hud_frame(session,width,height,frame);
     const bool turbo=*std::max_element(session.spec().induction.begin(),session.spec().induction.end())>0;
-    append_race_boost_hud(atlas,session.nitrous(),turbo,session.turbo_pressure(),width,height,frame);
+    append_race_boost_hud(atlas,session.nitrous(),turbo,session.turbo_pressure(),width,height,frame,
+                          session.spec().nitrous.count);
     if (!atlas.lap_ready || !width || !height) return;
     const auto snapshot=race_lap_hud_snapshot(session.course().route,session.timing(),0,true);
     build_race_lap_hud_panel(snapshot,RaceLapHudLanguage{true,0},frame.lap);
@@ -443,19 +448,26 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
 }
 
 void append_race_boost_hud(const RaceHudAtlas& atlas, const NitrousSnapshot& nos,
-        bool turbo, float pressure, unsigned width, unsigned height, RaceHudFrame& frame) noexcept {
+        bool turbo, float pressure, unsigned width, unsigned height, RaceHudFrame& frame,
+        unsigned nitrous_count) noexcept {
     if (!atlas.boost_ready || !width || !height) return;
     const float scale=std::min(width/1280.0F,height/720.0F), s=scale*5.0F/3.0F;
     const float px=width-147*scale,py=height-119*scale;
     const unsigned before=frame.quads;
-    // NOS_6 group plus child SAT centers, relative to the Tach needle.
+    // NOS_2 or NOS_6 group plus child SAT centers, relative to Tach needle.
     // Full original artwork is retained; charge modulates segment alpha.
     constexpr float x[6]={18,5,-14,-23,-24,-17};
     constexpr float y[6]={-19,-27,-24,-13,4,16};
-    const float segments=nos.capacity?6.0F*float(nos.remaining)/float(nos.capacity):0;
-    if (nos.capacity) for (unsigned k=0;k<6;++k) {
+    constexpr float x2[2]={2.001083F,-19.498917F};
+    constexpr float y2[2]={-22.999462F,1.499538F};
+    const unsigned bars=nitrous_count==2?2U:6U;
+    const float segments=nos.capacity?float(bars)*float(nos.remaining)/float(nos.capacity):0;
+    if (nos.capacity) for (unsigned k=0;k<bars;++k) {
         const float filled=std::clamp(segments-float(k),0.0F,1.0F);
-        rect(frame,{800+int(k)*32,270,32,32},px+(x[k]-16)*s,py+(y[k]-16)*s,32*s,32*s,
+        const int size=bars==2?64:32;
+        const float cx=bars==2?x2[k]:x[k],cy=bars==2?y2[k]:y[k];
+        rect(frame,{800+int(k)*size,bars==2?310:270,size,size},
+            px+(cx-size*.5F)*s,py+(cy-size*.5F)*s,size*s,size*s,
             {{0,255,0}},static_cast<unsigned char>(150*filled));
     }
     // Put NOS below scale/needle, preserving their existing painter order.
