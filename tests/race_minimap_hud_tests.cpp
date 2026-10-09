@@ -36,15 +36,37 @@ void focused() {
     check(frame.quads>count && frame.quads<kRaceHudMaxQuads,"map and player append within capacity");
     for (std::size_t i=count*4;i<frame.quads*4;++i) {
         const auto& v=frame.vertices[i];
-        check(std::isfinite(v.px) && std::isfinite(v.py) && v.pz>0,"finite perspective vertices");
-        check(v.u>=512.0F/kRaceHudAtlasWidth && v.u<837.0F/kRaceHudAtlasWidth &&
-              v.v>=0 && v.v<258.0F/kRaceHudAtlasSize,"map UVs cannot bleed into gauge/fonts");
+        check(std::isfinite(v.px) && std::isfinite(v.py) && v.pz>=0 &&
+              std::isfinite(v.u) && std::isfinite(v.v),"finite route and affine marker vertices");
     }
     RaceHudFrame repeated;build_race_hud_frame(session,1280,720,repeated);
     check(append_race_minimap(session,atlas,1280,720,state,repeated),"same snapshot builds again");
     check(frame.quads==repeated.quads && std::memcmp(frame.vertices.data(),repeated.vertices.data(),
           frame.quads*4*sizeof(TrackVertex))==0,"repeated presentation leaves map unchanged");
     check(before==session.record(),"map presentation leaves physics and recording unchanged");
+    // Far outside the authored image, native WRAP still fills the same HUD
+    // window. Clipping by source UV would remove the route altogether.
+    atlas.map.offset_x=-12020;
+    RaceHudFrame outside;build_race_hud_frame(session,1280,720,outside);
+    check(append_race_minimap(session,atlas,1280,720,state,outside),"outside artwork still builds");
+    unsigned route_vertices=0;
+    for (std::size_t i=count*4;i<outside.quads*4;++i) route_vertices+=outside.vertices[i].pz>0;
+    check(route_vertices>=4,"HUD window retains route beyond texture edges");
+    atlas.map.offset_x=0;
+    // Native submission has unit position W, separate projected texture UVQ.
+    // Varying texture Q must not perspective-weight alpha: this pixel is 25.
+    RaceHudAtlas white;white.rgba.assign(kRaceHudAtlasWidth*kRaceHudAtlasSize*4,255);
+    RaceHudFrame alpha;alpha.quads=1;alpha.lap_first_quad=0;
+    for (unsigned i=0;i<4;++i) {
+        auto& v=alpha.vertices[i];v.px=(i==1 || i==2)?4:0;v.py=i>=2?4:0;
+        v.pz=(i==1 || i==2)?4:1;
+        v.u=600.0F/kRaceHudAtlasWidth;v.v=100.0F/kRaceHudAtlasSize;
+        v.color[0]=v.color[1]=v.color[2]=255;
+        v.color[3]=static_cast<unsigned char>(i>=2?200:0);
+    }
+    std::array<unsigned char,64> pixel{};
+    composite_race_hud(white,alpha,pixel.data(),4,4,16);
+    check(pixel[0]==25,"route alpha is screen-affine independently of projected UVs");
     repeated.quads=kRaceHudMaxQuads;
     check(!append_race_minimap(session,atlas,1280,720,state,repeated) &&
           repeated.quads==kRaceHudMaxQuads,"capacity failure does not publish partial map");

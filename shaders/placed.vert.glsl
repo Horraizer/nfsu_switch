@@ -46,6 +46,17 @@ layout (std140, binding = 1) uniform Instance {
 
 void main()
 {
+    // HUD submissions at native 0x0040BEF0 keep unit position W. UVQ is
+    // divided separately by the texture stage; color/alpha stay screen-affine.
+    if ((frame.options.z & 1024u) != 0u) {
+        float q = inPosition.z > 0.0 ? inPosition.z : 1.0;
+        gl_Position = vec4(inPosition.x * frame.projection.x,
+                           -inPosition.y * frame.projection.y, 0.0, 1.0);
+        outWorld = vec3(q, inPosition.z > 0.0 ? 1.0 : 0.0, 0.0);
+        outColor = inColor;
+        outTexcoord = inTexcoord * q;
+        return;
+    }
     // The raw slot order is (longitudinal, lateral, vertical) = (px, pz, py).
     vec3 slot = vec3(inPosition.x, inPosition.z, inPosition.y);
     vec3 moved = slot.x * instance.rows[0].xyz + slot.y * instance.rows[1].xyz +

@@ -333,6 +333,7 @@ struct DekoRenderer::Impl {
         frame.projection[1]=2.0F/source_height();
         frame.projection[2]=0.1F; frame.projection[3]=10;
         frame.options[1]=1;
+        frame.options[2]=1024; // Unit-W HUD with separate projective route UVs.
         const DrawInstanceUniform instance;
         const DrawMaterialUniform material;
         auto* data=static_cast<unsigned char*>(hud_uniforms.getCpuAddr());
@@ -1070,12 +1071,9 @@ struct DekoRenderer::Impl {
             static_cast<unsigned char*>(hud_vertices.getCpuAddr())+slot*slot_bytes);
         for (std::size_t i=0;i<quads*4;++i) {
             vertices[i]=input[i];
-            // Positive pz is a HUD-only reciprocal homogeneous depth.
-            // Ordinary/frontend vertices keep their original unit-depth path.
-            const float depth=(!additive && input[i].pz>0)?1.0F/input[i].pz:1.0F;
-            vertices[i].px=(input[i].px-source_width()*0.5F)*depth;
-            vertices[i].py=(input[i].py-source_height()*0.5F)*depth;
-            vertices[i].pz=-depth;
+            vertices[i].px=input[i].px-source_width()*0.5F;
+            vertices[i].py=input[i].py-source_height()*0.5F;
+            vertices[i].pz=(!additive && input[i].pz>0)?input[i].pz:-1.0F;
         }
         cmd.bindShaders(DkStageFlag_GraphicsMask,{additive?&frontend_vertex:&vertex,additive?&frontend_fragment:&textured_opaque});
         const auto base=hud_uniforms.getGpuAddr();

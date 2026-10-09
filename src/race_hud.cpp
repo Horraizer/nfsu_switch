@@ -334,6 +334,14 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
         const auto packs=load_texture_pack_set(root/"Tracks/TEX1003TRACK.BIN",bytes);
         if (!packs.complete || !packs.ok() ||
             !copy_texture(bytes,packs,{"Tracks/TEX1003TRACK.BIN",atlas.map.hash,{513,1,256,256}},atlas,error)) return false;
+        // One texel of periodic padding isolates linear WRAP from other HUD
+        // artwork. These are copies of the original map pixels, not a mask.
+        for (int y=0;y<258;++y) for (int x=0;x<258;++x) {
+            if (x>0 && x<257 && y>0 && y<257) continue;
+            const int sx=513+(x+255)%256,sy=1+(y+255)%256;
+            std::memcpy(atlas.rgba.data()+((y)*kRaceHudAtlasWidth+512+x)*4,
+                        atlas.rgba.data()+(sy*kRaceHudAtlasWidth+sx)*4,4);
+        }
         for (const auto& source : std::array<SourceSpec,2>{{
                 {"Global/INGAMEB.BUN",0x7E22DED8,{780,1,32,32}},
                 {"Global/INGAMEB.BUN",0x72974A14,{820,1,16,16}}}}) {
@@ -588,8 +596,14 @@ void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,
                 const float qa=a.pz>0?a.pz:1,qb=b.pz>0?b.pz:1,qc=c.pz>0?c.pz:1;
                 const float total=w0*qa+w1*qb+w2*qc;
                 const float wa=w0*qa/total,wb=w1*qb/total,wc=w2*qc/total;
-                const float u=wa*a.u+wb*b.u+wc*c.u;
-                const float vcoord=wa*a.v+wb*b.v+wc*c.v;
+                float u=wa*a.u+wb*b.u+wc*c.u;
+                float vcoord=wa*a.v+wb*b.v+wc*c.v;
+                if (a.pz>0) {
+                    const float local_u=(u*kRaceHudAtlasWidth-513)/256;
+                    const float local_v=(vcoord*kRaceHudAtlasSize-1)/256;
+                    u=(513+(local_u-std::floor(local_u))*256)/kRaceHudAtlasWidth;
+                    vcoord=(1+(local_v-std::floor(local_v))*256)/kRaceHudAtlasSize;
+                }
                 const int tx=std::max(0,std::min(int(kRaceHudAtlasWidth)-1,static_cast<int>(u*kRaceHudAtlasWidth)));
                 const int ty=std::max(0,std::min(511,static_cast<int>(vcoord*512)));
                 const auto* source=atlas.rgba.data()+(ty*kRaceHudAtlasWidth+tx)*4;
@@ -610,7 +624,7 @@ void composite_race_hud(const RaceHudAtlas& atlas, const RaceHudFrame& frame,
                 }
                 auto* target=rgba+y*pitch+x*4;
                 const auto channel=[&](int k) {return unsigned(std::clamp(
-                    wa*a.color[k]+wb*b.color[k]+wc*c.color[k]+.5F,0.0F,255.0F));};
+                    w0*a.color[k]+w1*b.color[k]+w2*c.color[k]+.5F,0.0F,255.0F));};
                 const unsigned alpha=(unsigned(source[3])*channel(3)+127)/255;
                 for (int k=0;k<3;++k) {
                     const unsigned tint=(channel(k)*unsigned(source[k])+127)/255;

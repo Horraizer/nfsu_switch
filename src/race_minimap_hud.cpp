@@ -13,36 +13,6 @@ void filter(float target, float dt, float& value, float& velocity) noexcept {
     velocity=float((double(a)*3*dt+double(b)*2)*dt+velocity);
     value=next;
 }
-float plane(const MinimapVertex& v,int edge) {
-    return edge==0?v.uvq[0]:edge==1?v.uvq[2]-v.uvq[0]:
-           edge==2?v.uvq[1]:v.uvq[2]-v.uvq[1];
-}
-MinimapVertex mix(const MinimapVertex& a,const MinimapVertex& b,float t) {
-    MinimapVertex r;
-    for (int k=0;k<2;++k) r.screen[k]=a.screen[k]+(b.screen[k]-a.screen[k])*t;
-    for (int k=0;k<3;++k) r.uvq[k]=a.uvq[k]+(b.uvq[k]-a.uvq[k])*t;
-    for (int k=0;k<4;++k) r.color[k]=static_cast<unsigned char>(
-        a.color[k]+(int(b.color[k])-a.color[k])*t);
-    return r;
-}
-// Clip homogeneous route UVs to the source artwork, so a cropped map cannot
-// sample adjacent gauge/font texels in the shared atlas. Outside is transparent.
-std::size_t crop(const MinimapPiece& piece,std::array<MinimapVertex,12>& points) {
-    std::copy(piece.vertices.begin(),piece.vertices.end(),points.begin());
-    std::size_t count=4;
-    for (int edge=0;edge<4 && count;++edge) {
-        std::array<MinimapVertex,12> next{};std::size_t n=0;
-        auto previous=points[count-1];float pv=plane(previous,edge);
-        for (std::size_t i=0;i<count;++i) {
-            const auto current=points[i];const float cv=plane(current,edge);
-            if ((pv>=0)!=(cv>=0)) next[n++]=mix(previous,current,pv/(pv-cv));
-            if (cv>=0) next[n++]=current;
-            previous=current;pv=cv;
-        }
-        points=next;count=n;
-    }
-    return count;
-}
 }
 
 void update_race_minimap_direction(MapPoint target,std::int32_t ticks,
@@ -88,30 +58,20 @@ bool append_race_minimap(const RaceSession& session,const RaceHudAtlas& atlas,
     MinimapGeometry geometry;
     if (build_minimap_geometry(atlas.map,style,presentation,player.raw_xy,&player,1,geometry)!=MinimapResult::ok)
         return false;
-    // Prepare bounded pieces before publishing any vertices to the existing HUD.
-    std::array<MinimapPiece,kMinimapMaxPieces> pieces{};std::size_t count=0;
+    // Native clips to the HUD window, not to rotating texture coordinates.
+    // The isolated atlas sampler wraps the route artwork without changing it.
+    if (frame.quads+geometry.count>kRaceHudMaxQuads) return false;
+    if (frame.lap_first_quad==kRaceHudMaxQuads) frame.lap_first_quad=frame.quads;
     for (std::size_t i=0;i<geometry.count;++i) {
         const auto& piece=geometry.pieces[i];
-        if (!piece.route) {if(count==pieces.size())return false;pieces[count++]=piece;continue;}
-        std::array<MinimapVertex,12> points{};const auto n=crop(piece,points);
-        for (std::size_t j=1;j+1<n;j+=2) {
-            if(count==pieces.size())return false;
-            pieces[count]=piece;
-            pieces[count++].vertices={{points[0],points[j],points[j+1],points[std::min(j+2,n-1)]}};
-        }
-    }
-    if (frame.quads+count>kRaceHudMaxQuads) return false;
-    if (frame.lap_first_quad==kRaceHudMaxQuads) frame.lap_first_quad=frame.quads;
-    for (std::size_t i=0;i<count;++i) {
-        const auto& piece=pieces[i];
         const int tx=piece.route?513:780,ty=1,tw=piece.route?256:32;
         for (std::size_t j=0;j<4;++j) {
             const auto& in=piece.vertices[j];auto& out=frame.vertices[frame.quads*4+j];
             const float u=in.uvq[0]/in.uvq[2],v=in.uvq[1]/in.uvq[2];
             out.px=in.screen[0];out.py=in.screen[1];
-            out.pz=piece.route?200*in.uvq[2]:1;
-            out.u=(tx+.5F+u*(tw-1))/kRaceHudAtlasWidth;
-            out.v=(ty+.5F+v*(tw-1))/kRaceHudAtlasSize;
+            out.pz=piece.route?200*in.uvq[2]:0;
+            out.u=(piece.route?tx+u*tw:tx+.5F+u*(tw-1))/kRaceHudAtlasWidth;
+            out.v=(piece.route?ty+v*tw:ty+.5F+v*(tw-1))/kRaceHudAtlasSize;
             // Explicit full-byte modulation for the existing final HUD pass.
             for (int k=0;k<4;++k) out.color[k]=static_cast<unsigned char>(std::min(255,int(in.color[k])*2));
         }

@@ -64,7 +64,7 @@ atomic capacity refusal and no first-track map for unselected resources.
 Actual original resources and first-track collision/route loaded read-only.
 Three integrated HUD captures include lap/timer/map/gauge/FPS, startup and
 moving/turning poses. Hot-plug neutral frame precedes throttle. Viewed
-minimap-r1-moving-pc/hud-360.png; speed31MPH and turning player/map are visible.
+minimap-r1-moving-pc/hud-360.png; moving car and turning player/map are visible.
 Captures use a flat diagnostic background, not an original or port scene shot.
 
 Switch SDK Release NRO built with tag minimap-r1; NRO/embedded shader/frontend
@@ -84,3 +84,47 @@ Remaining: owner portable map placement/turn/R3 appearance and load/lifecycle
 acceptance at current NRO identity; second-track map, original default/style
 and material parity, race start-line/rival markers are not claimed complete.
 Next authorized step after map acceptance: nitro/turbo mechanics and HUD.
+
+## Owner correction: minimap-r2
+
+At267c4a2, owner rejected transparency and the changing window shape after
+actual minimap-r1 upload. Do not count the original map as visually accepted.
+The log nxlink-minimap-r1-run1.log records a completed driving run and exit;
+current Netloader availability is not inferred from that run.
+
+The integration's extra UV0..1 polygon crop was wrong: native0x0058FB10 clips
+to the stationary HUD rectangle. Removed that crop. Original world.efx has
+WRAP/LINEAR and Modulate2x for RGBA; authenticated SHA-256 is
+d1cdbd788d564c4cd408a060d0eda4e99245f0eb54b18a4fcee848d2966e6c98.
+The map sampler now wraps within its atlas rectangle, with one texel of
+periodic padding copied from original artwork to isolate linear edge samples.
+No texture alpha mask or arbitrary opacity multiplier was introduced.
+
+Original0x0040BEF0 emits unit position W and separate UVQ. The previous GPU
+adapter moved Q into position W and thereby perspective-weighted color/alpha
+too. Renderer-only HUD flag1024 keeps unit W and screen-affine RGBA while
+dividing route UVQ separately. CPU reference uses the same separation.
+Ordinary scene uniforms keep the flag off; frontend uses its existing shader.
+Native read-only disassembly is saved in minimap-r2-render-context.txt.
+
+Targeted native minimap and shader manifest CTests PASS. The existing HUD
+CTest still fails only its two retained manual up/down fixture assertions.
+New negatives catch route removal outside artwork and perspective-weighted
+alpha. The first test build failed on an array-assignment typo, corrected in
+minimap-r2-native-build-r2.log; no failed run is counted as a pass.
+Actual Switch SDK NRO/embedded shader/frontend contract CTest3/3PASS in
+minimap-r2-sdk.log. No complete native matrix is claimed.
+
+Fresh full PC renderer capture PASS: minimap-r2-pc-scene.png and comparison
+minimap-r2-pc-reference.png. This renders the retail street, selected Skyline,
+road reflections, shadow and HUD through current native libraries; it is not
+a gray-background HUD composite or Switch readback. The helper uses its
+previous diagnostic far plane250 and a stationary free-driving pose. Deck
+pose/car dress/viewport differ. Visible route and marker are close to the
+reference; final alpha equality is not claimed. Blue start-line marker is
+still absent, event8 map remains unimplemented, and original live style
+selection/technique state is not fully established. These remain explicit.
+
+Source is local only. Preserve minimap-r1 NRO and receipt. Seal minimap-r2
+against its actual commit after ASCII scan; do not claim a new hardware run
+or publish/merge automatically. Next: owner checks corrected map on Switch.
