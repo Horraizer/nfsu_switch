@@ -146,6 +146,12 @@ void main()
         return;
     }
     vec4 sampled = texture(baseTexture, uv);
+    // Same original sprite material in both backend fragment variants.
+    if (material.alpha.w == 5.0) {
+        outColor=vec4(sampled.rgb*(material.environment_color.rgb/255.0)*2.0,
+                      sampled.a*material.alpha.x);
+        return;
+    }
     uvec4 texel = uvec4(sampled * 255.0 + 0.5);
     if (material.fallback.w == 6.0) {
         // Raw track D3DCOLOR is little-endian BGRA; the native declaration

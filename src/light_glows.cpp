@@ -193,6 +193,35 @@ OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
     return result;
 }
 
+OriginalCarGlow place_original_road_glow(const float* point,const float* normal,
+    const CameraFrame& camera,unsigned width) noexcept {
+    OriginalCarGlow out;out.texture=1;
+    const Vec3 world{point[0],point[2],-point[1]};
+    const Vec3 d=difference(world,camera.eye);const double distance2=dot3(d,d);
+    const double depth=dot3(d,camera.forward);
+    if(!width || !(distance2>0) || distance2>=40000 || depth<=camera.near_plane ||
+       depth>=camera.far_plane || std::abs(dot3(d,camera.right))*camera.focal_x>=depth ||
+       std::abs(dot3(d,camera.up))*camera.focal_y>=depth)return out;
+    const double distance=std::sqrt(distance2);
+    const float toward[3]={float(-d.x/distance),float(d.z/distance),float(-d.y/distance)};
+    const float right[3]={float(camera.right.x),float(-camera.right.z),float(camera.right.y)};
+    const float up[3]={float(-camera.up.x),float(camera.up.z),float(-camera.up.y)};
+    const float position[3]={point[0],point[1],point[2]};
+    const float facing=std::max(0.0F,toward[0]*normal[0]+toward[1]*normal[1]+toward[2]*normal[2]);
+    FrontendRoadGlow quad;
+    if(!frontend_road_glow(position,toward,right,up,facing,
+        float(depth/(double(width)*.5*camera.focal_x)),0,quad))return out;
+    std::copy(std::begin(quad.rgba),std::end(quad.rgba),out.rgba);
+    out.rgba[3]=static_cast<unsigned char>(double(out.rgba[3])*
+        (distance2<=32000?1:(40000-distance2)/8000));
+    for(unsigned axis=0;axis<3;++axis) {
+        out.transform[axis]=(quad.corners[1][axis]-quad.corners[0][axis])*.5F;
+        out.transform[8+axis]=(quad.corners[3][axis]-quad.corners[0][axis])*.5F;
+        out.transform[12+axis]=(quad.corners[0][axis]+quad.corners[2][axis])*.5F;
+    }
+    out.transform[15]=1;return out;
+}
+
 RenderTexture make_car_glow_texture(bool head) {
     RenderTexture texture;
     texture.hash = head ? 0x18500001U : 0x18500002U;

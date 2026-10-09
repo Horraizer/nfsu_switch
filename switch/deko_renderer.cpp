@@ -112,6 +112,10 @@ struct DekoRenderer::Impl {
     std::array<dk::Image, 2> depths;
     DekoSceneTarget scene_target;
     bool fxaa_enabled=false;
+    bool streaks_enabled=false, streaks_initialized=false;
+    dk::Shader streak_vertex,streak_fade_fragment,streak_copy_fragment;
+    dk::Image streak_color;
+    dk::MemBlock streak_descriptors;
     bool msaa_enabled=false;
 #if defined(NFSU_RACE_MSAA8)
     static constexpr DkMsMode msaa_mode=DkMsMode_8x;
@@ -642,6 +646,29 @@ struct DekoRenderer::Impl {
             !shader("frontend_ui.frag", DkStage_Fragment, frontend_fragment, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
         if (package && !prepare_static_commands(source, presentation, error)) return false;
+        // The comparison uses the existing single-sample scene/depth path.
+        // MSAA remains independently selectable; its depth cannot be attached
+        // to a single-sample light history target.
+        streaks_enabled=presentation && source.race_environment && !msaa_enabled;
+        if(streaks_enabled) {
+            if(!shader("fxaa.vert",DkStage_Vertex,streak_vertex,error) ||
+               !shader("streak_fade.frag",DkStage_Fragment,streak_fade_fragment,error) ||
+               !shader("streak_copy.frag",DkStage_Fragment,streak_copy_fragment,error) ||
+               !block(2*kDrawDescriptorBytes,kDataFlags,"light streak descriptors",streak_descriptors,error))return false;
+            dk::ImageLayout layout;
+            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
+                .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(scene_target.width,scene_target.height).initialize(layout);
+            dk::MemBlock memory;
+            if(!block(layout.getSize(),kImageFlags,"light streak history",memory,error))return false;
+            streak_color.initialize(layout,memory,0);
+            dk::ImageDescriptor image;image.initialize(dk::ImageView{streak_color});
+            dk::Sampler sampler;sampler.setFilter(DkFilter_Linear,DkFilter_Linear)
+                .setWrapMode(DkWrapMode_ClampToEdge,DkWrapMode_ClampToEdge,DkWrapMode_ClampToEdge);
+            dk::SamplerDescriptor descriptor;descriptor.initialize(sampler);
+            std::memcpy(streak_descriptors.getCpuAddr(),&image,sizeof image);
+            std::memcpy(static_cast<unsigned char*>(streak_descriptors.getCpuAddr())+kDrawDescriptorBytes,&descriptor,sizeof descriptor);
+            std::printf("LIGHT STREAKS history=%ux%u decay_RGB=130,150,180/255 original409B70 before_FXAA_HUD=1\n",scene_target.width,scene_target.height);
+        }
         if(fxaa_enabled) {
             if(!shader("fxaa.vert",DkStage_Vertex,fxaa_vertex,error) ||
                !shader("fxaa.frag",DkStage_Fragment,fxaa_fragment,error) ||
@@ -846,6 +873,9 @@ struct DekoRenderer::Impl {
         for (std::size_t i = first_dynamic; i < source.draw_count(); ++i) {
             const auto view = source.draw_view(i);
             const auto index = i - first_dynamic;
+            // Original LIGHTSTREAKS replaces direct glow submission: these
+            // same sprites are emitted exactly once into the history below.
+            if(streaks_enabled && view.material.alpha[3]==5.0F)continue;
             std::memcpy(data + (1+2*index)*256, &view.placement, sizeof(DrawInstanceUniform));
             // Copy a private GPU payload; the recorded retail material stays intact.
             auto material=view.material;
@@ -1353,6 +1383,54 @@ struct DekoRenderer::Impl {
             cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
             cmd.bindMultisampleState(dk::MultisampleState{});
             if(!scene_target.upscale)cmd.bindRenderTargets(&resolved_view,nullptr);
+        }
+        if(streaks_enabled) {
+            // One ordered GPU queue owns this persistent image across both
+            // swap slots. Barriers separate sample, render and next-frame use.
+            cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache);
+            dk::ImageView history{streak_color};
+            cmd.bindRenderTargets(&history,nullptr);
+            cmd.setViewports(0,{{0,0,float(scene_target.width),float(scene_target.height),0,1}});
+            cmd.setScissors(0,{{0,0,scene_target.width,scene_target.height}});
+            if(!streaks_initialized) {
+                cmd.clearColor(0,DkColorMask_RGBA,0,0,0,0);
+                streaks_initialized=true;
+            }
+            const auto fullscreen=[&](dk::Shader& fragment,bool fading) {
+                cmd.bindShaders(DkStageFlag_GraphicsMask,{&streak_vertex,&fragment});
+                dk::RasterizerState raster;raster.setCullMode(DkFace_None);
+                dk::ColorState color;color.setBlendEnable(0,true).setAlphaCompareOp(DkCompareOp_Always);
+                dk::ColorWriteState write;write.setMask(0,DkColorMask_RGB);
+                dk::BlendState blend;blend.setFactors(fading?DkBlendFactor_Zero:DkBlendFactor_One,
+                    fading?DkBlendFactor_SrcColor:DkBlendFactor_One,DkBlendFactor_Zero,DkBlendFactor_One);
+                dk::DepthStencilState depth;depth.setDepthTestEnable(false).setDepthWriteEnable(false);
+                cmd.bindRasterizerState(raster);cmd.bindColorState(color);cmd.bindColorWriteState(write);
+                cmd.bindBlendStates(0,blend);cmd.bindDepthStencilState(depth);
+                cmd.bindVtxAttribState(std::array<DkVtxAttribState,0>{});
+                cmd.draw(DkPrimitive_Triangles,3,1,0,0);
+            };
+            fullscreen(streak_fade_fragment,true);
+            cmd.barrier(DkBarrier_Fragments,0);
+            // Test new lights against this frame's scene depth. Old history
+            // remains in screen space, as in the original persistent target.
+            cmd.bindRenderTargets(&history,&depth_view);
+            cmd.bindImageDescriptorSet(descriptors.getGpuAddr(),static_cast<std::uint32_t>(handles.size()+(reflection_ready?1:0)+(frontend_cube_ready?1:0)));
+            cmd.bindSamplerDescriptorSet(descriptors.getGpuAddr()+sampler_offset,(reflection_ready||frontend_cube_ready)?3:2);
+            const RecordedDraw* previous_light=nullptr;
+            for(std::size_t i=first_dynamic;i<commands->draw_count();++i) {
+                const auto view=commands->draw_view(i);
+                if(view.material.alpha[3]!=5.0F || view.material.alpha[0]<=0)continue;
+                const auto index=i-first_dynamic;
+                emit_draw(cmd,view.definition,base+(1+2*index)*256,base+(2+2*index)*256,
+                    !previous_light || !same_fixed_state(*previous_light,view.definition));
+                previous_light=&view.definition;
+            }
+            cmd.barrier(DkBarrier_Full,DkInvalidateFlags_Image|DkInvalidateFlags_L2Cache|DkInvalidateFlags_Descriptors);
+            cmd.bindRenderTargets(&color_view,nullptr);
+            cmd.bindImageDescriptorSet(streak_descriptors.getGpuAddr(),1);
+            cmd.bindSamplerDescriptorSet(streak_descriptors.getGpuAddr()+kDrawDescriptorBytes,1);
+            cmd.bindTextures(DkStage_Fragment,0,dkMakeTextureHandle(0,0));
+            fullscreen(streak_copy_fragment,false);
         }
         if(fxaa_enabled) {
             // Complete scene writes before sampling. Every slot has distinct

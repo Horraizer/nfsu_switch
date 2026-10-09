@@ -338,7 +338,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     // RaceRun loads the route and collision course itself; discard the
     // diagnostic path and contact copy before allocating that course.
     root_ = root;
-    if (wet_road_reflections_) {
+    if (wet_road_reflections_ || (race_visuals_ && glows_enabled_)) {
         if (!load_wet_road_lamps(root, track_.contacts, lamps_, error, static_cast<std::int16_t>(track_.track_number))) return false;
         lamps_loaded_ = true;
     }
@@ -383,7 +383,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     }
     if (loading) loading->checkpoint("render prepared");
     if (cache_bytes() > 8*kMiB) { error = "race command cache exceeds 8 MiB"; return false; }
-    if (lamps_loaded_) {
+    if (lamps_loaded_ && wet_road_reflections_) {
         wet_uploads_ = combined_uploads_;
         if (!append_wet_lamp_uploads(lamps_, wet_uploads_, error) || !prepare_reflections(error)) return false;
     }
@@ -409,6 +409,8 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
         track_placements_.capacity()*sizeof(DrawInstanceUniform);
     bytes += wet_uploads_.resources.capacity()*sizeof(UploadResource);
     for (const auto& r : wet_uploads_.resources) bytes += r.name.capacity()+1;
+    // Fixed glow names fit the same short-string capacity as the templates.
+    bytes += road_glows_.capacity()*(sizeof(RecordedDraw)+16);
     bytes += lamps_.lights.capacity()*sizeof(WetRoadLamp) + lamps_.texture.rgba.capacity();
     bytes += (reflection_templates_.capacity()+lamp_draws_.capacity())*sizeof(RecordedDraw);
     bytes += (reflection_first_.capacity()+reflection_selection_.capacity())*sizeof(std::size_t);
@@ -555,6 +557,7 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
         // Authored image payload belongs to car residency, like the other car textures.
         // The command cache counts only the descriptors borrowing it.
         for(const auto& texture:original_glow_textures_)car_bytes_+=texture.rgba.capacity();
+        road_glows_.resize(lamps_.lights.size());
         if(car_bytes_>kPersistentBudgetPlaceholder){error="car glow residency exceeds payload budget";return false;}
     } else {
         glow_head_ = make_car_glow_texture(true);
@@ -662,7 +665,7 @@ RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
     if (i >= car_templates_.owning_draws().size()) {
         i -= car_templates_.owning_draws().size();
         if (i >= glow_count_) throw std::out_of_range("selected glow draw is out of range");
-        const auto& glow = glow_selected_[i];
+        const auto& glow = i<glow_selected_.size()?glow_selected_[i]:road_glows_.at(i-glow_selected_.size());
         return {glow, kNoHandle, glow.placement, glow.material, false};
     }
     const auto& draw = car_templates_.owning_draws().at(i);
@@ -836,6 +839,15 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=sprite.rgba[c];
                 draw.material.alpha[0]=float(sprite.rgba[3])/255;
             }
+            for(std::size_t i=0;i<lamps_.lights.size();++i) {
+                const auto& lamp=lamps_.lights[i];
+                const auto sprite=place_original_road_glow(lamp.position,lamp.direction,basis,options.width);
+                auto& draw=road_glows_[i];draw=glow_templates_[1];
+                std::copy(std::begin(sprite.transform),std::end(sprite.transform),draw.placement.rows);
+                for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=sprite.rgba[c];
+                draw.material.alpha[0]=float(sprite.rgba[3])/255;
+            }
+            glow_count_+=road_glows_.size();
         } else if (glows_enabled_) {
             const auto sprites = place_car_glows(glow_anchors_, car_, basis,
                                                  session.animation().braking);
@@ -983,6 +995,14 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 const auto sprites=place_original_car_glows(glow_anchors_,car_,basis,options.width,session.light_service_brake());
                 for(const auto& sprite:sprites) {
                     auto draw=glow_templates_[sprite.texture];
+                    std::copy(std::begin(sprite.transform),std::end(sprite.transform),draw.placement.rows);
+                    for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=sprite.rgba[c];
+                    draw.material.alpha[0]=float(sprite.rgba[3])/255;
+                    result.commands.owning_draws().push_back(std::move(draw));
+                }
+                for(const auto& lamp:lamps_.lights) {
+                    const auto sprite=place_original_road_glow(lamp.position,lamp.direction,basis,options.width);
+                    auto draw=glow_templates_[1];
                     std::copy(std::begin(sprite.transform),std::end(sprite.transform),draw.placement.rows);
                     for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=sprite.rgba[c];
                     draw.material.alpha[0]=float(sprite.rgba[3])/255;

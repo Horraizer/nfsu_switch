@@ -42,6 +42,9 @@ OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
     const PreparedCarScene& car,const CameraFrame& camera,unsigned display_width,
     double service_brake) noexcept;
 
+OriginalCarGlow place_original_road_glow(const float* point,const float* normal,
+    const CameraFrame& camera,unsigned display_width) noexcept;
+
 // Procedural, bounded approximation of the retail flare image. The two
 // 16x16 textures are generated at load time and are never stored in Git.
 RenderTexture make_car_glow_texture(bool head);

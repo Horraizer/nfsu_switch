@@ -154,7 +154,7 @@ add_custom_target(nfsu_switch_frontend_probe_shaders ALL DEPENDS ${NFSU_FRONTEND
 
 
 # Production fullscreen postprocess stages, distinct from diagnostic probes.
-set(NFSU_POSTPROCESS_STAGES fxaa.vert fxaa.frag)
+set(NFSU_POSTPROCESS_STAGES fxaa.vert fxaa.frag streak_fade.frag streak_copy.frag)
 set(NFSU_POSTPROCESS_BLOBS "")
 foreach(stage IN LISTS NFSU_POSTPROCESS_STAGES)
     if(stage MATCHES "[.]vert$")

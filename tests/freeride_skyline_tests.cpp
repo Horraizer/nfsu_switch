@@ -402,7 +402,7 @@ void retail_checks(const std::filesystem::path& root) {
                     require(scene.frame(run.session(),frame,error),"skyline dressed frame: " + error);
             }
             require(scene.frame(run.session(),frame,error),"final dressed frame: " + error);
-            require(frame.glow_draws==7,"original primary lights reserve two layers per head and three tails");
+            require(frame.glow_draws>7,"original primary lights include authored road sources and seven car slots");
             unsigned visible_glows=0;
             for(std::size_t i=0;i<frame.commands.draw_count();++i) {
                 const auto d=frame.commands.draw_view(i);
