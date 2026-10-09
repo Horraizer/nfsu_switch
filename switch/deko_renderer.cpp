@@ -113,6 +113,14 @@ struct DekoRenderer::Impl {
     DekoSceneTarget scene_target;
     bool fxaa_enabled=false;
     bool msaa_enabled=false;
+#if defined(NFSU_RACE_MSAA8)
+    static constexpr DkMsMode msaa_mode=DkMsMode_8x;
+    static constexpr unsigned msaa_samples=8;
+#else
+    static constexpr DkMsMode msaa_mode=DkMsMode_2x;
+    static constexpr unsigned msaa_samples=2;
+#endif
+    std::uint64_t msaa_budget_extra=0;
 #if defined(NFSU_DEKO_DEBUG_DIAGNOSTICS)
     bool msaa_first_frame=true;
 #else
@@ -178,7 +186,7 @@ struct DekoRenderer::Impl {
                dk::MemBlock& out, std::string& error) {
         bytes = align_up(bytes ? bytes : 1, DK_MEMBLOCK_ALIGNMENT);
         if(!trace("allocation.before",error,name,bytes))return false;
-        if (bytes > kMaxUploadResourceBytes || gpu_bytes + bytes > kGpuBudgetPlaceholder) {
+        if (bytes > kMaxUploadResourceBytes || gpu_bytes + bytes > kGpuBudgetPlaceholder + msaa_budget_extra) {
             error = std::string(name) + ": GPU memory budget exceeded"; return false;
         }
         dk::UniqueMemBlock memory = dk::MemBlockMaker{device, static_cast<std::uint32_t>(bytes)}
@@ -360,7 +368,7 @@ struct DekoRenderer::Impl {
 #if defined(NFSU_RACE_FXAA)
         fxaa_enabled=presentation && source.race_environment;
 #endif
-#if defined(NFSU_RACE_MSAA2)
+#if defined(NFSU_RACE_MSAA2) || defined(NFSU_RACE_MSAA8)
         msaa_enabled=presentation && source.race_environment;
 #endif
         if(fxaa_enabled && msaa_enabled) { error="select one race AA mode";return false; }
@@ -616,7 +624,7 @@ struct DekoRenderer::Impl {
             .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(source.width, source.height).initialize(color_layout);
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
             .setType(msaa_enabled?DkImageType_2DMS:DkImageType_2D)
-            .setMsMode(msaa_enabled?DkMsMode_2x:DkMsMode_1x)
+            .setMsMode(msaa_enabled?msaa_mode:DkMsMode_1x)
             .setFormat(DkImageFormat_ZF32).setDimensions(scene_target.width, scene_target.height).initialize(depth_layout);
         if(msaa_enabled) {
             // One queue completes each resolve before the next clear. These
@@ -624,11 +632,34 @@ struct DekoRenderer::Impl {
             // as in the SDK multisampling example; resolved images stay per slot.
             dk::ImageLayout msaa_layout;
             dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender|DkImageFlags_Usage2DEngine)
-                .setType(DkImageType_2DMS).setMsMode(DkMsMode_2x)
+                .setType(DkImageType_2DMS).setMsMode(msaa_mode)
                 .setFormat(DkImageFormat_RGBA8_Unorm)
                 .setDimensions(scene_target.width,scene_target.height).initialize(msaa_layout);
+            if(msaa_samples==8) {
+                // The opt-in 8x comparison reserves only the measured extra
+                // color/depth allocation over the tested 2x configuration.
+                // Other resources retain the existing budget; no fallback.
+                dk::ImageLayout base_color,base_depth;
+                dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender|DkImageFlags_Usage2DEngine)
+                    .setType(DkImageType_2DMS).setMsMode(DkMsMode_2x)
+                    .setFormat(DkImageFormat_RGBA8_Unorm)
+                    .setDimensions(scene_target.width,scene_target.height).initialize(base_color);
+                dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
+                    .setType(DkImageType_2DMS).setMsMode(DkMsMode_2x)
+                    .setFormat(DkImageFormat_ZF32)
+                    .setDimensions(scene_target.width,scene_target.height).initialize(base_depth);
+                const auto actual=align_up(msaa_layout.getSize(),DK_MEMBLOCK_ALIGNMENT)+
+                                  align_up(depth_layout.getSize(),DK_MEMBLOCK_ALIGNMENT);
+                const auto baseline=align_up(base_color.getSize(),DK_MEMBLOCK_ALIGNMENT)+
+                                    align_up(base_depth.getSize(),DK_MEMBLOCK_ALIGNMENT);
+                if(actual<baseline){error="MSAA allocation size order invalid";return false;}
+                msaa_budget_extra=actual-baseline;
+                std::printf("RACE AA MSAA8 extra_target_bytes=%llu GPU_budget_bytes=%llu\n",
+                    (unsigned long long)msaa_budget_extra,
+                    (unsigned long long)(kGpuBudgetPlaceholder+msaa_budget_extra));
+            }
             dk::MemBlock memory;
-            if(!block(msaa_layout.getSize(),kImageFlags,"MSAA2 scene color",memory,error))return false;
+            if(!block(msaa_layout.getSize(),kImageFlags,"MSAA scene color",memory,error))return false;
             msaa_color.initialize(msaa_layout,memory,0);
         }
         if (scene_target.upscale || fxaa_enabled)
@@ -661,7 +692,7 @@ struct DekoRenderer::Impl {
             }
         }
         if(fxaa_enabled)std::printf("RACE AA FXAA source=%ux%u search=8 subpixel=0.5 before_upscale_and_HUD=1\n",scene_target.width,scene_target.height);
-        if(msaa_enabled)std::printf("RACE AA MSAA2 source=%ux%u samples=2 FXAA=off before_upscale_and_HUD=1\n",scene_target.width,scene_target.height);
+        if(msaa_enabled)std::printf("RACE AA MSAA%u source=%ux%u samples=%u FXAA=off before_upscale_and_HUD=1\n",msaa_samples,scene_target.width,scene_target.height,msaa_samples);
         for (std::size_t i = 0; i < (presentation && !msaa_enabled ? 2U : 1U); ++i) {
             dk::MemBlock depth_memory;
             if (!block(depth_layout.getSize(), kImageFlags, "depth image", depth_memory, error)) return false;
@@ -1223,7 +1254,7 @@ struct DekoRenderer::Impl {
         cmd.bindRenderTargets(&color_view, &depth_view);
         if(msaa_enabled) {
             dk::MultisampleState samples;
-            samples.setMode(DkMsMode_2x).setLocations();
+            samples.setMode(msaa_mode).setLocations();
             cmd.bindMultisampleState(samples);
             cmd.setSampleMask(0xFFFFU);
         }
