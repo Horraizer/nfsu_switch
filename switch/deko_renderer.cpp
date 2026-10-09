@@ -550,13 +550,18 @@ struct DekoRenderer::Impl {
         std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) + sampler_offset,
                     &sampler_descriptor, sizeof sampler_descriptor);
         sampler.setFilter(DkFilter_Linear, DkFilter_Linear);
-        if(source.race_environment)sampler.setFilter(DkFilter_Linear,DkFilter_Linear,DkMipFilter_Linear);
+        if(source.race_environment) {
+            sampler.setFilter(DkFilter_Linear,DkFilter_Linear,DkMipFilter_Linear)
+                .setMaxAnisotropy(4.0f);
+            std::puts("WORLD FILTER min=linear mag=linear mip=linear anisotropy=4");
+        }
         sampler_descriptor.initialize(sampler);
         std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) +
                         sampler_offset + kDrawDescriptorBytes,
                     &sampler_descriptor, sizeof sampler_descriptor);
         if ((source.frame.options[2] & 10U) != 0 || (source.race_environment || !source.frontend_cube_draws.empty())) {
         sampler.setFilter(DkFilter_Linear, DkFilter_Linear)
+            .setMaxAnisotropy(1.0f)
             .setWrapMode(DkWrapMode_ClampToEdge, DkWrapMode_ClampToEdge, DkWrapMode_ClampToEdge);
         sampler_descriptor.initialize(sampler);
         std::memcpy(static_cast<unsigned char*>(descriptors.getCpuAddr()) +
