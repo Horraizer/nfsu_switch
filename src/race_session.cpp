@@ -51,7 +51,8 @@ bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& err
         chase_angle(fx,fy)-chase_angle(s.velocity.x,s.velocity.y));
     SteeringContext context;
     context.raw = float(input.steer);
-    context.seconds = float(1+double(steering_steps_)/120);
+    context.seconds = float(1+double(steering_steps_)/60);
+    context.dt = static_cast<float>(kDriveFrameSeconds);
     context.forward_speed = float(forward_speed(s));
     context.speed = float(vehicle_sqrt(s.velocity.x*s.velocity.x+s.velocity.y*s.velocity.y+s.velocity.z*s.velocity.z));
     context.heading_minus_velocity_deg = float(double(static_cast<std::int16_t>(difference))*(360.0/65536));
@@ -62,7 +63,7 @@ bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& err
     context.handbrake = input.handbrake ? 1 : 0;
     context.brake = float(input.brake);
     context.predicted_max_speed = steering_max_speed_;
-    context.shift_elapsed = shifted_ ? float(double(steering_steps_-shift_step_)/120) : 1;
+    context.shift_elapsed = shifted_ ? float(double(steering_steps_-shift_step_)/60) : 1;
     context.predicate = steering_mode_ == RaceSteering::recovered_predicate1;
     if (!steering_step(context,steering_state_,steering_result_)) {
         error = "recovered steering context refused at substep "+std::to_string(substep); return false;
@@ -121,14 +122,11 @@ bool RaceSession::advance(const GamepadFrame& pad, std::string& error) {
     if (!race_car_held(timing_)) {
         if (controls_.frame_state().reset) vehicle_.request_reset();
         const bool recovered = steering_mode_ != RaceSteering::baseline;
-        // Filtering remains a qualified two120Hz-update port adapter. The
-        // completed steering/input is transferred once before four physics
-        // slices, as the observed original pre-loop transfer requires.
+        // Keep the legacy processed-controls adapter at two120Hz updates.
+        // Human4615E0 calls steering460930 once with the world dt before
+        // physics. Calling it twice with half dt incorrectly snaps each
+        // small slew below one degree back to zero during gradual turn-in.
         auto first=controls_.step(forward_speed(car()),car().gear,car().gearbox,recovered);
-        if(recovered) {
-            if(!steer_input(first,0,error)) {started_=false;return false;}
-            ++steering_steps_;
-        }
         auto held=controls_.step(forward_speed(car()),car().gear,car().gearbox,recovered);
         if(recovered) {
             if(!steer_input(held,1,error)) {started_=false;return false;}

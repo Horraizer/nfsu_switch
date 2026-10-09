@@ -87,6 +87,29 @@ int main() {
 
     VehicleTrackCourse course;
     check(build_vehicle_proving_ground(course,error),"steering replay course");
+    // A held pad sample must not be slewed twice with half the world dt:
+    // the native one-degree snap otherwise suppresses gradual high-speed
+    // turn-in. Original460930 slow-ramp evidence is recorded in the checkpoint.
+    for(int sign : {-1,1}) {
+        auto fast_course=course; fast_course.start.speed=58;
+        RaceSession fast(fast_course,stock_240sx_vehicle_spec(),RaceSteering::recovered_predicate1);
+        check(fast.start(error),"high-speed steering session starts");
+        unsigned tick=0;
+        while(race_car_held(fast.timing())&&tick<1000)
+            check(fast.advance(race_input_frame({1,0,0},tick++),error),"high-speed countdown");
+        for(int frame=0;frame<=44;++frame) {
+            const double raw=std::min(.8,std::max(0.,(frame-30)*.025));
+            const int axis=raw==0?0:sign*int(3000+27000*raw);
+            check(fast.advance(race_input_frame({1,0,axis},tick++),error),"gradual high-speed turn advances");
+        }
+        const auto& t=fast.telemetry();
+        check(std::abs(t.model.steer_angle)>.017&&sign*t.model.steer_angle<0,
+              "gradual high-speed input reaches road wheels before full lock");
+        check(sign*t.model.angular_velocity.z<-.0001,
+              "gradual high-speed input turns the body in the requested direction");
+        check(t.contacts==0&&t.model.wheels[0].contact&&t.model.wheels[1].contact,
+              "turn-in response is measured before impact with front contact");
+    }
     for (auto mode:{RaceSteering::recovered_predicate0,RaceSteering::recovered_predicate1}) {
         RaceSession a(course,stock_240sx_vehicle_spec(),mode), b(course,stock_240sx_vehicle_spec(),mode);
         check(a.start(error) && b.start(error),"recovered sessions start");
