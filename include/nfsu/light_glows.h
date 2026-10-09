@@ -6,13 +6,14 @@
 
 namespace nfsu {
 
-// Four marker positions, in the source car's raw (forward, left, up) frame.
+// Five marker positions, in the source car's raw (forward, left, up) frame.
 // Missing markers stay absent; no invented position is drawn.
 struct CarGlowAnchor {
     Vec3 slot{};
     bool present = false;
+    Vec3 normal{};
 };
-using CarGlowAnchors = std::array<CarGlowAnchor, 4>;
+using CarGlowAnchors = std::array<CarGlowAnchor, 5>;
 
 struct CarGlowSprite {
     Vec3 world{};
@@ -27,6 +28,19 @@ CarGlowSprites place_car_glows(const CarGlowAnchors& anchors,
                                const PreparedCarScene& car,
                                const CameraFrame& camera,
                                bool braking) noexcept;
+
+// Original primary-view light sprites: two layers per headlamp and three tails.
+struct OriginalCarGlow {
+    float transform[16]{};
+    unsigned char rgba[4]{};
+    unsigned texture = 0;
+};
+using OriginalCarGlows = std::array<OriginalCarGlow,7>;
+bool load_original_car_glow_textures(const std::filesystem::path& root,
+    std::array<RenderTexture,3>& textures,std::string& error);
+OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
+    const PreparedCarScene& car,const CameraFrame& camera,unsigned display_width,
+    double service_brake) noexcept;
 
 // Procedural, bounded approximation of the retail flare image. The two
 // 16x16 textures are generated at load time and are never stored in Git.

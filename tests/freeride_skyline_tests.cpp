@@ -19,6 +19,7 @@
 #include "nfsu/car_assets.h"
 #include "nfsu/frontend_preset.h"
 #include "nfsu/frontend_scene.h"
+#include "nfsu/frontend_motion.h"
 #include "nfsu/freeride_skyline.h"
 #include "nfsu/platform.h"
 #include "nfsu/race_events.h"
@@ -401,6 +402,14 @@ void retail_checks(const std::filesystem::path& root) {
                     require(scene.frame(run.session(),frame,error),"skyline dressed frame: " + error);
             }
             require(scene.frame(run.session(),frame,error),"final dressed frame: " + error);
+            require(frame.glow_draws==7,"original primary lights reserve two layers per head and three tails");
+            unsigned visible_glows=0;
+            for(std::size_t i=0;i<frame.commands.draw_count();++i) {
+                const auto d=frame.commands.draw_view(i);
+                if(d.material.alpha[3]==5 && d.material.alpha[0]>0)++visible_glows;
+            }
+            std::printf("freeride-original-glow visible=%u slots=%zu\n",visible_glows,frame.glow_draws);
+            require(visible_glows>0,"original tail glow visible in rear chase frame");
             require(frame.car_draws!=0,"the dressed car contributes draws to the race frame");
             // Every prepared high-quality reflection frame refreshes all faces.
             // A face tag prevents any draw from leaking into the other views.
@@ -472,7 +481,30 @@ void unit_checks() {
 
 } // namespace
 
+void original_glow_witness() {
+    // Original 0x5447C0 execution, authenticated speed.exe; primary CView,
+    // supplied point/normal and identity car matrix. See glow-r1-original.log.
+    const float point[3]={1.5F,-.6000000238418579F,.700279951095581F};
+    const float toward[3]={.4514164924621582F,.8920027017593384F,.023547090590000153F};
+    const float right[3]={-.7047351002693176F,.7000333666801453F,.11533286422491074F};
+    const float up[3]={-.0988493338227272F,.06409282982349396F,-.9930362105369568F};
+    const float first[3][3]={{2.044702291F,-.079072669F,.383308232F},
+        {2.115605116F,-.153492883F,.253602624F},{1.813075066F,-.655442774F,.297428221F}};
+    const unsigned char rgba[3][4]={{31,37,53,25},{9,11,12,1},{57,0,0,36}};
+    for(unsigned descriptor=0;descriptor<3;++descriptor) {
+        nfsu::FrontendRoadGlow quad;
+        require(nfsu::frontend_car_glow(point,toward,right,up,.4514164924621582F,
+            .002785184420645237F,0,descriptor,1,quad),"original glow witness emits");
+        for(unsigned axis=0;axis<3;++axis)require(std::abs(quad.corners[0][axis]-first[descriptor][axis])<.00001F,
+            "original glow first corner");
+        for(unsigned c=0;c<4;++c)require(quad.rgba[c]==rgba[descriptor][c],"original glow vertex bytes");
+        nfsu::frontend_car_glow(point,toward,right,up,0,.002785184420645237F,0,descriptor,1,quad);
+        require(quad.rgba[3]==0,"back-facing glow cannot emit light");
+    }
+}
+
 int main(int argc, char** argv) {
+    original_glow_witness();
     try {
         std::string error;
         require(check_arguments(argc, argv, 1, error), error);

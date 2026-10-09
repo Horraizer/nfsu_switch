@@ -24,43 +24,6 @@ std::uint16_t frontend_wheel_phase(std::uint16_t phase,float travel,float radius
     // Native CRT conversion truncates before the 16-bit accumulator wraps.
     return static_cast<std::uint16_t>(unsigned(phase)+static_cast<std::uint32_t>(static_cast<std::int32_t>(increment)));
 }
-namespace {
-struct GlowDescriptor {float low_size,high_size;unsigned char low[4],high[4];float exponent,offset,near_depth,far_depth;};
-constexpr GlowDescriptor glow_descriptors[]={
-    {0,64,{0,0,0,0},{100,120,170,80},1.4500000476837158F,.800000011920929F,.009999999776482582F,.014999999664723873F},
-    {28,28,{0,0,0,0},{100,120,140,20},3,.800000011920929F,.009999999776482582F,.014999999664723873F},
-    {20,30,{0,0,0,0},{128,0,0,80},1,.20000000298023224F,.009999999776482582F,.019999999552965164F},
-    {30,100,{110,100,75,110},{110,100,75,150},1,4,.0010000000474974513F,.10000000149011612F}
-};
-}
-bool frontend_car_glow(const float (&point)[3],const float (&toward_eye)[3],
-    const float (&right)[3],const float (&up)[3],float facing,float depth_scale,
-    unsigned mode,unsigned descriptor,float opacity,FrontendRoadGlow& out) noexcept {
-    out={};
-    if(mode>2 || descriptor>=4 || !std::isfinite(facing) || !std::isfinite(depth_scale) ||
-       !std::isfinite(opacity) || opacity<0)return false;
-    for(unsigned i=0;i<3;++i)if(!std::isfinite(point[i]) || !std::isfinite(toward_eye[i]) ||
-        !std::isfinite(right[i]) || !std::isfinite(up[i]))return false;
-    const auto& d=glow_descriptors[descriptor];
-    const double gain=std::min(1.0,std::pow(double(std::max(0.0F,facing)),double(d.exponent))*double(opacity));
-    const double size=(double(d.low_size)+(double(d.high_size)-d.low_size)*gain)*
-        std::clamp(double(depth_scale),double(d.near_depth),double(d.far_depth))*(mode==2?1:1.5);
-    if(size<=0)return false;
-    const int signs[4][2]={{-1,1},{1,1},{1,-1},{-1,-1}};
-    for(unsigned corner=0;corner<4;++corner)for(unsigned axis=0;axis<3;++axis) {
-        const double extent=size*(signs[corner][0]*double(right[axis])+
-            signs[corner][1]*double(up[axis]))*(mode==2 && axis==2?10:1);
-        out.corners[corner][axis]=float(double(point[axis])+double(d.offset)*toward_eye[axis]+extent);
-    }
-    for(unsigned channel=0;channel<4;++channel)
-        out.rgba[channel]=static_cast<unsigned char>(double(d.low[channel])+(int(d.high[channel])-d.low[channel])*gain);
-    return true;
-}
-bool frontend_road_glow(const float (&point)[3],const float (&toward_eye)[3],
-    const float (&right)[3],const float (&up)[3],float facing,float depth_scale,
-    unsigned mode,FrontendRoadGlow& out) noexcept {
-    return frontend_car_glow(point,toward_eye,right,up,facing,depth_scale,mode,3,1,out);
-}
 void FrontendRoad::update(float seconds,std::uint32_t ticks,bool forced) noexcept {
     if(!std::isfinite(seconds) || seconds<0) return;
     // 0x4AE1F0 uses the previous speed for this frame's velocity.

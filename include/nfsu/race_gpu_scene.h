@@ -158,10 +158,11 @@ private:
     bool glows_enabled_ = false;
     CarGlowAnchors glow_anchors_{};
     RenderTexture glow_head_, glow_tail_;
+    std::array<RenderTexture,3> original_glow_textures_;
     std::array<MeshVertex, 4> glow_vertices_{};
     std::array<std::uint16_t, 6> glow_indices_{{0,1,2,0,2,3}};
-    std::array<RecordedDraw, 2> glow_templates_{};
-    std::array<RecordedDraw, 4> glow_selected_{};
+    std::array<RecordedDraw, 3> glow_templates_{};
+    std::array<RecordedDraw, 7> glow_selected_{};
     std::size_t glow_count_ = 0;
     std::size_t glow_first_resource_ = 0;
 };

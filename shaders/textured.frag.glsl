@@ -161,6 +161,13 @@ void main()
         return;
     }
 
+    // Original world.efx light sprite: authored RGB * vertex color * two.
+    if (material.alpha.w == 5.0) {
+        outColor = vec4(sampled.rgb * (material.environment_color.rgb / 255.0) * 2.0,
+                        sampled.a * material.alpha.x);
+        return;
+    }
+
     bool race_fast = material.fallback.w == 4.0 || material.fallback.w == 5.0;
     if (race_fast && (material.fallback.w == 4.0 || (frame.options.z & 1u) == 0u)) {
         uint shade = 256u;

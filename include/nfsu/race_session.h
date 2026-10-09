@@ -29,6 +29,10 @@ public:
     bool advance(const GamepadFrame& pad, std::string& error);
     const VehicleState& car() const { return vehicle_.state(); }
     const CarAnimationState& animation() const { return animation_; }
+    double light_service_brake() const {
+        const auto& frame=controls_.frame_state();
+        return frame.brake_from_button?frame.brake_digital:frame.brake_analog;
+    }
     const RaceProgress& progress() const { return vehicle_.progress(); }
     const RaceTimingState& timing() const { return timing_; }
     const RaceTimingConfig& timing_config() const { return timing_config_; }

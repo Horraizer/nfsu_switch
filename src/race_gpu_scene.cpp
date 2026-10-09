@@ -550,8 +550,16 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
 
 bool RaceGpuScene::prepare_glows(std::string& error) {
     namespace sm = shader_manifest;
-    glow_head_ = make_car_glow_texture(true);
-    glow_tail_ = make_car_glow_texture(false);
+    if(race_visuals_) {
+        if(!load_original_car_glow_textures(root_,original_glow_textures_,error))return false;
+        // Authored image payload belongs to car residency, like the other car textures.
+        // The command cache counts only the descriptors borrowing it.
+        for(const auto& texture:original_glow_textures_)car_bytes_+=texture.rgba.capacity();
+        if(car_bytes_>kPersistentBudgetPlaceholder){error="car glow residency exceeds payload budget";return false;}
+    } else {
+        glow_head_ = make_car_glow_texture(true);
+        glow_tail_ = make_car_glow_texture(false);
+    }
     for (std::size_t i = 0; i < glow_vertices_.size(); ++i) {
         auto& v = glow_vertices_[i];
         v.px = (i == 0 || i == 3) ? -1.0F : 1.0F;
@@ -562,7 +570,7 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
     }
     auto& table = combined_uploads_;
     glow_first_resource_ = table.resources.size();
-    if (glow_first_resource_ + 4 > kTrackSliceResourceLimit) {
+    if (glow_first_resource_ + (race_visuals_?5:4) > kTrackSliceResourceLimit) {
         error = "glow resources exceed race resource capacity"; return false;
     }
     const auto buffer = [&](UploadResourceKind kind, const char* name,
@@ -605,13 +613,16 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
             std::max(table.totals.largest_texture_bytes, shape.bytes);
         return true;
     };
-    if (!texture(glow_head_, "race-glow/head") ||
+    if(race_visuals_) {
+        for(unsigned i=0;i<3;++i)if(!texture(original_glow_textures_[i],
+            i==0?"race-glow/original-head":i==1?"race-glow/original-tail":"race-glow/original-head-outer"))return false;
+    } else if (!texture(glow_head_, "race-glow/head") ||
         !texture(glow_tail_, "race-glow/tail")) return false;
     const sm::Program* program = nullptr;
     for (const auto& candidate : sm::kPrograms)
         if (std::strcmp(candidate.name, "car_textured") == 0) program = &candidate;
     if (!program) { error = "glow shader program is absent"; return false; }
-    for (std::size_t i = 0; i < glow_templates_.size(); ++i) {
+    for (std::size_t i = 0; i < (race_visuals_?3U:2U); ++i) {
         auto& draw = glow_templates_[i];
         draw.name = i == 0 ? "race-glow/head" : "race-glow/tail";
         draw.group = track_.scene.region.draws.size() + i;
@@ -627,6 +638,7 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
             }
         if (!found) { error = "glow additive variant is absent"; return false; }
         draw.pipeline.depth_write = false;
+        if(race_visuals_)draw.material.alpha[3]=5;
     }
     return true;
 }
@@ -816,7 +828,15 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         CameraFrame basis;
         if (!make_camera_frame(options.camera, options.width, options.height, basis, error)) return false;
         glow_count_ = 0;
-        if (glows_enabled_) {
+        if (glows_enabled_ && race_visuals_) {
+            const auto sprites=place_original_car_glows(glow_anchors_,car_,basis,options.width,session.light_service_brake());
+            for(const auto& sprite:sprites) {
+                auto& draw=glow_selected_[glow_count_++];draw=glow_templates_[sprite.texture];
+                std::copy(std::begin(sprite.transform),std::end(sprite.transform),draw.placement.rows);
+                for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=sprite.rgba[c];
+                draw.material.alpha[0]=float(sprite.rgba[3])/255;
+            }
+        } else if (glows_enabled_) {
             const auto sprites = place_car_glows(glow_anchors_, car_, basis,
                                                  session.animation().braking);
             // Keep the package draw count invariant even when the view-facing
@@ -959,6 +979,16 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 error = "reference glow resource offset differs"; return false;
             }
             append_glow_resources(uploads, combined_uploads_, glow_first_resource_);
+            if(race_visuals_) {
+                const auto sprites=place_original_car_glows(glow_anchors_,car_,basis,options.width,session.light_service_brake());
+                for(const auto& sprite:sprites) {
+                    auto draw=glow_templates_[sprite.texture];
+                    std::copy(std::begin(sprite.transform),std::end(sprite.transform),draw.placement.rows);
+                    for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=sprite.rgba[c];
+                    draw.material.alpha[0]=float(sprite.rgba[3])/255;
+                    result.commands.owning_draws().push_back(std::move(draw));
+                }
+            } else {
             const auto reference_sprites = place_car_glows(glow_anchors_, car_, basis,
                                                             session.animation().braking);
             for (std::size_t i = 0; i < reference_sprites.size(); ++i) {
@@ -966,6 +996,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 draw.material.alpha[0] = static_cast<float>(reference_sprites[i].opacity);
                 car_glow_transform(reference_sprites[i], basis, draw.placement.rows);
                 result.commands.owning_draws().push_back(std::move(draw));
+            }
             }
             result.triangles += 2*glow_count_;
             DrawExecutionPlan plan;

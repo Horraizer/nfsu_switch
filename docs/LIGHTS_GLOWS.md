@@ -1,5 +1,29 @@
 # Night lights and glows (issue #185)
 
+## Current race-visuals comparison
+
+The direct-owner Light Glow change replaces the procedural car overlay when
+race visuals are enabled. It reuses the recovered frontend 0x5443F0 primitive:
+authored inner/outer headlamp and tail textures from GLOBALB.BUN, descriptor
+sizes/colors, powered marker-normal facing and original byte truncation.
+Seven reserved slots cover two layers per headlamp and three brake markers;
+missing or culled markers remain invisible. Ordinary-owner head/tail gains
+and the service-brake response follow 0x56D8D0. Handbrake alone is not the
+service-brake input. The shared frontend primitive's arithmetic is unchanged.
+
+The race sprite shader uses the world texture/color modulation branch.
+Original whole-pipeline pixel equivalence, occlusion-query behavior, damage
+and special-owner activation, and reflected copies are not established by
+this change. Existing world lights keep their existing rendering. This is
+not a full-scene bloom or motion-blur implementation.
+
+The original consumer witness is tools/frontend66_car_glow_native.py;
+nfsu_freeride_skyline_tests checks its corners/color and full race resource
+loading/frame generation/return to menu on both available events. Original
+texture payload belongs to persistent car residency; borrowing command
+descriptors remain inside the command-cache ceiling. Actual Switch visual
+acceptance remains required. The legacy diagnostic path below is retained.
+
 ## Retail evidence
 
 The retail `speed.exe` collector at `0x0056BDB0..0x0056C0DC` records
