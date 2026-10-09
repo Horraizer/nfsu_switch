@@ -264,7 +264,11 @@ struct DekoRenderer::Impl {
             error = path + ": invalid DKSH header"; return false;
         }
         dk::MemBlock code;
-        if (!block(header[3], kDataFlags | DkMemBlockFlags_Code, name, code, error)) return false;
+        // The SDK reserves the final 0x400 bytes of every code block. Page
+        // alignment alone does not guarantee this tail for every shader size.
+        if (!block(std::uint64_t{header[3]} + DK_SHADER_CODE_UNUSABLE_SIZE,
+                   kDataFlags | DkMemBlockFlags_Code, name, code, error)) return false;
+        std::memset(code.getCpuAddr(),0,code.getSize());
         std::memcpy(code.getCpuAddr(), blob.data() + header[2], header[3]);
         dk::ShaderMaker{code, 0}.setControl(blob.data()).initialize(out);
         if (!healthy(error) || !out.isValid() || out.getStage() != stage) {
