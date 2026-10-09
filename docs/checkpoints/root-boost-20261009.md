@@ -159,3 +159,59 @@ independent review, source push, merge or deployment is claimed. Actual Switch
 sound/exhaust appearance and acceleration acceptance remain pending. Preserve
 boost-r1/r2/r3 and prior hardware logs. Confirm fresh Netloader readiness before
 sending boost-r4; no nxlink launched by this task.
+
+
+## Hardware rejection and prepared-package correction: boost-r5
+
+Owner reported pressing L returned to the menu on boost-r4 source4452f4f.
+Actual nxlink log contains two ERROR / FREE DRIVE ERROR occurrences of
+"prepared command package changed or exceeded capacity". Original rejected
+NRO/log/manifest and boost-r4-rejected-log-snapshot.log are retained; the failure
+record is boost-r4-failure.json. Earlier native images and individual-command
+validation missed the inactive-open to active-update prepared package contract.
+
+The Switch renderer freezes dynamic draw count and definition addresses at
+open (switch/deko_renderer.cpp). Active-only insertion of the nitrous flame
+violated that count. Successor keeps one permanent slot for each authored pipe
+from the first inactive frame. Inactive geometry is degenerate with zero alpha;
+activation updates placement, material and atlas index inside the same object.
+The renderer guard remains intact. Sound and active flame appearance unchanged.
+
+Existing race_boost_tests now exercises actual selected Skyline scene inputs on
+both event1 and event8, original draw distance, wet reflections and world mips.
+It checks dynamic count/order/definition addresses and package identity across
+inactive, launch, active, all four atlas cells, release, depletion, pose reset
+and fresh race session. This matches the relevant Switch open/update contract,
+not a claim of native deko3d execution on PC. The retail invocation is registered
+as nfsu_race_boost_retail with the existing read-only fixture for future CTest.
+
+Validation from the actual workspace:
+- cmake --build build -j4 --target nfsu_race_boost_tests: PASS,
+  boost-r5-native-build-r3.log; all current affected dependencies rebuilt.
+- nfsu_race_boost_tests with actual retail root: PASS,
+  boost-r5-native-retail-r3.log. 155 prepared updates per event, 310 total,
+  actual charge depletion and active/inactive atlas assertions included.
+- cmake -S . -B build -G Ninja: PASS after native retail test registration,
+  boost-r5-native-configure-final.log; existing retail root retained.
+- ctest --test-dir build --output-on-failure -R '^nfsu_race_boost_tests$':
+  1/1 PASS, boost-r5-native-tests.log.
+- root-boost-r5-build.sh: actual Switch SDK Release build and three required
+  NRO/shader/frontend contract tests PASS, boost-r5-sdk-build.log.
+  Final CMake delta only registers the native retail invocation; it does not
+  change Switch production build inputs or NRO code.
+- Changed source/helper bytes and paths ASCII scan; git diff --check.
+  Whole-HEAD ASCII/mode scan follows local commit.
+
+Failed preliminary native run returned access violation without a verdict;
+it is not a test pass. Its log and gdb diagnostic are retained. That interim
+fixture attempted to restart an existing RaceRun (an invalid API use) and passed
+error.c_str() before a failing operation could reallocate it. Corrected test
+uses a fresh RaceRun and a live string reference, with bounded countdown and
+progress output. The owned diagnostic run was stopped by verified PID/start
+identity; that stopped run is incomplete, not parity or a mutation result.
+
+Seal nfsu-boost-r5.nro and boost-r5-manifest.json in the existing artifact
+directory. Levels1/1, AF4, FXAA on, MSAA off, FPS overlay off remain. No full
+matrices/reviewer/source push/merge. Corrected actual Switch L activation is
+still pending owner verification. Confirm current Netloader readiness before
+sending; do not reuse the exited boost-r4 nxlink process.

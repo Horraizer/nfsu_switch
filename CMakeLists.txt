@@ -1684,7 +1684,7 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_hud_tests)
     add_test(NAME nfsu_race_hud_tests COMMAND nfsu_race_hud_tests)
     add_executable(nfsu_race_boost_tests tests/race_boost_tests.cpp)
-    target_link_libraries(nfsu_race_boost_tests PRIVATE nfsu_race_hud)
+    target_link_libraries(nfsu_race_boost_tests PRIVATE nfsu_race_hud nfsu_frontend nfsu_posix_file_system)
     nfsu_enable_warnings(nfsu_race_boost_tests)
     add_test(NAME nfsu_race_boost_tests COMMAND nfsu_race_boost_tests)
     add_executable(nfsu_race_minimap_hud_tests tests/race_minimap_hud_tests.cpp)
@@ -2208,6 +2208,10 @@ if(NFSU_BUILD_TESTS)
         # The bounded index of the race music: docs/RACE_AUDIO.md.
         add_test(NAME nfsu_race_audio_retail
             COMMAND nfsu_race_audio_tests "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_race_boost_retail
+            COMMAND nfsu_race_boost_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_race_boost_retail PROPERTIES LABELS retail
+            FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
         # The event 1 sky: its inventory, the overview and street frame pins
         # and the complete CPU/GPU draw trace (issue #184): docs/SKY_FOG.md.
         add_test(NAME nfsu_sky_fog_retail

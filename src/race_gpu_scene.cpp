@@ -883,7 +883,10 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             glow_count_+=road_glows_.size();
             const auto flames=place_nitrous_flames(exhaust_anchors_,car_,basis,
                 session.nitrous().active&&session.timing().outcome!=RaceOutcome::finished,session.timing().step);
-            for(const auto& flame:flames)if(flame.rgba[3]) {
+            // Renderer open freezes the dynamic count and definition addresses.
+            // Keep one slot for each authored pipe, even with nitrous off.
+            for(std::size_t i=0;i<flames.size();++i)if(exhaust_anchors_[i].marker.present) {
+                const auto& flame=flames[i];
                 auto& draw=nitrous_selected_[nitrous_count_++];draw=nitrous_template_;
                 draw.first_index=6*flame.texture;
                 std::copy(std::begin(flame.transform),std::end(flame.transform),draw.placement.rows);
