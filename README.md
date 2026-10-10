@@ -1,66 +1,84 @@
-# nfsu-switch
+# NFSU Switch
 
-Experimental native Nintendo Switch engine port and clean-room research for
-Need for Speed: Underground. A playable driving diagnostic exists; the complete
-introductory Underground race is still in development.
+An experimental native Nintendo Switch port / engine reimplementation of
+**Need for Speed: Underground (2003)**, using data from your own PC copy.
+The engine and Switch renderer are rebuilt in C++; the original PC executable
+is not run on the console. This is an early playable release, not the complete game.
 
-The repository contains no Electronic Arts code or game data. A user-provided
-PC installation is required for local research and testing.
+**[Download 0.1](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.1)** |
+**[Installation, controls and building](docs/GETTING_STARTED.md)** |
+**[Release details](docs/RELEASE_0_1.md)**
 
-## Agent workflow
+## Bring your own game
 
-[AGENTS.md](AGENTS.md) defines provider-independent coordinator, worker and
-reviewer roles. Start or resume with [Work recovery](docs/WORK_RECOVERY.md);
-[Work state](docs/WORK_STATE.md) is the dated index of current priorities.
-Verify its links against live Git and board state before acting.
+You must own a PC copy of Need for Speed: Underground. No original game files,
+textures, cars, tracks, music, movies or executable are included in the download.
+Use the North American PC data set described in the installation guide.
+Console disc data and Need for Speed: Underground 2 are not supported inputs.
 
-## Project status
+## Playable in 0.1
 
-Status recorded 2026-10-04 against merged gameplay baseline `ec217496`.
-[Work state](docs/WORK_STATE.md) links the dated evidence and active work;
-check the live board before treating a branch or hardware result as current.
+- Free driving on Olympic Square, with the tuned orange Skyline.
+- Level 3 nitrous: actual acceleration, charge consumption, exhaust flame and sound.
+- Level 1 turbo, with a turbo gauge and nitrous display.
+- Minimap, lap timer, speedometer, tachometer and gear display.
+- Camera switching and hold-to-look-back on the right stick button.
+- Original-data frontend, introductory movies, music and driving audio.
+- Body reflections, wet-road reflections, headlights, shadows, light glow,
+  particles, mipmaps and 4x anisotropic filtering.
+- Hardware rendering with deko3d. The supplied build uses FXAA, with MSAA and
+  the diagnostic FPS overlay disabled.
 
-### Available in main
+Handheld play is the priority. Docked mode also works, but 0.1 is not a promise
+of a higher-resolution docked mode or a locked 60 FPS. Frame-time drops,
+visual defects and handling/audio differences still need work.
 
-- `nfsu_switch_race` provides live player-only driving on track 1003 with
-  deko3d rendering, streamed scenery, controls, chase camera, static track
-  collision, audio and a speedometer. Its event 1 diagnostic has two-lap
-  timing. This is not the complete introductory Underground event 0.
-- The renderer includes selectable texture filtering, sky, particles,
-  glows, car shading and wet-road reflections. These paths still contain
-  approximations; enabling them does not establish original visual fidelity.
-- `nfsu_race` provides the desktop event 1 diagnostic and scripted replay;
-  see [DESKTOP_RACE](docs/DESKTOP_RACE.md). `nfsu_viewer` provides car inspection,
-  and `nfsu_probe` inspects the installation and decoded formats read-only.
+Atlantic / event 8 is present as a development launch option, not a normal
+track-selection menu. Underground career and the introductory race with
+opponents are **not playable in this release**. More circuit tracks and the
+original-style opponent AI are being worked on separately.
 
-### Work in branches, not accepted as complete
+## Progress screenshots
 
-- [All-car support, PR #319](https://git.accad.pro/murzintsevav/nfsu-switch/pulls/319):
-  the owner drove Skyline, Supra, Celica, Tiburon and Eclipse on Switch.
-  Hardware material defects returned the branch to changes requested;
-  catalog loading does not establish correct materials, tuning or handling.
-- [Intro playback, #320](https://git.accad.pro/murzintsevav/nfsu-switch/issues/320)
-  and [menu, #66](https://git.accad.pro/murzintsevav/nfsu-switch/issues/66):
-  a combined test build reaches videos, menu, free driving and return.
-  The owner confirmed video sound but rejected video proportions and menu
-  appearance. Original menu music and presentation are being completed.
-- Controller, nitrous, shared contacts and audio research have separate open
-  PRs. A recovered contract or passing unit test is not a completed race.
+Actual Switch captures from the graphics milestone preceding 0.1. These show
+hardware rendering; their older HUD predates the turbo/nitrous integration.
 
-### Target milestone
+![Switch: Skyline and city lighting](https://github.com/Horraizer/nfsu_switch/releases/download/v0.1/progress-switch-city.jpg)
 
-Original startup videos and sound lead into the original-style menu with
-the requested original music. Only two gameplay modes will be available:
+![Switch: body reflections](https://github.com/Horraizer/nfsu_switch/releases/download/v0.1/progress-switch-reflections.jpg)
 
-1. **Underground:** one complete introductory event 0, including its cars,
-   tuning and decals, opponents, traffic and contacts, nitrous on Switch L,
-   original HUD/minimap, start, finish/results and return/retry flow.
-2. **Free driving:** continuous driving on the first track, with return to
-   the menu. This does not imply an expanded open world.
+PC reference captures from the exact 0.1 source, showing the integrated HUD and
+nitrous flame. These are CPU reference frames, not Switch GPU screenshots or
+performance measurements. The Atlantic frame uses the development event path.
 
-The complete event 0, frontend presentation/music, original audio/visual
-fidelity and end-to-end hardware acceptance remain open. This repository
-does not yet provide the complete original game or career.
+![0.1 PC reference: Olympic Square, HUD and nitrous](https://github.com/Horraizer/nfsu_switch/releases/download/v0.1/progress-pc-olympic-nitro.png)
+
+![0.1 PC reference: Atlantic](https://github.com/Horraizer/nfsu_switch/releases/download/v0.1/progress-pc-atlantic-nitro.png)
+
+## Feedback
+
+Please open a GitHub issue with the release/build tag, handheld or docked mode,
+track, reproduction steps and, when possible, a screenshot or short video.
+For crashes, include a Netloader log if available. Do not attach original game
+files, disc images or executables.
+
+## Project and third-party notices
+
+This is an unofficial fan project, not affiliated with or endorsed by EA or
+Nintendo. Need for Speed and the game's content belong to their respective
+rights holders. Source availability does not grant rights to the retail assets.
+
+The movie decoder includes adaptations from FFmpeg n7.1 under LGPL 2.1;
+see [attribution](docs/INTRO_MOVIES.md) and the
+[license text](third_party/ffmpeg-LGPL-2.1.txt). Attribution is also retained
+in the affected source files. Other project source has no repository-wide
+license grant yet; do not assume an MIT or GPL license for the whole project.
+
+## Developer reference
+
+The material below documents the project's diagnostic tools and earlier
+milestones. For the downloadable 0.1 build, use the guide linked above;
+historical research notes are not a feature checklist for this release.
 
 ## Build
 
