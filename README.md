@@ -13,7 +13,7 @@ is not run on the console. This is an early playable release, not the complete g
 
 You must own a PC copy of Need for Speed: Underground. No original game files,
 textures, cars, tracks, music, movies or executable are included in the download.
-Use the North American PC data set described in the installation guide.
+Use the PC version **1.4 USA (North America)** described in the installation guide.
 Console disc data and Need for Speed: Underground 2 are not supported inputs.
 
 ## Playable in 0.1

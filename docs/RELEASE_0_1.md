@@ -14,7 +14,7 @@ project owner on 2026-10-09. It is not a newly compiled or untested AI build.
 - Atlantic is available through a development event launch; no menu track picker.
 
 Read [the installation guide](GETTING_STARTED.md) before launching. You need
-your own North American PC game data. No retail data is distributed here.
+your own PC version **1.4 USA (North America)** game data. No retail data is distributed here.
 
 ## Not included / still in progress
 
@@ -45,3 +45,7 @@ a frame-rate guarantee. They are progress illustrations, not game data packs.
 The NRO and SD-ready ZIP are equivalent. The ZIP contains the NRO, English
 installation/release notes and the bundled decoder license, with no game data.
 Source and third-party attribution are available at the release tag.
+
+Documentation update: the owner confirmed the PC edition as 1.4 USA. The
+release NRO and v0.1 source tag are unchanged; the SD ZIP instructions have
+been corrected, and SHA256SUMS.txt reflects that documentation-only ZIP update.

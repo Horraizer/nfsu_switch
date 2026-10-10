@@ -2,15 +2,14 @@
 
 ## Required game edition
 
-Use your own **Need for Speed: Underground (2003), North American PC installation**
+Use your own **Need for Speed: Underground (2003), PC version 1.4 USA (North America)**
 with the original English frontend files. This is NFS Underground 1, not
 Underground 2, the Xbox release, or a remastered texture/mod pack.
 
-The development installation is authenticated by the files below. Its executable
-has no usable FileVersion/ProductVersion field, so a patch number such as 1.4
-has not been independently established. We do not claim that every regional or
-patched installation is compatible. These exact input identities are more
-specific than an unverified patch label:
+The project owner confirms that the tested installation is **1.4 USA**.
+The file identities below identify the actual inputs used during development.
+Other regional editions, patch levels and modified data sets have not been
+validated for this release.
 
 | File | SHA-256 of the tested input |
 | --- | --- |
