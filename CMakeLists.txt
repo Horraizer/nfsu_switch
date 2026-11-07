@@ -274,6 +274,14 @@ nfsu_enable_warnings(nfsu_viewer)
 if(NFSU_BUILD_TESTS)
     include(CTest)
 
+    add_test(NAME nfsu_fresh_test_targets COMMAND ${CMAKE_COMMAND}
+        -DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/fresh-test-targets
+        -DGENERATOR=${CMAKE_GENERATOR}
+        -DCXX=${CMAKE_CXX_COMPILER}
+        -DPYTHON=${Python3_EXECUTABLE}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/fresh_test_targets.cmake)
+
     add_executable(nfsu_chunk_tests
         tests/chunk_tests.cpp
     )

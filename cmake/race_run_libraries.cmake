@@ -26,7 +26,7 @@ if(NINTENDO_SWITCH)
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()
 
-if(BUILD_TESTING AND NOT NINTENDO_SWITCH)
+if(NFSU_BUILD_TESTS AND NOT NINTENDO_SWITCH)
     add_executable(nfsu_start_crowd_check tools/start_crowd_check.cpp)
     target_link_libraries(nfsu_start_crowd_check PRIVATE nfsu_race_run nfsu_posix_file_system)
     nfsu_enable_warnings(nfsu_start_crowd_check)

@@ -87,3 +87,13 @@ Report build tag, console model, handheld/docked mode, event/course and steps,
 plus available logs/video. Do not upload retail game files, personal saves or
 credentials. This is an unofficial fan project; existing third-party notices
 and the lack of a repository-wide license grant remain in effect.
+
+## Source build corrections
+
+The publication fixes first-configure test target registration by using the
+already-declared NFSU_BUILD_TESTS option before CTest initializes its cache.
+A fresh ON/OFF configure regression checks the affected executable targets.
+The README retains the probe examples required by the CLI documentation guard;
+[CLI_REFERENCE](CLI_REFERENCE.md) contains the full developer command reference.
+These are host build/documentation corrections. Runtime source and the supplied
+r7 NRO are unchanged.

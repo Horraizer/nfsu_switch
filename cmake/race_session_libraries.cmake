@@ -15,7 +15,7 @@ if(NINTENDO_SWITCH)
         CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()
 
-if(BUILD_TESTING AND NOT NINTENDO_SWITCH)
+if(NFSU_BUILD_TESTS AND NOT NINTENDO_SWITCH)
     add_executable(nfsu_crash_camera_tests tests/crash_camera_tests.cpp)
     target_link_libraries(nfsu_crash_camera_tests PRIVATE nfsu_race_session nfsu_race_hud)
     nfsu_enable_warnings(nfsu_crash_camera_tests)
