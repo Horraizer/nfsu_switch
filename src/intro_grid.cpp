@@ -4,6 +4,7 @@
 #include "nfsu/frontend_scene.h"
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/ai_action.h"
+#include "nfsu/quick_rival.h"
 #include "nfsu/ai_powertrain.h"
 #include "nfsu/traffic_model.h"
 #include <algorithm>
@@ -67,7 +68,8 @@ bool load_traffic(const std::filesystem::path& root,const std::vector<unsigned c
 // table in GLOBALB (0x34B00 + 0x788).
 bool configure_quick_grid(Event0SetupDescriptor& grid,const CarTypeTable& types,
     const std::vector<unsigned char>& globals,const unsigned char* ai,const QuickRaceOptions& options,
-    const VehicleSpec& player,std::string& error) {
+    const VehicleSpec& player,const VehicleUpgradeLevels& player_levels,const CarPartDatabase& db,
+    std::array<InstalledPartSelection,4>& dresses,std::string& error) {
     constexpr std::array<unsigned,20> cars{{1,3,6,9,7,10,11,12,13,14,4,15,16,8,5,0,17,2,18,19}};
     if(!ai||types.records.size()<cars.size()||options.opponents>3||options.difficulty>2) {
         error="quick race rival inputs invalid";return false;
@@ -87,10 +89,10 @@ bool configure_quick_grid(Event0SetupDescriptor& grid,const CarTypeTable& types,
     }
     std::uint32_t rng=options.seed;
     const auto random=[&](unsigned bound) {
-        const auto sample=rng%bound,x=rng^0x1d872b41U,y=(x>>5)^x;
-        rng=(y<<27)^y^x;return sample;
+        return quick_rival_random(rng,bound);
     };
     grid.racer_count=options.opponents+1;
+    bool player_model_used=false; //4B4040 permits at most one player-model rival.
     for(unsigned i=1;i<grid.racer_count;++i) {
         std::array<int,20> order;order.fill(-1);
         for(const auto car:cars) {
@@ -101,18 +103,27 @@ bool configure_quick_grid(Event0SetupDescriptor& grid,const CarTypeTable& types,
         unsigned selected=0;
         bool found=false;
         for(float allowance=15.F;!found;allowance*=2)for(const auto car:order) {
-            if((i==1||types.records[car].name!=grid.actors[0].visual.car)&&
+            if((!player_model_used||types.records[car].name!=grid.actors[0].visual.car)&&
                rating[car]<=player_rating+allowance) {selected=unsigned(car);found=true;break;}
         }
+        player_model_used|=types.records[selected].name==grid.actors[0].visual.car;
         auto& actor=grid.actors[i];actor={};
         actor.config_id=static_cast<std::int8_t>(99+i);actor.role=Event0Role::opponent;
         actor.visual.car=types.records[selected].name;actor.event_label=actor.visual.car;
-        const float value=float(random(0x7fffffffU))*4.656612873077393e-10F;
-        const auto* thresholds=ai+0x788+options.difficulty*40;
-        for(unsigned context=0;context<10;++context) {
-            float threshold;std::memcpy(&threshold,thresholds+context*4,4);
-            if(value<threshold){actor.selected_context=static_cast<std::int16_t>(context);break;}
-        }
+        actor.selected_context=static_cast<std::int16_t>(quick_rival_context(ai,options.difficulty,rng));
+    }
+    //4B4380: performance matching and appearance run after driver selection,
+    //in actor configuration order, before the human grid-slot swap. The port
+    //seed remains explicit, not the original global RNG's pre-menu history.
+    for(unsigned i=1;i<grid.racer_count;++i) {
+        auto& actor=grid.actors[i];
+        const auto id=find_car_type(types,actor.visual.car);
+        if(id==kNoCarType){error="quick rival selected model missing";return false;}
+        const auto* record=globals.data()+types.records[id].offset;
+        VehicleUpgradeLevels levels;VehicleSpec spec;
+        if(!adaptive_rival_setup(record,kVehicleRecordSize,player,player_levels,levels,spec,error)||
+           !quick_rival_visual(db,actor.visual.car,record,kVehicleRecordSize,levels,rng,dresses[i],error))return false;
+        actor.performance=levels;
     }
     // 4B4610 swaps the human with a random initial grid slot.
     grid.desired_player_grid=static_cast<std::uint8_t>(random(grid.racer_count)+1);
@@ -189,11 +200,12 @@ bool load_race_grid(const std::filesystem::path& root,unsigned event,const std::
     const auto reference_levels=event!=0&&owned_levels?*owned_levels:*reference->performance;
     VehicleSpec reference_spec;
     if(!load_race_vehicle_spec(root/"Global/GLOBALB.BUN",reference->visual.car,reference_levels,reference_spec,error))return false;
+    std::array<InstalledPartSelection,4> quick_dresses{};
     if(quick) {
         auto grid=std::make_shared<Event0SetupDescriptor>(*next.setup);
         const auto types=parse_car_type_table(globals.data(),globals.size());
         if(!types.ok()){error="quick race car table invalid";return false;}
-        if(!configure_quick_grid(*grid,types,globals,ai_configuration,*quick,reference_spec,error))return false;
+        if(!configure_quick_grid(*grid,types,globals,ai_configuration,*quick,reference_spec,reference_levels,db,quick_dresses,error))return false;
         next.setup=std::move(grid);
     }
     next.actors.resize(next.setup->racer_count);
@@ -205,10 +217,15 @@ bool load_race_grid(const std::filesystem::path& root,unsigned event,const std::
         if(found==next.setup->actors.end()) {error="intro grid actor absent";return false;}
         actor.config=*found;const auto& preset=actor.config.visual;
         actor.request=stock_car_request(preset.car);
+        const bool random_dress=quick&&actor.config.role==Event0Role::opponent;
+        if(random_dress) {
+            const auto index=static_cast<std::size_t>(found-next.setup->actors.begin());
+            actor.request.installed_parts=quick_dresses[index];
+        }
         if(!preset.name.empty() && !resolve_frontend_preset_parts(front,static_cast<std::size_t>(preset.offset),preset.car,
             preset.name,db,actor.request.installed_parts,error))return false;
         actor.skin=stock_car_skin(preset.car);
-        if((!preset.name.empty() && !resolve_frontend_preset_skin(globals,preset.car,db,actor.request.installed_parts,
+        if(((!preset.name.empty()||random_dress) && !resolve_frontend_preset_skin(globals,preset.car,db,actor.request.installed_parts,
             actor.skin.selection,error)) ||
            !load_car_assets(root/"Global/GLOBALB.BUN",preset.car,actor.assets,error))return false;
         const bool owned=event!=0&&actor.config.role==Event0Role::human&&owned_dress;
@@ -241,8 +258,8 @@ bool load_race_grid(const std::filesystem::path& root,unsigned event,const std::
             auto& frame=*actor.frame;
             if(!prepare_stock_frame(inputs,actor.request,actor.skin,frame,error,true) ||
                (owned&&owned_dress->bind&&!owned_dress->bind(frame,inputs,actor.request,error,owned_dress->user)) ||
-               (!owned&&!preset.name.empty() && !bind_frontend_runtime_skin(frame,actor.request,error)) ||
-               (!owned&&!preset.name.empty() && !bind_frontend_sponsors(inputs,actor.request.installed_parts,frame,error)) ||
+               (!owned&&(!preset.name.empty()||random_dress) && !bind_frontend_runtime_skin(frame,actor.request,error)) ||
+               (!owned&&(!preset.name.empty()||random_dress) && !bind_frontend_sponsors(inputs,actor.request.installed_parts,frame,error)) ||
                !prepare_car_shadow(preset.car,inputs,frame.car_pack,actor.shadow,error) ||
                !prepare_car_shadow_bounds(inputs,frame,actor.shadow,error))return false;
         }

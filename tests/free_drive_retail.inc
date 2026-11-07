@@ -113,7 +113,9 @@ void verify_quick_race(const std::filesystem::path& root) {
         {QuickRaceMode::drift,1301,0,0,2},
         {QuickRaceMode::lap_knockout,1003,1,1,1},
     };
+    unsigned quick_case=0;
     for(const auto& test:cases) {
+        const auto ordinal=quick_case++;
         const auto choices=catalog.quick_courses(test.mode);
         const auto chosen=std::find_if(choices.begin(),choices.end(),[&](unsigned i) {
             const auto& c=catalog.free_courses()[i];return c.track==test.track&&!c.direction;
@@ -125,23 +127,42 @@ void verify_quick_race(const std::filesystem::path& root) {
         const auto type=quick_race_type(test.mode,selection.type);
         QuickRaceOptions options;options.mode=test.mode;options.traffic=test.density;
         options.opponents=test.opponents;options.laps=std::max(1U,test.laps);
-        options.catch_up=test.opponents!=2;
+        options.catch_up=test.opponents!=2;options.difficulty=ordinal%3;
+        const unsigned preset=ordinal%4;
+        VehicleUpgradeLevels player_levels;
+        player_levels.weight=player_levels.suspension=player_levels.engine_a=player_levels.induction=
+            player_levels.nitrous=player_levels.engine_b=player_levels.gearbox=player_levels.tyres=player_levels.grip=int(preset);
+        VehicleSpec player_spec;check(load_race_vehicle_spec(global,"CIVIC",player_levels,player_spec,error),"quick reference setup");
         const bool practice=test.mode==QuickRaceMode::free_run;
         const auto name=std::string(quick_race_mode_name(test.mode))+" "+std::to_string(test.track);
         std::cout<<name<<" traffic="<<test.density<<" rivals="<<test.opponents<<std::endl;
         RaceRun run;check(run.set_event(course.event,error,course.round)&&run.set_quick_race(options,error)&&
-            run.set_car("CIVIC",error),name+" configure");
+            run.set_car("CIVIC",error)&&run.set_performance_levels(player_levels,error),name+" configure");
         IntroGrid grid;
         const bool has_grid=!practice&&type!=RaceType::drift;
         if(has_grid) {
-            check(load_race_grid(root,course.event,"CIVIC",options.difficulty,grid,error,nullptr,nullptr,
+            check(load_race_grid(root,course.event,"CIVIC",options.difficulty,grid,error,&player_levels,nullptr,
                 course.round,GridPlayerVisuals::load_with_scene,&options),name+" grid");
             std::vector<RaceRivalSetup> rivals;std::array<int,3> contexts{};
             const IntroGridActor* player=nullptr;
             for(const auto& actor:grid.actors) {
                 if(actor.config.role==Event0Role::human){player=&actor;continue;}
                 contexts[rivals.size()]=actor.config.selected_context;
-                check(contexts[rivals.size()]>=3&&contexts[rivals.size()]<=5,"native medium rival contexts");
+                const auto context=contexts[rivals.size()];
+                check((options.difficulty==0&&context>=0&&context<=2)||
+                      (options.difficulty==1&&context>=3&&context<=5)||
+                      (options.difficulty==2&&context>=6&&context<=8),"native quick difficulty context bank");
+                VehicleUpgradeLevels expected_levels;VehicleSpec expected_spec;
+                check(actor.config.performance.has_value()&&
+                    adaptive_rival_setup(image.data()+actor.assets.record_offset,kVehicleRecordSize,player_spec,player_levels,
+                        expected_levels,expected_spec,error)&&
+                    performance_levels_equal(expected_levels,*actor.config.performance)&&
+                    expected_spec.handling.torque==actor.placement_spec.handling.torque&&
+                    expected_spec.handling.mass==actor.placement_spec.handling.mass&&
+                    expected_spec.handling.gear_ratios==actor.placement_spec.handling.gear_ratios,"Quick Race adaptive performance reaches actor");
+                check(actor.request.installed_parts.records[30].has_value()&&actor.frame&&actor.frame->skinned&&
+                    actor.skin.selection.base_color!=stock_car_skin(actor.config.visual.car).selection.base_color,
+                    "generated rival paint reaches composed skin");
                 rivals.push_back({actor.placement_spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode});
             }
             check(player&&run.set_intro_grid(player->pose,player->hull,rivals,contexts,error,player->config.final_grid),name+" runtime grid");
