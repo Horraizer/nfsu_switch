@@ -50,7 +50,9 @@ std::array<float,3> race_prop_visual_position(const RaceProp& p) noexcept {
 void RaceProps::convert_proxy(RaceProp& p,const TrackContactWorld& world) {
     if(!p.placement_ready){p.placement_pose=race_contact_pose(p.state);p.placement_ready=true;}
     // The native conversion owns a fresh440740 cache, not a wheel's last hit.
-    TrackGroundCache cache;TrackContact contact;
+    TrackGroundCache local_cache;TrackContact contact;
+    auto& cache=p.world_slot<maintenance_ground_.size()?maintenance_ground_[p.world_slot]:local_cache;
+    cache={};
     const auto origin=race_prop_visual_position(p);
     if(query_track_ground(world,{origin[0],origin[1],origin[2]},cache,contact)) {
         float minimum=0;const auto centre=p.spec.handling.centre_of_mass[2];
@@ -120,6 +122,11 @@ bool RaceProps::load(const std::filesystem::path& root,std::string& error,const 
             error="invalid prop contact material";return false;
         }
         p.lifetime=f(def+192);p.points=h->second.points;p.box=race_contact_box(h->second);
+        p.reclamation_exempt=u(def+228)!=0;
+        for(const auto& point:p.points) {
+            V delta=sub(point,setup.centre_of_mass);
+            p.sphere_radius=std::max(p.sphere_radius,prop_speed(delta));
+        }
         p.bounds=race_track_body_bounds(p.spec,p.box);
         auto& b=p.state.rigid_body;
         for(unsigned row=0;row<3;++row)for(unsigned col=0;col<3;++col)b.axes[row][col]=f(at+48+16*row+4*col);
@@ -169,7 +176,36 @@ void RaceProps::observe_contact(RaceProp& p,const RacePairContact& result,
             hit.audio_order=audio_order;hit.magnitude_sum=result.prop_magnitudes[i];
         }
     }
-    if(result.applied&&p.impact.activation==0){p.moved=true;p.awake=true;p.quiet=0;++hits;}
+    if(result.applied&&p.impact.activation==0){
+        //597C90 records first activation, not every later contact/reawakening.
+        if(!p.awake&&(p.first_activation_tick==0||p.first_activation_tick==0x7fffffffU))
+            p.first_activation_tick=clock_;
+        p.moved=true;p.awake=true;p.quiet=0;++hits;
+    }
+}
+void RaceProps::maintain_pool(const TrackContactWorld& world,const VehicleVec3& human,
+    std::uint32_t tick,std::uint64_t frame) {
+    unsigned live=0;for(const auto& p:objects_)live+=p.body_id>=0&&!p.expired;
+    const unsigned free_slots=live<32?32-live:0;
+    if(!prop_pool_maintenance_due(free_slots,frame))return;
+    const bool pressure=free_slots<4;
+    for(auto& p:objects_)if(p.body_id>=0&&!p.expired&&!p.reclamation_exempt) {
+        bool retire=false;
+        if(!pressure&&p.world_slot<maintenance_ground_.size()) {
+            // Stock006EF284=1:595750 removes a body wholly below local road.
+            TrackContact ground;
+            if(query_track_ground(world,p.state.position,maintenance_ground_[p.world_slot],ground))
+                retire=float(p.state.position.z)+p.sphere_radius<ground.point[2];
+        }
+        const V delta{{float(p.state.position.x)-float(human.x),
+            float(p.state.position.y)-float(human.y),float(p.state.position.z)-float(human.z)}};
+        //420B40 copies human actor+60 to world+280.421400 measures nearest
+        //human; AI rivals and traffic do not keep distant debris alive.
+        if(retire||prop_pool_reclaims(free_slots,p.awake,p.reclamation_exempt,
+                prop_speed(delta),tick,p.first_activation_tick)) {
+            p.expired=true;p.awake=false;
+        }
+    }
 }
 bool RaceProps::prepare_frame(const TrackContactWorld& world,std::string& error,float dt) {
     if(!std::isfinite(dt)||dt<=0||dt>.1F){error="invalid prop frame interval";return false;}

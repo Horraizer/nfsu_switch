@@ -397,6 +397,14 @@ void retail_checks(const std::filesystem::path& root) {
             require(run.set_steering(RaceSteering::recovered_predicate1,error),error);
             require(run.prepare_metadata(root,error),"skyline metadata: " + error);
             require(run.start(root,scene.track(),error),"skyline free-drive start: " + error);
+            if(event==1) {
+                RaceRun solo;QuickRaceOptions options;
+                options.mode=QuickRaceMode::circuit;options.opponents=0;options.traffic=0;
+                require(solo.set_event(event,error)&&solo.set_quick_race(options,error)&&
+                    solo.prepare_metadata(root,error)&&solo.start(root,scene.track(),error),error);
+                require(solo.session().props()&&!solo.session().props()->objects().empty(),
+                    "solo Quick Race with traffic off retains authored collision objects");
+            }
             std::unique_ptr<RaceRun> paired;
             std::unique_ptr<RaceSession> authored,wrong_hull;
             unsigned wrong_hull_differences=0,prop_impacts=0;
@@ -505,6 +513,29 @@ void retail_checks(const std::filesystem::path& root) {
                         "each environment face has a bounded nonempty draw list");
                 require(validate_recorded_commands(commands,error),error);
             }
+            // A failed native Virgin conversion still destroys its scenery
+            // owner. Exercise the actual renderer with an expired, never-hit
+            // placement, rather than accepting a visible noncolliding prop.
+            bool retired_visual_checked=false;
+            for(const auto& source:run.session().props()->objects()) {
+                if(source.moved||source.expired)continue;
+                for(const auto& section:scene.track().scene.sections) {
+                    if(scene.track().objects.sections.at(section.section_index).number!=source.section)continue;
+                    const auto at=section.first_handle+source.instance;
+                    if(at>=scene.track().scene.instance_handles.size())continue;
+                    const auto handle=scene.track().scene.instance_handles[at];
+                    if(handle==kNoHandle)continue;
+                    auto& expired=const_cast<RaceProp&>(source);
+                    expired.expired=true;expired.proxy_discarded=true;
+                    require(scene.frame(run.session(),frame,error),error);
+                    const auto& transform=scene.track().scene.instances.at(handle).transform;
+                    for(auto value:transform.linear)require(value==0,"retired untouched prop has no visible geometry");
+                    for(auto value:transform.translation)require(value==0,"retired untouched prop has no stale placement");
+                    retired_visual_checked=true;break;
+                }
+                if(retired_visual_checked)break;
+            }
+            require(retired_visual_checked,"expired untouched scenery was exercised through the real race renderer");
             std::printf("freeride-car-payload SKYLINE %llu\n",
                 static_cast<unsigned long long>(scene.car_bytes()));
         }

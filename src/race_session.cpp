@@ -790,6 +790,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     if(props_&&!race_car_held(timing_)&&!external_contact_owner_) {
         const auto begin=profile?timer->now_us():0;
         props_->queued_contacts_=true;props_->clock_=std::uint32_t(timing_.now_ticks);
+        props_->maintain_pool(course_.world,car().position,props_->clock_,timing_.step);
         if(!props_->prepare_frame(course_.world,error,world_dt))return false;
         props_->world_frame_ready_=true;
         for(std::size_t i=0;i<props_->objects_.size();++i) {
@@ -951,7 +952,10 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         props_->queued_contacts_=true;props_->clock_=tick;
         // 420310 advances active prop bodies before 420380 searches for contacts.
         const auto begin=profile?timer->now_us():0;
-        if(!props_->world_frame_ready_&&!props_->advance(course_.world,error,float(frame_seconds_))){started_=false;return false;}
+        if(!props_->world_frame_ready_) {
+            props_->maintain_pool(course_.world,car().position,tick,timing_.step);
+            if(!props_->advance(course_.world,error,float(frame_seconds_))){started_=false;return false;}
+        }
         props_->world_frame_ready_=false;
         if(profile)profile->prop_motion+=(timer->now_us()-begin)/1000.0;
     }
@@ -1151,7 +1155,12 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                 if(other.prop!=none) {
                     auto& p=props_->objects_[other.prop];
                     if(p.body_id<0) {
-                        if(registered_props==32){p.proxy_discarded=true;continue;}
+                        if(registered_props==32){
+                            //469714 converts then destroys the Virgin even if
+                            //the live pool is full. Its scenery must not remain
+                            //visible after losing its collision proxy.
+                            p.proxy_discarded=true;p.expired=true;continue;
+                        }
                         unsigned slot=0;while(slot<32&&bodies[actor_limit+slot].state)++slot;
                         if(slot==32)return false;
                         ++registered_props;p.world_slot=slot;

@@ -4,11 +4,20 @@
 #include <cstring>
 #include <cstdint>
 #include <limits>
+#include "prop_pool_native.inc"
 int main(int argc,char** argv) {
     using V=std::array<float,3>;
     const V zero{};
     unsigned failures=0,rows=0;
     auto check=[&](bool ok){if(!ok)++failures;};
+    for(const auto& c:kNativePropPoolCases)
+        check(nfsu::prop_pool_reclaims(c.free_slots,c.awake!=0,c.exempt!=0,
+            c.distance,100000,c.activation)==c.retire);
+    for(unsigned frame=0;frame<256;++frame) {
+        check(nfsu::prop_pool_maintenance_due(3,frame));
+        check(nfsu::prop_pool_maintenance_due(4,frame)==(frame==51||frame==179));
+        check(nfsu::prop_pool_maintenance_due(32,frame)==(frame==51||frame==179));
+    }
     // Authenticated596649 and597614 instruction-range witnesses.
     const float lifts[][6]={
         {0x0.0p+0F,-0x1.0000000000000p+0F,0x0.0p+0F,0x1.0000000000000p+0F,0x0.0p+0F,0x1.0ccccc0000000p+0F},

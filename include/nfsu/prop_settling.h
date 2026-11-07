@@ -30,6 +30,19 @@ struct PropGroundContact {std::uint32_t polygon,created,touched;};
 inline float prop_clock_age(std::uint32_t now,std::uint32_t then) noexcept {
     return static_cast<float>(static_cast<std::int32_t>(now-then))*0.00025F;
 }
+// 595670 calls maintenance under pressure or every128 world frames.
+inline bool prop_pool_maintenance_due(unsigned free_slots,std::uint64_t frame) noexcept {
+    return free_slots<4 || ((frame+0x4dU)&0x7fU)==0;
+}
+// 595750 pressure branch: only resting, non-exempt Smokeables retire.
+// free_slots is the snapshot before the queued destructors run.
+inline bool prop_pool_reclaims(unsigned free_slots,bool awake,bool exempt,float distance,
+    std::uint32_t now,std::uint32_t first_activation) noexcept {
+    if(free_slots>=10 || awake || exempt)return false;
+    const float limit=free_slots<4?20.F:300.F;
+    return distance>limit || (first_activation!=0 && first_activation!=0x7fffffffU &&
+        prop_clock_age(now,first_activation)>15.F && distance>120.F);
+}
 inline void prop_touch_ground(std::vector<PropGroundContact>& contacts,
     std::uint32_t polygon,std::uint32_t now) {
     for(auto& contact:contacts)if(contact.polygon==polygon){contact.touched=now;return;}

@@ -1172,7 +1172,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         }
         for(std::size_t p=0;p<props.size();++p) {
             const auto& prop=props[p];const auto handle=prop_handles_[p];
-            if(!prop.moved||handle==kNoHandle)continue;
+            if((!prop.moved&&!prop.expired)||handle==kNoHandle)continue;
             for(std::size_t section=0;section<track_.objects.sections.size();++section)
                 if(track_.objects.sections[section].number==prop.section) {
                     const auto key=std::make_pair(section,std::size_t(prop.instance));

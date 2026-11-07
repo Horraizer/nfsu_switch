@@ -302,7 +302,7 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
     }
     // A live track world owns props even when its traffic selection is empty.
     // Solver-only replay runs keep their explicitly empty object world.
-    if((free_drive_||traffic_configured_||!rivals_.empty()||race_type_==RaceType::time_trial||race_type_==RaceType::drift)&&
+    if((quick_race_||free_drive_||traffic_configured_||!rivals_.empty()||race_type_==RaceType::time_trial||race_type_==RaceType::drift)&&
        !session_->set_traffic(root,traffic_,error,std::max(1U,catchup_traffic_selector_),intro_ai_.world_random()))return false;
     if((race_type_==RaceType::time_trial||
        (quick_race_&&!free_drive_&&race_type_!=RaceType::drift&&rivals_.empty()))&&

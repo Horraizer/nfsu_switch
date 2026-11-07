@@ -79,7 +79,7 @@ struct RaceWorldContactProbe {
         props.restore_proxy(p);
         return p.support_lift==0&&p.render_support_lift==0&&p.state.position.z==10.25;
     }
-    static bool queued_scenery(RaceSession& s,std::string& error) {
+    static bool queued_scenery(RaceSession& s,std::string& error,bool pressure=false) {
         VehicleHull hull;
         for(float x:{-1.F,1.F})for(float y:{-1.F,1.F})for(float z:{-1.F,1.F})
             hull.points.push_back({x,y,z});
@@ -101,14 +101,25 @@ struct RaceWorldContactProbe {
         prop.placement_bounds={x-1,y-1,x+1,y+1};
         s.props_=std::make_unique<RaceProps>();
         auto& props=*s.props_;
-        props.objects_.push_back(prop);props.proxy_order_={0};props.widest_proxy_=2;
+        props.objects_.reserve(33);props.objects_.push_back(prop);props.proxy_order_={0};props.widest_proxy_=2;
+        if(pressure) {
+            // Reachable after32 moved, sleeping zero-lifetime objects. Their
+            // positions are far from the human but do not block a fresh prop.
+            for(unsigned slot=0;slot<32;++slot) {
+                auto old=live_cube(slot,{500+double(slot)*3,500,24},{},10000);
+                old.awake=false;props.objects_.push_back(std::move(old));
+            }
+            s.world_shape_ids_.assign(32,true);
+        }
         props.terrain_queries_.resize(hull.points.size());props.terrain_hits_.resize(hull.points.size());
         props.terrain_statuses_.resize(hull.points.size());props.terrain_arms_.resize(hull.points.size());
         std::vector<RaceQueuedContact> trace;
         if(!s.resolve_world_contacts({history},{},error,nullptr,nullptr,&trace))return false;
         const auto& live=props.objects_[0];
         const auto& hits=s.prop_contacts();
-        const bool okay=live.moved&&live.body_id>=0&&live.impact.activation==0&&
+        const bool reclaimed=!pressure||std::all_of(props.objects_.begin()+1,props.objects_.end(),
+            [](const RaceProp& p){return p.expired&&p.body_id<0;});
+        const bool okay=reclaimed&&live.moved&&live.body_id>=0&&live.impact.activation==0&&
             hits.count>=2&&hits.hits[0].id==0&&hits.hits[1].id==0&&
             hits.hits[0].audio_order<hits.hits[1].audio_order&&
             !trace.empty()&&trace.front().prop==0&&trace.front().remaining>0;
@@ -666,6 +677,12 @@ int main() {
         check(!race.advance(race_input_frame({1,gas,32767},step),error),"advance after finish refused");
         check(race.timing().step==step && race.record()==before && race.car().position.x==pose.x &&
               race.car().position.y==pose.y && race_session_hud(race)==hud,"finish freezes physics timing record and HUD");
+    }
+
+    {
+        RaceSession session(course);
+        check(session.start(error)&&RaceWorldContactProbe::queued_scenery(session,error,true),
+              "original pool reclamation keeps the33rd placed object collidable");
     }
 
     Frame track,car;

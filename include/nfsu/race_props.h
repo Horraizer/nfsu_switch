@@ -1,6 +1,7 @@
 #pragma once
 #include "nfsu/race_contacts.h"
 #include "nfsu/prop_settling.h"
+#include "nfsu/track_ground.h"
 #include <vector>
 namespace nfsu {
 struct RaceProp {
@@ -22,7 +23,9 @@ struct RaceProp {
     std::uint32_t registered_tick=0;
     std::vector<std::array<float,3>> points;
     RacePropImpact impact;
-    float lifetime=0,age=0,quiet=0;
+    float lifetime=0,age=0,quiet=0,sphere_radius=0;
+    bool reclamation_exempt=false;
+    std::uint32_t first_activation_tick=0;
     float support_lift=0,render_support_lift=0;
     bool moved=false,awake=false,expired=false,proxy_discarded=false;
     // Fixed-step clock in original 4000 Hz units, independent of speed quietness.
@@ -56,6 +59,7 @@ private:
     friend class RaceSession;
     friend struct RaceWorldContactProbe;
     void convert_proxy(RaceProp&,const TrackContactWorld&);
+    void maintain_pool(const TrackContactWorld&,const VehicleVec3&,std::uint32_t,std::uint64_t);
     bool advance_body(RaceProp&,const TrackContactWorld&,std::string&,float dt);
     bool prepare_frame(const TrackContactWorld&,std::string&,float dt);
     bool refresh_contact(RaceProp&,VehicleState&);
@@ -63,6 +67,8 @@ private:
     bool queued_contacts_=false;
     bool world_frame_ready_=false;
     std::vector<RaceProp> objects_;
+    // Only the32 live bodies own native440A40 caches, not every placement.
+    std::array<TrackGroundCache,32> maintenance_ground_{};
     std::vector<std::size_t> proxy_order_;
     float widest_proxy_=0;
     // Sized once at load to the largest authored hull; reused across substeps.
