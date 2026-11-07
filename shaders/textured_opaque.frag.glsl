@@ -16,6 +16,7 @@
 layout (location = 0) in vec3 inWorld;
 layout (location = 1) in vec4 inColor;
 layout (location = 2) in vec2 inTexcoord;
+layout (location = 3) in vec3 inHeadlight;
 
 layout (location = 0) out vec4 outColor;
 
@@ -41,6 +42,14 @@ layout (std140, binding = 2) uniform Material {
     vec4 environment_range;
     // rgb: the constant environment colour bytes (0..255); a: EnvmapPower.
     vec4 environment_color;
+    vec4 surface_diffuse_min;
+    vec4 surface_diffuse_range;
+    vec4 surface_specular_min;
+    vec4 surface_specular_range;
+    vec4 surface_environment_min;
+    vec4 surface_environment_range;
+    vec4 surface_gates;
+    vec4 uv_animation;
 } material;
 
 layout (binding = 0) uniform sampler2D baseTexture;
@@ -77,33 +86,111 @@ float ordinary_world_channel(float texel, float vertex)
     return texel * vertex * 2.0;
 }
 
-layout (std140, binding = 4) uniform Headlight {
-    vec4 eye;
-    vec4 right;
-    vec4 up;
-    vec4 forward;
-    vec4 projection;
-    vec4 light;
-    uvec4 options;
-} headlight;
 layout (binding = 2) uniform sampler2D headlightTexture;
-float headlightMaskTexel(int i) {
-    if(i<=32 || i>=63)return 0.0;
-    return i<=48 ? 1.0 : (255.0-16.0*float(i-48))/255.0;
+vec3 projectLamp() {
+    float depth=inHeadlight.z;
+    float x=(.5+.005*depth)*64.0-.5;
+    // Linear interpolation of the original 64-texel falloff mask.
+    // The three slopes meet at texels 33, 48 and 62.
+    float mask=clamp(min(min(x-32.0,1.0-(x-48.0)*(16.0/255.0)),
+                         (63.0-x)*(31.0/255.0)),0.0,1.0);
+    if(mask<=0.0)return vec3(0);
+    vec2 uv=.5+inHeadlight.xy/depth;
+    if(any(lessThan(uv,vec2(0))) || any(greaterThan(uv,vec2(1))))return vec3(0);
+    return texture(headlightTexture,uv).rgb*mask*vec3(.8,.8,.9);
 }
 vec3 projectedHeadlight() {
     if((frame.options.z & 16u)==0u)return vec3(0);
-    vec3 d=inWorld-headlight.eye.xyz;float depth=dot(d,headlight.forward.xyz);
-    if(depth<=0.0)return vec3(0);
-    vec2 uv=.5+vec2(dot(d,headlight.right.xyz)*headlight.projection.x,
-        -dot(d,headlight.up.xyz)*headlight.projection.y)/depth;
-    float x=clamp((.5+.005*depth)*64.0-.5,0.0,63.0);int i=int(x);
-    float mask=mix(headlightMaskTexel(i),headlightMaskTexel(min(i+1,63)),fract(x));
-    return texture(headlightTexture,uv).rgb*mask*vec3(.8,.8,.9);
+    vec3 color=projectLamp();
+    return color;
 }
 
+// Original world texture transform. Keep negative fractional offsets signed.
+float animatedWorldUvAxis(float uv, float rate, float period, float mode, float seconds)
+{
+    if (mode == 0.0) return uv;
+    if (mode == 3.0) return uv + rate;
+    precise float phase = seconds;
+    if (mode == 2.0) {
+        if (period == 0.0) return uv;
+        phase = trunc(phase / period);
+    }
+    precise float value = phase * rate;
+    return uv + (value - trunc(value));
+}
+// End native UV scalar
+vec2 animatedWorldUv(vec2 uv)
+{
+    return vec2(animatedWorldUvAxis(uv.x, material.uv_animation.x,
+        material.uv_animation.z, material.uv_animation.w, frame.light.w),
+        animatedWorldUvAxis(uv.y, material.uv_animation.y,
+        material.uv_animation.z, material.uv_animation.w, frame.light.w));
+}
+
+vec2 worldUv() {
+    vec2 uv=animatedWorldUv(inTexcoord);
+    if (frame.options.x != 0u) uv.y=1.0-uv.y;
+    return uv;
+}
+
+// Native worldreflect receiver, effect selector 0x40. Diffuse and vertex
+// alpha mask the reflection, and the stored vertex color is BGRA.
+void shadeWorldReflect() {
+    vec4 dc=texture(baseTexture,worldUv());
+    vec3 reflected=vec3(0.0);
+    if((frame.options.z & 2u)!=0u) {
+        vec3 delta=inWorld-frame.eye.xyz;
+        vec2 screen_uv=vec2(0.5)+vec2(dot(frame.right.xyz,delta)*frame.projection.x,
+            -dot(frame.up.xyz,delta)*frame.projection.y)*(0.5/dot(frame.forward.xyz,delta));
+        reflected=texture(reflectionTexture,screen_uv).rgb;
+    }
+    outColor=vec4(dc.rgb*(inColor.bgr+projectedHeadlight())*2.0+inColor.a*dc.a*reflected,1.0);
+}
+
+void shadeWorldDiffuse(vec4 sampled,uint texel_alpha) {
+    outColor=vec4(ordinary_world_channel(sampled.r, inColor.b),
+                  ordinary_world_channel(sampled.g, inColor.g),
+                  ordinary_world_channel(sampled.b, inColor.r),
+                  float(race_effect_alpha(texel_alpha, material.alpha.x)) / 255.0);
+    outColor.rgb+=sampled.rgb*projectedHeadlight()*2.0;
+}
+
+// The Switch build selects this entry point for static world materials.
+void raceWorldMain() {
+    if(material.fallback.w==7.0) {
+        shadeWorldReflect();
+        return;
+    }
+    vec4 sampled=texture(baseTexture,worldUv());
+    shadeWorldDiffuse(sampled,uint(sampled.a*255.0+0.5));
+}
 void main()
 {
+    // FE car flares use original world.efx Modulate2x in all four lanes.
+    // FE neon uses the generic ground path; racing neon uses the projected
+    // shadow shader. Both consume the same native packed RGBA controller.
+    if(material.alpha.w == 7.0) {
+        vec2 uv=inTexcoord;if(frame.options.x!=0u)uv.y=1.0-uv.y;
+        vec4 texel=texture(baseTexture,uv);
+        uint rgb=uint(material.alpha.z);
+        vec3 tint=vec3(rgb&255u,(rgb>>8u)&255u,(rgb>>16u)&255u)/255.0;
+        outColor=vec4(texel.rgb*tint*2.0,texel.a*material.alpha.x);
+        return;
+    }
+    if(material.alpha.w == 8.0) {
+        vec2 uv=inTexcoord;if(frame.options.x!=0u)uv.y=1.0-uv.y;
+        vec4 texel=texture(baseTexture,uv);
+        outColor=vec4(texel.rgb*(material.environment_color.rgb/255.0)*2.0,
+                      texel.a*material.alpha.x*2.0);
+        return;
+    }
+    // Native skid ribbon: texture with per-endpoint opacity; no lamp projection.
+    if(material.fallback.w == 9.0) {
+        vec2 uv=inTexcoord;if(frame.options.x!=0u)uv.y=1.0-uv.y;
+        vec4 texel=texture(baseTexture,uv);
+        outColor=vec4(texel.rgb*inColor.rgb*2.0,texel.a*inColor.a*material.alpha.x*2.0);
+        return;
+    }
     if ((frame.options.z & 1024u) != 0u) {
         vec2 uv = inTexcoord / inWorld.x;
         if (inWorld.y > 0.5) {
@@ -115,32 +202,16 @@ void main()
     }
     // Original world.efx reflection-source material, with BGRA declaration.
     if (material.fallback.w == 8.0) {
-        vec2 source_uv = inTexcoord;
+        vec2 source_uv = animatedWorldUv(inTexcoord);
         if (frame.options.x != 0u) source_uv.y = 1.0 - source_uv.y;
         outColor = texture(baseTexture, source_uv) * vec4(inColor.bgr, inColor.a) * 2.0;
         return;
     }
-    // Native worldreflect receiver (effect selector 0x40). D3DCOLOR is BGRA
-    // in the stored vertex bytes; the original declaration expands it to RGB.
-    // Diffuse alpha masks reflection, not the output alpha.
     if (material.fallback.w == 7.0) {
-        vec2 base_uv = inTexcoord;
-        if (frame.options.x != 0u) base_uv.y = 1.0 - base_uv.y;
-        vec4 dc = texture(baseTexture, base_uv);
-        vec3 reflected = vec3(0.0);
-        if ((frame.options.z & 2u) != 0u) {
-            vec3 delta = inWorld - frame.eye.xyz;
-            vec2 screen_uv = vec2(0.5) + vec2(dot(frame.right.xyz, delta) * frame.projection.x,
-                -dot(frame.up.xyz, delta) * frame.projection.y) * (0.5 / dot(frame.forward.xyz, delta));
-            reflected = texture(reflectionTexture, screen_uv).rgb;
-        }
-        outColor = vec4(dc.rgb * (inColor.bgr + projectedHeadlight()) * 2.0 + inColor.a * dc.a * reflected, 1.0);
+        shadeWorldReflect();
         return;
     }
-    vec2 uv = inTexcoord;
-    if (frame.options.x != 0u) {
-        uv.y = 1.0 - uv.y;
-    }
+    vec2 uv=worldUv();
     // The nearest texel, wrapped; the manifest's sampler state is what makes
     // this wrap_texel. Held as bytes, as the reference holds it.
     // Original FE worldreflect.efx: alpha is1 after the pixel equation.
@@ -163,13 +234,7 @@ void main()
     }
     uvec4 texel = uvec4(sampled * 255.0 + 0.5);
     if (material.fallback.w == 6.0) {
-        // Raw track D3DCOLOR is little-endian BGRA; the native declaration
-        // expands it to RGBA before world.efx sees the authored color.
-        outColor = vec4(ordinary_world_channel(sampled.r, inColor.b),
-                        ordinary_world_channel(sampled.g, inColor.g),
-                        ordinary_world_channel(sampled.b, inColor.r),
-                        float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0);
-        outColor.rgb += sampled.rgb * projectedHeadlight() * 2.0;
+        shadeWorldDiffuse(sampled,texel.a);
         return;
     }
     if (material.fallback.w == 3.0) {

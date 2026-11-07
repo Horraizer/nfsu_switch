@@ -744,12 +744,16 @@ bool simulate_track_residency(
 }
 
 struct TrackResidencySession::Impl {
+    // RaceRun passes temporary costs and local options at startup. Keep the
+    // small immutable configuration alive for every later zone transition.
+    std::vector<TrackResidencyCost> costs;
+    TrackResidencyOptions options;
     Streamer streamer;
     TrackResidencyRun counters;
     std::size_t index = 0, sample = 0;
     Impl(const TrackStreamTable& t, const TrackZoneReport& z, std::uint32_t track,
          const std::vector<TrackResidencyCost>& c, const TrackResidencyOptions& o)
-        : streamer(t,z,track,c,o) {}
+        : costs(c), options(o), streamer(t,z,track,costs,options) {}
 };
 TrackResidencySession::TrackResidencySession() = default;
 TrackResidencySession::~TrackResidencySession() = default;

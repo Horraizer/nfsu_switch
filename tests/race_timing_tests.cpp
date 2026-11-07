@@ -1222,7 +1222,62 @@ void test_circle() {
 
 } // namespace
 
+void test_point_to_point_go() {
+    auto route=hand_route(1);route.point_to_point=true;
+    route.finish=2;route.spline.open=true;
+    Race race(route,4);race.countdown();race.run_to(163);
+    for(const auto& r:race.state.racers)
+        check(r.lap==0 && r.highest_checkpoint==0,"sprint GO sets each lap to zero");
+    Events finish={progress(nfsu::RaceEventKind::crossed_forward,2,1,75),
+                   progress(nfsu::RaceEventKind::lap_complete,2,1,75)};
+    check(race.step(finish,30) && race.racer().finish_valid &&
+          race.state.outcome==nfsu::RaceOutcome::finished,"one sprint finish completes the race");
+}
+
+#include "race_actor_retirement_native.inc"
+void test_actor_retirement() {
+    for(const auto& c:kNativeActorRetirement) {
+        nfsu::RaceRacerTiming r;r.permanent_ghost=c.ghost;r.ghost_start_ticks=c.since;r.ghost_seconds=2.F;
+        float dt;std::memcpy(&dt,&c.dt,sizeof dt);
+        check(nfsu::race_racer_body_ghost(r,c.now)==c.body_ghost,"original466890 body ghost consumer");
+        check(nfsu::race_racer_hidden(r,c.now,dt,c.frame)==c.hidden,"original570B90 world timer and render blink");
+    }
+}
+
+void test_knockout() {
+    using namespace nfsu;
+    RaceTimingConfig c;c.racers=4;c.humans=1;
+    RaceTimingState s;s.racers.resize(4);s.outcome=RaceOutcome::running;s.step=1200;s.now_ticks=100000;
+    const unsigned order[]={1,2,3,0};std::string error;
+    s.racers[1].new_lap=true;s.racers[1].highest_lap=1;
+    check(apply_lap_knockout(c,s,order,4,error)&&s.racers[0].status==RacerStatus::not_finished,
+        "leader completing first lap does not eliminate last before third crosses");
+    s.racers[3].new_lap=true;s.racers[3].highest_lap=1;
+    check(apply_lap_knockout(c,s,order,4,error)&&s.racers[0].status==RacerStatus::knocked_out&&
+        s.racers[0].position==4&&!s.racers[0].finish_valid&&s.outcome==RaceOutcome::finished,
+        "third racer crossing lap one knocks out last human, without a win");
+    check(!s.racers[0].permanent_ghost,"human knockout does not hide the player actor");
+    const unsigned bad[]={1,2,2,0};const auto before=s.racers;
+    check(!apply_lap_knockout(c,s,bad,4,error)&&s.racers[3].status==before[3].status,
+        "duplicate knockout ranking refused before state changes");
+    s={};s.racers.resize(4);s.outcome=RaceOutcome::running;
+    const unsigned lead[]={0,1,2,3};
+    s.racers[1].new_lap=true;s.racers[1].highest_lap=2;
+    s.racers[3].status=RacerStatus::knocked_out;s.racers[3].position=4;
+    check(apply_lap_knockout(c,s,lead,4,error)&&s.racers[2].status==RacerStatus::knocked_out&&
+        s.racers[2].position==3&&s.racers[3].position==4&&s.outcome==RaceOutcome::running,
+        "second crossing lap two eliminates third and preserves already eliminated fourth");
+    check(s.racers[2].permanent_ghost&&s.racers[2].ghost_start_ticks==s.now_ticks&&
+        s.racers[2].ghost_seconds==2.F,"non-human elimination starts original ghost and blink interval");
+    const auto since=s.racers[2].ghost_start_ticks;s.now_ticks+=10000;
+    check(apply_lap_knockout(c,s,lead,4,error)&&s.racers[2].ghost_start_ticks==since,
+        "repeated elimination inspection does not restart the blink interval");
+}
+
 int main() {
+    test_point_to_point_go();
+    test_knockout();
+    test_actor_retirement();
     test_ticks_per_frame();
     test_quantize();
     test_format();

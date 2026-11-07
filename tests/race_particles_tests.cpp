@@ -78,9 +78,18 @@ int main() {
         auto hit=sample(1);
         for (auto& wheel : hit.model.wheels) wheel.contact=false;
         hit.impulses=1; hit.impulse={3,0,0};
+        hit.audio_contact_count=1;hit.audio_contacts[0].impulse=hit.impulse;
+        hit.audio_contacts[0].point={-.85,0,.27};
         wall.advance(hit,spec);
         check(wall.smoke_count()==0 && wall.spark_count()==2,
               "wall impulse did not produce two sparks");
+        check(wall.spark(0).origin.x==-.85&&wall.spark(0).origin.z==.27,"spark starts at actual solver witness");
+        nfsu::RaceParticles displaced,absent;
+        auto shifted=hit;shifted.audio_contacts[0].point={12,-7,3};displaced.advance(shifted,spec);
+        check(displaced.spark_count()==2&&displaced.spark(0).origin.x==12&&displaced.spark(0).origin.y==-7&&displaced.spark(0).origin.z==3,
+              "moving only the contact witness moves the burst without changing body or impulse");
+        shifted.audio_contact_count=0;absent.advance(shifted,spec);
+        check(absent.spark_count()==0,"missing witness does not invent a body-side spark origin");
         const auto spark_hash=frame_hash(wall);
         std::cout << "spark-frame-sha256 " << spark_hash << '\n';
         // A synthetic wall impulse at step 1: event1.txt has no hull hit.
@@ -106,6 +115,7 @@ int main() {
         for (std::uint64_t step=49; step<=240; ++step) {
             auto t=sample(step);
             t.impulses=1; t.impulse={3,0,0};
+            t.audio_contact_count=1;t.audio_contacts[0].impulse=t.impulse;t.audio_contacts[0].point={-.85,0,.27};
             a.advance(t,spec);
         }
         check(a.smoke_count()<=nfsu::kRaceSmokeLimit &&

@@ -190,6 +190,11 @@ int track_screen_size_level(
     const float position[3],
     float radius) noexcept;
 
+// 0x0053E290 adds bit2 for player views1/2; 0x005450F0 derives those
+// indices from the view table. Keep this recovered exclusion separate from
+// capture/reflection masks: alternate scenery can be valid in those views.
+constexpr std::uint8_t kTrackMainViewInstanceMask = 0x02U;
+
 // 0x00445EDA to 0x00445EEB: `mov dl, byte ptr [edi + 0x84]` then
 // `test dl, al` on the low byte of (flags ^ 0x60), and a non-zero result
 // skips the instance. The test is 8-bit on both sides, which is why mask is
@@ -291,8 +296,8 @@ struct TrackCullOptions {
     TrackResidency residency;
     TrackCullLimits limits;
     // The render context's mask byte. Zero, the default, masks nothing.
-    // Retail's value was not recovered, so the default set is a superset of
-    // the retail one on this gate. Ignored entirely under
+    // The generic caller has no view identity, so it must supply any view
+    // exclusions explicitly. Ignored entirely under
     // TrackCullPolicy::draw_everything.
     std::uint8_t instance_mask = 0;
     // The screen-size gate of 0x00445F34. Off by default because its scale
@@ -424,7 +429,8 @@ public:
     bool prepare(const TrackObjectReport& objects, std::string& error,
                  const TrackCullLimits& limits = {});
     bool cull(const TrackFrustum& frustum, std::string& error,
-              const TrackResidency* residency = nullptr);
+              const TrackResidency* residency = nullptr,
+              std::uint8_t instance_mask = 0);
     const TrackCullReport& result() const;
     std::uint64_t memory_bytes() const;
 private:

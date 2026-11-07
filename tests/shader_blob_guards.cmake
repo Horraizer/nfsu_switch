@@ -194,8 +194,8 @@ function(nfsu_case label file manifest expected tgsi)
 endfunction()
 
 nfsu_case("a vertex attribute moved"
-    placed.vert.glsl car_textured.manifest
-    "placed.vert.dksh fetches vertex attribute location 3 (components xy), which the manifest does not declare"
+    placed_headlight.vert.glsl car_textured.manifest
+    "placed_headlight.vert.dksh fetches vertex attribute location 3 (components xy), which the manifest does not declare"
     OWN
     "layout (location = 2) in vec2 inTexcoord"
     "layout (location = 3) in vec2 inTexcoord")
@@ -218,13 +218,13 @@ nfsu_case("a texture binding moved"
 
 nfsu_case("a fragment uniform block binding moved"
     textured_opaque.frag.glsl track_textured.manifest
-    "the compiled fragment shader reads a 80-byte uniform block at binding 3 (textured_opaque.frag.tgsi: CONST[4]), which the manifest does not give that stage"
+    "the compiled fragment shader reads a 208-byte uniform block at binding 3 (textured_opaque.frag.tgsi: CONST[4]), which the manifest does not give that stage"
     OWN
     "layout (std140, binding = 2) uniform Material"
     "layout (std140, binding = 3) uniform Material")
 
 nfsu_case("a vertex uniform block binding moved"
-    placed.vert.glsl car_textured.manifest
+    placed_headlight.vert.glsl car_textured.manifest
     "uniform block Instance is in the manifest at vertex binding 1, but the compiled vertex shader has no uniform block there"
     OWN
     "layout (std140, binding = 1) uniform Instance"

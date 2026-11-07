@@ -47,7 +47,30 @@ sections, supplemental `Y` sections, `Tracks/TEX1003TRACK.BIN`,
 `Global/INGAMEB.BUN`, then `Global/GLOBALB.BUN`. Track slices retain native
 DXT blocks; desktop rendering decodes the textures requested by resident
 geometry. The two remaining hashes without a matching texture-info record
-are `0x2D1A7A07` and `0x74CFB820`.
+are `0x2D1A7A07` and `0x74CFB820`. The further circuit tracks of the
+2026-10-10 all-circuits task keep the same rule: every absent placed hash
+their permanent sets request is substituted with the GLOBALB DEFAULTALPHA
+record exactly as Atlantic's power tower is (track 1005 `0x828DCF0B`,
+1007 `0x2F93D9E1` and `0x828DCF0B`, 1008 `0x6D1AFA74` and `0x828DCF0B`),
+except `0x74CFB820`, which tracks 1007 and 1008 place and leave unresolved
+in exactly the way event 1 ships it on track 1003. The drift tracks
+(owner tasks 2026-10-12 and 2026-10-14) apply the same rule in bulk: the
+L1RB tracks 1301-1304 place the same nineteen absent hashes and the L1RC
+tracks 1305-1308 the same fifty-six, none of which any source of their sets
+provides (the L1RC stream holds two of the L1RB hashes in a texture-only
+section those tracks never load, which changes nothing), and all are
+substituted with the DEFAULTALPHA record (`absent_placed_hashes` in
+`src/track_slice.cpp` is the list), leaving nothing unresolved. The
+aliases live in `RenderTexture::default_alpha_aliases`, which the fixed
+natural-claims array was never sized for. The drag tracks (owner task
+2026-10-15) substitute their own small per-image sets - four hashes on
+1201/1210, two on 1202, five on 1206/1214 and four on 1207 - while 1207
+also places `0x74CFB820`, which stays unresolved exactly as tracks 1007
+and 1008 ship it. The sprint tracks (owner task
+2026-10-17) place the same L1RA family hashes their neighbours do - 1104
+and 1105 `0x828DCF0B`, 1106-1109 also `0x2F93D9E1` - all
+substituted, while 1106, 1107 and 1108 place `0x74CFB820` and ship it
+unresolved as ever.
 
 `Global/GLOBALB.BUN` also contains raw P8 textures. Its `info +52` points to
 a separate palette in the pack's data range. The retail loader points the

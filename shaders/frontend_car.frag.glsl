@@ -59,13 +59,17 @@ void main() {
     uvec4 texel=uvec4(texture(baseTexture,uv)*255.0+0.5);
     if (texel.a<frame.options.w) discard;
     uvec3 color=texel.rgb;
+    // Original ps_1_1 COLOR0/COLOR1 are saturated inputs. Diffuse and
+    // alpha in this backend carry the final factor2 from car.efx already.
+    vec4 diffuse=clamp(vec4(inDiffuse,inAlphaScale)*.5,0.0,1.0);
+    vec4 specular=clamp(vec4(inAdditive,inEnvironmentPower),0.0,1.0);
     vec3 environment=4.0*material.surface_gates.z*cubeSample(inCubeDirection)*
-        (material.surface_environment_min.rgb+inEnvironmentPower*material.surface_environment_range.rgb);
-    uvec3 value=uvec3(clamp(floor(vec3(color)*inDiffuse+float(texel.a)*inAlphaScale*(inAdditive+environment)+0.5),0.0,255.0));
+        (material.surface_environment_min.rgb+specular.a*material.surface_environment_range.rgb);
+    uvec3 value=uvec3(clamp(floor(vec3(color)*(2.0*diffuse.rgb)+float(texel.a)*(2.0*diffuse.a)*(specular.rgb+environment)+0.5),0.0,255.0));
     uint lamp_mode=uint(material.alpha.w+0.5);
     uvec3 lamp=lamp_mode==1u ? uvec3(120,120,110) : lamp_mode==2u ? uvec3(52,4,2) :
         lamp_mode==3u ? uvec3(192,28,18) : uvec3(0);
     value+=((uvec3(255)-value)*lamp+127u)/255u;
-    uint alpha=uint(clamp(float(texel.a)*inAlphaScale+0.5,0.0,255.0));
+    uint alpha=uint(clamp(float(texel.a)*(2.0*diffuse.a)+0.5,0.0,255.0));
     outColor=vec4(vec3(value)/255.0,float(alpha)/255.0);
 }

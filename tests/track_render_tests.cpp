@@ -2133,6 +2133,28 @@ void test_render_honours_the_options() {
     check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error,
              nullptr, true, &selected), "reflection residency inclusion", error);
     check(!reflected.empty(), "resident source restores its reflection");
+    // Mixed section runs, including a return to an earlier section. Each
+    // retained instance must keep its original order and live transform.
+    changed = wet_fixture;
+    const auto reflected_source = changed.scene.instances[2];
+    changed.scene.instances.assign(5, reflected_source);
+    const std::uint32_t sections[] = {1234,1234,1235,1234,1236};
+    for (unsigned i=0;i<5;++i) changed.scene.instances[i].section_number=sections[i];
+    selected.zone_sections={1234,1236};
+    check_ok(nfsu::track_reflection_entries(changed.scene,wet,reflected,error,
+             nullptr,false,&selected), "mixed reflection section runs", error);
+    std::vector<std::uint32_t> reflected_instances;
+    for (const auto& entry:reflected)
+        if(reflected_instances.empty() || reflected_instances.back()!=entry.instance)
+            reflected_instances.push_back(entry.instance);
+    check(reflected_instances==std::vector<std::uint32_t>({0,1,3,4}),
+          "section cache preserves reentry, selection and draw order");
+    selected.zone_sections={1235};
+    check_ok(nfsu::track_reflection_entries(changed.scene,wet,reflected,error,
+             nullptr,false,&selected), "reflection zone changes between frames", error);
+    check(!reflected.empty() && std::all_of(reflected.begin(),reflected.end(),
+          [](const auto& entry){return entry.instance==2;}),
+          "section membership never survives into a different query");
     changed = wet_fixture;
     changed.scene.instances[2].transform.translation[0] = 100000;
     check_ok(nfsu::track_reflection_entries(changed.scene, wet, reflected, error),

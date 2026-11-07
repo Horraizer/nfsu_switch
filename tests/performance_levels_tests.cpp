@@ -1,3 +1,6 @@
+// Camera-only pins refreshed after native chase surge recovery.
+// Full stock/upgraded replays retain all noncamera states and physics.
+// Native camera fixtures remain the independent behavior oracle.
 #include "nfsu/race_setup.h"
 #include "nfsu/handling_telemetry.h"
 #include "nfsu/race_events.h"
@@ -33,32 +36,44 @@ VehicleSpec setup(const Record& record, const VehicleUpgradeLevels& levels) {
     require(make_race_vehicle_spec(record.data(),record.size(),levels,spec,error),error);
     return spec;
 }
-void check_aero_setup(const Record& original) {
-    VehicleTuning tuning;std::vector<VehicleTuningIssue> issues;
-    require(decode_vehicle_tuning(original.data(),original.size(),tuning,issues),"aero tuning source");
-    for(int a=0;a<=3;++a)for(int b=0;b<=3;++b) {
-        VehicleUpgradeLevels levels;levels.aero_a=a;levels.aero_b=b;
+constexpr float runtime_aero_pins[20][3]={
+#include "race_setup_aero_native.inc"
+};
+void check_aero_setup(const Record& original,unsigned car=0) {
+    for(int weight=0;weight<=3;++weight)for(int suspension=0;suspension<=3;++suspension)
+    for(int tyres=0;tyres<=3;++tyres)for(int visual=0;visual<2;++visual) {
+        VehicleUpgradeLevels levels;levels.weight=weight;levels.suspension=suspension;levels.tyres=tyres;
+        levels.aero_a=visual?3:0;levels.aero_b=visual?1:0;
         const auto spec=setup(original,levels);Record encoded{};
         encode_vehicle_handling(spec.handling,encoded.data(),encoded.size());
         const float fields[]{spec.handling.downforce_front,spec.handling.downforce_rear,spec.handling.aero_preload};
-        for(unsigned i=0;i<3;++i) {
-            float expected=f32(original,0x374+4*i);
-            if(b)expected=expected+tuning.aero_b[static_cast<std::size_t>(b-1)].downforce_delta[i];
-            if(a)expected=expected+tuning.aero_a[static_cast<std::size_t>(a-1)].downforce_delta[i];
-            require(fields[i]==expected&&f32(encoded,0x374+4*i)==expected,
-                    "selected B-before-A float fields survive decode/spec/encode");
-        }
-        auto omitted=spec;omitted.handling.downforce_front=0;omitted.handling.downforce_rear=0;
-        omitted.handling.aero_preload=0;
-        VehicleModel full(spec),without(omitted);VehicleState x,y;VehiclePose pose;pose.speed=20;
-        VehicleTelemetry tx,ty;VehicleInput input;
-        require(full.reset(x,pose)&&without.reset(y,pose)&&
-                full.step(x,input,VehicleFlatGround{},tx)&&without.step(y,input,VehicleFlatGround{},ty),
-                "selected aero setup force callbacks complete");
-        require(x.prepared_force.z!=y.prepared_force.z&&x.aero_preloads!=y.aero_preloads,
-                "selected aero coefficients reach both model force and moving preload");
+        const auto& expected=runtime_aero_pins[car*10+weight+suspension+tyres];
+        for(unsigned i=0;i<3;++i)
+            require(fields[i]==expected[i]&&f32(encoded,0x374+4*i)==expected[i],
+                    "original57F2B0 continuous aero, independent of visual-part levels");
     }
-    std::cout<<"aero selected/tuned setup16 passed\n";
+    const auto spec=setup(original,{});auto omitted=spec;
+    omitted.handling.downforce_front=omitted.handling.downforce_rear=omitted.handling.aero_preload=0;
+    VehicleModel full(spec),without(omitted);VehicleState x,y;VehiclePose pose;pose.speed=20;
+    VehicleTelemetry tx,ty;VehicleInput input;
+    require(full.reset(x,pose)&&without.reset(y,pose)&&
+            full.step(x,input,VehicleFlatGround{},tx)&&without.step(y,input,VehicleFlatGround{},ty),
+            "runtime aero force callbacks complete");
+    require(x.prepared_force.z!=y.prepared_force.z&&x.aero_preloads!=y.aero_preloads,
+            "runtime aero reaches both model force and moving preload");
+    std::cout<<"original continuous aero128 cases passed\n";
+}
+constexpr float runtime_inertia_pins[8][4]={
+#include "race_inertia_native.inc"
+};
+void check_runtime_inertia(const Record& original) {
+    for(int weight=0;weight<4;++weight)for(int item=0;item<2;++item) {
+        VehicleUpgradeLevels levels;levels.weight=weight;levels.mass_item=item!=0;
+        const auto h=setup(original,levels).handling;
+        const auto& pin=runtime_inertia_pins[2*weight+item];
+        require(h.mass==pin[0]&&h.inertia==std::array<float,3>{pin[1],pin[2],pin[3]},
+                "original runtime mass/inertia producer");
+    }
 }
 void check_levels(const Record& original) {
     VehicleHandling stock; VehicleTuning tuning;
@@ -66,8 +81,10 @@ void check_levels(const Record& original) {
     require(decode_vehicle_handling(original.data(),original.size(),stock,hi),"stock handling");
     require(decode_vehicle_tuning(original.data(),original.size(),tuning,ti),"retail tuning tables");
     const auto zero=setup(original,{});
-    require(compare_vehicle_handling(zero.handling,stock_240sx_handling())==kVehicleRecordSize,
-            "zero-level 240SX equals legacy field bits");
+    auto expected_zero=stock_240sx_handling();
+    expected_zero.inertia={runtime_inertia_pins[0][1],runtime_inertia_pins[0][2],runtime_inertia_pins[0][3]};
+    require(compare_vehicle_handling(zero.handling,expected_zero)==kVehicleRecordSize,
+            "zero-level runtime inertia with all other stock field bits preserved");
     using Member = int VehicleUpgradeLevels::*;
     const Member fields[] = {&VehicleUpgradeLevels::weight,&VehicleUpgradeLevels::suspension,
         &VehicleUpgradeLevels::engine_a,&VehicleUpgradeLevels::engine_b,&VehicleUpgradeLevels::induction,
@@ -80,14 +97,15 @@ void check_levels(const Record& original) {
         Record applied{};
         require(apply_vehicle_tuning(original.data(),original.size(),levels,applied.data(),applied.size(),ti),
                 "apply isolated level");
-        require(h.downforce_front==f32(applied,0x374)&&h.downforce_rear==f32(applied,0x378)&&
-                h.aero_preload==f32(applied,0x37C),
-                "selected tuned aero bytes reach model handling without stock substitution");
+        const auto& aero=runtime_aero_pins[levels.weight+levels.suspension+levels.tyres];
+        require(h.downforce_front==aero[0]&&h.downforce_rear==aero[1]&&h.aero_preload==aero[2],
+                "normal live setup uses original continuous aero after raw tuning");
         if (field==&VehicleUpgradeLevels::weight) {
             require(h.mass==float(double(stock.mass)*tuning.weight[n].mass_scale),"weight mass");
             require(h.centre_of_mass[0]==float(double(stock.centre_of_mass[0])+
                     tuning.weight[n].centre_of_mass_longitudinal_delta),"weight CG");
-            require(h.inertia==vehicle_box_inertia(h.mass,h.length,h.width,h.height),"weight inertia");
+            const auto& inertia=runtime_inertia_pins[2*level];
+            require(h.inertia==std::array<float,3>{inertia[1],inertia[2],inertia[3]},"original runtime weight inertia");
             require(f32(applied,kVehicleYawInertiaScaleOffset)==tuning.weight[n].yaw_inertia_scale,
                     "decoded yaw scale (unused by solver)");
         } else if (field==&VehicleUpgradeLevels::suspension) {
@@ -126,11 +144,6 @@ void check_levels(const Record& original) {
             }
         } else {
             auto expected=zero.handling;
-            if(field==&VehicleUpgradeLevels::aero_a||field==&VehicleUpgradeLevels::aero_b) {
-                expected.downforce_front=f32(applied,0x374);
-                expected.downforce_rear=f32(applied,0x378);
-                expected.aero_preload=f32(applied,0x37C);
-            }
             if(field==&VehicleUpgradeLevels::grip) {
                 // The tuning write at raw384/388 aliases selector1 service
                 // and parking setup. Check bytes AND actual brake response.
@@ -182,19 +195,24 @@ void check_sessions(const Record& record) {
     require(compare_vehicle_handling(upgraded.handling,setup(record,levels).handling)==kVehicleRecordSize &&
             saved==record,"repeated setup uses original bytes, no cumulative application");
     VehicleTrackCourse course; require(build_vehicle_proving_ground(course,error),error);
-    RaceSession legacy(course),zero(course,setup(record,{})),a(course,upgraded),b(course,upgraded);
+    auto runtime_stock=stock_240sx_vehicle_spec();
+    runtime_stock.handling.inertia={runtime_inertia_pins[0][1],runtime_inertia_pins[0][2],runtime_inertia_pins[0][3]};
+    RaceSession legacy(course,runtime_stock),zero(course,setup(record,{})),a(course,upgraded),b(course,upgraded);
     require(legacy.start(error) && zero.start(error) && a.start(error) && b.start(error),error);
     Sha256 hash; bool changed=false;
     for (unsigned tick=0;tick<1000;++tick) {
         const auto pad=race_input_frame({1,tick<180 ? 0U : gamepad_button_bit(GamepadButton::trigger_right),0},tick);
         require(legacy.advance(pad,error) && zero.advance(pad,error) && a.advance(pad,error) && b.advance(pad,error),error);
-        require(legacy.record()==zero.record(),"legacy/explicit zero replay bytes");
+        require(legacy.record()==zero.record(),"original-inertia stock/explicit zero replay bytes");
         require(a.record()==b.record(),"upgraded replay bytes deterministic");
         changed |= a.record()!=legacy.record(); hash.update(a.record().data(),a.record().size());
     }
     require(changed,"upgraded replay differs for documented setup");
+    // Portable regression after native selector1 phase recovery; original
+    // operation fixtures stay separate. Runtime aero now uses57F2B0; the
+    // native aero fixture pins that producer independently of this replay.
     const auto synthetic_hash=sha256_hex(hash.finish());
-    require(synthetic_hash=="DC99D5DD5B616524CA9051E6392829E1528DA68B5999E13F1F6C6CDF0D4BD6A8","synthetic upgraded replay pin: "+synthetic_hash);
+    require(synthetic_hash=="95D557AEB11910CA7F8D2B5DA145E5E451C9FD30FAB519B808BC9783C39C4D63","synthetic upgraded replay pin: "+synthetic_hash);
     std::cout << "synthetic-upgrade-sha256 " << synthetic_hash << '\n';
     // Reset reuses the model and shifts; it must not apply tables again.
     const auto before=a.spec().handling;
@@ -214,7 +232,7 @@ void check_sessions(const Record& record) {
     std::fclose(file);
     // A wheel off the ground has no measured road slip. Raw input and
     // sensor age are also unavailable for a disconnected replay pad.
-    VehicleTrackCourse airborne_course=course; airborne_course.start.ground.z+=20;
+    VehicleTrackCourse airborne_course=course; airborne_course.start.ground.z+=20;    // A supplied moving spawn bypasses loading-time terrain settling.    // A stationary20m drop now lands during prepare_grid, as it should.    airborne_course.start.speed=1;
     RaceSession airborne(airborne_course);
     require(airborne.start(error),"airborne telemetry session");
     while (race_car_held(airborne.timing())) require(airborne.advance({},error),error);
@@ -241,16 +259,29 @@ void check_sessions(const Record& record) {
     }
     require(sg>kVehicleGearFirst && tg>kVehicleGearFirst,"automatic gear transitions");
     const auto stock_hash=sha256_hex(sh.finish()), upgraded_hash=sha256_hex(th.finish());
-    require(stock_hash=="F7668EA7F92D82033E2664C9462CA4B779D3CB1430281698BC1747D202B7142C","stock acceleration pin");
-    require(upgraded_hash=="3BD4BF6907EFA29B288E092AC8ACCE4627F104B138B4C18C179D53386A7E59AC","upgraded acceleration pin");
-    require(transitions=="upgrade:313:3;stock:351:3;upgrade:726:4;stock:812:4;upgrade:1401:5;stock:1574:5;upgrade:2429:6;stock:2702:6;",
-            "stock and upgraded automatic shift transitions");
+    std::cout<<"observed acceleration-stock "<<stock_hash<<"\nobserved acceleration-upgrade "
+             <<upgraded_hash<<"\nobserved transitions "<<transitions<<'\n';
+    require(stock_hash=="0FA3F61E2B02BEFC118DA3DF3A0755A8025334821F7CB68EF108EFA4D0840941","stock acceleration pin");
+    require(upgraded_hash=="F03029C8D5783BEE116D3F7B188C781093E54368126CAAE953C4AAA140A01780","upgraded acceleration pin: "+upgraded_hash);
+    require(transitions=="upgrade:488:3;stock:547:3;upgrade:1000:4;stock:1158:4;upgrade:1831:5;stock:2106:5;upgrade:3075:6;stock:3465:6;",
+            "stock and upgraded automatic shift transitions: "+transitions);
     std::cout << "acceleration-stock " << stock_hash << "\nacceleration-upgrade " << upgraded_hash
               << "\ntransitions " << transitions << '\n';
 }
 void check_retail(const std::filesystem::path& root) {
     const auto global=root/"Global/GLOBALB.BUN";
-    const auto record=read_record(global,"240SX"); check_levels(record); check_sessions(record);
+    const auto record=read_record(global,"240SX");check_aero_setup(record);check_levels(record);check_sessions(record);
+    const auto civic=read_record(global,"CIVIC");check_aero_setup(civic,1);
+    VehicleUpgradeLevels drift_levels;drift_levels.weight=drift_levels.tyres=drift_levels.suspension=1;
+    drift_levels.mass_item=true;drift_levels.aero_a=3;drift_levels.aero_b=1;
+    const auto ordinary=setup(civic,drift_levels);VehicleSpec drift;std::string error;
+    require(make_race_vehicle_spec(civic.data(),civic.size(),drift_levels,drift,error,true,1),error);
+    require(drift.handling.mass==1.1761059761047363F&&drift.handling.inertia==ordinary.handling.inertia,
+            "original57F2B0 drift mass blend keeps pre-blend inertia with the unique item");
+    require(drift.handling.downforce_front==.14166666567325592F&&
+            drift.handling.downforce_rear==.15458333492279053F&&
+            drift.handling.aero_preload==.021166665479540825F,
+            "original57F2B0 drift aero ignores visual-part levels");
     const auto second=read_record(global,"RX7"); VehicleHandling raw; std::vector<VehicleHandlingIssue> issues;
     require(decode_vehicle_handling(second.data(),second.size(),raw,issues),"RX7 stock decode");
     const auto stock=setup(second,{}); bool nonzero=false;
@@ -271,7 +302,7 @@ int main(int argc,char** argv) {
         require(parse_performance_levels(performance_levels_text(levels),levels,error),"canonical CLI roundtrip");
         Record original{}; encode_vehicle_handling(stock_240sx_handling(),original.data(),original.size());
         encode_vehicle_tuning(stock_240sx_tuning(),original.data(),original.size());
-        const auto saved=original;check_aero_setup(original);
+        const auto saved=original;check_runtime_inertia(original);check_aero_setup(original);
         if(argc==2&&std::string(argv[1])=="--aero-only")return 0;
         check_levels(original);
         if(argc==2&&std::string(argv[1])=="--aliases-only") {
@@ -279,7 +310,12 @@ int main(int argc,char** argv) {
         }
         check_sessions(original);
         require(original==saved,"original record never mutated");
-        levels.weight=4; VehicleSpec untouched=stock_240sx_vehicle_spec();
+        for(const auto member:{&VehicleUpgradeLevels::aero_a,&VehicleUpgradeLevels::aero_b}) {
+            levels={};levels.*member=4;VehicleSpec refused=stock_240sx_vehicle_spec();
+            require(!make_race_vehicle_spec(original.data(),original.size(),levels,refused,error),
+                    "invalid visual aero levels still refused by runtime setup");
+        }
+        levels={};levels.weight=4; VehicleSpec untouched=stock_240sx_vehicle_spec();
         require(!make_race_vehicle_spec(original.data(),original.size(),levels,untouched,error),"invalid API levels refused");
         require(compare_vehicle_handling(untouched.handling,stock_240sx_handling())==kVehicleRecordSize,"failed setup leaves output untouched");
         if (argc==2) check_retail(argument_path(argv[1]));

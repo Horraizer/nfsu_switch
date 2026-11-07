@@ -1,4 +1,5 @@
 #include "nfsu/chase_camera.h"
+#include "nfsu/player_powertrain.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -172,7 +173,7 @@ bool check_rules(const ChaseCameraRules& rules, std::string& error) {
 }
 
 bool check_approximations(const ChaseCameraApproximations& a, std::string& error) {
-    if (a.fov_mode != ChaseFovMode::horizontal && a.fov_mode != ChaseFovMode::vertical_4_3) {
+    if (a.fov_mode != ChaseFovMode::retail && a.fov_mode != ChaseFovMode::horizontal && a.fov_mode != ChaseFovMode::vertical_4_3) {
         error = "fov_mode is not a known mode";
         return false;
     }
@@ -433,14 +434,17 @@ double ChaseCameraOpenWorld::clear_fraction(const VehicleVec3&, const VehicleVec
     return 1.0;
 }
 
-ChaseCameraSubject chase_subject(const VehicleState& state, const VehicleSpec& spec) noexcept {
+ChaseCameraSubject chase_subject(const VehicleState& state, const VehicleSpec& spec,
+                                 const VehicleVec3& acceleration) noexcept {
     const VehicleVec3 com{static_cast<double>(spec.handling.centre_of_mass[0]),
                           static_cast<double>(spec.handling.centre_of_mass[1]),
                           static_cast<double>(spec.handling.centre_of_mass[2])};
     ChaseCameraSubject subject;
     subject.origin = sub(state.position, rotate(state.orientation, com));
     subject.forward = rotate(state.orientation, VehicleVec3{1.0, 0.0, 0.0});
+    subject.body_up = rotate(state.orientation, VehicleVec3{0.0, 0.0, 1.0});
     subject.velocity = state.velocity;
+    subject.acceleration = acceleration;
     return subject;
 }
 
@@ -531,14 +535,14 @@ ChaseCamera::ChaseCamera(const ChaseCameraTable& table,
         return;
     }
     bool found = false;
-    for (const int pov : kChasePovs) {
+    for (const int pov : std::array<int,4>{{0,1,2,4}}) {
         ChaseCameraAnchor anchor;
         if (!find_chase_anchor(table_, false, pov, anchor)) {
             continue;
         }
         if (!finite(static_cast<double>(anchor.along)) ||
             !finite(static_cast<double>(anchor.height)) ||
-            !finite(static_cast<double>(anchor.across)) || !(anchor.along < 0.0F)) {
+            !finite(static_cast<double>(anchor.across)) || (chase_pov(pov) && !(anchor.along < 0.0F))) {
             error_ = "the anchor of POV " + std::to_string(pov) + " is not a chase anchor";
             return;
         }
@@ -556,28 +560,21 @@ ChaseCamera::ChaseCamera(const ChaseCameraTable& table,
 
 bool ChaseCamera::set_pov(int pov) noexcept {
     ChaseCameraAnchor anchor;
-    if (!valid_ || !chase_pov(pov) || !find_chase_anchor(table_, false, pov, anchor)) {
+    if (!valid_ || !(chase_pov(pov) || pov == 2) || !find_chase_anchor(table_, false, pov, anchor)) {
         return false;
     }
     pov_ = pov;
     return true;
 }
 
-void ChaseCamera::next_pov() noexcept {
-    if (!valid_) {
-        return;
-    }
-    std::size_t current = 0;
-    for (std::size_t i = 0; i < kChasePovs.size(); ++i) {
-        if (kChasePovs[i] == pov_) {
-            current = i;
-        }
-    }
-    for (std::size_t step = 1; step <= kChasePovs.size(); ++step) {
-        if (set_pov(kChasePovs[(current + step) % kChasePovs.size()])) {
-            return;
-        }
-    }
+void ChaseCamera::next_pov(bool drift) noexcept {
+    if (!valid_) return;
+    const auto* povs=drift?kDriftChasePovs.data():kChasePovs.data();
+    const auto count=drift?kDriftChasePovs.size():kChasePovs.size();
+    std::size_t current=count-1;
+    for(std::size_t i=0;i<count;++i)if(povs[i]==pov_)current=i;
+    for(std::size_t step=1;step<=count;++step)
+        if(set_pov(povs[(current+step)%count]))return;
 }
 
 bool ChaseCamera::reset(const ChaseCameraSubject& subject,
@@ -604,13 +601,51 @@ bool ChaseCamera::place(const ChaseCameraSubject& subject,
                         ChaseCameraView& view,
                         bool look_back) {
     if (!valid_ || !finite(subject.origin) || !finite(subject.forward) ||
-        !finite(subject.velocity)) {
+        !finite(subject.velocity) || !finite(subject.acceleration) || !finite(subject.body_up)) {
         return false;
     }
     ChaseCameraAnchor anchor;
     if (!find_chase_anchor(table_, false, pov_, anchor)) {
         return false;
     }
+    if (pov_ == 2) {
+        // 489E5E/48A460: fixed POVs use the complete body frame, with no
+        // chase-heading spring. The model's x/left/z axes match the anchors.
+        VehicleVec3 forward=subject.forward, up=subject.body_up;
+        const double f=vehicle_sqrt(dot(forward,forward));
+        if (!(f>0)) return false;
+        forward=scale(forward,1/f);
+        VehicleVec3 left=cross(up,forward);
+        const double l=vehicle_sqrt(dot(left,left));
+        if (!(l>0)) return false;
+        left=scale(left,1/l);up=cross(forward,left);
+        const double p=chase_angle_radians(anchor.pitch);
+        const double cp=vehicle_cos(p),sp=vehicle_sin(p);
+        view={};view.pov=pov_;view.pivot=subject.origin;
+        view.eye=add(add(add(subject.origin,scale(forward,anchor.along)),
+            scale(up,anchor.height)),scale(left,anchor.across));
+        if (look_back) {forward=scale(forward,-1);left=scale(left,-1);}
+        view.forward=sub(scale(forward,cp),scale(up,sp));
+        view.up=add(scale(forward,sp),scale(up,cp));
+        view.heading=chase_angle(view.forward.x,view.forward.y);
+        view.target=view.heading;view.pitch=anchor.pitch;
+        view.fov=rules_.fov[2];view.near_plane=approx_.near_plane;
+        view.far_plane=approx_.far_plane;view.reach=1;
+        started_=true;target_=chase_target_heading(rules_,subject);lag_=0;reach_=1;
+        surge_.reset();
+        return true;
+    }
+    if(snap)surge_.reset();
+    else {
+        const auto speeds=player_publish_owner_speeds(subject.velocity,subject.forward);
+        const float ax=float(subject.acceleration.x),ay=float(subject.acceleration.y),az=float(subject.acceleration.z);
+        const float local=(az*float(subject.forward.z)+ay*float(subject.forward.y))+ax*float(subject.forward.x);
+        surge_.update(local,speeds.forward,player_owner_slip_angle(subject.velocity,subject.forward),float(dt));
+    }
+    //489ED2..489F34 builds the inverse-view arm as surge - anchor.along;
+    //48A826's inverse turns it back into anchor.along - surge in world space.
+    anchor.along-=surge_.offset();
+    if(surge_.offset()<0.F)anchor.height+=surge_.offset()*.2F;
     const std::uint16_t target = chase_target_heading(rules_, subject);
     std::int16_t lag = 0;
     if (!snap) {

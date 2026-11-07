@@ -9,6 +9,25 @@ silent so automated runs need no sound device.
 
 ## Signal flow and limits
 
+The owner-directed engine update of2026-10-12 supersedes the engine row and
+four-band approximation described below. See
+[engine/exhaust checkpoint](checkpoints/root-engine-audio-20261012.md).
+Both live adapters now pass the selected car and engine upgrade. The service
+loads that car's engine/exhaust banks and CarTypeInfo sound gains, and evaluates
+their original straight-line graph with portable callbacks. Eight voices replace
+the former four: engine0..3 and exhaust12..15, with other cue slots unchanged.
+Engine and exhaust have dedicated mixer slots. Authored release tails are retained. Legacy
+engine_layer_weights remains only for diagnostic before/after playback.
+The copied snapshot now passes published gearbox drive load, physical RPM,
+maximum RPM, brakes, gear and native race stage to EngineEnvelope. Its latch,
+rolling mean, audible RPM/load shift states and selected balance/accent feed
+the two ABK graphs. The original player divisor is160; the drive-load input
+retains gearbox+70 publication units, not crankshaft Nm. See
+[engine envelope restoration](ENGINE_ENVELOPE.md) and nfsu_race_audio_tests.
+Camera-dependent category/spatial gains, countdown scripted revving and rival
+engines remain open. A fixed six-dB engine/exhaust bus headroom is port mastering
+policy, separate from the recovered bank controls and selected gain pair.
+
 After each 60 Hz race tick, `race_audio_snapshot()` copies engine RPM,
 throttle, horizontal speed, maximum wheel slip, copied per-contact observations from both substeps,
 the latest physics step, countdown, completed laps, and race finish state from
@@ -17,7 +36,7 @@ uses the separately copied physics step because countdown advances only the
 race clock. An unchanged physics clock holds collision graph controls.
 The audio service has no mutable reference to
 the session. The simulator never reads from the audio service. The output
-thread mixes eleven fixed clip slots and one streamed stereo signal into
+thread mixes bounded clip voices and one streamed stereo signal into
 48 kHz signed 16-bit PCM. Clip phase and gain use Q32 and Q15 integers;
 voices are summed in slot order with 64-bit accumulators. The race enables a stereo-linked peak limiter
 before the final PCM16 clamp; raw overload and limited-frame counters remain
@@ -47,7 +66,7 @@ and output buffers. Pausing silences output and holds the stream in the bounded
 ring. Finishing fades music and engine and leaves the finish cue audible.
 No third-party audio library is used.
 
-## Retail lookup evidence and current cue choices
+## Historical lookup evidence and provisional cue choices
 
 All virtual addresses below refer to the examined PC `speed.exe` with
 SHA-256 `C0FAD450912952F53809A54690D235AA8B4E25B9F46650693C7CBEE1B4C074B7`.
@@ -90,6 +109,10 @@ The service therefore uses the following explicit approximations:
 | Go | `Sound/FE/FE_MB.abk` sample 26 plays at the go transition. | Exact retail event to sample mapping. |
 | Lap | `Sound/FE/FE_MB.abk` sample 29 plays when completed laps increase. | Exact retail event to sample mapping. |
 | Finish | `Sound/FE/FE_MB.abk` sample 30 plays once at finish. It takes precedence over the final lap cue. | Exact retail event to sample mapping. |
+
+The table above records the early provisional service, not the current
+implementation. In particular, the provisional lap/finish samples are unbound;
+see [later feedback corrections](GARAGE_FEEDBACK.md).
 
 The named WAV candidates in `AUDIO_FORMATS.md` were heard by the owner and
 accepted as free of audible corruption. The four interface sample choices

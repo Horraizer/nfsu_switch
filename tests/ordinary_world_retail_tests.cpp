@@ -52,7 +52,7 @@ int main(int argc,char** argv) {
         RaceRun run;need(run.set_event(8,error)&&run.start(root,gpu.track(),error),error);
         RaceRouteDriver driver(RaceDrivingLine::event8_forward);
         std::set<std::string> appeared;bool car=false,sky=false,reflected=false,original_color=false;
-        for(unsigned tick=0;tick<=4000;++tick) {
+        for(unsigned tick=0;tick<=6000;++tick) {
             if(tick%30==0) {
                 RaceGpuFrame frame;need(gpu.frame(run.session(),frame,error),error);
                 need(validate_draw_update(frame.commands.resource_table(),frame.commands,kTrackSliceDrawLimit,error),error);
@@ -87,7 +87,7 @@ int main(int argc,char** argv) {
                     reflected=true;need(frame.commands.reflection_draw(i).material.fallback[3]!=6,"reflected material changed");
                 }
             }
-            if(tick<4000)need(run.simulate(driver.sample(run.session()),error)&&run.commit(error),error);
+            if(tick<6000)need(run.simulate(driver.sample(run.session()),error)&&run.commit(error),error);
         }
         need(appeared.size()==3 && car && sky && reflected && original_color,"actual candidate/car/sky/reflection/non-gray coverage missing");
         std::cout<<"PASS: ordinary event8 emissions, baked source colors and unaffected car/sky/reflected controls; reflected="<<reflected

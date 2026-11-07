@@ -438,7 +438,7 @@ bool render_track_draw_list(
             if (observe) observe(ReferenceDraw{group, draw.mesh, scene.instances.size(),
                 draw.texture, draw.first_index, draw.index_count, true, false, true,
                 CullMode::none, material.blend, material.alpha_test, material.alpha_ref,
-                false, true});
+                false, true, material.linear_filter});
             for (std::size_t n = draw.first_index/3; n < (draw.first_index+draw.index_count)/3; ++n) {
                 const auto& t = mesh.triangles[n];
                 const std::uint16_t indices[] = {t.a,t.b,t.c};
@@ -560,6 +560,7 @@ bool render_track_draw_list(
             options.material_state == MaterialStateMode::retail &&
             ((!options.reflection_pass && track_vertex_format(mesh.vertex_format_flags).mask == 0) ||
              raster.wet_world || raster.reflected_world);
+        if(raster.ordinary_world && raster.texture->mip_count>1)raster.linear_filter=true;
         if(raster.ordinary_world && !options.reflection_pass)raster.headlight=options.headlight;
 
         // Opaque depth rejects hidden sky pixels. Translucency must see
@@ -571,13 +572,15 @@ bool render_track_draw_list(
             sky_drawn = true;
         }
 
+        const auto uv_offset=raster.texture && options.material_state==MaterialStateMode::retail ?
+            texture_uv_offset(raster.texture->uv_animation,options.world_ticks) : std::array<float,2>{};
         const std::uint64_t first = draw.first_index;
         const std::uint64_t count = draw.index_count;
         if (observe && count != 0) {
             observe(ReferenceDraw{entry.draw, draw.mesh, entry.instance,
                 raster.texture ? draw.texture : kNoHandle,
                 draw.first_index, draw.index_count, true, raster.depth_write, true,
-                options.cull, raster.blend, raster.alpha_test, raster.alpha_ref});
+                options.cull, raster.blend, raster.alpha_test, raster.alpha_ref, false, false, raster.linear_filter});
         }
         if ((first + count) / 3 > first / 3) {
             ++track_stats.entries_drawn;
@@ -611,8 +614,8 @@ bool render_track_draw_list(
                 const TrackVertex& source = mesh.vertices[indices[k]];
                 world[k] = track_placed_vertex(source, placement);
                 clip[k] = project_point(camera, world[k]);
-                clip[k].u = source.u;
-                clip[k].v = source.v;
+                clip[k].u = source.u+uv_offset[0];
+                clip[k].v = source.v+uv_offset[1];
                 clip[k].r = source.color[0];
                 clip[k].g = source.color[1];
                 clip[k].b = source.color[2];

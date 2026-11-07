@@ -57,11 +57,13 @@ IntroOutcome control_outcome(IntroControl c) {
     return c==IntroControl::quit?IntroOutcome::quit:IntroOutcome::skipped;
 }
 }
-IntroResult play_original_intro(const std::string& root,const IntroPoll& poll,const IntroPresent& present) {
+static IntroResult play_sequence(const std::string& root,const char* const* names,std::size_t count,
+                                 const IntroPoll& poll,const IntroPresent& present) {
     IntroResult result;
     if(!poll||!present) {result.outcome=IntroOutcome::error;result.error="intro callbacks missing";return result;}
     try {
-        for(const auto* name:sequence) {
+        for(std::size_t index=0;index<count;++index) {
+            const auto* name=names[index];
             const auto initial=poll(); if(initial!=IntroControl::continue_playback) {result.outcome=control_outcome(initial);return result;}
             MovieReader movie(root+"/Movies/"+name);
             MovieFrame frame;
@@ -108,5 +110,30 @@ IntroResult play_original_intro(const std::string& root,const IntroPoll& poll,co
         }
     } catch(const std::exception& e) {result.outcome=IntroOutcome::error;result.error=e.what();}
     return result;
+}
+IntroResult play_career_movie(const std::string& root,const std::string& name,
+                              const IntroPoll& poll,const IntroPresent& present) {
+    if(name.size()<5 || name.size()>32 || name.substr(name.size()-4)!=".mad" ||
+       name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.")!=std::string::npos ||
+       name.find("..")!=std::string::npos) {
+        IntroResult result;result.outcome=IntroOutcome::error;result.error="invalid career movie basename";return result;
+    }
+    const char* names[]={name.c_str()};return play_sequence(root,names,1,poll,present);
+}
+IntroResult play_original_intro(const std::string& root,const IntroPoll& poll,const IntroPresent& present) {
+    return play_sequence(root,sequence,std::size(sequence),poll,present);
+}
+IntroResult play_underground_prologue(const std::string& root,const IntroPoll& poll,const IntroPresent& present) {
+    // Original MU_UG_NewCareerFMV replaces the authored placeholder "carsel"
+    // with this event0 string. It is separate from the boot e3_title movie.
+    constexpr const char* movie[]={"01_DAY.mad"};
+    return play_sequence(root,movie,1,poll,present);
+}
+IntroResult play_underground_epilogue(const std::string& root,const IntroPoll& poll,const IntroPresent& present) {
+    // UG0 victory bypasses PostRaceResults/StyleAnimator (49E14D/49E0C9),
+    // then selects MU_UG_NewCareerExtroFMV (4AB78B..4AB7AE). Its constructor
+    // formats event0+0xC4 with %s_S for the fresh-career branch (4E880A).
+    constexpr const char* movie[]={"02_FAN_s.mad"};
+    return play_sequence(root,movie,1,poll,present);
 }
 } // namespace nfsu

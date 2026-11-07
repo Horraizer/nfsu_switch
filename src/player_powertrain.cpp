@@ -1,11 +1,14 @@
 #include "nfsu/player_powertrain.h"
 #include "nfsu/nitrous.h"
 #include "nfsu/player_angle_data.h"
+#include "nfsu/player_heading_data.h"
+#include <algorithm>
 #include <cstring>
 #include <cmath>
 #include <limits>
 
 namespace nfsu {
+#include "player_surfaces.inc"
 namespace {
 
 float absf(float x) noexcept { return x < 0.0F ? -x : x; }
@@ -56,13 +59,34 @@ float slip_angle(float longitudinal,float lateral) noexcept {
     return angle;
 }
 
-float differential_share(float numerator, float denominator, bool both_contact) noexcept {
+float differential_share(float numerator, float denominator, bool both_contact,int owner_mode) noexcept {
+    const float edge = both_contact ? 0.35F : 0.5F; // 700044
+    if(owner_mode==1)return 1.0F-edge;
+    if(owner_mode==2)return edge;
     if (absf(denominator) <= 1.0e-5F) return 0.5F;
     float share = numerator / denominator;
-    const float edge = both_contact ? 0.35F : 0.5F; // 700044
     if (share < edge) share = 1.0F - 0.35F * 0.5F;
     else if (share > 1.0F - edge) share = 0.35F * 0.5F;
     return share;
+}
+
+float shift_grip_limit(float drive,unsigned category) noexcept {
+    //6F100C, four initialized ride classes in each27-float family.
+    constexpr float limits[3][4]={{.55F,.7F,.85F,1.F},{5.F,4.6F,4.3F,4.F},
+                                  {1.3F,1.35F,1.4F,1.4F}};
+    return limits[drive>.8F?2U:drive>=.2F?1U:0U][category];
+}
+
+float owner_traction_curve(float slip) noexcept {
+    //705E44 ->6FFEBC.454F30 interpolation, including its product order.
+    constexpr float knots[6][2]={{0,1},{5,.8F},{9,.9F},{12.6F,.833F},{17.1F,.72F},{25,.65F}};
+    if(slip<=knots[0][0])return knots[0][1];
+    if(slip>=knots[5][0])return knots[5][1];
+    for(unsigned i=0;i<5;++i)if(slip<knots[i+1][0]) {
+        const float t=(slip-knots[i][0])/(knots[i+1][0]-knots[i][0]);
+        return t*knots[i+1][1]+(1.F-t)*knots[i][1];
+    }
+    return knots[5][1];
 }
 
 float wheel_slip(const VehicleHandling& h,const std::array<PlayerWheelWork,4>& w) noexcept {
@@ -143,6 +167,34 @@ PlayerRigidVector player_strut_attachment(const VehicleHandling& h,
     return point;
 }
 
+bool player_strut_ground_projection(const std::array<float,4>& p,
+    const PlayerRigidVector& hub,const PlayerRigidVector& up,
+    float bump,float& gap) noexcept {
+    gap=-100.0F;
+    const float alignment=(up[1]*p[1]+up[2]*p[2])+up[0]*p[0];
+    if(!std::isfinite(alignment)) {gap=alignment;return false;}
+    if(alignment<.001F||p[2]==0.0F)return false;
+    const float height=-((p[1]*hub[1]+p[0]*hub[0]-p[3])/p[2])+bump;
+    gap=((height-hub[2])*p[2])/alignment;
+    return true;
+}
+
+PlayerStrutCompression player_strut_compression(const VehicleAxleStrut& h,
+    float raw,float previous,float cached_rate,float interval) noexcept {
+    PlayerStrutCompression out;out.rate=cached_rate;
+    if(raw>h.bump_limit) {
+        out.compression=h.bump_limit;out.contact=true;
+        const float excess=raw-h.bump_limit;
+        out.overflow=excess>0.15000000596046448F?0.15000000596046448F:excess;
+    } else if(raw<h.droop_limit) {
+        out.compression=h.droop_limit;
+    } else {
+        out.compression=raw;out.contact=true;
+    }
+    if(interval>.0001F)out.rate=(out.compression-previous)/interval;
+    return out;
+}
+
 float player_strut_nominal_force(const VehicleAxleStrut& h,
                                  float x, float rate, float partner,
                                  float preload, float overflow,
@@ -170,6 +222,12 @@ std::uint16_t player_velocity_angle(float longitudinal,float lateral) noexcept {
     if (longitudinal<0.0F) angle=static_cast<std::uint16_t>(0x8000U-angle);
     if (lateral<0.0F) angle=static_cast<std::uint16_t>(0U-angle);
     return angle;
+}
+
+std::int16_t player_unit_asin(float value)noexcept {
+    if(!std::isfinite(value))return 0;
+    const auto angle=asin_angle(value<0.F?-value:value);
+    return static_cast<std::int16_t>(value<0.F?-int(angle):int(angle));
 }
 
 float player_angle_sin(std::uint16_t angle) noexcept {
@@ -213,6 +271,141 @@ PlayerOwnerSpeeds player_publish_owner_speeds(const VehicleVec3& velocity,
     result.magnitude=sqrtf((x*x+z*z)+y*y);
     result.forward=(z*fz+y*fy)+x*fx;
     return result;
+}
+
+//478AA0 first truncates each orientation component times65536, then
+//564FA0 uses integer division and564F00 table interpolation. The velocity
+//angle deliberately remains564DB0; replacing both with one atan changes a word.
+std::uint16_t player_owner_heading(const VehicleVec3& forward) noexcept {
+    const auto component=[](double v) {
+        const float scaled=float(v)*65536.F;
+        if(!(scaled>=-2147483648.F&&scaled<2147483648.F))return std::int32_t(0);
+        return static_cast<std::int32_t>(scaled);
+    };
+    const auto sx=component(forward.x),sy=component(forward.y);
+    const std::int64_t x=sx<0?-std::int64_t(sx):sx,y=sy<0?-std::int64_t(sy):sy;
+    unsigned quadrant=(sx<0?1U:0U)^(sy<0?3U:0U);std::uint32_t angle=0x4000;
+    if(x>(y>>14)) {
+        const auto ratio=static_cast<std::uint32_t>(((2147483647LL/x)*y)>>16)<<1;
+        std::uint32_t lo=0,hi=0,weight=0;
+        if(ratio<0x40000) {
+            const auto index=ratio>>11;lo=kPlayerHeadingFine[index];hi=kPlayerHeadingFine[index+1];weight=(ratio&0x7ff)<<5;
+        } else if(ratio<0x200000) {
+            const auto index=ratio>>14;lo=kPlayerHeadingCoarse[index];hi=kPlayerHeadingCoarse[index+1];weight=(ratio&0x3fff)<<2;
+        } else if(ratio<0x1000000) {lo=0x3eba;hi=0x3fd7;weight=ratio>>8;}
+        else lo=hi=0x3fff;
+        angle=lo+(((hi-lo)*weight)>>16);
+    }
+    if(quadrant==1)angle=0x8000-angle;
+    else if(quadrant==2)angle-=0x8000;
+    else if(quadrant==3)angle=0-angle;
+    return static_cast<std::uint16_t>(angle);
+}
+
+float player_owner_slip_angle(const VehicleVec3& velocity,const VehicleVec3& forward) noexcept {
+    return player_owner_slip_angle(velocity,player_owner_heading(forward));
+}
+
+float player_owner_slip_angle(const VehicleVec3& velocity,std::uint16_t heading) noexcept {
+    const auto travel=player_velocity_angle(float(velocity.x),float(velocity.y));
+    float angle=float(static_cast<std::uint16_t>(heading-travel))*9.58738019107841e-5F;
+    if(angle>3.141590118408203F)angle-=6.283180236816406F;
+    return angle;
+}
+
+void player_publish_owner_motion(PlayerOwnerMotion& owner,const PlayerRigidVector& velocity,
+                                const PlayerRigidVector& angular,const PlayerRigidMatrix& axes) noexcept {
+    owner.velocity=velocity;owner.angular_velocity=angular;owner.axes=axes;
+    owner.heading=player_owner_heading({axes[0][0],axes[0][1],axes[0][2]});
+}
+
+void player_publish_owner_acceleration(PlayerOwnerMotion& owner,const VehicleVec3& before,
+                                      const VehicleVec3& after,float world_dt) noexcept {
+    if(!(world_dt>0.F))return;
+    const float inverse=1.F/world_dt;
+    owner.acceleration={{(float(after.x)-float(before.x))*inverse,
+                         (float(after.y)-float(before.y))*inverse,
+                         (float(after.z)-float(before.z))*inverse}};
+}
+
+void player_drag_body_torque(PlayerRigidBodyState& body,const PlayerOwnerMotion& owner,
+                            unsigned support,unsigned state,bool nitrous) noexcept {
+    if(support<4||state!=0)return;
+    const auto& v=owner.velocity;
+    if(!(absf(player_owner_slip_angle({v[0],v[1],v[2]},owner.heading)*57.2957763671875F)<5.F))return;
+    const auto& a=owner.acceleration;const auto& forward=owner.axes[0];
+    float factor=((a[0]*forward[0]+a[1]*forward[1])+a[2]*forward[2])*1.5F;
+    const float upper=nitrous?7.F:4.F;
+    if(factor>upper)factor=upper;
+    if(factor< -3.F)factor=-3.F;
+    factor=-factor;
+    for(unsigned k=0;k<3;++k)body.torque[k]+=owner.axes[1][k]*factor;
+}
+
+float player_drag_nitrous_grip(bool drag,bool active,std::uint32_t clock,float activation) noexcept {
+    if(!drag||!active)return 1.F;
+    std::int32_t signed_clock;std::memcpy(&signed_clock,&clock,4);
+    const float seconds=float(signed_clock)*.00025F;
+    return seconds<=activation+.5F?.6F:1.F;
+}
+
+float player_shift_grip_scale(float quality,float drive,unsigned category) noexcept {
+    if(!(quality>0.F)||category>3)return 1.F;
+    const float reciprocal=1.F/shift_grip_limit(drive,category);
+    const float ratio=reciprocal*quality;
+    return 1.F+(ratio>1.F?1.F:ratio);
+}
+
+float player_owner_base_grip(float scale,unsigned mode,bool assisted) noexcept {
+    return mode==0&&!assisted?.85F*scale:scale;
+}
+
+std::array<float,4> player_owner_traction_update(PlayerOwnerTraction& p,float drive,
+    unsigned category,bool eligible,bool racing,float speed,float angle,float dt,
+    const std::array<float,4>& load,const std::array<float,4>& slip) noexcept {
+    std::array<float,4> factor{{1,1,1,1}};
+    if(!eligible||!(speed>0.F)||category>3)return factor;
+    if(p.mode==0) {
+        if(racing&&speed*2.237F<15.F) {
+            float largest=0;unsigned index=0;
+            for(unsigned i=0;i<4;++i) {
+                const float weighted=(load[i]*(1.F/3.F))*slip[i];
+                const float value=weighted<=slip[i]?weighted:slip[i];
+                if(largest<value){largest=value;index=i;}
+            }
+            if(largest>.5F) {
+                const float value=owner_traction_curve(largest);
+                p.scale=(1.F/shift_grip_limit(drive,category))*value;
+                p.mode=static_cast<int>((1.5F-value)*6.F+static_cast<float>(index&1));
+                p.timer=.5F;p.quiet=0;
+            }
+        }
+    } else if((speed>=1.F?absf(angle):0.F)>.3F) {
+        p.mode=0;
+    } else if(std::any_of(slip.begin(),slip.end(),[](float value){return value>=2.5F;})) {
+        p.quiet=0;p.timer-=dt;
+        if(p.timer<0.F){--p.mode;p.timer=.5F;}
+    } else {
+        p.quiet+=dt;if(p.quiet>1.F)p.mode=0;
+    }
+    if(p.mode!=0) {
+        if(p.mode%2==1){factor[0]=p.scale;factor[3]=p.scale;}
+        if(p.mode%2==0){factor[1]=p.scale;factor[2]=p.scale;}
+    }
+    return factor;
+}
+
+float player_rear_grip(const VehicleHandling& h,float tilt,float slip,
+                      float speed,float parking) noexcept {
+    const float base=absf(tilt)+1.F;
+    const float angle=absf(slip);
+    //477431: handbrake plus a small slip angle bypasses the extra term.
+    if(parking>.5F && angle<20.F*.01745329238474369F)return base;
+    const float speed_scale=(speed/30.F);
+    const float gain=h.rear_grip_base+h.rear_grip_slip;
+    float extra=(speed_scale*angle)*gain;
+    if(extra>.3499999940395355F)extra=.3499999940395355F;
+    return base+extra;
 }
 
 VehicleVec3 player_hub_velocity(const std::array<VehicleVec3,3>& axes,
@@ -313,6 +506,30 @@ float player_wheel_contact_load(const PlayerRigidVector& y,
     return factor*nominal;
 }
 
+void player_front_drive_torque(const VehicleHandling& h,PlayerRigidBodyState& body,
+                               const std::array<PlayerWheelWork,4>& w,
+                               unsigned published_support,bool assisted) noexcept {
+    if(assisted||h.rear_drive_fraction>=.2F||published_support!=4)return;
+    const auto& v=body.velocity;
+    if(!(sqrtf((v[0]*v[0]+v[1]*v[1])+v[2]*v[2])<44.7F))return;
+    //587DE0 retains only each front wheel's local longitudinal component.
+    const float x0=w[0].force_long*w[0].heading_x+w[0].side_x*w[0].force_lat;
+    const float x1=w[1].force_long*w[1].heading_x+w[1].side_x*w[1].force_lat;
+    if(!(x0>0.F&&x1>0.F))return;
+    const PlayerRigidVector lever{{0,0,-h.centre_of_mass[2]}};
+    std::array<PlayerRigidVector,2> moment{};
+    for(unsigned i=0;i<2;++i) {
+        const float x=i?x1:x0;PlayerRigidVector world{};
+        for(unsigned k=0;k<3;++k)world[k]=
+            (0.F*body.axes[2][k]+0.F*body.axes[1][k])+x*body.axes[0][k];
+        //567540 computes EDX cross ECX in this exact product order.
+        moment[i]={{world[2]*lever[1]-world[1]*lever[2],
+                    world[0]*lever[2]-world[2]*lever[0],
+                    world[1]*lever[0]-lever[1]*world[0]}};
+    }
+    for(unsigned k=0;k<3;++k)body.torque[k]+=(moment[0][k]+moment[1][k])* -1.75F;
+}
+
 PlayerRigidVector player_low_support_apply(const VehicleHandling& h,
                                            PlayerRigidBodyState& body,
                                            unsigned support,unsigned state) noexcept {
@@ -409,6 +626,47 @@ void player_rigid_body_add_contact_force(PlayerRigidBodyState& body,
     for(unsigned k=0;k<3;++k)body.torque[k]+=moment[k];
 }
 
+float player_strut_bump_impulse(const VehicleHandling& h,PlayerRigidBodyState& body,
+    const PlayerRigidVector& hub,const PlayerRigidVector& normal) noexcept {
+    PlayerRigidVector arm{},velocity{};
+    for(unsigned k=0;k<3;++k)
+        arm[k]=(hub[2]*body.axes[2][k]+hub[1]*body.axes[1][k])+hub[0]*body.axes[0][k];
+    for(unsigned k=0;k<3;++k) {
+        const unsigned a=(k+1)%3,b=(k+2)%3;
+        velocity[k]=(arm[b]*body.angular_velocity[a]-arm[a]*body.angular_velocity[b])+body.velocity[k];
+    }
+    const float inward=-((normal[2]*velocity[2]+normal[1]*velocity[1])+normal[0]*velocity[0]);
+    if(inward<0.F)return 0.F;
+    const float scalar=(.2F*inward)*h.mass; //6F073C, rigid144 mass;148 is inverse
+    PlayerRigidVector impulse{};
+    for(unsigned k=0;k<3;++k)impulse[k]=normal[k]*scalar;
+    const auto magnitude=[](const PlayerRigidVector& v) {
+        return sqrtf((v[0]*v[0]+v[2]*v[2])+v[1]*v[1]);
+    };
+    const float length=magnitude(impulse);
+    if(length>1000.F)for(float& v:impulse)v*=1000.F/length;
+    //584E30 takes arm cross impulse, with its distinct magnitude sum order.
+    auto torque=rigid_cross(arm,impulse);
+    const float torque_length=magnitude(torque);
+    if(torque_length>10.F)for(float& v:torque)v*=10.F/torque_length;
+    for(unsigned k=0;k<3;++k) {
+        body.momentum[k]+=impulse[k];body.angular_momentum[k]+=torque[k];
+    }
+    return scalar;
+}
+
+PlayerRigidMatrix player_body_inverse_tensor(const VehicleHandling& h,
+    const PlayerRigidMatrix& axes,bool alternate) noexcept {
+    const float yaw=alternate?h.inertia[2]*h.alternate_yaw_scale:h.inertia[2];
+    const float inverse_determinant=1.0F/((h.inertia[1]*yaw)*h.inertia[0]);
+    PlayerRigidMatrix inverse{},transpose{};
+    inverse[0][0]=(h.inertia[1]*yaw)*inverse_determinant;
+    inverse[1][1]=(h.inertia[0]*yaw)*inverse_determinant;
+    inverse[2][2]=(h.inertia[0]*h.inertia[1])*inverse_determinant;
+    for(unsigned c=0;c<3;++c)for(unsigned r=0;r<3;++r)transpose[c][r]=axes[r][c];
+    return rigid_product(rigid_product(axes,inverse),transpose);
+}
+
 void player_rigid_body_refresh(const VehicleHandling& h,PlayerRigidBodyState& body) noexcept {
     const float inverse_mass=1.0F/h.mass;
     for(unsigned k=0;k<3;++k)body.velocity[k]=body.momentum[k]*inverse_mass;
@@ -419,14 +677,7 @@ void player_rigid_body_refresh(const VehicleHandling& h,PlayerRigidBodyState& bo
             body.momentum[k]*=factor;body.velocity[k]=body.momentum[k]*inverse_mass;
         }
     }
-    const float yaw=body.alternate_yaw?h.inertia[2]*h.alternate_yaw_scale:h.inertia[2];
-    const float inverse_determinant=1.0F/((h.inertia[1]*yaw)*h.inertia[0]);
-    PlayerRigidMatrix inverse{},transpose{};
-    inverse[0][0]=(h.inertia[1]*yaw)*inverse_determinant;
-    inverse[1][1]=(h.inertia[0]*yaw)*inverse_determinant;
-    inverse[2][2]=(h.inertia[0]*h.inertia[1])*inverse_determinant;
-    for(unsigned c=0;c<3;++c)for(unsigned r=0;r<3;++r)transpose[c][r]=body.axes[r][c];
-    const auto world=rigid_product(rigid_product(body.axes,inverse),transpose);
+    const auto world=player_body_inverse_tensor(h,body.axes,body.alternate_yaw);
     for(unsigned k=0;k<3;++k)
         body.angular_velocity[k]=((body.angular_momentum[2]*world[2][k]+
             body.angular_momentum[1]*world[1][k])+body.angular_momentum[0]*world[0][k])+0.0F;
@@ -479,6 +730,12 @@ void player_rigid_body_integrate(const VehicleHandling& h,PlayerRigidBodyState& 
     player_rigid_body_refresh(h,body);
 }
 
+void player_race_body_policy(PlayerRigidBodyState& body,bool racing,float throttle,
+                             unsigned support,float forward_vertical) noexcept {
+    if(racing&&(throttle>0.3F||(support==4&&absf(forward_vertical)>0.15F)))
+        body.linear_damping=false;
+}
+
 void player_rigid_body_normalize(PlayerRigidBodyState& body) noexcept {
     const auto forward=rigid_normalized(body.axes[0]);
     const auto up=rigid_normalized(rigid_cross(forward,body.axes[1]));
@@ -488,16 +745,16 @@ void player_rigid_body_normalize(PlayerRigidBodyState& body) noexcept {
 void player_distribute_torque(const VehicleHandling& h, int gear,
                               PlayerEngineState& engine,
                               std::array<PlayerWheelWork,4>& w,
-                              float transmitted) noexcept {
+                              float transmitted,int owner_mode) noexcept {
     if (gear == kVehicleGearNeutral) return;
     engine.feedback_torque -= transmitted;
     const float geared = transmitted * h.gear_ratios[static_cast<std::size_t>(gear)];
     const float front = ((1.0F - h.rear_drive_fraction) * h.final_drive_rear) * geared;
     const float rear = (geared * h.final_drive_front) * h.rear_drive_fraction;
     const float front_right = differential_share(w[1].spin,w[0].spin+w[1].spin,
-                                                  w[0].contact&&w[1].contact);
+                                                  w[0].contact&&w[1].contact,owner_mode);
     const float rear_left = differential_share(w[2].spin,w[2].spin+w[3].spin,
-                                                w[2].contact&&w[3].contact);
+                                                w[2].contact&&w[3].contact,owner_mode);
     if (!w[0].locked) w[0].torque += (1.0F-front_right)*front;
     if (!w[1].locked) w[1].torque += front_right*front;
     if (!w[2].locked) w[2].torque += rear_left*rear;
@@ -580,18 +837,19 @@ void player_wheel_prepare(const VehicleHandling& h, std::size_t k,
     w.cached_slip = w.slip; //58747D stores the same raw slip into160 and164
     // ABS attenuation587483..5874CF; declared ordinary owner flag0.
     if (w.slip <= -0.5F && w.torque < 0.0F && parking == 0.0F) w.torque *= 0.15F;
+    const float friction=((w.surface.sliding_grip*h.tyres[k/2].sliding_friction)*w.friction_scale)*w.owner_grip;
     const float magnitude=sqrtf(w.velocity_lat*w.velocity_lat+w.slip*w.slip);
     w.sliding=false;
     w.force_long=0.0F; w.force_lat=0.0F;
     if (magnitude != 0.0F && (w.velocity_lat != 0.0F || w.velocity_long != 0.0F)) {
-        const float scale=(1.0F/magnitude)*h.tyres[k/2].sliding_friction;
+        const float scale=(1.0F/magnitude)*friction;
         const float force_scale=scale*w.load;
         const float capacity=(parking+service)*1.2F;
         //58759A..5875C7 supplies the LONGITUDINAL fraction of the
         // velocity magnitude to587220, independently of slip magnitude.
         // Its temporary push shifts stack operands by four bytes.
         const float velocity_magnitude=sqrtf(w.velocity_long*w.velocity_long+w.velocity_lat*w.velocity_lat);
-        const float requested=((1.0F/velocity_magnitude)*h.tyres[k/2].sliding_friction*w.load)*absf(w.velocity_long);
+        const float requested=((1.0F/velocity_magnitude)*friction*w.load)*absf(w.velocity_long);
         const float demand=absf(w.spin)*0.1F+h.wheels[k].radius*requested;
         if (capacity > demand) { w.spin=0.0F; w.locked=capacity>1.0F; }
         else w.locked=false;
@@ -604,8 +862,8 @@ void player_wheel_prepare(const VehicleHandling& h, std::size_t k,
             w.force_long=w.slip*force_scale;
             w.force_lat=-(force_scale*w.velocity_lat);
             //587637..58767B uses the separate owner speed, not wheel speed.
-            if (w.owner_speed*2.237F<1.0F&&h.tyres[k/2].sliding_friction>0.1F) {
-                const float normalize=1.0F/h.tyres[k/2].sliding_friction;
+            if (w.owner_speed*2.237F<1.0F&&friction>0.1F) {
+                const float normalize=1.0F/friction;
                 w.force_long*=normalize;w.force_lat*=normalize;
             }
             return;
@@ -620,11 +878,15 @@ void player_wheel_limit(const VehicleHandling& h, std::size_t k,
     const bool boosted=w.torque>0.0F&&!w.locked;
     if (boosted) w.force_long*=1.5F; // 6F0878
     const float demand=sqrtf(w.force_long*w.force_long+w.force_lat*w.force_lat);
-    const float limit=h.tyres[k/2].static_friction*w.load;
+    const float limit=(((w.surface.static_grip*h.tyres[k/2].static_friction)*w.friction_scale)*w.owner_grip)*w.load;
     if (demand>limit&&demand>0.001F) {
         const float factor=limit/demand;
         w.force_long*=factor; w.force_lat*=factor;
     } else if (boosted) w.force_long/=1.5F;
+    //587948..5879AD publishes normalized friction utilization, not m/s.
+    w.friction_usage=limit>0.001F?std::min(demand/limit,1.F):1.F;
+    if(w.sliding||w.locked)w.friction_usage=1.F;
+    if(!w.contact)w.friction_usage=0.F;
     //587A58..587A87 lateral drag uses the original16-bit angle and sine
     // polynomial after the source radians-to-angle truncation.
     if (absf(w.velocity_long)>1.0F&&w.velocity_lat!=0.0F) {
@@ -641,7 +903,7 @@ float player_wheel_acceleration(const VehicleHandling& h, std::size_t k,
     const float reaction=h.wheels[k].radius*w.force_long;
     const float filtered=((w.torque-reaction)+w.history_torque)*0.5F;
     w.history_torque=filtered;
-    const float surface=(0.002F*1.0F)*w.spin; // surface0 at6EF2FC
+    const float surface=(0.002F*w.surface.rolling_drag)*w.spin; //5871AF:6EF2FC
     const float rolling_torque=(rolling*0.1F)*w.spin;
     float rate=((filtered-surface)-rolling_torque)/kPlayerWheelInertia;
     if (w.locked) rate=0.0F;
@@ -672,24 +934,44 @@ void player_engine_feedback_finalize(const VehicleHandling& h,int gear,
             engine.feedback_torque+=correction;
         }
     }
-    // Stock rear descriptor6F1098+60 is0; the subsequent curve feedback
-    // term multiplied by gearbox+E4 is therefore zero in this common path.
+    const float combined=engine.feedback_torque+crank;
+    if(engine.feedback_torque<crank&&combined<0&&gearbox.feedback_scale!=0) {
+        //705EA0/700048: preserve454F30's interpolation/store order.
+        static constexpr float x[]{-10.F,-7.5F,-3.5F,-.3F,-.05F};
+        static constexpr float y[]{1.F,.96F,.925F,.875F,0.F};
+        float factor=y[0];
+        if(combined>=x[4])factor=y[4];
+        else if(combined>x[0])for(unsigned i=0;i<4;++i)if(combined<x[i+1]) {
+            const float u=(combined-x[i])/(x[i+1]-x[i]);
+            factor=u*y[i+1]+(1.F-u)*y[i];break;
+        }
+        engine.feedback_torque+=(factor*gearbox.feedback_scale)*combined;
+    }
 }
 
-void player_gear_integrate(const VehicleHandling& h,PlayerGearState& gearbox,float dt) noexcept {
+void player_gear_integrate(const VehicleHandling& h,PlayerGearState& gearbox,float dt,
+                           float request_scale) noexcept {
     static constexpr float rates[4]={-3.0F,0.0F,1.5F,0.0F}; //700034
-    gearbox.clutch+=dt*(h.clutch_rate*rates[gearbox.mode]);
+    float rate=h.clutch_rate*request_scale; //46DFAF..46DFB2, gearboxDC
+    if(gearbox.shift_quality>0.F)rate*=1.F+gearbox.shift_quality;
+    else if(gearbox.shift_quality<0.F&&gearbox.requested_gear>=3)rate*=.35F; //6B7204
+    rate*=rates[gearbox.mode];
+    gearbox.clutch+=dt*rate;
 }
 
 void player_gear_update(const VehicleHandling& h,int& gear,PlayerGearState& box,
                         PlayerEngineState& engine,std::array<PlayerWheelWork,4>& w,
-                        float throttle,float owner_speed_magnitude) noexcept {
+                        float throttle,float owner_speed_magnitude,
+                        const std::array<float,4>* offset_bounds,std::uint32_t* world_random,
+                        bool assisted,bool clutch_override) noexcept {
     box.wheel_engine_speed=wheel_speed(h,gear,w);
     const auto needs_disengage=[&]() {
         return throttle<0.3F && box.wheel_engine_speed<=h.idle_rpm*kPlayerRpmToRadS+0.0001F;
     };
     switch (box.mode) {
     case 3:
+        //46DB60 descriptor+60 ordinary, +64 assisted; +68 below for launch.
+        box.feedback_scale=assisted?-.7F:0.F;
         engine.throttle_multiplier=1.0F;
         if (gear!=kVehicleGearNeutral) {
             if (throttle>0.2F&&wheel_slip(h,w)>0.0F) {
@@ -719,28 +1001,39 @@ void player_gear_update(const VehicleHandling& h,int& gear,PlayerGearState& box,
             }
             if (needs_disengage()) box.mode=0;
         }
-        if (gear!=box.requested_gear) {box.mode=0;box.shift_pending=true;}
+        if (gear!=box.requested_gear) {
+            box.mode=0;box.shift_pending=true;
+            if(gear==kVehicleGearNeutral&&box.requested_gear==kVehicleGearFirst)
+                box.feedback_scale=-.9F; // descriptor+68, not ordinary+60
+        }
+        if(clutch_override)box.mode=1;
         break;
     case 2:
-        engine.throttle_multiplier=0.7F;
+        engine.throttle_multiplier=clutch_override?1.F:.7F;
         if (box.clutch>=1.0F) {
             box.clutch=1.0F;
             if (absf(engine.angular_speed-box.wheel_engine_speed)<50.0F||gear==kVehicleGearNeutral)
                 box.mode=3;
         }
         if (needs_disengage()&&gear!=kVehicleGearNeutral) box.mode=0;
+        if(clutch_override)box.mode=1;
         break;
     case 0:
-        engine.throttle_multiplier=0.0F;
+        engine.throttle_multiplier=clutch_override?1.F:0.F;
         if (box.clutch<=0.0F) {box.clutch=0.0F;box.mode=1;}
+        if(clutch_override)box.mode=1;
         break;
     case 1:
-        engine.throttle_multiplier=0.0F;
+        engine.throttle_multiplier=clutch_override?1.F:0.F;
         gear=box.requested_gear;
         if (box.shift_pending||!needs_disengage()) {
             box.shift_pending=false;
-            box.mode=2;
-            player_gear_randomize(box);
+            if(!clutch_override)box.mode=2;
+            //46D760 draws from the world, not one identical per-car sequence.
+            // Publish only when this real phase consumes its two random draws.
+            if(world_random)box.rng_state=*world_random;
+            player_gear_randomize(box,offset_bounds);
+            if(world_random)*world_random=box.rng_state;
         }
         break;
     }
@@ -752,23 +1045,77 @@ void player_gear_seed(PlayerGearState& box,std::uint32_t seed) noexcept {
     box.up_offset=0.0F;box.down_offset=0.0F;
 }
 
-void player_gear_randomize(PlayerGearState& box) noexcept {
-    box.up_offset=random_unit(box.rng_state)*100.0F-100.0F;
-    box.down_offset=random_unit(box.rng_state)*100.0F-100.0F;
+void player_gear_randomize(PlayerGearState& box,const std::array<float,4>* bounds) noexcept {
+    static constexpr std::array<float,4> initial{{-100.F,0.F,-100.F,0.F}};
+    const auto& b=bounds?*bounds:initial;
+    box.up_offset=random_unit(box.rng_state)*(b[1]-b[0])+b[0]; //46D760
+    box.down_offset=random_unit(box.rng_state)*(b[3]-b[2])+b[2];
 }
 
 void player_engine_cutoff_update(const VehicleHandling& h,int gear,
                                  PlayerEngineState& engine,float seconds) noexcept {
     static constexpr float duration[8]={0.05F,0.04F,0.055F,0.06F,0.07F,0.075F,0.075F,0.075F}; //700004
     if (engine.cutoff_until==0.0F) {
-        if (engine.angular_speed*kPlayerRadSToRpm>=h.max_rpm-50.0F)
+        if (engine.angular_speed*kPlayerRadSToRpm>h.max_rpm-50.0F)
             engine.cutoff_until=seconds+duration[gear];
-    } else if (seconds>=engine.cutoff_until) engine.cutoff_until=0.0F;
+    } else if (seconds>engine.cutoff_until) engine.cutoff_until=0.0F;
 }
 
 void player_engine_reset(PlayerEngineState& engine, float rpm) noexcept {
     engine = {};
     engine.angular_speed = rpm * kPlayerRpmToRadS;
+}
+
+void player_drag_heat_update(const VehicleHandling& h,PlayerEngineState& engine,
+    const PlayerGearState& box,int gear,std::int32_t clock,bool held) noexcept {
+    if(engine.blown)return;
+    const float seconds=float(clock)*0.00025F; //73AD34,6CCA38
+    if(held||(gear==kVehicleGearFirst&&box.shift_quality>0))engine.heat_time=seconds;
+    const float dt=seconds-engine.heat_time;
+    engine.heat_time=seconds;
+    const float rpm=engine.angular_speed*kPlayerRadSToRpm;
+    const float rate=rpm>=h.redline_rpm?0.35F:-0.1F; //6FFFF8,700000; nitro addend is zero
+    if(rate<=0||engine.heat<=1.F)engine.heat+=rate*dt;
+    if(engine.heat<=0)engine.heat=0;
+    if(engine.heat>=0.95F) {
+        if(engine.overheat_since==0)engine.overheat_since=seconds;
+        if(seconds-engine.overheat_since>1.F)engine.blown=true;
+    } else engine.overheat_since=0;
+}
+
+float player_drag_launch_rpm(const VehicleHandling& h) noexcept {
+    const float base=(h.redline_rpm-h.idle_rpm)*h.shift_fraction+h.idle_rpm;
+    const float factor=h.rear_drive_fraction<.001F?1.F:h.rear_drive_fraction>.999F?1.1F:1.2F;
+    return base*factor;
+}
+float player_drag_shift_window(unsigned category,unsigned gear,float scale) noexcept {
+    static constexpr float windows[4][9]={ //6FFF60; RideInfo performance category
+        {0,560,360,175,160,140,140,0,0},{0,600,400,230,220,160,160,0,0},
+        {0,850,550,300,250,200,180,0,0},{0,1100,750,400,325,290,230,0,0}};
+    return category<4&&gear<9?windows[category][gear]*scale:0.F;
+}
+float player_drag_shift_quality(float rpm,float upshift,unsigned category,
+    unsigned gear,float window_scale) noexcept {
+    if(category>=4||gear>=9)return 0;
+    const float difference=upshift-rpm,window=player_drag_shift_window(category,gear,window_scale);
+    if(difference>=0) {
+        const float quality=std::max(0.F,1.F-difference/(0.95F*window));
+        return quality<=0?0.F:quality<0.5F?0.5F:0.85F;
+    }
+    //46EA09 compares the late window against abs(difference); equality misses.
+    return -difference<(1.F-0.95F)*window?1.F:-1.F;
+}
+
+void player_drag_shift_boost(PlayerGearState& box,PlayerEngineState& engine,
+    std::int32_t clock) noexcept {
+    const float seconds=float(clock)*0.00025F;
+    if(box.mode==3&&box.shift_quality>0&&box.shift_boost_since==0)
+        box.shift_boost_since=seconds;
+    if(box.mode!=3||box.shift_boost_since<=0)return;
+    const float elapsed=seconds-box.shift_boost_since;
+    const float bonus=((0.5F-elapsed)/0.5F)*box.shift_quality*2.F;
+    if(bonus>0)engine.throttle_multiplier=1.F+bonus;
+    if(elapsed>=0.5F){box.shift_boost_since=0;box.shift_quality=0;}
 }
 
 bool player_request_shift_tables(const VehicleHandling& h,
@@ -876,10 +1223,11 @@ float player_engine_torque(const VehicleHandling& h,
             context.rpm_scale=descriptor.rpm_scale;
             context.clock=input->nitrous_clock;
             context.activation_seconds=input->nitrous_activation_seconds;
-            // Explicit ordinary port domain: drag and override disabled.
+            context.flag_78a344=input->drag_mode;
             drive=nitrous_engine_torque(drive,engine.angular_speed,nitrous_rate,true,context);
         }
     }
+    if(engine.heat>0.7F)drive*=((1.F-(engine.heat-0.7F)/(1.F-0.7F))/1.1F); //46D0C4
     float brake = -curve(h.engine_brake.data(), 3, h.idle_rpm, h.max_rpm, rpm) *
                   (1.0F - effective);
     if (engine.cutoff_until > 0.0F && gear != kVehicleGearNeutral) brake *= 4.0F; // 6B7210

@@ -81,7 +81,14 @@ int main() {
     // boundary check rejects first_index=1 (the old test masked that guard).
     refuse("first index unaligned", "vertex or index range", [](auto& c) { c.owning_draws()[0].first_index = 1; });
     refuse("index count unaligned", "vertex or index range", [](auto& c) { c.owning_draws()[0].index_count = 2; });
-    refuse("base vertex nonzero", "vertex or index range", [](auto& c) { c.owning_draws()[0].first_vertex = 1; });
+    refuse("base vertex outside buffer", "index references missing vertex", [](auto& c) { c.owning_draws()[0].first_vertex = 1; });
+    boundary=good;
+    boundary.owning_uploads().resources[0].elements=4;
+    boundary.owning_uploads().resources[0].bytes=4*sizeof(MeshVertex);
+    boundary.owning_draws()[0].vertex_count=4;boundary.owning_draws()[0].first_vertex=1;
+    check(validate_recorded_commands(boundary,error),"shared indices address a later pose exactly to buffer end");
+    boundary.owning_draws()[0].first_vertex=0xffffffffU;
+    check(!validate_recorded_commands(boundary,error),"base vertex cannot wrap signed GPU offset");
     boundary = good; boundary.owning_draws()[0].first_index = 3;
     check(validate_recorded_commands(boundary, error), "index range ending exactly at buffer end");
     refuse("swapped buffer kinds", "vertex or index range", [](auto& c) {
@@ -245,6 +252,22 @@ int main() {
             }
         }
     }
+    // A complete32x32 RGBA mip chain occupies14 GOBs, not one128-row
+    // allocation per level. This regression reproduces the campaign estimate
+    // which demanded a larger cap despite the backend using one-GOB tails.
+    UploadResource mip_bound; mip_bound.kind=UploadResourceKind::texture;
+    mip_bound.name="one-GOB chain";mip_bound.bytes=5460;
+    check(check_texture_upload_format(TextureUploadFormat::rgba8,32,32,5460,
+        mip_bound.texture,error,6),"known mip chain shape");
+    std::uint64_t tight=0,loose=0,tight_alignment=0,loose_alignment=0;
+    check(deko_texture_image_bound(mip_bound,tight,tight_alignment,error) &&
+        bounded_image_layout(mip_bound,loose,loose_alignment,error) &&
+        tight==7168 && tight_alignment==loose_alignment && loose>tight,
+        "one-GOB mip bound loses the known layout or retains per-level128-row padding");
+    mip_bound.bytes--;
+    check(!deko_texture_image_bound(mip_bound,tight,tight_alignment,error) && !tight && !tight_alignment,
+        "specialized image bound accepted an invalid chain");
+    error.clear();
     r.texture.row_bytes = 1;
     copy.row_pitch_bytes = 99;
     check(!plan_texture_copy(r, copy, error) && copy.row_pitch_bytes == 0, "copy refusal resets plan");
@@ -271,7 +294,7 @@ int main() {
     execution_refuse("executor width", "1280x720", [](auto& c) { c.width = 1279; });
     execution_refuse("executor height", "1280x720", [](auto& c) { c.height = 721; });
     execution_refuse("4097 draws", "4096", [](auto& c) { c.owning_draws().resize(4097, c.owning_draws()[0]); });
-    execution_refuse("8193 resources", "8192", [](auto& c) { c.owning_uploads().resources.resize(8193, c.owning_uploads().resources[0]); });
+    execution_refuse("16385 resources", "16384", [](auto& c) { c.owning_uploads().resources.resize(kDrawResourceCapacity+1, c.owning_uploads().resources[0]); });
     execution_refuse("2048 uniforms exceed budget", "transient", [](auto& c) { c.owning_draws().resize(2048, c.owning_draws()[0]); });
     auto many = good; many.owning_draws().resize(2047, many.owning_draws()[0]);
     check(plan_draw_execution(many, plan, error) && plan.uniform_bytes == 1048320,
@@ -292,6 +315,9 @@ int main() {
     many = good; many.owning_uploads().resources.resize(8192, many.owning_uploads().resources[0]);
     check(plan_draw_execution(many, plan, error) && plan.descriptor_bytes == 262208,
           "8192 resources fit the track descriptor bound");
+    many = good;many.owning_uploads().resources.resize(kDrawResourceCapacity,many.owning_uploads().resources[0]);
+    check(plan_draw_execution(many,plan,error)&&plan.descriptor_bytes==524352&&plan.sampler_offset==524288,
+          "complete zone backing keeps separate image and sampler descriptor ranges");
     // Two individually valid large textures must not overflow the staging
     // block together. The plan checks sizes without dereferencing payloads.
     many = good; many.owning_uploads().resources.push_back(texture(16384, 32768));
@@ -330,6 +356,26 @@ int main() {
               draw.pipeline.cull == sm::Cull::none,
               "Switch lamp uses additive blending, depth test and no depth writes");
         check(draw.placement.rows[14] == -2, "Switch lamp uses the reflected height");
+    }
+    // Resource lookup keeps the last matching upload, and shared lamp state
+    // must not accidentally share the per-light placement or draw name.
+    check(append_wet_lamp_uploads(lamps, lamp_uploads, error), "duplicate lamp uploads prepare");
+    lamp.position[0] += 0.25F;
+    lamps.lights.push_back(lamp);
+    lamp_draws.clear();
+    check(record_lamp_reflections(lamp_options, lamp_uploads, lamp_draws, error) &&
+          lamp_draws.size() == 2, "two visible lamps record");
+    if (lamp_draws.size() == 2) {
+        const auto& a = lamp_draws[0]; const auto& b = lamp_draws[1];
+        check(a.vertex_resource == 3 && b.vertex_resource == 3 &&
+              a.index_resource == 4 && b.index_resource == 4 &&
+              a.texture_resource == 5 && b.texture_resource == 5,
+              "lamp lookup preserves last matching resource");
+        check(a.name != b.name && a.placement.rows[12] != b.placement.rows[12],
+              "lamp prototype preserves distinct placement and identity");
+        check(a.material.alpha[0] == b.material.alpha[0] &&
+              a.material.environment_range[3] == b.material.environment_range[3],
+              "lamp prototype preserves shared material");
     }
     lamps.lights.clear(); lamp_draws.clear();
     check(record_lamp_reflections(lamp_options, lamp_uploads, lamp_draws, error) && lamp_draws.empty(),

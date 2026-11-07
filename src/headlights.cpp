@@ -13,7 +13,8 @@ bool load_headlight_texture(const std::filesystem::path& root,
     source.bytes=&bytes;source.wanted=&wanted;source.complete=packs.complete;
     for(const auto& pack:packs.packs)source.packs.push_back(&pack);
     RenderTextureSet decoded;
-    if(!decode_render_texture_sources({source},{},decoded,error))return false;
+    RenderTextureLimits limits;limits.retain_mips=true;
+    if(!decode_render_texture_sources({source},limits,decoded,error))return false;
     for(auto& t:decoded.textures)if(t.claims_hash(wanted[0])&&t.usable())texture=std::move(t);
     if(!texture.usable()){error="original HEADLIGHTS texture missing";return false;}
     return true;

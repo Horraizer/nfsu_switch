@@ -16,7 +16,17 @@ thread_local DrawValidationAudit* validation_audit = nullptr;
 static_assert(sizeof(DrawFrameUniform) == 112);
 static_assert(sizeof(FrontendLighting)==160);
 static_assert(sizeof(DrawInstanceUniform) == 64);
-static_assert(sizeof(DrawMaterialUniform) == 192);
+static_assert(sizeof(DrawMaterialUniform) == 208);
+
+void track_uv_material(DrawMaterialUniform& material,const RenderTexture* texture,
+                       const RenderOptions& options) noexcept {
+    if(!texture || options.material_state!=MaterialStateMode::retail)return;
+    const auto& a=texture->uv_animation;
+    material.uv_animation[0]=a.mode==3?float(a.u_offset)*(-1.F/32768):float(a.u_rate)/32768;
+    material.uv_animation[1]=a.mode==3?float(a.v_offset)*(-1.F/32768):float(a.v_rate)/32768;
+    material.uv_animation[2]=float(a.period)/256;
+    material.uv_animation[3]=float(a.mode);
+}
 
 bool frame_state(const RenderOptions& options, const RenderLimits& limits,
                  RecordedCommands& out, std::string& error) {
@@ -54,6 +64,7 @@ bool frame_state(const RenderOptions& options, const RenderLimits& limits,
     out.frame.light[0] = static_cast<float>(kLightX / length);
     out.frame.light[1] = static_cast<float>(kLightY / length);
     out.frame.light[2] = static_cast<float>(kLightZ / length);
+    out.frame.light[3] = texture_world_seconds(options.world_ticks);
     out.frame.options[0] = options.flip_v ? 1 : 0;
     out.frame.options[1] = options.vertex_color ? 1 : 0;
     out.frame.options[2] = (options.shading == ShadingMode::flat ? 1U : 0U) |
@@ -70,12 +81,16 @@ struct ResourceMap {
     std::vector<std::size_t> indices;
     std::vector<std::size_t> textures;
 
-    ResourceMap(const UploadTable& table, std::size_t meshes, std::size_t texture_count)
+    ResourceMap(const UploadTable& table, std::size_t meshes, std::size_t texture_count,
+                const char* resource_prefix)
         : vertices(meshes, kNoHandle), indices(meshes, kNoHandle),
           textures(texture_count, kNoHandle) {
         for (std::size_t i = 0; i < table.resources.size(); ++i) {
             const auto& r = table.resources[i];
-            if (r.name.compare(0, 9, "race-car/") == 0 || r.name.compare(0, 9, "wet lamp ") == 0) continue;
+            // Source indices are local to each asset package. A combined
+            // race table also contains cars/effects whose source zero must
+            // never replace track mesh or texture zero in reflection draws.
+            if (r.name.compare(0, std::strlen(resource_prefix), resource_prefix) != 0) continue;
             if (r.kind == UploadResourceKind::vertex_buffer) vertices[r.source] = i;
             else if (r.kind == UploadResourceKind::index_buffer) indices[r.source] = i;
             else textures[r.source] = i;
@@ -225,6 +240,14 @@ RecordedDrawView RecordedCommands::draw_view(std::size_t i) const {
     const auto& draw = draws.at(i);
     return {draw, draw.instance, draw.placement, draw.material, false};
 }
+std::size_t RecordedCommands::texture_alias_count() const {
+    if(!generation_valid())throw std::logic_error("expired texture animation frame");
+    return source_?source_->texture_alias_count():0;
+}
+DrawTextureAlias RecordedCommands::texture_alias(std::size_t i) const {
+    if(!generation_valid()||!source_)throw std::logic_error("texture animation source unavailable");
+    return source_->texture_alias(i);
+}
 std::size_t RecordedCommands::static_track_draw_count() const {
     if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
     return source_->static_track_draw_count();
@@ -236,6 +259,10 @@ std::size_t RecordedCommands::static_track_instance_count() const {
 const DrawInstanceUniform& RecordedCommands::static_track_instance(std::size_t i) const {
     if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
     return source_->static_track_instance(i);
+}
+bool RecordedCommands::movable_track_instance(std::size_t i) const {
+    if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
+    return source_->movable_track_instance(i);
 }
 std::size_t RecordedCommands::static_track_definition_count() const {
     if (!generation_valid() || !source_) throw std::logic_error("static package unavailable");
@@ -321,7 +348,7 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
              std::strcmp(d.program->name, "track_linear_textured") == 0) ?
                 "textured_opaque.frag.glsl" : "textured.frag.glsl";
         if (std::strcmp(d.program->vertex_source, shadow ? "car_shadow.vert.glsl" : frontend ? "frontend_car.vert.glsl" : shaded ? "car_shaded.vert.glsl" :
-                        sky ? "sky.vert.glsl" : "placed.vert.glsl") != 0 ||
+                        sky ? "sky.vert.glsl" : textured ? "placed_headlight.vert.glsl" : "placed.vert.glsl") != 0 ||
             std::strcmp(d.program->fragment_source, fragment) != 0 ||
             (textured && (d.program->texture_count != (shadow || sky ? 1U : shaded ? 2U : 3U) ||
                           d.program->textures[0].filter !=
@@ -342,7 +369,7 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         const auto& idx = resources[d.index_resource];
         if (v.kind != UploadResourceKind::vertex_buffer || idx.kind != UploadResourceKind::index_buffer ||
             v.element_bytes != d.program->buffers[0].stride || idx.element_bytes != 2 ||
-            d.first_vertex != 0 || d.vertex_count != v.elements || !d.index_count ||
+            d.first_vertex >= d.vertex_count || d.first_vertex > 0x7fffffffU || d.vertex_count != v.elements || !d.index_count ||
             d.first_index % 3 || d.index_count % 3 ||
             std::uint64_t{d.first_index} + d.index_count > idx.elements)
             return fail(d.name, "invalid vertex or index range");
@@ -350,7 +377,7 @@ bool validate_recorded_commands(const RecordedCommands& commands, std::string& e
         for (std::uint64_t i = d.first_index; i < std::uint64_t{d.first_index} + d.index_count; ++i) {
             std::uint16_t index;
             std::memcpy(&index, idx.data + i*2, 2);
-            if (index >= d.vertex_count) return fail(d.name, "index references missing vertex");
+            if (std::uint64_t(index)+d.first_vertex >= d.vertex_count) return fail(d.name, "index references missing vertex");
         }
         if (textured != (d.texture_resource != kNoHandle) ||
             (textured && (d.texture_resource >= resources.size() ||
@@ -381,7 +408,7 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
         std::uint64_t triangles = 0;
         for (const auto& mesh : scene.meshes) triangles += mesh.triangles.size();
         if (!triangle_limits(triangles, prepared_draw_triangles(scene), limits, error)) return false;
-        const ResourceMap resources(out.owning_uploads(), scene.meshes.size(), scene.textures.size());
+        const ResourceMap resources(out.owning_uploads(), scene.meshes.size(), scene.textures.size(), "car ");
         PreparedMeshInstances copies;
         std::vector<std::uint32_t> order;
         if (!prepared_mesh_instances(scene, copies, error) ||
@@ -431,7 +458,8 @@ bool record_car_commands(const PreparedCarScene& scene, const RenderOptions& opt
 
 bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList& list,
                            const RenderOptions& options, const RenderLimits& limits,
-                           RecordedCommands& commands, std::string& error) {
+                           RecordedCommands& commands, std::string& error,
+                           const std::vector<std::size_t>& model_meshes) {
     commands = RecordedCommands{};
     error.clear();
     try {
@@ -447,7 +475,7 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                 if (draw.mesh == scene.sky_mesh && draw.drawable &&
                     draw.binding == BindingKind::resolved) submitted += draw.index_count/3;
         if (!triangle_limits(triangles, submitted, limits, error)) return false;
-        const ResourceMap resources(out.owning_uploads(), scene.region.meshes.size(), scene.region.textures.size());
+        const ResourceMap resources(out.owning_uploads(), scene.region.meshes.size(), scene.region.textures.size(), "track ");
         if (options.sky && scene.sky_mesh != kNoHandle) {
             for (std::size_t group = 0; group < scene.region.draws.size(); ++group) {
                 const auto& source = scene.region.draws[group];
@@ -514,6 +542,7 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
                 surface_options.texture_filter=TextureFilterMode::linear;
             if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
                 !pipeline(draw, true, texture, 0, source.texture_hash, surface_options, error)) return false;
+            track_uv_material(draw.material,texture,options);
             if(wet_world)draw.material.fallback[3]=7.0F;
             draw.material.environment_min[3] =
                 track_vertex_format(scene.region.meshes[source.mesh].vertex_format_flags).mask == 0x40 ? 1.0F : 0.0F;
@@ -527,6 +556,25 @@ bool record_track_commands(const PreparedTrackScene& scene, const TrackDrawList&
             if (sky_position == kNoHandle && draw.pipeline.blend)
                 sky_position = out.owning_draws().size();
             out.owning_draws().push_back(std::move(draw));
+        }
+        // WorldObject models have no scenery instance. Prepare their immutable
+        // resources once; the owner supplies the animation-node placement.
+        for(auto mesh:model_meshes) {
+            if(mesh>=scene.region.meshes.size()){error="world model mesh outside scene";return false;}
+            for(std::size_t group=0;group<scene.region.draws.size();++group) {
+                const auto& source=scene.region.draws[group];
+                if(source.mesh!=mesh||!source.drawable||!source.index_count)continue;
+                RecordedDraw draw;draw.group=group;draw.mesh=mesh;draw.instance=kNoHandle;
+                draw.name="world model group "+std::to_string(group);
+                const auto* texture=source.binding==BindingKind::resolved?&scene.region.textures[source.texture]:nullptr;
+                if(!buffers(scene.region.meshes[mesh],source,resources,draw,error)||
+                   !pipeline(draw,true,texture,0,source.texture_hash,options,error))return false;
+                track_uv_material(draw.material,texture,options);
+                if(texture&&options.material_state==MaterialStateMode::retail&&
+                   track_vertex_format(scene.region.meshes[mesh].vertex_format_flags).mask==0)
+                    draw.material.fallback[3]=6.F;
+                out.owning_draws().push_back(std::move(draw));
+            }
         }
         if (sky_position == kNoHandle) sky_position = out.owning_draws().size();
         std::rotate(out.owning_draws().begin(), out.owning_draws().begin()+sky_count,
@@ -553,13 +601,14 @@ const RecordedDraw& RecordedCommands::reflection_draw(std::size_t i) const {
 }
 bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptions& supplied_options,
                               const UploadTable& uploads, std::vector<RecordedDraw>& draws,
-                              std::string& error, bool cull, const TrackResidency* residency) {
+                              std::string& error, bool cull, const TrackResidency* residency,
+                              const TrackReflectionCache* cache) {
     draws.clear();
     auto options = supplied_options;
     options.texture_filter = TextureFilterMode::legacy;
     std::vector<TrackDrawListEntry> entries;
-    if (!track_reflection_entries(scene, options, entries, error, nullptr, cull, residency)) return false;
-    const ResourceMap resources(uploads, scene.region.meshes.size(), scene.region.textures.size());
+    if (!track_reflection_entries(scene, options, entries, error, cache, cull, residency)) return false;
+    const ResourceMap resources(uploads, scene.region.meshes.size(), scene.region.textures.size(), "track ");
     for (const auto& entry : entries) {
         const auto& source = scene.region.draws[entry.draw];
         const auto& instance = scene.instances[entry.instance];
@@ -578,6 +627,7 @@ bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptio
         if (native_world) surface_options.texture_filter = TextureFilterMode::linear;
         if (!buffers(scene.region.meshes[source.mesh], source, resources, draw, error) ||
             !pipeline(draw, true, texture, 0, source.texture_hash, surface_options, error)) return false;
+        track_uv_material(draw.material,texture,options);
         // Native world.efx in the reflection target, including doubled alpha.
         // Distinct from the main-world marker and the wet receiver marker.
         if (native_world) draw.material.fallback[3] = 8.0F;
@@ -586,28 +636,40 @@ bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptio
     return record_lamp_reflections(options, uploads, draws, error);
 }
 bool record_lamp_reflections(const RenderOptions& options, const UploadTable& uploads,
-                             std::vector<RecordedDraw>& draws, std::string& error) {
+                             std::vector<RecordedDraw>& draws, std::string& error,
+                             const CameraFrame* camera) {
     if (options.wet_lamps) {
         const auto& lamps = *options.wet_lamps;
         std::size_t resource = kNoHandle;
-        for (std::size_t i = 0; i < uploads.resources.size(); ++i)
-            if (uploads.resources[i].name == "wet lamp vertices") resource = i;
+        // The lamp block is appended to the upload table. Reverse lookup
+        // preserves the old last-match rule without scanning every car/track
+        // resource on every frame.
+        for (std::size_t i = uploads.resources.size(); i > 0; --i)
+            if (uploads.resources[i-1].name == "wet lamp vertices") { resource = i-1; break; }
         if (resource == kNoHandle) { error = "lamp uploads missing"; return false; }
-        CameraFrame camera;
-        if (!make_camera_frame(options.camera, options.width, options.height, camera, error)) return false;
+        CameraFrame local_camera;
+        if (!camera) {
+            if (!make_camera_frame(options.camera, options.width, options.height, local_camera, error)) return false;
+            camera = &local_camera;
+        }
+        RecordedDraw prototype;
+        bool prepared=false;
         for (std::size_t n = 0; n < lamps.lights.size(); ++n) {
             TrackTransform placement;
-            if (!wet_road_lamp_placement(lamps.lights[n], camera, placement)) continue;
-            RecordedDraw draw; draw.name = "wet lamp " + std::to_string(n);
-            draw.vertex_resource = resource; draw.index_resource = resource+1; draw.texture_resource = resource+2;
-            draw.vertex_count = 4; draw.index_count = 6;
-            auto unlit = options; unlit.cull = CullMode::none;
-            unlit.texture_filter = TextureFilterMode::legacy;
-            if (!pipeline(draw, true, &lamps.texture, 0, lamps.texture.hash, unlit, error)) return false;
-            for (std::size_t i = 0; i < draw.program->variant_count; ++i)
-                if (std::strcmp(draw.program->variants[i].name, "additive") == 0) draw.pipeline = draw.program->variants[i];
-            draw.material.alpha[0] = 150.0F/255;
-            draw.material.environment_range[3] = 1; // Unlit effect sprite.
+            if (!wet_road_lamp_placement(lamps.lights[n], *camera, placement)) continue;
+            if (!prepared) {
+                prototype.vertex_resource = resource; prototype.index_resource = resource+1; prototype.texture_resource = resource+2;
+                prototype.vertex_count = 4; prototype.index_count = 6;
+                auto unlit = options; unlit.cull = CullMode::none;
+                unlit.texture_filter = TextureFilterMode::legacy;
+                if (!pipeline(prototype, true, &lamps.texture, 0, lamps.texture.hash, unlit, error)) return false;
+                for (std::size_t i = 0; i < prototype.program->variant_count; ++i)
+                    if (std::strcmp(prototype.program->variants[i].name, "additive") == 0) prototype.pipeline = prototype.program->variants[i];
+                prototype.material.alpha[0] = 150.0F/255;
+                prototype.material.environment_range[3] = 1; // Unlit effect sprite.
+                prepared=true;
+            }
+            RecordedDraw draw=prototype;draw.name="wet lamp "+std::to_string(n);
             for (std::size_t i = 0; i < 3; ++i) {
                 for (std::size_t j = 0; j < 3; ++j) draw.placement.rows[i*4+j] = placement.linear[i*3+j];
                 draw.placement.rows[12+i] = placement.translation[i];
@@ -635,4 +697,21 @@ bool reserve_draw_uniforms(const RecordedCommands& commands, MemoryArena& arena,
     error.clear();
     return true;
 }
+bool validate_prepared_dynamic_prefix(const std::vector<const RecordedDraw*>& definitions,
+                                      const RecordedCommands& next, std::string& error) {
+    const auto track=next.static_track_draw_count(),total=next.draw_count();
+    if(track>total || total-track>definitions.size()) {
+        error="prepared dynamic prefix exceeded capacity";return false;
+    }
+    // A disappearing start crowd retires a suffix. Every remaining slot must
+    // keep its original identity; insertion/reordering is still refused.
+    for(std::size_t i=track;i<total;++i) {
+        const auto view=next.draw_view(i);
+        if(view.track_instance || &view.definition!=definitions[i-track]) {
+            error="prepared dynamic definition changed";return false;
+        }
+    }
+    return true;
+}
+
 } // namespace nfsu

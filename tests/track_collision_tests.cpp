@@ -2062,7 +2062,20 @@ void test_query_edges() {
                                                 32.0F, cells, limits),
               "query edges: a cap of exactly two admits two cells");
         check(cells.size() == 2, "query edges: and returns both");
+        std::array<std::size_t,2> fixed{};std::size_t count=99;
+        check(nfsu::query_track_collision_cells(report,0.F,0.F,64.F,32.F,
+                fixed.data(),fixed.size(),count,limits) && count==cells.size() &&
+                std::equal(cells.begin(),cells.end(),fixed.begin()),
+              "bounded cell query retains exact vector traversal order");
+        count=99;
+        check(!nfsu::query_track_collision_cells(report,0.F,0.F,64.F,32.F,
+                fixed.data(),1,count,limits) && count==0,
+              "bounded cell query refuses insufficient capacity without partial answer");
         limits.max_cells = 1;
+        count=99;
+        check(!nfsu::query_track_collision_cells(report,0.F,0.F,64.F,32.F,
+                fixed.data(),fixed.size(),count,limits) && count==0,
+              "bounded cell query preserves explicit query budget refusal");
         check(!nfsu::query_track_collision_cells(report, 0.0F, 0.0F, 64.0F,
                                                  32.0F, cells, limits),
               "query edges: a cap of one refuses a two-cell query");

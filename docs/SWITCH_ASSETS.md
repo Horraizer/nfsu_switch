@@ -134,11 +134,28 @@ card or anywhere else.
 ## The manifest
 
 `nfsu::retail_asset_manifest` (`include/nfsu/assets.h`,
-`src/assets.cpp`) holds three sets. `first-lap` is the default and combines
-the other two with the HUD files; `stock-car` is exactly the six files
-`stock_frame_file_path` names for the stock-car application, and
-`event-1` covers the event table and track files the port reads for event 1;
-the game's wider load also includes the HUD texture packs.
+`src/assets.cpp`) holds the sets below. `first-lap` is the default and
+combines the stock-car and event-1 files with the HUD files; `stock-car` is
+exactly the six files `stock_frame_file_path` names for the stock-car
+application, and `event-1` covers the event table and track files the port
+reads for event 1; the game's wider load also includes the HUD texture
+packs. `first-lap-1005` is event 8's Atlantic set, and
+`first-lap-1001`/`1002`/`1004`/`1006`/`1007`/`1008` are the six further
+circuit tracks of the owner's 2026-10-10 all-circuits task: each swaps the
+TRACKB/TEX/pack triple for its own track (`nfsu::first_lap_asset_set_name`
+maps a circuit track to its set name). `first-lap-1301` through
+`first-lap-1308` are the drift tracks (owner tasks 2026-10-12 and
+2026-10-14): each swaps the triple for its own track and the region stream
+for `Tracks/STREAML1RB.BUN` (1301-1304) or `Tracks/STREAML1RC.BUN`
+(1305-1308), and unlike the circuit packs the per-track
+`STREAML1R*_13NN.BUN` files carry real content - one shared drift-city
+image per region (4.3 MB in L1RB, 1.9 MB in L1RC). `first-lap-1201`
+through `first-lap-1214` are the six drag tracks (owner task 2026-10-15):
+L1RB pairs 1201/1210 and 1206/1214 share their pack images, 1202 races
+from L1RC and 1207 from the new `Tracks/STREAML1RE.BUN` (21.2 MB).
+`first-lap-1102` through `first-lap-1109` are the sprint tracks (owner
+task 2026-10-17): eight sets over the existing `Tracks/STREAML1RA.BUN`
+with empty per-track packs, like the circuits.
 
 | Path | Bytes | SHA-256 | Sets | What reads it |
 | --- | ---: | --- | --- | --- |

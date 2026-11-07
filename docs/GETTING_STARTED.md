@@ -1,4 +1,7 @@
-# Getting started with 0.1
+# Getting started with v0.2-lan-r7
+
+This is an experimental prerelease. For the older 0.1 package and its original
+scope, use [RELEASE_0_1](RELEASE_0_1.md) and the v0.1 source tag.
 
 ## Required game edition
 
@@ -24,152 +27,162 @@ list is insufficient for the current menu, tuned Skyline, movies and audio.
 
 ## Install on Switch
 
-1. Have a Switch capable of running homebrew and Homebrew Menu in **full-memory
-   application mode** (title takeover). Do not use Album/applet mode for this build.
-2. Download `nfsu-switch-0.1.nro` from the 0.1 release. Put it at
-   `sdmc:/switch/nfsu-switch/nfsu-switch-0.1.nro`.
-3. Open your PC game's installed folder (the folder containing `speed.exe`).
-   Copy these complete directories into `sdmc:/nfsu/`, retaining subdirectories:
-   `Cars`, `FrontEnd`, `Global`, `Languages`, `Movies`, `Sound`, `SNDSTREAMS`,
-   `SpeechStreams`, and `Tracks`. This deliberately favors a complete data copy
-   over an incomplete minimal subset. Do not copy mod loaders or replacement data.
-4. The resulting layout should look like this:
+1. Open Homebrew Menu in **full-memory application mode** (title takeover).
+   Album/applet mode does not provide the memory this build needs.
+2. Download `nfsu-switch-v0.2-lan-r7-sd.zip` and extract its contents at the
+   top level of the SD card. Alternatively, put the standalone NRO under
+   `sdmc:/switch/nfsu-switch/`. The NRO filename is not the game-data folder.
+3. From your own PC1.4 USA installation, copy these complete directories to
+   `sdmc:/nfsu/`, keeping subdirectories: `Cars`, `FrontEnd`, `Global`,
+   `Languages`, `Movies`, `Sound`, `SNDSTREAMS`, `SpeechStreams`, and `Tracks`.
+4. Check the layout, especially `Languages/English.bin`:
 
    ```text
-   sdmc:/switch/nfsu-switch/nfsu-switch-0.1.nro
-   sdmc:/nfsu/Cars/SKYLINE/GEOMETRY.BIN
-   sdmc:/nfsu/FrontEnd/FrontB.lzc
-   sdmc:/nfsu/Global/GLOBALB.BUN
-   sdmc:/nfsu/Languages/English.bin
-   sdmc:/nfsu/Movies/na_boot.mad
-   sdmc:/nfsu/Sound/...
-   sdmc:/nfsu/SNDSTREAMS/...
-   sdmc:/nfsu/SpeechStreams/...
-   sdmc:/nfsu/Tracks/...
+   SD card/
+     switch/
+       nfsu-switch/
+         NFSU_switch.nro
+     nfsu/
+       Cars/
+       FrontEnd/FrontB.lzc
+       Global/GLOBALB.BUN
+       Languages/English.bin
+       Movies/
+       Sound/
+       SNDSTREAMS/
+       SpeechStreams/
+       Tracks/
    ```
-5. Launch the NRO. A/B skips the opening movies. Choose **Free Driving** in
-   the menu and press A. The supplied build loads Olympic Square and the
-   tuned Skyline. Underground displays an unavailable notice in 0.1.
 
-No `speed.exe`, Windows installation, emulator or external video player is
-needed on Switch. The NRO contains the port and its shaders, not retail assets.
-The port reads your copied data; it does not patch the PC installation.
+   Avoid accidental nesting such as `nfsu/nfsu/Cars` or putting game data
+   under `switch/nfsu-switch/nfsu`.
+5. Launch NFSU_switch LAN r7. Select Go Underground, Quick Race or Multiplayer.
+   Free Run is practice inside the standalone race setup. Keep existing saves;
+   the release archive contains no profile files and does not reset progress.
 
-An optional ASCII file at `sdmc:/config/nfsu_switch/assets.cfg` can relocate data:
+The NRO contains the port, its shaders and diagnostic recordings. It contains
+no retail game data. `speed.exe` is not needed on the SD card. Full campaign
+coverage uses more files than the historical first-lap minimum asset list.
+
+An optional ASCII `sdmc:/config/nfsu_switch/assets.cfg` can move the data root:
 
 ```text
 root = sdmc:/games/nfsu
 ```
 
-Use an ASCII path and save without a UTF-8 BOM. The default needs no config file.
+Use an ASCII path, without a UTF-8 BOM. The default needs no config file.
+Profiles are stored under `sdmc:/switch/nfsu-saves/`; keep a backup before
+trying experimental builds. Do not share personal saves in public reports.
 
-## Controls in the supplied free-driving build
+## Driving controls
 
 | Control | Action |
 | --- | --- |
-| Left stick / D-pad | Steer |
+| Left stick / D-pad | Steering; lane change in Drag |
 | ZR | Accelerate |
-| ZL | Brake; hold at rest for reverse assist |
+| ZL | Brake / reverse |
 | B | Handbrake |
-| L (hold) | Nitrous while driving; consumes the bottle |
+| A (hold) | Nitrous, when fitted |
 | X | Change camera |
-| R3 (hold right stick button) | Look back / view from the front; release to restore camera |
-| Minus | Reset the car |
-| Y | Pause / resume |
-| Plus | Leave free driving and return to the menu |
-| Menu Up/Down or left stick | Select menu entry |
-| Menu A / B | Confirm / back |
+| R3 (hold) | Look back; release to restore the normal view |
+| Right stick up / down | Drag gear up / down |
+| R / L | Alternative manual gear up / down |
+| Plus | Race pause; LAN room/race leave follows the displayed prompt |
+| Minus | Car reset where available |
+| L3 + R3 | Toggle diagnostic FPS/frame-time overlay |
+| Menu A / B | Accept / back |
 
-The tuned free-drive car uses turbo level 1 and nitrous level 3. Nitrous is
-reserved on L, rather than the generic diagnostic control map's downshift.
-Turbo adds engine performance automatically; it is not a second boost button.
-There is no invented continuous nitrous refill: re-entering a new session
-initializes the bottle; a car reset alone does not refill it.
+Turbo is an automatic performance upgrade, not a separate boost button.
+The chosen car/tier determines installed nitrous and performance parts.
+Use the original-style screens for purchases, rewards and profile selection.
 
-## Known limits and troubleshooting
+## Two-player LAN
 
-- Full Underground progression, traffic and finished opponent AI are absent.
-- There is no normal track-selection screen. The menu's free drive is Olympic
-  Square. Atlantic can be launched through the developer `--live --event 8`
-  path, which is not the same menu/free-drive experience.
-- Physics, steering, tachometer, sound and rendering are still being matched
-  to the original. Visual effects are implemented in bounded forms, not a
-  claim of complete original rendering parity.
-- Targeting smooth 60 FPS does not mean 60 FPS everywhere. The FPS overlay
-  is disabled in the release. Do not compare PC reference renderer timing
-  to Switch GPU performance.
-- If preparation fails, first verify full-memory mode, the exact SD layout,
-  a complete data copy and the original file identities. Photograph the error.
-- If input seems latched after entry, release held controls and try again.
-- If a visual artifact appears, report the location and whether re-entry
-  clears it. Include the `boost-r6` build identity in the report.
+Both consoles need this build and their own local PC data copy, on the same
+router network. Open Multiplayer. A creates a room; X joins by the host's
+IPv4 address. The host sets course, direction, laps and the shared performance
+tier. Each driver selects a car; Y opens the appearance garage. B at the garage
+root returns to the room. The guest confirms readiness with A; the host starts
+when ready. See [LAN_MULTIPLAYER](LAN_MULTIPLAYER.md) for scope and limitations.
+
+This is custom router LAN, not Nintendo online play or direct local wireless.
+No room discovery, traffic or AI grid is provided by this prototype. Guest
+movement is host-authoritative; timing, latency and handling still need paired
+hardware comparison. Do not mix old and new protocol versions.
+
+## Known limits
+
+- r7's latest garage changes have PC and packaging checks, not final console
+  visual/input acceptance. This exact paired LAN build is still experimental.
+- Full campaign records and automated start/finish checks do not establish
+  a flawless 8-10-hour playthrough, original AI/physics/audio parity or locked 60 FPS.
+- Remaining drift HUD, collision/traffic/audio and some frontend behavior
+  continue to be matched against original data/code.
+- Missing `English.bin`, an incomplete data tree, a wrong regional asset set
+  or applet-mode memory can prevent startup/loading. Check the displayed error.
+- For a crash, preserve its SD/Netloader log and report `garage-flow-r7`.
 
 ## Build from source
-
-The downloadable NRO is the actual hardware-accepted binary. A rebuild with a
-different SDK can differ byte-for-byte and needs its own hardware check.
-The `v0.1` tag adds documentation only to runtime source commit
-`24665d0a03bbae52e5f16c5f1a1d38b62676a23a`.
 
 ```sh
 git clone https://github.com/Horraizer/nfsu_switch.git
 cd nfsu_switch
-git checkout v0.1
+git checkout v0.2-lan-r7
 ```
 
-### Switch NRO
-
-Install devkitPro's `switch-dev` tools: devkitA64, libnx, deko3d, uam,
-switch-tools, switch-cmake, devkita64-cmake and switch-pkg-config. Also install
-CMake 3.21+, Ninja and host Python 3.8+. Use a devkitPro/MSYS2 shell on Windows
-or a correctly configured devkitPro environment on Linux.
+Install devkitPro switch-dev: devkitA64, libnx, deko3d, uam, switch-tools,
+switch-cmake, devkita64-cmake and switch-pkg-config. Use CMake3.21+, Ninja and
+standalone Python3.12 (the exercised version) in a configured devkitPro/MSYS2 or Linux shell.
 
 ```sh
 export DEVKITPRO=/opt/devkitpro
 cmake -S . -B build-switch -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=cmake/switch-toolchain.cmake \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DNFSU_RACE_BUILD_TAG=boost-r6 \
-  -DNFSU_RACE_FXAA=ON \
-  -DNFSU_RACE_MSAA2=OFF -DNFSU_RACE_MSAA8=OFF \
-  -DNFSU_RACE_FPS_OVERLAY=OFF \
-  -DNFSU_SWITCH_DEKO_DEBUG=OFF -DNFSU_SWITCH_FRONTEND_PREFLIGHT=OFF
+  -DCMAKE_BUILD_TYPE=Release -DNFSU_RACE_BUILD_TAG=garage-flow-r7 \
+  -DNFSU_RACE_FXAA=ON -DNFSU_RACE_MSAA2=OFF -DNFSU_RACE_MSAA8=OFF \
+  -DNFSU_RACE_FPS_OVERLAY=OFF -DNFSU_SWITCH_DEKO_DEBUG=OFF
 cmake --build build-switch --target nfsu_switch_race_nro
 ctest --test-dir build-switch --output-on-failure \
-  -R '^(nfsu_switch_race_nro|nfsu_switch_race_embedded_shaders|nfsu_switch_frontend_profile_contract)$'
+  -R '^(nfsu_switch_race_nro|nfsu_switch_race_embedded_shaders)$'
 ```
 
-Output: `build-switch/switch/nfsu_switch_race.nro`. Shader compilation and
-embedding are part of this target. The host checks above validate packaging;
-they do not run a Switch emulator or establish hardware performance.
-For the complete SDK test suite, build all targets and run plain CTest.
-See [SWITCH_BUILD.md](SWITCH_BUILD.md) for SDK discovery and diagnostics.
+Output: `build-switch/switch/nfsu_switch_race.nro`. Offline shader compilation
+and RomFS embedding are part of the target. This produces default build
+metadata; the uploaded NRO has a custom LAN r7 title, with identical runtime
+source. A different SDK can produce a different binary.
 
-### Desktop tools and tests
-
-Use a C++17 compiler, CMake, Ninja and Python. GCC is the exercised native
-build path. Desktop diagnostic tools do not substitute for the Switch
-application; platform-specific window/audio backends have separate limits.
+For desktop tools and all retail checks, first install the exercised Python
+packages into the standalone interpreter CMake will use:
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DNFSU_RETAIL_ROOT=/path/to/your/pc/game
+python -m pip install -r requirements-dev.txt
+```
+
+
+```sh
+cmake -S . -B build -G Ninja -DNFSU_RETAIL_ROOT=/path/to/your/pc/game
 cmake --build build
 ctest --test-dir build --output-on-failure
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DNFSU_RETAIL_ROOT=/path/to/your/pc/game
+cmake --build build-release
+ctest --test-dir build-release --output-on-failure
 ```
 
-Use an ASCII path for the retail root and quote it if it contains spaces.
-A configure without `NFSU_RETAIL_ROOT` skips retail validation and is not a
-complete game-data test. The README's developer reference lists the tools;
-most are research/diagnostic executables, not a finished desktop game launcher.
+Use an ASCII retail path; quote it when it contains spaces. The standalone
+Python configure finds must provide the packages in requirements-dev.txt.
+The optional original-PC live recorders additionally require frida17.5.1;
+it is not needed for ordinary NRO play. A configure without
+NFSU_RETAIL_ROOT skips retail validation and is not a complete gate.
+Desktop tools do not substitute for Switch GPU/runtime acceptance.
 
-## Sending with Netloader
+## Netloader
 
-With the Switch's Homebrew Menu Netloader open on your local network:
+With the target console's Netloader open:
 
 ```sh
-nxlink -a SWITCH_IP -s nfsu-switch-0.1.nro
+nxlink -a SWITCH_IP -s nfsu-switch-v0.2-lan-r7.nro
 ```
 
-Keep the data on SD; Netloader sends the NRO only. Capture the terminal output
-when reporting crashes. Never post copyrighted retail files with a bug report.
+Only the NRO is transferred; keep the game data on SD. For two consoles, both
+Netloaders must be ready. Do not start two PC log servers on the same port.

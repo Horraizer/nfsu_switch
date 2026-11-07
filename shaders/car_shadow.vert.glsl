@@ -58,8 +58,14 @@ void main()
     vec3 moved = slot.x * instance.rows[0].xyz + slot.y * instance.rows[1].xyz +
                  slot.z * instance.rows[2].xyz + instance.rows[3].xyz;
     int i = gl_VertexID;
-    moved.z = i < 4 ? material.fallback[i] : i < 8 ? material.environment_min[i-4] :
-              i < 12 ? material.environment_range[i-8] : material.environment_color[i-12];
+    // UAM lowers an indirect uniform-vector component to the vector's X
+    // component. Keep both selections explicit: every native terrain tap
+    // must retain its own height, including the four inner +0.08 lifts.
+    vec4 heights = i < 4 ? material.fallback : i < 8 ? material.environment_min :
+                   i < 12 ? material.environment_range : material.environment_color;
+    int column = i & 3;
+    moved.z = column == 0 ? heights.x : column == 1 ? heights.y :
+              column == 2 ? heights.z : heights.w;
     // Reflection source placements are prepared with the retail 0x200 exception.
     vec3 world = vec3(moved.x, moved.z, -moved.y);
 

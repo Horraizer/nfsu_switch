@@ -154,7 +154,7 @@ nfsu_case("--car twice" 1
 # ---------------------------------------------------------------------------
 
 nfsu_case("the rest script" 0
-          "handling: built-in 240SX table (RECOVERED, docs/VEHICLE.md)\n;vehicle-sim: script rest segments 1 steps 240 of 1/120 s gearbox automatic speed 0.000000 m/s\n;shift up rpm: 1:7400.00 2:7400.00 3:7150.00 4:6750.00 5:7500.00\n;shift down rpm: 2:4238.12 3:5088.96 4:5466.36 5:6075.00\n;at step 120 t 1.000 ;final step 240 t 2.000 ;telemetry: records 240 bytes 124800 sha256 "
+          "handling: built-in 240SX table (RECOVERED, docs/VEHICLE.md)\n;vehicle-sim: script rest segments 1 steps 240 of 1/120 s gearbox automatic speed 0.000000 m/s\n;shift up rpm: 1:7400.00 2:7400.00 3:7150.00 4:6750.00 5:7500.00\n;shift down rpm: 2:4238.12 3:5088.96 4:5466.36 5:6075.00\n;at step 120 t 1.000 ;final step 240 t 2.000 ;telemetry: records 240 bytes 317760 sha256 "
           "at step 240 ;error"
           rest)
 set(rest_hash "${last_hash}")
@@ -167,14 +167,14 @@ endif()
 # moved with the handbrake fix: the handbrake segments are the brake axis
 # as max(service, 0.5 x handbrake) (0x00474B4B), not an added rear lock torque.
 nfsu_case("the mixed script" 0
-          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 1248000 sha256 42EB9280BF7812434EEE60E0017873A6819536764557BC4BB3E0ECF8ACA93AFE\n"
+          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 3177600 sha256 0BD6A3668B340A4A24AC61D36D710FE8556013069D893892EBEFE3D36008B9BD\n"
           "error"
           mixed --every 0)
 set(mixed_hash "${last_hash}")
 
 # --every 0 prints no intermediate line; --steps past the script coasts on.
 nfsu_case("--every 0 and --steps past the end" 0
-          "steps 300 of 1/120;final step 300 ;telemetry: records 300 bytes 156000 "
+          "steps 300 of 1/120;final step 300 ;telemetry: records 300 bytes 397200 "
           "at step"
           rest --every 0 --steps 300)
 # No step at all is still a run: the hash of no records.

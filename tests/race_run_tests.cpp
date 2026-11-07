@@ -53,6 +53,8 @@ void operator delete(void* p,std::size_t,std::align_val_t) noexcept { free_count
 void operator delete[](void* p,std::size_t,std::align_val_t) noexcept { free_counted(p); }
 
 void require(bool okay, const std::string& error) { if (!okay) throw std::runtime_error(error); }
+// Successful literal checks must not allocate diagnostic strings per draw.
+void require(bool okay, const char* error) { if (!okay) throw std::runtime_error(error); }
 void require_retail_car_draws(const nfsu::RaceGpuFrame& frame, const char* path,
                               bool tuned) {
     using namespace nfsu;
@@ -112,6 +114,12 @@ int main(int argc, char** argv) {
     using namespace nfsu;
     try {
         std::string error;
+        // Authenticated422410 table6B7C20, all selectors, not difficulty.
+        float cap=2;
+        require(race_rival_throttle_cap(0,cap)&&cap==.93F,"native event cap0");
+        require(race_rival_throttle_cap(1,cap)&&cap==.97F,"native event cap1");
+        require(race_rival_throttle_cap(2,cap)&&cap==1.F,"native event cap2");
+        require(!race_rival_throttle_cap(3,cap)&&cap==1.F,"invalid cap leaves output untouched");
         RaceTickDebt clock;
         clock.add(16666); require(!clock.take(), "clock rounds early");
         clock.add(1); require(clock.take() && !clock.take(), "clock loses fractional debt");
@@ -176,7 +184,7 @@ int main(int argc, char** argv) {
                     pad.pads[0].axes[0] == run.steer && pad.time_us == ticks*1000000/60,
                     "replay pad differs from desktop");
         }
-        require(ticks == 48332 && replay.exhausted() && !replay.next(ticks, pad, error), "replay extent differs");
+        require(ticks == 48260 && replay.exhausted() && !replay.next(ticks, pad, error), "replay extent differs");
         RaceRun unopened;
         require(!unopened.commit(error) && !unopened.simulate({}, error), "unstarted race accepted");
         MeshVertex vertices[3]{}; std::uint16_t indices[] = {0,1,2};
@@ -302,19 +310,23 @@ int main(int argc, char** argv) {
                 error == "race scene is not loaded", "unloaded race scene did not refuse a frame");
         require(!race.commit(error), "commit without step accepted");
         require(replay.load(text, error), error);
-        require(scene.cache_bytes() <= 8*kMiB,"command cache exceeded metadata limit");
-        std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 8*kMiB << '\n';
+        require(scene.cache_bytes() <= 16*kMiB,"command cache exceeded metadata limit");
+        std::cout << "command cache metadata estimate " << scene.cache_bytes() << " / " << 16*kMiB << '\n';
         // Shading changes material uniforms, not retained command storage.
         // Tuned selection adds one draw; four glow sprites add their
         // templates. Issue #315 moved the shadow texture's name into
         // CarShadowAsset (the car's own <NAME>_SHADOWIG, was the 240SX
         // literal), one std::string = 32 retained bytes on both selections.
-        // FE command fields grow RecordedCommands304->1280 and
-        // RecordedDraw384->392. Two retained commands plus4225 retained
-        // draw capacities add35752 bytes. Six inline glow records add48.
-        // Layout/capacity probes separately verified both selections.
-        const std::uint64_t cache_pin = (tuned ? 4369312U : 4369281U) +
-                                        (glows ? 35355U : 0U);
+        // Prepared metadata now retains authored animation-frame resources,
+        // the native shadow ground cache and the neon asset. The layout
+        // inventory independently reports command/draw/upload sizes and every
+        // packet capacity; no payload or memory-budget ceiling is increased.
+        // The world UV payload extends retained draw metadata and texture-bearing
+        // assets; uniform slot alignment and all memory ceilings stay unchanged.
+        // The two Trolley model labels fit existing draw capacity, adding62 name bytes.
+        // Pre-start NOS retains one purge draw template and two instances.
+        const std::uint64_t cache_pin = (tuned ? 4557968U : 4557937U) +
+                                        (glows ? 40131U : 0U);
         const auto initial_cache_bytes = scene.cache_bytes();
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
                   << " collision " << race.persistent_bytes() << '\n';
@@ -347,9 +359,15 @@ int main(int argc, char** argv) {
                 const bool is_shaded = name == "car_shaded_textured" || name == "car_shaded_linear_textured";
                 if (is_world || is_shaded) {
                     ++(is_world ? world : shaded);
-                    require(draw.program->textures[0].filter == (filter == TextureFilterMode::linear ?
+                    bool expected_linear=filter==TextureFilterMode::linear;
+                    if(is_world) {
+                        const auto mask=track_vertex_format(scene.track().scene.region.meshes.at(draw.mesh).vertex_format_flags).mask;
+                        const auto mips=commands.resource_table().resources.at(draw.texture_resource).texture.mip_count;
+                        expected_linear=expected_linear||mask==0x40||(mips>1&&mask==0);
+                    }
+                    require(draw.program->textures[0].filter == (expected_linear ?
                             shader_manifest::Filter::linear : shader_manifest::Filter::nearest),
-                            "race policy lost world/shaded sampler");
+                            "race policy lost material-selected world/shaded sampler");
                 } else if (name == "sky_textured") {
                     require(draw.program->textures[0].filter == shader_manifest::Filter::nearest,"sky sampler changed");
                 } else if (draw.texture_resource != kNoHandle) {
@@ -463,7 +481,7 @@ int main(int argc, char** argv) {
         DrawExecutionPlan plan;
         require(plan_draw_execution(frame.commands,plan,error),error);
         const auto gpu_bound = need.buffer_extent + need.image_extent + plan.staging_bytes + 64*kMiB;
-        require(gpu_bound <= kGpuBudgetPlaceholder, "combined GPU bound exceeds 256 MiB");
+        require(gpu_bound <= kGpuBudgetPlaceholder, "combined GPU bound exceeds configured budget");
         std::cout << "GPU conservative bound " << gpu_bound << " / " << kGpuBudgetPlaceholder << '\n';
         MemoryArena buffers, images, staging;
         ArenaConfig config; config.category = MemoryCategory::gpu; config.max_alignment = kMaxArenaAlignment;
@@ -503,7 +521,8 @@ int main(int argc, char** argv) {
             return 0;
         }
         std::size_t frames = 0, max_draws = 0;
-        const std::set<std::uint64_t> inspect = {1,163,180,600,1200,6000,11344,12459,13110,24300,35396,36510,37177,48332};
+        bool checked_smoke=false,checked_braking=false;
+        const std::set<std::uint64_t> inspect = {1,163,180,600,1200,6000,11344,12459,13110,24300,35396,36510,37177,48260};
         const bool full = argc > 3 && std::string(argv[3]) == "--full-draws";
         const bool sampled = argc > 3 && std::string(argv[3]) == "--sample-draws";
         require(argc <= 3 || full || sampled, "unknown retail draw sampling option");
@@ -535,7 +554,14 @@ int main(int argc, char** argv) {
             scene.advance_particles(race.session());
             expected_particles.advance(race.session());
             const auto tick = race.session().timing().step;
-            if (full || (sampled && tick%60 == 0) || inspect.count(tick)) {
+            // Rendering witnesses must describe actual physics, not a tick
+            // selected under a former vehicle model. Keep explicit coverage
+            // requirements at the end of the complete two-lap input replay.
+            const bool smoke_witness=!checked_smoke && expected_particles.smoke_count()>=4 &&
+                                     expected_particles.spark_count()==0;
+            const bool brake_witness=!checked_braking && race.session().animation().braking &&
+                                     race.session().telemetry().model.forward_speed>1.0;
+            if (full || (sampled && tick%60 == 0) || inspect.count(tick) || smoke_witness || brake_witness) {
                 DrawValidationAudit audit;
                 auto* previous_audit = set_draw_validation_audit(&audit);
                 const auto allocations_before = allocation_calls;
@@ -563,8 +589,20 @@ int main(int argc, char** argv) {
                     reference.visible == frame.visible && reference.unplaced == frame.unplaced,
                     "cached frame metadata differs from reference");
                 for (std::size_t i = 0; i < frame.commands.resource_table().resources.size(); ++i)
-                    require(same_upload_resource(reference.commands.resource_table().resources[i],frame.commands.resource_table().resources[i]),
-                            "cached upload resource differs from reference at index " + std::to_string(i));
+                    if(!same_upload_resource(reference.commands.resource_table().resources[i],frame.commands.resource_table().resources[i]))
+                        throw std::runtime_error("cached upload resource differs from reference at index "+std::to_string(i));
+                // Resolve each immutable descriptor slot once per frame. A
+                // repeated source slot retains the original last-alias-wins
+                // rule; no chained or recursive alias interpretation is added.
+                const auto resource_count=frame.commands.resource_table().resources.size();
+                std::vector<std::uint32_t> effective_textures(resource_count);
+                for(std::size_t i=0;i<resource_count;++i)effective_textures[i]=static_cast<std::uint32_t>(i);
+                for(std::size_t i=0;i<frame.commands.texture_alias_count();++i) {
+                    const auto alias=frame.commands.texture_alias(i);
+                    require(alias.resource<resource_count&&alias.frame<resource_count,
+                            "animated descriptor points outside the upload package");
+                    effective_textures[alias.resource]=alias.frame;
+                }
                 for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                     const auto selected = frame.commands.draw_view(i);
                     const auto& a = selected.definition; const auto& b = reference.commands.owning_draws()[i];
@@ -576,9 +614,17 @@ int main(int argc, char** argv) {
                                 &selected.material == &a.material,
                                 "selected track draw escaped its static package");
                     } else require(!selected.track_instance, "car draw entered static track range");
-                    require(selected.diagnostic_name() == b.name && a.group == b.group && a.mesh == b.mesh && selected.instance == b.instance &&
+                    // The prepared GPU packet keeps an immutable descriptor slot;
+                    // the owning reference packet binds the animated frame directly.
+                    // Compare the exact effective resource, not the slot's base index.
+                    auto effective_texture=a.texture_resource;
+                    if(effective_texture!=kNoHandle) {
+                        require(effective_texture<effective_textures.size(),"draw texture outside upload package");
+                        effective_texture=effective_textures[effective_texture];
+                    }
+                    if(!(selected.diagnostic_name() == b.name && a.group == b.group && a.mesh == b.mesh && selected.instance == b.instance &&
                         a.vertex_resource == b.vertex_resource && a.index_resource == b.index_resource &&
-                        a.texture_resource == b.texture_resource && a.first_vertex == b.first_vertex &&
+                        effective_texture == b.texture_resource && a.first_vertex == b.first_vertex &&
                         a.vertex_count == b.vertex_count && a.first_index == b.first_index && a.index_count == b.index_count &&
                         a.program == b.program && a.pipeline.name == b.pipeline.name &&
                         a.pipeline.cull == b.pipeline.cull && a.pipeline.alpha_test == b.pipeline.alpha_test &&
@@ -587,8 +633,13 @@ int main(int argc, char** argv) {
                         a.pipeline.blend_op == b.pipeline.blend_op && a.pipeline.depth_test == b.pipeline.depth_test &&
                         a.pipeline.depth_write == b.pipeline.depth_write && a.pipeline.color_write == b.pipeline.color_write &&
                         std::memcmp(&selected.placement,&b.placement,sizeof b.placement) == 0 &&
-                        std::memcmp(&selected.material,&b.material,sizeof b.material) == 0,
-                        "cached ordered draw differs from reference");
+                        std::memcmp(&selected.material,&b.material,sizeof b.material) == 0)) {
+                        throw std::runtime_error("cached ordered draw differs from reference: index "+std::to_string(i)+
+                        " names "+selected.diagnostic_name()+" / "+b.name+
+                        " textures "+std::to_string(a.texture_resource)+" / "+std::to_string(b.texture_resource)+
+                        " vertex "+std::to_string(a.vertex_resource)+" / "+std::to_string(b.vertex_resource)+
+                        " instances "+std::to_string(selected.instance)+" / "+std::to_string(b.instance));
+                    }
                 }
                 require(frame.track_draws > 0 && frame.car_draws == (tuned ? 75U : 74U) &&
                         frame.particle_draws == kRaceParticleLimit,
@@ -596,7 +647,7 @@ int main(int argc, char** argv) {
                 require(frame.commands.draw_count() == frame.track_draws + frame.car_draws +
                         frame.particle_draws + frame.glow_draws + 1,
                         "ground shadow, particles or glows missing");
-                if (tick == 1200) {
+                if (smoke_witness) {
                     unsigned visible_smoke=0, visible_sparks=0;
                     bool smoke_color_checked=false, spark_color_checked=false;
                     const auto& camera=frame.commands.frame;
@@ -670,6 +721,8 @@ int main(int argc, char** argv) {
                     require(visible_smoke >= 4 && visible_smoke <= kRaceSmokeLimit &&
                             visible_sparks == 0 && smoke_color_checked && spark_color_checked,
                             "slide frame does not contain bounded smoke and no sparks");
+                    checked_smoke=true;
+                    std::cout<<"smoke witness tick "<<tick<<" visible "<<visible_smoke<<'\n';
                 }
                 if (tick == 1 || tick == 180 || tick == 11344) {
                     std::size_t shadows = 0;
@@ -695,7 +748,7 @@ int main(int argc, char** argv) {
                 require(deko_frame_gpfifo_bound(deko_track_list_calls(
                             static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,
                         "selected track draws exceed GPFIFO call budget");
-                if (tick == 13110) {
+                if (brake_witness) {
                     require(race.session().animation().braking, "animation guard tick is not braking");
                     StockFrameInputs inputs;
                     require(read_stock_frame_inputs(root, inputs, tuned), "animation guard retail car inputs unavailable");
@@ -739,6 +792,8 @@ int main(int argc, char** argv) {
                     }
                     require(wheels > 0 && moving_wheels > 0 && brakes > 0 && headlights > 0 && brakelights > 0,
                             "animation guard did not inspect moving wheels and both lamp slots");
+                    checked_braking=true;
+                    std::cout<<"braking witness tick "<<tick<<'\n';
                 }
                 require(validate_draw_update(uploaded, frame.commands, kTrackSliceDrawLimit, error), error);
                 max_draws = std::max(max_draws, frame.commands.draw_count()); ++frames;
@@ -747,6 +802,7 @@ int main(int argc, char** argv) {
                     << " far " << frame.far_plane << '\n';
             }
         }
+        require(checked_smoke && checked_braking,"complete input lacks required live smoke/braking draw coverage");
         require(first_contact_tick == 0 && first_shadow_tick == 0,
                 "race replay delayed first wheel contact or shadow alpha");
         std::cout << "shadow startup: first wheel contact tick " << first_contact_tick

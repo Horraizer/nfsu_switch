@@ -36,7 +36,7 @@ int main(int argc,char** argv) {
             require(!race.set_performance_levels(levels,error),"late setup refused");
             require(race.start(root,scene.track(),error),error);
             require(compare_vehicle_handling(race.session().spec().handling,
-                    pass==0 ? stock_240sx_handling() : [&]() {
+                    [&]() {
                         VehicleSpec spec; require(load_race_vehicle_spec(root/"Global/GLOBALB.BUN","240SX",levels,spec,error),error);
                         return spec.handling;
                     }())==kVehicleRecordSize,"RaceRun uses selected spec");

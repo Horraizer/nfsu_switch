@@ -30,5 +30,9 @@ void main() {
     vec2 uv = inTexcoord;
     if (frame.options.x != 0u) uv.y = 1.0 - uv.y;
     vec4 texel = texture(baseTexture, uv);
-    outColor = vec4(texel.rgb * inColor.rgb * 2.0, texel.a * material.alpha.x);
+    if (material.alpha.w == 7.0) {
+        uint rgb = uint(material.alpha.z);
+        vec3 tint = vec3(rgb & 255u, (rgb >> 8u) & 255u, (rgb >> 16u) & 255u) / 255.0;
+        outColor = vec4(texel.rgb * tint * 2.0, texel.a * material.alpha.x);
+    } else outColor = vec4(texel.rgb * inColor.rgb * 2.0, texel.a * material.alpha.x);
 }

@@ -28,9 +28,16 @@ if(WIN32 AND NOT NINTENDO_SWITCH)
 endif()
 nfsu_enable_warnings(nfsu_audio_output)
 
-add_library(nfsu_race_audio src/race_audio.cpp src/collision_audio.cpp)
+# The same decoded FE cues are used by menu and in-race UI. This component
+# owns PCM mixing, not another output device or a frontend music player.
+add_library(nfsu_frontend_sfx src/frontend_sfx.cpp)
+target_link_libraries(nfsu_frontend_sfx PUBLIC nfsu_audio_playback nfsu_sha256)
+target_compile_features(nfsu_frontend_sfx PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_frontend_sfx)
+
+add_library(nfsu_race_audio src/race_audio.cpp src/collision_audio.cpp src/engine_audio.cpp src/remote_engine_audio.cpp src/traffic_audio.cpp src/turbo_audio.cpp)
 target_link_libraries(nfsu_race_audio PUBLIC nfsu_audio_playback
-    nfsu_audio_output nfsu_race_session)
+    nfsu_audio_output nfsu_race_session nfsu_car_assets nfsu_frontend_sfx)
 target_include_directories(nfsu_race_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(nfsu_race_audio PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_race_audio)

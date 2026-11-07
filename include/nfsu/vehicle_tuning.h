@@ -21,7 +21,7 @@ namespace nfsu {
 // 0xC90-byte record, and every code address is a virtual address of the
 // retail speed.exe (SHA-256 C0FAD450...074B7).
 //
-// 0x00575960 is the whole rule: it copies 0xAC dwords from record +0x110 into
+// Raw table procedure0x00575960 copies 0xAC dwords from record +0x110 into
 // RideInfo +0x60 (0x0057596C) and then calls, in this order,
 //   0x00575A10  the suspension table
 //   0x00575A90  the tyre table and the tyre-friction item
@@ -31,6 +31,8 @@ namespace nfsu {
 //               curves and the nitrous table
 //   0x00576360  the gearbox table and the drive-split item
 //   0x00576250  the weight table, the mass item and the inertia rebuild
+// Live normal-race57F2B0 clears the two visual aero levels before this call
+// and then adds continuous aero; make_race_vehicle_spec owns that wrapper.
 // The callees address the record through the same pointer the copy read from,
 // record + 0x110, so an offset they compute as `source + X` is record
 // +0x110 + X; the constants below are record offsets.
@@ -366,6 +368,12 @@ bool apply_vehicle_tuning(const unsigned char* record,
                           unsigned char* out_record,
                           std::size_t out_size,
                           std::vector<VehicleTuningIssue>& issues);
+
+// Drift-only postprocessing at 57F337..57F5D7, after apply_vehicle_tuning.
+// Uses the selected original record and applied setup; no retail writes.
+bool apply_vehicle_drift_setup(const unsigned char* original, std::size_t size,
+                               const VehicleUpgradeLevels&, unsigned char* applied,
+                               std::size_t applied_size);
 
 // The box inertia rule of 0x005762FC..0x00576352, in the record's units
 // (tonnes, metres, tonnes m^2), with the constant 1/12 at 0x006CCA6C as the

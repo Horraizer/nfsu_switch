@@ -63,11 +63,29 @@ std::uint64_t track_scene_frame_ceiling(const PreparedTrackScene& scene) noexcep
 // PLACEHOLDER. Replaced by the peak of every persistent allocation of a race
 // measured on hardware: the car scenes once uploaded, and whatever else is
 // loaded once per session.
-constexpr std::uint64_t kPersistentBudgetPlaceholder = 64 * kMiB;
+// Includes baked NIS crowd poses, all racers/traffic, command metadata,
+// decoded sound banks and HUD. The full campaign gate checks this complete
+// composition; the former car-only checks omitted audio/HUD and scene variants.
+constexpr std::uint64_t kPersistentBudgetPlaceholder = 128 * kMiB;
+
+struct RacePersistentPayload {
+    std::uint64_t cars = 0, course = 0, contacts = 0, commands = 0, audio = 0, hud = 0;
+    std::uint64_t total() const noexcept;
+    std::string description() const;
+};
+// Shared by console startup and the complete production campaign check.
+// Saturating addition refuses overflow rather than accepting a wrapped sum.
+bool check_race_persistent_payload(const RacePersistentPayload&, std::string& error);
 
 // PLACEHOLDER. Replaced by the peak streaming allocation of one retail region
-// measured on hardware, over every region a route loads.
-constexpr std::uint64_t kStreamingRegionBudgetPlaceholder = 16 * kMiB;
+// measured on hardware, over every region a route loads. The eight retail
+// circuit permanent sets measure 14,514,080..17,259,968 decoded texture bytes
+// and 27,916,010..35,022,884 streaming payload bytes (track+texture totals
+// up to 52,282,852), read from the owner's retail installation through
+// load_track_slice at the commit that introduced the six new circuits; 18 MiB
+// covers every one of them, where the earlier 16 MiB fit only tracks 1003
+// and forward 1005.
+constexpr std::uint64_t kStreamingRegionBudgetPlaceholder = 24 * kMiB;
 
 // PLACEHOLDER. Replaced by the most regions the retail streaming tables keep
 // resident at once. Those tables are not decoded (docs/TRACK_OBJECTS.md), so
@@ -85,7 +103,7 @@ constexpr std::uint64_t kTransientBudgetPlaceholder = 1 * kMiB;
 // PLACEHOLDER. Replaced by the peak GPU residency measured on hardware, with
 // every image sized by dkImageLayoutGetSize rather than by its texels, inside
 // whatever memory mode the application runs in.
-constexpr std::uint64_t kGpuBudgetPlaceholder = 256 * kMiB;
+constexpr std::uint64_t kGpuBudgetPlaceholder = 266 * kMiB;
 
 // PLACEHOLDER. Replaced by the peak live allocation count per arena measured
 // on hardware. It bounds the bookkeeping each arena reserves up front, 52

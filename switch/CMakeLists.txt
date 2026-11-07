@@ -154,7 +154,7 @@ add_custom_target(nfsu_switch_frontend_probe_shaders ALL DEPENDS ${NFSU_FRONTEND
 
 
 # Production fullscreen postprocess stages, distinct from diagnostic probes.
-set(NFSU_POSTPROCESS_STAGES fxaa.vert fxaa.frag streak_fade.frag streak_copy.frag)
+set(NFSU_POSTPROCESS_STAGES fxaa.vert fxaa.frag speed_blur.vert speed_blur.frag speed_blur_reduce.frag speed_blur_copy.frag streak_fade.frag streak_copy.frag)
 set(NFSU_POSTPROCESS_BLOBS "")
 foreach(stage IN LISTS NFSU_POSTPROCESS_STAGES)
     if(stage MATCHES "[.]vert$")
@@ -181,7 +181,7 @@ if(NFSU_BUILD_TESTS)
     endforeach()
     add_test(NAME nfsu_uam_derivatives_tests
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/uam_derivatives_tests.py)
-    foreach(stage IN ITEMS placed.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
+    foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
         add_test(NAME nfsu_switch_derivatives_${stage}
             COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} --check
                 ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${NFSU_SHADER_OUTPUT}/${stage}.tgsi)
@@ -270,7 +270,7 @@ nfsu_enable_warnings(nfsu_switch_deko3d)
 
 set(NFSU_DEKO_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/deko_romfs)
 set(NFSU_DEKO_BLOBS "")
-foreach(stage IN ITEMS placed.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
+foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
     set(blob ${NFSU_DEKO_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_DEKO_ROMFS}/shaders
@@ -281,8 +281,11 @@ foreach(stage IN ITEMS placed.vert car_shadow.vert car_shadow.frag textured.frag
     list(APPEND NFSU_DEKO_BLOBS ${blob})
 endforeach()
 add_custom_target(nfsu_switch_deko_romfs DEPENDS ${NFSU_DEKO_BLOBS})
+# nx_create_nro runs in this binary directory. Relative asset folders keep
+# the Windows native RomFS directory scanner independent of checkout encoding.
+# Copy/dependency paths below remain full CMake-managed paths.
 set_target_properties(nfsu_switch_deko_romfs PROPERTIES
-    DKP_ASSET_FOLDER ${NFSU_DEKO_ROMFS} DKP_ASSET_FILES "${NFSU_DEKO_BLOBS}")
+    DKP_ASSET_FOLDER deko_romfs DKP_ASSET_FILES "${NFSU_DEKO_BLOBS}")
 nx_generate_nacp(OUTPUT nfsu_switch_deko3d.nacp NAME "nfsu_switch_deko3d"
     AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
 nx_create_nro(nfsu_switch_deko3d NACP nfsu_switch_deko3d.nacp
@@ -501,12 +504,24 @@ if(NOT NFSU_RACE_BUILD_TAG MATCHES "^[A-Za-z0-9._-]+$")
 endif()
 # Opt-in hardware diagnostic: SDK argument checks plus immediate callback log.
 option(NFSU_SWITCH_FRONTEND_PREFLIGHT "Run isolated first-mesh GPU diagnostic stages" OFF)
+option(NFSU_SWITCH_SPEED_BLUR_PROBE "Compare full RGBA pass pixels from one active NOS frame" OFF)
+option(NFSU_SWITCH_CAMPAIGN_SWEEP "Start the resumable hardware campaign smoke on launch" OFF)
+option(NFSU_SWITCH_CAMPAIGN_FINISH_SWEEP "Exercise finish, results and saves in the campaign sweep" OFF)
 option(NFSU_SWITCH_DEKO_DEBUG "Use deko3d debug validation for the race application" OFF)
 set(NFSU_SWITCH_RACE_DEKO_LIBRARY deko3d)
 if(NFSU_SWITCH_DEKO_DEBUG)
     set(NFSU_SWITCH_RACE_DEKO_LIBRARY deko3dd)
 endif()
-add_executable(nfsu_switch_race race_main.cpp deko_renderer.cpp)
+add_executable(nfsu_switch_race race_main.cpp lan_main.cpp deko_renderer.cpp)
+if(NFSU_SWITCH_CAMPAIGN_SWEEP)
+    target_compile_definitions(nfsu_switch_race PRIVATE NFSU_SWITCH_CAMPAIGN_SWEEP=1)
+endif()
+if(NFSU_SWITCH_CAMPAIGN_FINISH_SWEEP)
+    if(NOT NFSU_SWITCH_CAMPAIGN_SWEEP)
+        message(FATAL_ERROR "Campaign finish sweep requires NFSU_SWITCH_CAMPAIGN_SWEEP")
+    endif()
+    target_compile_definitions(nfsu_switch_race PRIVATE NFSU_SWITCH_CAMPAIGN_FINISH_SWEEP=1)
+endif()
 option(NFSU_RACE_FPS_OVERLAY "Enable diagnostic FPS overlay by default" OFF)
 if(NFSU_RACE_FPS_OVERLAY)
     target_compile_definitions(nfsu_switch_race PRIVATE NFSU_RACE_FPS_OVERLAY=1)
@@ -527,19 +542,43 @@ endif()
 if(NFSU_RACE_FXAA)
     target_compile_definitions(nfsu_switch_race PRIVATE NFSU_RACE_FXAA=1)
 endif()
-target_link_libraries(nfsu_switch_race PRIVATE nfsu_race_run nfsu_race_hud nfsu_posix_file_system nfsu_screen_text nfsu_stock_view nfsu_race_audio nfsu_frontend nfsu_frontend_music nfsu_intro_movie ${NFSU_SWITCH_RACE_DEKO_LIBRARY})
+target_link_libraries(nfsu_switch_race PRIVATE nfsu_race_run nfsu_race_hud nfsu_posix_file_system nfsu_screen_text nfsu_stock_view nfsu_race_audio nfsu_frontend nfsu_frontend_music nfsu_intro_movie nfsu_lan_scene ${NFSU_SWITCH_RACE_DEKO_LIBRARY})
 if(NFSU_SWITCH_DEKO_DEBUG)
     target_compile_definitions(nfsu_switch_race PRIVATE NFSU_DEKO_DEBUG_DIAGNOSTICS=1)
+endif()
+if(NFSU_SWITCH_SPEED_BLUR_PROBE)
+    target_compile_definitions(nfsu_switch_race PRIVATE NFSU_SPEED_BLUR_PROBE=1)
 endif()
 if(NFSU_SWITCH_FRONTEND_PREFLIGHT)
     target_compile_definitions(nfsu_switch_race PRIVATE NFSU_FRONTEND_PREFLIGHT=1)
 endif()
-target_compile_definitions(nfsu_switch_race PRIVATE NFSU_RACE_BUILD_TAG="${NFSU_RACE_BUILD_TAG}")
+target_compile_definitions(nfsu_switch_race PRIVATE NFSU_RACE_BUILD_TAG="${NFSU_RACE_BUILD_TAG}" NFSU_RACE_WORLD_SHADER=1)
 set_target_properties(nfsu_switch_race PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 nfsu_enable_warnings(nfsu_switch_race)
 set(NFSU_RACE_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/race_romfs)
 set(NFSU_RACE_ASSETS "")
-foreach(stage IN ITEMS placed.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag ${NFSU_FRONTEND_PROBE_STAGES} ${NFSU_POSTPROCESS_STAGES})
+set(race_world_source ${PROJECT_SOURCE_DIR}/shaders/textured_opaque.frag.glsl)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${race_world_source})
+file(READ ${race_world_source} race_world_glsl)
+string(FIND "${race_world_glsl}" "\nvoid main()" race_world_generic_main)
+if(race_world_generic_main LESS 0)
+    message(FATAL_ERROR "Missing generic textured shader entry point")
+endif()
+string(SUBSTRING "${race_world_glsl}" 0 ${race_world_generic_main} race_world_glsl)
+string(REPLACE "void raceWorldMain()" "void main()" race_world_glsl "${race_world_glsl}")
+set(race_world ${NFSU_SHADER_OUTPUT}/race_world.frag)
+file(GENERATE OUTPUT ${race_world}.glsl CONTENT "${race_world_glsl}\n")
+add_custom_command(OUTPUT ${race_world}.dksh ${race_world}.tgsi
+    COMMAND ${NX_UAM_EXE} -s frag -o ${race_world}.raw -t ${race_world}.tgsi ${race_world}.glsl
+    COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} ${race_world}.raw ${race_world}.tgsi ${race_world}.dksh
+    COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} --check ${race_world}.dksh ${race_world}.tgsi
+    COMMAND ${CMAKE_COMMAND} -DMODE=blob -DMANIFEST=${PROJECT_SOURCE_DIR}/shaders/track_linear_textured.manifest
+        -DVERTEX_DKSH=${NFSU_SHADER_OUTPUT}/placed_headlight.vert.dksh -DVERTEX_TGSI=${NFSU_SHADER_OUTPUT}/placed_headlight.vert.tgsi
+        -DFRAGMENT_DKSH=${race_world}.dksh -DFRAGMENT_TGSI=${race_world}.tgsi -P ${NFSU_SHADER_CHECKER}
+    BYPRODUCTS ${race_world}.raw
+    DEPENDS ${race_world}.glsl ${NFSU_SHADER_OUTPUT}/placed_headlight.vert.dksh ${NFSU_SHADER_STAMPS}
+        ${NFSU_SHADER_CHECKER} ${NFSU_SHADER_DERIVATIVES} ${NX_UAM_EXE} VERBATIM)
+foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag race_world.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag ${NFSU_FRONTEND_PROBE_STAGES} ${NFSU_POSTPROCESS_STAGES})
     set(blob ${NFSU_RACE_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_RACE_ROMFS}/shaders
@@ -560,10 +599,27 @@ add_custom_command(OUTPUT ${NFSU_RACE_ROMFS}/performance1.txt
 list(APPEND NFSU_RACE_ASSETS ${NFSU_RACE_ROMFS}/performance1.txt)
 add_custom_target(nfsu_switch_race_romfs DEPENDS ${NFSU_RACE_ASSETS})
 set_target_properties(nfsu_switch_race_romfs PROPERTIES
-    DKP_ASSET_FOLDER ${NFSU_RACE_ROMFS} DKP_ASSET_FILES "${NFSU_RACE_ASSETS}")
+    DKP_ASSET_FOLDER race_romfs DKP_ASSET_FILES "${NFSU_RACE_ASSETS}")
 nx_generate_nacp(OUTPUT nfsu_switch_race.nacp NAME "nfsu_switch_race"
     AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
 nx_create_nro(nfsu_switch_race NACP nfsu_switch_race.nacp ROMFS nfsu_switch_race_romfs)
+
+# Standalone engineering room. No career menu or save changes are involved.
+add_executable(nfsu_switch_lan lan_main.cpp deko_renderer.cpp)
+target_link_libraries(nfsu_switch_lan PRIVATE nfsu_lan_scene nfsu_stock_view nfsu_race_audio nfsu_screen_text ${NFSU_SWITCH_RACE_DEKO_LIBRARY})
+target_compile_definitions(nfsu_switch_lan PRIVATE NFSU_RACE_BUILD_TAG="lan-room-r5" NFSU_LAN_STANDALONE=1)
+if(NFSU_RACE_FXAA)
+    target_compile_definitions(nfsu_switch_lan PRIVATE NFSU_RACE_FXAA=1)
+elseif(NFSU_RACE_MSAA2)
+    target_compile_definitions(nfsu_switch_lan PRIVATE NFSU_RACE_MSAA2=1)
+elseif(NFSU_RACE_MSAA8)
+    target_compile_definitions(nfsu_switch_lan PRIVATE NFSU_RACE_MSAA8=1)
+endif()
+set_target_properties(nfsu_switch_lan PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
+nfsu_enable_warnings(nfsu_switch_lan)
+nx_generate_nacp(OUTPUT nfsu_switch_lan.nacp NAME "nfsu_switch_lan"
+    AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
+nx_create_nro(nfsu_switch_lan NACP nfsu_switch_lan.nacp ROMFS nfsu_switch_race_romfs)
 add_executable(nfsu_switch_texture_compare ${PROJECT_SOURCE_DIR}/src/texture_filter_compare_main.cpp
     ${PROJECT_SOURCE_DIR}/src/track_render.cpp deko_renderer.cpp)
 target_include_directories(nfsu_switch_texture_compare PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -575,7 +631,7 @@ nx_generate_nacp(OUTPUT nfsu_switch_texture_compare.nacp NAME "nfsu_texture_comp
     AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
 set(NFSU_TEXTURE_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/texture_romfs)
 set(NFSU_TEXTURE_ASSETS "")
-foreach(stage IN ITEMS placed.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
+foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
     set(blob ${NFSU_TEXTURE_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_TEXTURE_ROMFS}/shaders
@@ -591,7 +647,7 @@ add_custom_command(OUTPUT ${NFSU_TEXTURE_ROMFS}/texture_filter_v2.txt
 list(APPEND NFSU_TEXTURE_ASSETS ${NFSU_TEXTURE_ROMFS}/texture_filter_v2.txt)
 add_custom_target(nfsu_switch_texture_romfs DEPENDS ${NFSU_TEXTURE_ASSETS})
 set_target_properties(nfsu_switch_texture_romfs PROPERTIES
-    DKP_ASSET_FOLDER ${NFSU_TEXTURE_ROMFS} DKP_ASSET_FILES "${NFSU_TEXTURE_ASSETS}")
+    DKP_ASSET_FOLDER texture_romfs DKP_ASSET_FILES "${NFSU_TEXTURE_ASSETS}")
 nx_create_nro(nfsu_switch_texture_compare NACP nfsu_switch_texture_compare.nacp ROMFS nfsu_switch_texture_romfs)
 if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_switch_texture_compare_nro COMMAND ${CMAKE_COMMAND}
@@ -610,6 +666,14 @@ if(NFSU_BUILD_TESTS)
         -DBUILD_TAG=${NFSU_RACE_BUILD_TAG}
         -P ${PROJECT_SOURCE_DIR}/tests/switch_race_romfs_check.cmake)
     set_tests_properties(nfsu_switch_race_nro PROPERTIES TIMEOUT 60)
+    add_test(NAME nfsu_switch_lan_nro COMMAND ${CMAKE_COMMAND}
+        -DNRO=${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_lan.nro
+        -DELF=$<TARGET_FILE:nfsu_switch_lan> -DTITLE=nfsu_switch_lan
+        -DSHADERS=${NFSU_SHADER_OUTPUT} -DREPLAY=${NFSU_RACE_INPUT}
+        -DPERFORMANCE_REPLAY=${NFSU_PERFORMANCE_INPUT}
+        -DBUILD_TAG=lan-room-r5
+        -P ${PROJECT_SOURCE_DIR}/tests/switch_race_romfs_check.cmake)
+    set_tests_properties(nfsu_switch_lan_nro PROPERTIES TIMEOUT 60)
     add_test(NAME nfsu_switch_race_embedded_shaders
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/switch_embedded_shaders_tests.py
             --nro ${CMAKE_CURRENT_BINARY_DIR}/nfsu_switch_race.nro
@@ -628,6 +692,14 @@ if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_frontend_glow_source_tests
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/frontend_glow_source_tests.py
             --root ${PROJECT_SOURCE_DIR})
+    add_test(NAME nfsu_switch_gpu_sample_contract
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/switch_gpu_sample_tests.py
+                --root ${PROJECT_SOURCE_DIR})
+    set_tests_properties(nfsu_switch_gpu_sample_contract PROPERTIES TIMEOUT 60)
+    add_test(NAME nfsu_switch_shadow_height_contract
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/car_shadow_shader_tests.py
+            --tgsi ${NFSU_SHADER_OUTPUT}/car_shadow.vert.tgsi)
+    set_tests_properties(nfsu_switch_shadow_height_contract PROPERTIES TIMEOUT 60)
     add_test(NAME nfsu_switch_frontend_profile_contract
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/switch_frontend_profile_tests.py
             --root ${PROJECT_SOURCE_DIR})

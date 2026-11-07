@@ -1,4 +1,7 @@
 #include "nfsu/race_session.h"
+#include "nfsu/race_run.h"
+#include "nfsu/start_crowd.h"
+#include "nfsu/posix_file_system.h"
 #include "nfsu/race_setup.h"
 #include "nfsu/handling_telemetry.h"
 #include "nfsu/race_hud.h"
@@ -18,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -119,7 +123,9 @@ public:
     // when the caller keeps it, one build per tick as the original's car
     // update does.
     RaceHudFrame hud_frame;
+    RaceMinimapState minimap_state;
     CarShadowAsset shadow;
+    StartCrowd crowd;
     std::vector<PreparedInstance> base;
     CarGlowAnchors glow_anchors{};
     bool glows = false;
@@ -132,7 +138,7 @@ public:
     explicit RaceScene(const TrackStreamTable& t, bool effects) : particles_enabled(effects), table(t) {}
     void load_car(const fs::path& root, const fs::path& texture, const CarAssets& selection) {
         std::string error;
-        require(load_race_hud_atlas(root,hud_atlas,error),error);
+        require(load_race_hud_atlas(root,hud_atlas,error,false,false,track_number==1301),error);
         if (!read_car_frame_inputs(root,selection,car_inputs,tuned,error))
             throw std::runtime_error(car_frame_inputs_error(car_inputs,error,root));
         require(prepare_race_car_frame(car_inputs,root,
@@ -141,6 +147,7 @@ public:
                 car,error,car_shading),error);
         require(prepare_car_shadow(selection.car_type_name,car_inputs,car.car_pack,shadow,error),error);
         require(prepare_car_shadow_bounds(car_inputs,car,shadow,error),error);
+        if(track_number==1301)require(crowd.load(posix_file_system(),root,error,kFirstDriftStartScene,1301),error);
         base = car.scene.instances;
         glow_anchors = collect_car_glow_anchors(car);
         const std::array<fs::path,3> paths = {
@@ -178,9 +185,9 @@ public:
                 section.index = objects.sections.size(); objects.sections.push_back(std::move(section));
             }
         }
-        if (track_number==1005) require(retain_instanced_track_meshes(geometry,objects,error),error);
+        if (track_number==1005||track_number==1301) require(retain_instanced_track_meshes(geometry,objects,error),error);
         auto wanted = track_region_texture_hashes(geometry);
-        if (track_number == 1005) {
+        if (track_number == 1005||track_number==1301) {
             wanted.push_back(kTrackDefaultAlphaHash);
             std::sort(wanted.begin(), wanted.end());
             wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
@@ -222,6 +229,7 @@ public:
         RenderTextureLimits limits; limits.max_total_bytes = 512ULL*1024*1024;
         require(decode_render_texture_sources(sources,limits,textures,error),error);
         if (track_number == 1005) require(bind_track_default_alpha(textures,0x828DCF0BU,error),error);
+        if(track_number==1301)require(bind_drift_track_default_alpha(textures,error),error);
         TrackSceneOptions options; options.region.max_texture_bytes = limits.max_total_bytes;
         require(build_track_scene(geometry,objects,textures,options,track,error),error);
         std::vector<TrackVisibleInstance> visible;
@@ -241,7 +249,8 @@ public:
         options.material_state = MaterialStateMode::retail;
         options.texture_filter=texture_filter;
         options.car_shading=car_shading;
-        require(drive_render_camera(session.camera(),ChaseFovMode::vertical_4_3,640,360,options.camera,error),error);
+        require(drive_render_camera(session.camera(),ChaseFovMode::retail,640,360,options.camera,error),error);
+        crowd.frame(session);crowd.camera(session,options.camera,options.width,options.height);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
         track_options.sky = true;
@@ -249,22 +258,25 @@ public:
         track_options.wet_lamps = wet_road_reflections ? &lamps : nullptr;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
-        const auto shadow_pose = place_car_shadow(shadow,session);
+        VehicleState presented=session.car();const bool start_car=crowd.car(session,presented);
+        const auto shadow_pose = place_car_shadow(shadow,presented,session.spec(),session.course().world);
         require(render_car_shadow(shadow,shadow_pose,track_options,background,stats,error),error);
-        require(drive_place_instances(base,session.car(),session.spec(),car.scene.instances,
+        require(drive_place_instances(base,presented,session.spec(),car.scene.instances,
                                       &session.animation()),"car placement failed");
         require(render_stock_frame(car,options,error),error);
         require(!tuned || car.stats.triangles_fallback == 0,
                 "tuned race car has fallback triangles");
         Frame composed;
-        require(compose_race_frame(background,car.frame,composed),"frame sizes differ");
-        if (glows) {
+        if(session.camera().pov==2 && !session.crash_camera_event() && !start_car)composed=background;
+        else require(compose_race_frame(background,car.frame,composed),"frame sizes differ");
+        if (glows && (session.camera().pov!=2 || session.crash_camera_event())) {
             CameraFrame camera;
             require(make_camera_frame(options.camera,options.width,options.height,camera,error),error);
             const auto sprites = place_car_glows(glow_anchors,car.scene,camera,
                                                  session.animation().braking);
             require(draw_car_glows(composed,options,sprites,stats,error),error);
         }
+        require(crowd.render(options,composed,stats,error),error);
         std::vector<unsigned char> rgba = composed.rgba();
         if (particles_enabled)
             require(draw_race_particles(rgba,options,particles,error,&background,&car.frame),error);
@@ -300,7 +312,7 @@ int run(int argc, char** argv) {
                          "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows|--glows=off]\n"
                          "  [--car NAME] a playable car type from the retail table; 240SX by default\n"
                          "  [--car-shading on|off] [--texture-filter legacy|linear]\n"
-                         "  [--wet-road-reflections on|off] [--event 1|8]\n"
+                         "  [--wet-road-reflections on|off] [--event <circuit event>]\n"
                          "  [--performance-levels name=0..3,...] [--handling-telemetry]\n"
                          "  [--steering baseline|recovered0|recovered1]\n"
                          "  [--hud-trace] writes completed HUD states to --out/hud.csv\n"
@@ -320,8 +332,13 @@ int run(int argc, char** argv) {
         if (a=="--hud-trace") { hud_trace=true; continue; }
         require(i+1<argc,"missing option value"); const std::string value=argv[++i];
         if (a=="--event") {
-            require(!event_seen && (value=="1" || value=="8"),"--event needs one 1 or 8");
-            event_seen=true; event_number=value=="1" ? 1 : 8;
+            require(!event_seen,"duplicate --event");
+            char* end=nullptr;
+            const long parsed=std::strtol(value.c_str(),&end,10);
+            require(end && *end=='\0' && parsed>0 && parsed<1000 &&
+                   nfsu::is_supported_event(static_cast<std::uint32_t>(parsed)),
+                   "--event needs one supported circuit event: 1, 8, 16, 19, 32, 35, 37, 45, 52, 53, 59, 71, 75, 81, 87, 89, 96, 99, 104, 107, 111, 113, 120, 121, 122 - or one of the drift events 3, 13, 18, 25, 28, 33, 40, 44, 50, 56, 64, 65, 73, 86, 90, 93, 105, 109 - or one of the drag events 4, 11, 17, 21, 29, 36, 42, 46, 51, 55, 62, 63, 70, 76, 79, 83, 88, 98, 106, 108 - or one of the sprint events 2, 12, 22, 23, 27, 34, 41, 43, 54, 57, 61, 67, 74, 78, 82, 94, 95, 100, 101, 110 - or one of the lap-knockout events 5, 10, 24, 31, 39, 49, 58, 60, 72, 84, 91, 103 - or one of the time-trial events 7, 15, 26, 47, 68, 77, 97");
+            event_seen=true; event_number=static_cast<std::uint32_t>(parsed);
         }
         else if (a=="--performance-levels") {
             require(!explicit_performance,"duplicate --performance-levels");
@@ -432,27 +449,36 @@ int run(int argc, char** argv) {
         scene.apply(step); const auto line=track_residency_step_line(table,step)+"\n";
         sequence.update(line.data(),line.size());
     }
-    VehicleSpec spec=stock_240sx_vehicle_spec();
-    if (explicit_performance || selected_car.car_type_name!="240SX") {
-        // Every car but the default drives its own decoded handling record;
-        // the built-in 240SX spec keeps the pinned baseline replay exact.
-        require(load_race_vehicle_spec(root/"Global/GLOBALB.BUN",selected_car.car_type_name,
-                                       performance,spec,error),error);
-    }
+    // Use the same recovered runtime producer for implicit and explicit
+    // zero upgrades, including the ordinary stock 240SX.
+    VehicleSpec spec;
+    require(load_race_vehicle_spec(root/"Global/GLOBALB.BUN",selected_car.car_type_name,
+                                   performance,spec,error,event_number==3,1),error);
     if (explicit_performance) {
         std::cout << "performance-levels " << performance_levels_text(performance) << '\n';
     }
     if (handling_telemetry && !explicit_performance) std::cout << "performance-levels legacy-stock\n";
     HandlingTelemetryLog handling_log(handling_telemetry ? stdout : nullptr);
     if (steering_seen || handling_telemetry) std::cout << "steering " << race_steering_name(steering) << '\n';
-    RaceSession session(course,spec,steering); require(session.start(error),error);
+    RaceSession session(course,spec,event_number==3?RaceSteering::recovered_predicate1:steering);
+    RaceCrashRoad crash_road;
+    if(live&&event_number!=3) {
+        require(crash_road.load(root,slot.track,slot.direction,course,spec.handling,nullptr,error),error);
+        require(session.set_crash_camera(&crash_road,kCrashCameraDefaultIntensity,slot.track,error),error);
+    }
+    if(event_number==3)require(session.prepare_style(root,error),error);
+    float countdown=kRaceCountdownStepSeconds,cinematic=0;
+    if(event_number==3)require(load_race_start_timing(root,3,countdown,cinematic,error),error);
+    VehiclePose start;
+    if(event_number==3)require(load_drift_start_pose(root,course,start,error),error);
+    require(session.start(error,event_number==3?&start:nullptr,countdown,cinematic),error);
     audio::RaceAudioService sound;
     if (live && !smoke) {
         std::string diagnostic;
-        sound.start(root, diagnostic);
+        sound.start(root, diagnostic, {}, {}, false,selected_car.car_type_name,performance.engine_a,performance.nitrous,performance.tyres,{},performance.induction);
         std::cout << "audio: " << diagnostic << '\n';
     }
-    RaceRouteDriver driver(event_number==1 ? RaceDrivingLine::event1_forward : RaceDrivingLine::event8_forward); std::vector<RaceInputRun> recording;
+    RaceRouteDriver driver(race_event_driving_line(event_number)); std::vector<RaceInputRun> recording;
     std::ofstream states, trajectory, hud_audit;
     if (!output.empty()) {
         require(fs::create_directory(output),"cannot create output directory");
@@ -476,6 +502,7 @@ int run(int argc, char** argv) {
         auto begin=Clock::now(); require(session.advance(pad,error),error); simulation.add(begin);
         require(handling_log.write(session,pad,consumed_us,live),"handling telemetry write failed");
         build_race_hud_frame(session,scene.hud_atlas,640,360,scene.hud_frame);
+        if(session.is_drift())require(append_race_minimap(session,scene.hud_atlas,640,360,scene.minimap_state,scene.hud_frame),"drift minimap geometry refused");
         if (hud_audit.is_open()) {
             const auto& r=scene.hud_frame.readout;
             hud_audit << session.timing().step << ',' << r.physics_step << ','
@@ -572,6 +599,10 @@ int run(int argc, char** argv) {
     std::cout << "total ticks " << result.finish_ticks << " time " << format_race_ticks(result.finish_ticks)
               << "\nstate-sha256 " << sha256_hex(sequence.finish()) << '\n'
               << "stream loads " << scene.loads << " releases " << scene.releases << " bytes-read " << scene.bytes_read << '\n';
+    if(session.is_drift()) {
+        for(const auto& row:session.drift_competition().standings())std::cout<<"drift "<<row.name<<" "<<row.score<<std::endl;
+        std::cout<<"drift banked "<<session.style().item(0).total<<" best "<<session.style().item(0).best<<" finished "<<session.drift().finished()<<std::endl;
+    }
     simulation.print("simulation"); streaming.print("residency"); hashing.print("hashing");
     scene.io_cost.print("stream-io"); scene.prepare_cost.print("scene-prepare"); scene.render_cost.print("render-hud");
     return 0;

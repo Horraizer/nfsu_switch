@@ -520,15 +520,20 @@ void decode_ast_segment(std::istream& input, const Segment& segment,
                         pos + start + skip, segment.codec, states[ch]);
                 }
             }
-            std::vector<Byte> pcm(static_cast<std::size_t>(frames) * segment.channels * 2);
-            for (std::uint32_t frame = 0; frame < frames; ++frame)
-                for (std::uint32_t ch = 0; ch < segment.channels; ++ch) {
-                    const std::size_t src = static_cast<std::size_t>(frame) * 2;
-                    const std::size_t dst = (static_cast<std::size_t>(frame) * segment.channels + ch) * 2;
-                    pcm[dst] = channels[ch][src];
-                    pcm[dst + 1] = channels[ch][src + 1];
-                }
-            sink(pcm.data(), pcm.size());
+            // Interleave into bounded chunks instead of retaining a second
+            // full PCM block while the stream waits for ring-buffer space.
+            constexpr std::uint32_t batch_frames=4096;
+            std::array<Byte,batch_frames*2*2> pcm{};
+            for(std::uint32_t first=0;first<frames;first+=batch_frames) {
+                const auto count=std::min(batch_frames,frames-first);
+                for(std::uint32_t frame=0;frame<count;++frame)
+                    for(std::uint32_t ch=0;ch<segment.channels;++ch) {
+                        const std::size_t src=static_cast<std::size_t>(first+frame)*2;
+                        const std::size_t dst=(static_cast<std::size_t>(frame)*segment.channels+ch)*2;
+                        pcm[dst]=channels[ch][src];pcm[dst+1]=channels[ch][src+1];
+                    }
+                sink(pcm.data(),static_cast<std::size_t>(count)*segment.channels*2);
+            }
             total += frames;
         } else if (tag != kSCHl && tag != kSCCl && tag != kSCEl) {
             fail(pos, "unexpected segment chunk");

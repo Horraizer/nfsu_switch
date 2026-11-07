@@ -25,6 +25,7 @@
 #include "nfsu/race_events.h"
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/race_run.h"
+#include "nfsu/car_collision_hull.h"
 #include "nfsu/race_session.h"
 #include "nfsu/sha256.h"
 #include "nfsu/skin_inputs.h"
@@ -392,17 +393,92 @@ void retail_checks(const std::filesystem::path& root) {
             require(run.set_event(event,error),error);
             require(run.set_free_drive(true,error),error);
             require(run.set_car("SKYLINE",error),error);
+            require(run.set_performance_levels(dress.performance,error),error);
+            require(run.set_steering(RaceSteering::recovered_predicate1,error),error);
             require(run.prepare_metadata(root,error),"skyline metadata: " + error);
             require(run.start(root,scene.track(),error),"skyline free-drive start: " + error);
+            std::unique_ptr<RaceRun> paired;
+            std::unique_ptr<RaceSession> authored,wrong_hull;
+            unsigned wrong_hull_differences=0,prop_impacts=0;
+            std::array<std::uint8_t,kVehicleTrackTelemetryRecordBytes> lhs{},rhs{};
+            if(event==1) {
+                VehicleHull hull;
+                require(decode_car_collision_hull(menu_inputs.file(StockFrameFile::car_geometry).bytes,
+                    bin_hash("SKYLINE_CV"),hull),"actual Skyline collision solid");
+                require(hull.points!=stock_240sx_hull().points,"selected hull differs from old 240SX substitution");
+                auto unchanged=hull;
+                require(!decode_car_collision_hull({},0,hull)&&hull.points==unchanged.points,
+                    "missing collision solid refuses without partial output");
+                std::printf("MODE_AUDIT SKYLINE hull_points=%zu old_240sx_points=%zu levels=%s\n",
+                    hull.points.size(),stock_240sx_hull().points.size(),performance_levels_text(dress.performance).c_str());
+                paired=std::make_unique<RaceRun>();
+                require(paired->set_intro_traffic({},error)&&paired->set_car("SKYLINE",error)&&paired->set_performance_levels(dress.performance,error)&&
+                    paired->set_steering(RaceSteering::recovered_predicate1,error)&&
+                    paired->prepare_metadata(root,error)&&paired->start(root,scene.track(),error),error);
+                authored=std::make_unique<RaceSession>(run.session().course(),run.session().spec(),
+                    RaceSteering::recovered_predicate1,hull);
+                wrong_hull=std::make_unique<RaceSession>(run.session().course(),run.session().spec(),
+                    RaceSteering::recovered_predicate1,stock_240sx_hull());
+                // All compared cars must inhabit the same authored object world.
+                require(authored->set_traffic(root,{},error)&&wrong_hull->set_traffic(root,{},error),error);
+                require(authored->start(error)&&wrong_hull->start(error),error);
+                require(run.session().props()&&paired->session().props()&&authored->props()&&wrong_hull->props(),
+                    "same-car comparison includes physical track props in all sessions");
+                for(const auto& prop:run.session().props()->objects())
+                    require(prop.box.neighbors.size()==prop.points.size(),
+                        "authored prop hull retains its original vertex connectivity");
+            }
             RaceGpuFrame frame;
-            for (unsigned tick=0;tick<240;++tick) {
-                const auto pad=race_input_frame({1,gamepad_button_bit(GamepadButton::trigger_right),0},tick);
+            for (unsigned tick=0;tick<(event==1?1200U:240U);++tick) {
+                auto buttons=gamepad_button_bit(GamepadButton::trigger_right);
+                if(tick>=300&&tick<420)buttons|=gamepad_button_bit(GamepadButton::shoulder_left);
+                if(tick>=660&&tick<750)buttons=gamepad_button_bit(GamepadButton::trigger_left);
+                if(tick>=780&&tick<840)buttons|=gamepad_button_bit(GamepadButton::face_south);
+                // Steer into the authored convex solids, beyond their box outlines.
+                const int steer=event==1?(tick>=420?16000:0):(tick>=480?12000:0);
+                const auto pad=race_input_frame({1,buttons,steer},tick);
                 require(run.simulate(pad,error) && run.commit(error),"skyline free-drive step: " + error);
+                if(paired) {
+                    prop_impacts+=unsigned(run.session().prop_contacts().count);
+                    require(paired->simulate(pad,error)&&paired->commit(error)&&authored->advance(pad,error)&&
+                        wrong_hull->advance(pad,error),error);
+                    for(unsigned k=0;k<kDriveStepsPerFrame;++k) {
+                        encode_vehicle_track_telemetry(run.session().physics_telemetry()[k],lhs);
+                        encode_vehicle_track_telemetry(paired->session().physics_telemetry()[k],rhs);
+                        require(lhs==rhs,"same-car free/race physics divergence at tick "+std::to_string(tick));
+                        encode_vehicle_track_telemetry(authored->physics_telemetry()[k],rhs);
+                        require(lhs==rhs,"RaceRun does not use selected hull at tick "+std::to_string(tick));
+                        encode_vehicle_track_telemetry(wrong_hull->physics_telemetry()[k],rhs);
+                        wrong_hull_differences+=lhs!=rhs;
+                    }
+                    require(run.session().nitrous().active==paired->session().nitrous().active &&
+                        run.session().nitrous().remaining==paired->session().nitrous().remaining,
+                        "same-car free/race nitrous activation or charge differs");
+                }
                 if (tick%60==0)
                     require(scene.frame(run.session(),frame,error),"skyline dressed frame: " + error);
             }
+            if(paired) {
+                require(wrong_hull_differences>0,"old hull negative did not exercise a collision difference");
+                require(prop_impacts>0,"same-car comparison exercises actual physical roadside contacts");
+                std::printf("MODE_AUDIT 1200 ticks paired physics/contact/nitrous exact; wrong_hull_differing_slices=%u\n",wrong_hull_differences);
+            }
             require(scene.frame(run.session(),frame,error),"final dressed frame: " + error);
             require(frame.glow_draws>7,"original primary lights include authored road sources and seven car slots");
+            unsigned original_light_chains=0;
+            for(const auto& resource:frame.commands.resource_table().resources) {
+                const std::string name=resource.name;
+                const unsigned levels=name=="race-car/headlights" ||
+                    name=="race-glow/original-head" || name=="race-glow/original-head-outer" ? 4U :
+                    name=="race-glow/original-tail" ? 5U : 0U;
+                if(!levels)continue;
+                ++original_light_chains;
+                require(resource.texture.mip_count==levels,
+                    "original lamp mip chain reaches actual GPU upload: " + name);
+                require(resource.bytes>std::uint64_t(resource.texture.width)*resource.texture.height*4,
+                    "lamp upload includes authored lower levels: " + name);
+            }
+            require(original_light_chains==4,"beam and all three original glow images are resident");
             unsigned visible_glows=0;
             for(std::size_t i=0;i<frame.commands.draw_count();++i) {
                 const auto d=frame.commands.draw_view(i);

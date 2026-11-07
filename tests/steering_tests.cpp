@@ -1,6 +1,7 @@
 #include "nfsu/steering.h"
 #include "nfsu/sha256.h"
 #include "nfsu/race_run.h"
+#include "vehicle_runtime_oracles.h"
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -82,8 +83,14 @@ int main() {
     car.gearbox=VehicleGearbox::manual;
     VehicleInput in; in.road_steering=true; in.road_angle=.15; in.road_target=.2;
     in.steer=.7; in.shift=VehicleShift::up; VehicleTelemetry t;
-    check(model.step(car,in,VehicleFlatGround(),t) && car.gear==3 &&
-        car.steer_angle==.15 && t.requested_steer_angle==.2,"override removes approximate lock/slew across manual shift");
+    check(model.step(car,in,VehicleFlatGround(),t) && car.transmission.requested_gear==3 &&
+        car.steer_angle==.15 && t.requested_steer_angle==.2,"override removes approximate lock/slew while native clutch accepts shift request");
+    in.shift=VehicleShift::none;
+    unsigned shift_ticks=0;
+    while(car.gear!=3 && shift_ticks++<120)
+        check(model.step(car,in,VehicleFlatGround(),t),"accepted manual shift completes through native phases");
+    check(car.gear==3 && car.steer_angle==.15 && t.requested_steer_angle==.2,
+          "completed native shift preserves explicit road steering override");
 
     VehicleTrackCourse course;
     check(build_vehicle_proving_ground(course,error),"steering replay course");
@@ -141,12 +148,19 @@ int main() {
         check(session.start(error),"production braking session starts");
         double brake_start=0, min_up=1; unsigned moving_samples=0, idle_samples=0;
         unsigned pinned_samples=0, release_samples=0;
+        unsigned service_samples=0,parking_samples=0;
         for (int k=0;k<644;++k) {
             // Connect with neutral input; a held trigger on hot-plug is latched.
             const bool releasing=button==GamepadButton::trigger_left && k>=540;
             const auto buttons=k<164 ? 0 : gamepad_button_bit(k<464 || releasing ? GamepadButton::trigger_right : button);
             const auto pad=race_input_frame({1,buttons,0},k);
+            const auto service_before=candidate_oracles::service_calls;
+            const auto parking_before=candidate_oracles::parking_calls;
             if (!session.advance(pad,error)) { check(false,"production braking advances"); break; }
+            if(k>=464&&!releasing) {
+                service_samples+=candidate_oracles::service_calls-service_before;
+                parking_samples+=candidate_oracles::parking_calls-parking_before;
+            }
             const auto& t=session.telemetry().model;
             const auto q=session.car().orientation;
             min_up=std::min(min_up,1-2*(q.x*q.x+q.y*q.y));
@@ -156,7 +170,9 @@ int main() {
                 const bool pinned=session.car().wheels[2].brake_locked && session.car().wheels[3].brake_locked;
                 if(pinned) {
                     ++pinned_samples;
-                    check(t.engine_rpm==stock_240sx_handling().idle_rpm,"selector3 candidate pin exports completed idle RPM");
+                    // Selector1 wheel locking does not impose selector3's
+                    // separate completed-RPM idle write. Native coupled wheel,
+                    // engine and publication operations are covered separately.
                 } else if(t.engine_rpm<=stock_240sx_handling().idle_rpm) ++idle_samples;
                 if(releasing && k>540 && t.engine_rpm>stock_240sx_handling().idle_rpm) ++release_samples;
             }
@@ -164,12 +180,15 @@ int main() {
         check(brake_start>8 && moving_samples>10,"braking exercises a moving car");
         check(idle_samples==0,"moving recovered1 RPM stays above idle unless driven wheels are pinned");
         if(button==GamepadButton::trigger_left)
-            check(pinned_samples>0 && release_samples>0,"production service brake reaches pin and recovers moving RPM on release");
-        else check(pinned_samples==0,"half-axis handbrake cannot activate the service-brake pin");
+            check(service_samples>0 && parking_samples==0 && release_samples>0,
+                  "production service brake uses original service path and restores moving RPM on release");
+        else check(parking_samples>0 && service_samples==0,
+                   "production handbrake uses original rear parking path without service input");
+        check(candidate_oracles::failures==0,"original brake/gear/strut callback operands remain valid");
         check(min_up>.95,"straight recovered1 braking stays upright");
         std::cout << "production brake " << gamepad_button_bit(button)
                   << " entry-speed " << brake_start << " moving-samples " << moving_samples
-                  << " idle-samples " << idle_samples << " min-up " << min_up << '\n';
+                  << " idle-samples " << idle_samples << " locked-samples " << pinned_samples << " min-up " << min_up << '\n';
     }
     std::cout << "steering tests: " << failures << " failures\n";
     return failures ? 1 : 0;

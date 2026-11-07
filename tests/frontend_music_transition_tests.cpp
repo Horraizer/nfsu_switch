@@ -1,10 +1,13 @@
 #include "nfsu/frontend_music.h"
+#include "nfsu/race_audio.h"
 #include "nfsu/audio_output.h"
 #include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <stdexcept>
 #include <vector>
+#include <chrono>
+#include <thread>
 // Exercise actual FrontendMusic and AST decoder with a deterministic device.
 // Pumping submits PCM; a separate cursor acknowledges playback. No device or
 // arbitrary wall-clock delay can hide a cue discarded by transition cleanup.
@@ -31,6 +34,20 @@ int main(int argc,char** argv){
     try {
         if(argc!=2)throw std::runtime_error("retail root required");
         const std::filesystem::path root=argv[1];std::string error;
+        for(const int entry:{14,6,33}){
+            FrontendSpeech speech;check(speech.play(root,entry,error),error.c_str());
+            bool audible=false;unsigned blocks=0;
+            while(speech.active()&&blocks++<3000){
+                std::vector<std::int16_t> pcm(1024*2);
+                speech.mix(pcm.data(),1024);
+                audible=audible||std::any_of(pcm.begin(),pcm.end(),[](auto v){return v!=0;});
+            }
+            check(audible&&!speech.active(),"original speech produces finite audible PCM");
+            check(speech.play(root,entry,error),error.c_str());speech.stop();
+            std::vector<std::int16_t> base(2048,123);speech.mix(base.data(),1024);
+            check(std::all_of(base.begin(),base.end(),[](auto v){return v==123;}),"stopped speech preserves music PCM");
+            check(!speech.play(root,95,error)&&!speech.active(),"invalid speech request cannot retain stale voice");
+        }
         for(const auto cue:{FrontendSound::select,FrontendSound::back}){
             FrontendMusic music;check(music.start(root,error),error.c_str());
             pump(1024);played=submitted; // Prime the actual music fade.
@@ -70,6 +87,28 @@ int main(int argc,char** argv){
             check(music.stop_ready(),"device playback acknowledgment completes bounded transition");
             music.stop();check(!render,"stop releases callback after audible cue");
         }
+        {
+            std::vector<std::int16_t> opening;
+            for(unsigned bank=1;bank<=2;++bank) {
+                RaceAudioService race;
+                check(race.start(root,error,{},{},true,"CIVIC"),error.c_str());
+                check(error.find("music_bank="+std::to_string(bank))!=std::string::npos,
+                      "new race service resumes original unplayed music bank");
+                std::vector<std::int16_t> pcm;
+                const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+                for(unsigned block=0;block<375;++block) {
+                    while(race.stats().ring_fill<1024&&std::chrono::steady_clock::now()<deadline)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    check(race.stats().ring_fill>=1024,"race decoder supplies bounded device demand");
+                    auto samples=pump(1024);pcm.insert(pcm.end(),samples.begin(),samples.end());played=submitted;
+                }
+                check(std::any_of(pcm.begin(),pcm.end(),[](auto v){return v!=0;}),"selected original race music reaches device");
+                check(race.stats().ring_underruns==0,"music comparison uses decoded PCM without underflow");
+                if(bank==1)opening=pcm;else check(opening!=pcm,"next race actually decodes different song PCM");
+                race.stop();race.stop();check(!render,"repeated race cleanup does not advance playlist twice");
+            }
+        }
+        std::cout<<"PASS: successive race audio services play different original songs without PCM underflow\n";
         std::cout<<"PASS: actual music select/back transition preserves original cue and waits for playback cursor\n";
         return 0;
     }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}

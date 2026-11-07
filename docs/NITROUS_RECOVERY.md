@@ -282,3 +282,69 @@ rounding of signed world ticks multiplied by the binary32 tick inverse.
 The exact integer significand product avoids an intervening binary64
 rounding. `nfsu_nitrous_tests` and the bridge comparison cover a counterexample
 to the former double-then-float expression.
+
+
+## Speed blur presentation (PC 1.4 USA, 2026-10-14)
+
+The authenticated executable identified above contains a separate graphics
+path for the NOS sensation. Successful start at 0x431C48 reaches the write
+of 1 to 0x73654C at 0x431C65. Rendering 0x40CD40 approaches that target
+using the float envelope at 0x73641C. It adds the NOS contribution to a
+speed ramp, constructs corner offsets from normalized view-space velocity,
+and submits downsample, two radial filters and a byte-factor composite.
+The production constants and their checks live in `speed_blur.h` and
+`nfsu_speed_blur_tests`, not duplicated here as adjustable tuning values.
+
+`tools/speed_blur_original.py` executes the original arithmetic and vector
+normalization with Unicorn. Only D3D submission/state calls are intercepted.
+It compares the envelope, composite byte and offsets with the C++ probe,
+including acceleration-effect onset/release, side velocity and rear-facing
+velocity. This does not execute the original GPU shader or prove pixel
+identity with D3D9. Reproduction from the owned checkout:
+
+```
+python tools/speed_blur_original.py --retail-root <PC-root> --probe build/nfsu_speed_blur_tests.exe --output build/nos-visual-r1/original-compare.json
+```
+
+The original 0x7024B8 downsample table contains four equally weighted taps
+at half-texel corners. 0x40D090 interpolates offsets across the fullscreen
+quad and averages four linear-clamp samples. The second invocation scales
+the offsets; 0x40D037 produces the blend-factor byte. The XOR-decoded retail
+`FX/filter.efx` confirms the four equally weighted sample equation. Original
+retail source/disassembly is retained only in ignored local evidence.
+
+Order matters: scenery submission/flush at 0x40997E/0x409983 and blur at
+0x4099BA precede actor rendering at 0x4099C5 and the car-node pass at
+0x4099D3 (0x570950). Thus the blur is applied before the cars, their shadows,
+light effects and HUD. Applying it to the already composed car is incorrect.
+The Switch prepared scene provides this boundary directly: static track
+commands, then the dynamic actor/shadow/effect suffix. Scene depth survives
+the fullscreen operation and is rebound for that suffix.
+
+The current Switch FXAA path uses two half-resolution RGBA8 images, four
+fullscreen submissions and one queue. Pass uniforms are separate for each
+fenced swap slot; images are ordered by GPU barriers. There is no per-frame
+allocation, readback or additional physics step. The envelope freezes in
+pause and resets with the race/reset counter. The actual NOS resource drives
+it in both free driving and Underground. HUD and cars remain sharp.
+This new stage is enabled for the current prepared single-sample/FXAA race
+path; alternative MSAA and owning diagnostic render paths retain their old
+behavior and do not yet run this stage.
+
+The original reader consumes view +0x1E0 velocity. The present adapter uses
+car velocity transformed into the current chase view. Exact original view
+velocity publication and the separate longitudinal camera-pullback producer
+remain unverified; this change does not claim full camera equivalence.
+The per-POV FOV store at 0x48ACA4 remains fixed; no invented NOS FOV pulse
+or change to handling/engine torque was added.
+
+Desktop scene preview (live NOS input, same pose before/after, CPU reference):
+
+```
+build/nfsu_intro_grid_viewer <PC-root> build/nos-visual-r1/world 720 speed-blur
+```
+
+This writes the world-before-actors reference and the ordinary frame with
+the same car/HUD composition. It is not a Switch screenshot or GPU timing.
+Actual Switch appearance, activation/release while driving, and performance
+still need the owner hardware run.

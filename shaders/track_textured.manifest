@@ -9,7 +9,7 @@
 format 1
 program track_textured
 
-stage kind=vertex source=placed.vert.glsl
+stage kind=vertex source=placed_headlight.vert.glsl
 stage kind=fragment source=textured_opaque.frag.glsl
 
 # PreparedTrackMesh::vertices uploaded as they are: one interleaved buffer
@@ -22,6 +22,7 @@ attribute location=2 name=texcoord type=vec2 format=float32x2 buffer=0 offset=16
 varying location=0 name=world type=vec3 interpolation=smooth
 varying location=1 name=color type=vec4 interpolation=smooth
 varying location=2 name=texcoord type=vec2 interpolation=smooth
+varying location=3 name=headlight type=vec3 interpolation=smooth
 
 block name=Frame binding=0 stages=vertex,fragment size=112
 member block=Frame name=eye type=vec4 offset=0
@@ -37,12 +38,20 @@ member block=Frame name=options type=uvec4 offset=96
 block name=Instance binding=1 stages=vertex size=64
 member block=Instance name=rows type=vec4[4] offset=0
 
-block name=Material binding=2 stages=fragment size=80
+block name=Material binding=2 stages=fragment size=208
 member block=Material name=fallback type=vec4 offset=0
 member block=Material name=alpha type=vec4 offset=16
 member block=Material name=environment_min type=vec4 offset=32
 member block=Material name=environment_range type=vec4 offset=48
 member block=Material name=environment_color type=vec4 offset=64
+member block=Material name=surface_diffuse_min type=vec4 offset=80
+member block=Material name=surface_diffuse_range type=vec4 offset=96
+member block=Material name=surface_specular_min type=vec4 offset=112
+member block=Material name=surface_specular_range type=vec4 offset=128
+member block=Material name=surface_environment_min type=vec4 offset=144
+member block=Material name=surface_environment_range type=vec4 offset=160
+member block=Material name=surface_gates type=vec4 offset=176
+member block=Material name=uv_animation type=vec4 offset=192
 
 texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=nearest wrap=repeat
 
@@ -57,7 +66,7 @@ variant name=additive alpha_test=always blend=on blend_src=src_alpha blend_dst=o
 variant name=alpha_tested_source_over alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one_minus_src_alpha blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none
 variant name=alpha_tested_additive alpha_test=greater alpha_ref=170 blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none
 
-block name=Headlight binding=4 stages=fragment size=112
+block name=Headlight binding=4 stages=vertex size=112
 member block=Headlight name=eye type=vec4 offset=0
 member block=Headlight name=right type=vec4 offset=16
 member block=Headlight name=up type=vec4 offset=32

@@ -613,8 +613,16 @@ bool select_track_texture_spillover_l1ra(
     selection = TrackStreamSelection{};
     selection.track = track;
     selection.set = TrackStreamSet::stream;
-    if (track != 1003 && track != 1005) {
-        error = "texture spillover supports L1RA circuits 1003 and 1005";
+    const bool known = (track >= 1001 && track <= 1008) ||
+                       (track >= 1102 && track <= 1109) ||
+                       (track >= 1301 && track <= 1308) ||
+                       track == 1201 || track == 1202 || track == 1206 ||
+                       track == 1207 || track == 1210 || track == 1214;
+    if (!known) {
+        error = "texture spillover supports the L1RA circuits 1001-1008,"
+                " the sprint tracks 1102-1109, the drift tracks 1301-1308"
+                " and the drag tracks 1201, 1202, 1206, 1207, 1210 and"
+                " 1214";
         return false;
     }
     if (!table.valid) {
@@ -964,6 +972,13 @@ bool load_with_reader(const TrackStreamTable& table,
             load.bytes_read += section.size;
             if (limits.poll) limits.poll();
             parse_section(section, limits);
+            if(section.loaded) {
+                std::string animation_error;
+                if(!append_texture_animations(section.bytes.data(),section.bytes.size(),section.animations,animation_error)) {
+                    section.issues.push_back({section.offset,animation_error});
+                    section.loaded=false;
+                }
+            }
             if (limits.release_source_bytes ||
                 (limits.release_non_texture_bytes && section.packs.packs.empty())) {
                 std::vector<unsigned char>().swap(section.bytes);

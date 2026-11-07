@@ -14,7 +14,10 @@ struct FrontendMusic::Impl {
     std::unique_ptr<AstStreamer> stream;
     Output output;
     OutputFade fade;
+    SpeechMusicDuck speech_duck;
     FrontendSfx sfx;
+    FrontendSpeech speech;
+    std::filesystem::path root;
     bool active=false;
     std::atomic<bool> ending{false},silenced{false};
     std::uint64_t rendered_frames=0;
@@ -38,6 +41,7 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
     stop();
     auto& p=*impl_;
     try {
+        p.root=root;
         if(!p.sfx.load(root,error)) throw std::runtime_error(error);
         std::ifstream bank_input(root/"Sound/STRMBANK/STRM_Music_UG0_MB.abk",std::ios::binary|std::ios::ate);
         if(!bank_input || bank_input.tellg()!=968) throw std::runtime_error("original music ABK identity/size mismatch");
@@ -61,7 +65,7 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
         for(std::size_t i=0;i<offsets.size();++i)
             indexed.push_back(index_ast_segment_by_boundary(*input,offsets[i],
                 i+1<offsets.size()?offsets[i+1]:static_cast<std::uint64_t>(end)));
-        p.stream=std::make_unique<AstStreamer>(); p.fade=OutputFade{};p.ending=false;p.silenced=false;p.rendered_frames=0;p.drain_boundary=0;
+        p.stream=std::make_unique<AstStreamer>(); p.fade=OutputFade{};p.speech_duck=SpeechMusicDuck{};p.ending=false;p.silenced=false;p.rendered_frames=0;p.drain_boundary=0;
         auto playlist=original_music_playlist(bank,indexed,true);
         p.first=p.next;
         std::rotate(playlist.begin(),playlist.begin()+p.first,playlist.end());
@@ -76,19 +80,21 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
         if(!p.output.start([&p](std::int16_t* pcm,std::size_t count) {
             p.stream->pop(pcm,count);
             const bool ending=p.ending.load();
-            const bool effect=p.sfx.active();
+            const bool effect=p.sfx.active()||p.speech.active();
             const bool audible_music=!p.fade.silent();
             // Cue gain is independent of the music transition fade.
-            p.fade.apply(pcm,count,ending); p.sfx.mix(pcm,count);
+            p.fade.apply(pcm,count,ending);
+            p.speech_duck.apply(pcm,count,p.speech.active());
+            p.sfx.mix(pcm,count); p.speech.mix(pcm,count);
             p.rendered_frames+=count;
             if(effect || audible_music)p.drain_boundary=p.rendered_frames;
-            if(ending && p.fade.silent() && !p.sfx.active())p.silenced=true;
+            if(ending && p.fade.silent() && !p.sfx.active() && !p.speech.active())p.silenced=true;
         },error)) { p.stream->stop(); p.stream.reset(); return false; }
         p.active=true; error.clear(); return true;
     } catch(const std::exception& e) { error=e.what(); stop(); return false; }
 }
 void FrontendMusic::begin_stop() {
-    auto& p=*impl_;
+    auto& p=*impl_;p.speech.stop();
     if(p.active && !p.ending.exchange(true))p.next=(p.current()+1)%7;
 }
 bool FrontendMusic::stop_ready() const {
@@ -102,11 +108,17 @@ void FrontendMusic::stop() {
     if(p.active && !p.ending.load())p.next=(p.current()+1)%7;
     p.output.stop();
     if(p.stream) { p.stream->stop(); p.stream.reset(); }
-    p.sfx.reset();p.active=false;
+    p.sfx.reset();p.speech.stop();p.active=false;
 }
+bool FrontendMusic::playing() const { return impl_->active && !impl_->ending.load(); }
 void FrontendMusic::sound(FrontendSound cue) {
     if(!impl_->ending.load())impl_->sfx.play(cue);
 }
+bool FrontendMusic::speech(int entry,std::string& error) {
+    if(!playing()){error="frontend audio device is not active";return false;}
+    return impl_->speech.play(impl_->root,entry,error);
+}
+void FrontendMusic::stop_speech(){impl_->speech.stop();}
 std::string FrontendMusic::error() const {
     if(!impl_->active) return {};
     const auto device=impl_->output.error();

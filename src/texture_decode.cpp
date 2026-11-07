@@ -125,6 +125,17 @@ bool decode_sources(
                     texture.alpha_blend_mode = record.alpha_blend_mode;
                     texture.layer_order = record.layer_order;
                     texture.layer_group = record.layer_group;
+                    const auto signed_word=[&](unsigned at) {
+                        const unsigned value=unsigned(record.info[at])|(unsigned(record.info[at+1])<<8);
+                        return static_cast<std::int16_t>(value<32768?int(value):int(value)-65536);
+                    };
+                    const unsigned mode=record.info[0x52];
+                    texture.uv_animation.mode=static_cast<std::int8_t>(mode<128?int(mode):int(mode)-256);
+                    texture.uv_animation.period=signed_word(0x58);
+                    texture.uv_animation.u_rate=signed_word(0x5a);
+                    texture.uv_animation.v_rate=signed_word(0x5c);
+                    texture.uv_animation.u_offset=signed_word(0x5e);
+                    texture.uv_animation.v_offset=signed_word(0x60);
                     if (!record.valid) {
                         texture.problem = record.problem.empty()
                                               ? "invalid texture record"

@@ -15,6 +15,7 @@ namespace nfsu {
 // (speed.exe 0x53F9C0 and 0x54622F). Apply only to a verified absent hash;
 // an existing, ambiguous or unusable claim is never overwritten.
 inline constexpr std::uint32_t kTrackDefaultAlphaHash = 0x66994F4AU;
+bool bind_drift_track_default_alpha(RenderTextureSet&,std::string& error);
 bool bind_track_default_alpha(RenderTextureSet& textures, std::uint32_t missing_hash,
                               std::string& error);
 
@@ -37,6 +38,7 @@ struct TrackSceneLimits {
     std::uint64_t max_draw_triangles = 1ULL << 24;
     // Payload bytes (RGBA8 or native DXT) of the textures copied into the prepared region.
     std::uint64_t max_texture_bytes = 128ULL * 1024ULL * 1024ULL;
+    std::vector<std::uint32_t> animation_texture_hashes;
 };
 
 // One valid source mesh, copied. Nothing refers back to the report.
@@ -122,6 +124,7 @@ struct TrackDrawCost {
 // reads, so the TrackRegionReport and RenderTextureSet it was prepared
 // from may change or be destroyed afterwards.
 struct PreparedTrackRegion {
+    std::size_t animation_texture_count=0; // explicit trailing frames, not static draws
     // The region the meshes came from, copied from the report.
     TrackRegionSelector region;
     // TrackRegionReport::meshes.size() of the source.

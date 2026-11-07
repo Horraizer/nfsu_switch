@@ -2,6 +2,15 @@
 #include <algorithm>
 #include <stdexcept>
 namespace nfsu::audio {
+unsigned original_music_next(unsigned first,const std::vector<std::uint64_t>& lengths,
+                             std::uint64_t frames) noexcept {
+    if(lengths.empty()||!frames)return first;
+    std::uint64_t total=0;for(auto length:lengths)total+=length;
+    if(!total)return first;
+    frames%=total;unsigned index=0;
+    while(index+1<lengths.size()&&frames>=lengths[index])frames-=lengths[index++];
+    return (first+index+1)%unsigned(lengths.size());
+}
 MenuSong original_menu_song(unsigned index) {
     static constexpr MenuSong songs[]={
         {"Get Low","Lil Jon & the Eastside Boyz","Kings of Crunk"},

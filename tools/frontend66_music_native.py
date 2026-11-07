@@ -46,3 +46,31 @@ assert metadata[19]==('"Get Low"',"Lil Jon & the Eastside Boyz","Kings of Crunk"
 assert all(v[3]==("IG" if i<19 else "FE") for i,v in enumerate(metadata))
 print("FE_METADATA",json.dumps(metadata[19:]))
 print("PASS native fresh-profile FE mask, selection and metadata")
+
+# Consume genuine played bits and select again, stopping before stream IO.
+# The incoming voice objects are mapped boundary inputs, not an audio driver.
+m.write(obj+0x20,0);m.write(obj+0x2c,voice);m.write(voice+0x18,3)
+sequence=[]
+for i in range(7):
+ sequence.append(m.integer(voice+0x54))
+ if i==6:break
+ m.run(0x53cbd0,(),{UC_X86_REG_EAX:obj})
+ assert m.uc.reg_read(UC_X86_REG_EIP)==m.stop
+ m.write(m.stack+0x14,stream)
+ for reg,value in [(UC_X86_REG_EAX,3),(UC_X86_REG_EDI,obj),(UC_X86_REG_EBX,voice),(UC_X86_REG_EBP,stream)]:m.uc.reg_write(reg,value)
+ m.uc.emu_start(0x53c4dd,0x53c671,count=20000)
+ assert m.uc.reg_read(UC_X86_REG_EIP)==0x53c671
+assert sequence==list(range(20,27))
+print('FE_NEXT_BANKS',sequence)
+m.write(0x77a920,0);sequence=[]
+for i in range(3):
+ m.write(m.stack+0x14,stream)
+ for reg,value in [(UC_X86_REG_EAX,3),(UC_X86_REG_EDI,obj),(UC_X86_REG_EBX,voice),(UC_X86_REG_EBP,stream)]:m.uc.reg_write(reg,value)
+ m.uc.emu_start(0x53c4dd,0x53c671,count=20000)
+ assert m.uc.reg_read(UC_X86_REG_EIP)==0x53c671
+ sequence.append(m.integer(voice+0x54))
+ m.run(0x53cbd0,(),{UC_X86_REG_EAX:obj})
+ assert m.uc.reg_read(UC_X86_REG_EIP)==m.stop
+assert sequence==[1,2,3]
+print('IG_NEXT_BANKS',sequence)
+print('PASS native default next-track order and played-bit consumption in FE and IG')

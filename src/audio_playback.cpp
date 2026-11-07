@@ -1,7 +1,9 @@
 #include "nfsu/audio_playback.h"
+#include "nfsu/race_audio_mix.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <stdexcept>
 
 namespace nfsu::audio {
@@ -24,6 +26,23 @@ std::int32_t interpolate(std::int32_t first, std::int32_t second,
 
 constexpr std::uint32_t kGainRampFrames = 240;
 
+// Original256-bin speaker table, generated once before audio callbacks.
+// Quantize through integer bytes, including positive zero at the cardinals.
+const std::array<std::array<float,2>,256> stereo_pan_table=[] {
+    std::array<std::array<float,2>,256> table{};
+    constexpr float rad=0.017453294F,half_pi=1.5707964F;
+    const float first=90.F*rad,last=270.F*rad,wrap=-90.F*rad;
+    for(unsigned i=0;i<table.size();++i) {
+        const float deg=float(i)*1.40625F;
+        const float phase=deg<90.F?((deg*rad-wrap)/(first-wrap))*half_pi:
+            deg<270.F?((deg*rad-last)/(first-last))*half_pi:
+            (((360.F-deg)*-1.F*rad-wrap)/(first-wrap))*half_pi;
+        table[i]={float(int(std::nearbyint(std::sin(phase)*255.F)))*(1.F/255.F),
+                  float(int(std::nearbyint(std::cos(phase)*255.F)))*(1.F/255.F)};
+    }
+    return table;
+}();
+
 std::int16_t clamp16(std::int64_t value) noexcept {
     return static_cast<std::int16_t>(std::max<std::int64_t>(-32768,
         std::min<std::int64_t>(32767, value)));
@@ -37,6 +56,15 @@ std::int16_t le16(const std::uint8_t* data) noexcept {
 struct StreamStopped {};
 
 } // namespace
+
+std::array<float,2> stereo_pan_gains(std::uint16_t azimuth,
+                                   std::uint32_t gain_q15) noexcept {
+    const float volume=float(std::min(gain_q15,32767U))*(1.F/32767.F);
+    // Keep6512F0's float products: cancelling127 changes rounded results.
+    const float scalar=(127.F*volume)*(1.F/127.F);
+    const auto& coefficient=stereo_pan_table[azimuth>>8];
+    return {scalar*coefficient[0],scalar*coefficient[1]};
+}
 
 bool PcmClip::valid() const noexcept {
     if (rate < 8000 || rate > 192000 || (channels != 1 && channels != 2) ||
@@ -70,8 +98,20 @@ void Mixer::control(std::size_t slot, std::uint32_t gain_q15,
     voice.pitch_q16 = std::max(1U, std::min(pitch_q16, 262144U));
 }
 
+void Mixer::pan(std::size_t slot,std::uint16_t azimuth) noexcept {
+    if(slot>=voices_.size())return;
+    auto& voice=voices_[slot];
+    if(!voice.clip||voice.clip->channels!=1)return;
+    if(!voice.angular_pan||voice.azimuth!=azimuth)voice.pan_gain=UINT32_MAX;
+    voice.angular_pan=true;voice.azimuth=azimuth;
+}
+
 void Mixer::stop(std::size_t slot) noexcept {
     if (slot < voices_.size()) voices_[slot] = {};
+}
+
+void Mixer::release(std::size_t slot) noexcept {
+    if (slot < voices_.size()) voices_[slot].loop = false;
 }
 
 bool Mixer::active(std::size_t slot) const noexcept {
@@ -88,11 +128,15 @@ void Mixer::render(std::int16_t* stereo, std::size_t frames,
                    std::uint32_t stream_gain_q15) noexcept {
     if (!stereo) return;
     std::array<std::uint64_t, kMixVoices> steps{};
+    std::array<std::size_t,kMixVoices> active{};
+    std::size_t active_count=0;
     for (std::size_t i = 0; i < voices_.size(); ++i)
-        if (voices_[i].clip)
+        if (voices_[i].clip) {
+            active[active_count++]=i;
             steps[i] = std::max<std::uint64_t>(1,
                 (static_cast<std::uint64_t>(voices_[i].clip->rate) *
                  voices_[i].pitch_q16 * 65536ULL) / kOutputRate);
+        }
     for (std::size_t frame = 0; frame < frames; ++frame) {
         std::int64_t left = 0, right = 0;
         if (stream) {
@@ -100,7 +144,8 @@ void Mixer::render(std::int16_t* stereo, std::size_t frames,
             left += static_cast<std::int64_t>(stream[frame * 2]) * gain / 32768;
             right += static_cast<std::int64_t>(stream[frame * 2 + 1]) * gain / 32768;
         }
-        for (std::size_t i = 0; i < voices_.size(); ++i) {
+        for (std::size_t at = 0; at < active_count; ++at) {
+            const auto i=active[at];
             auto& voice = voices_[i];
             if (!voice.clip) continue;
             const auto& clip = *voice.clip;
@@ -133,8 +178,18 @@ void Mixer::render(std::int16_t* stereo, std::size_t frames,
                 sample_at(clip, next, 0), fraction, 1ULL << 32);
             const auto sample_right = interpolate(sample_at(clip, index, 1),
                 sample_at(clip, next, 1), fraction, 1ULL << 32);
-            left += static_cast<std::int64_t>(sample_left) * voice.gain_q15 / 32768;
-            right += static_cast<std::int64_t>(sample_right) * voice.gain_q15 / 32768;
+            if(voice.angular_pan) {
+                if(voice.pan_gain!=voice.gain_q15) {
+                    voice.channel_gains=stereo_pan_gains(voice.azimuth,voice.gain_q15);
+                    voice.pan_gain=voice.gain_q15;
+                }
+                // Portable PCM accumulator/resampler remains a backend boundary.
+                left+=static_cast<std::int64_t>(float(sample_left)*voice.channel_gains[0]);
+                right+=static_cast<std::int64_t>(float(sample_right)*voice.channel_gains[1]);
+            }else {
+                left += static_cast<std::int64_t>(sample_left) * voice.gain_q15 / 32768;
+                right += static_cast<std::int64_t>(sample_right) * voice.gain_q15 / 32768;
+            }
             voice.phase_q32 += steps[i];
         }
         overloaded_samples_ += left < -32768 || left > 32767;
@@ -176,6 +231,24 @@ void OutputFade::apply(std::int16_t* stereo, std::size_t frames,
         stereo[i * 2 + 1] = static_cast<std::int16_t>(
             static_cast<std::int32_t>(stereo[i * 2 + 1]) * level /
             static_cast<std::int32_t>(kGainRampFrames));
+    }
+}
+
+void SpeechMusicDuck::apply(std::int16_t* stereo,std::size_t frames,bool speech,bool relative) noexcept {
+    if(!stereo)return;
+    if(speech!=active_) {
+        active_=speech;origin_=level_;elapsed_=0;duration_=speech?12000U:96000U;
+    }
+    const std::int64_t target=active_?6300:26500;
+    for(std::size_t i=0;i<frames;++i) {
+        if(elapsed_<duration_) {
+            ++elapsed_;
+            level_=static_cast<std::uint32_t>(std::int64_t(origin_)+
+                (target-origin_)*elapsed_/duration_);
+        }
+        const auto gain=RaceAudioMix::music_output(int(level_));
+        for(unsigned c=0;c<2;++c)stereo[i*2+c]=static_cast<std::int16_t>(
+            std::int64_t(stereo[i*2+c])*gain/(relative?RaceAudioMix::music_output(26500):32768));
     }
 }
 

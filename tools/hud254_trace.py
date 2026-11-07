@@ -171,7 +171,7 @@ def fonts(data):
     return rows
 
 
-def feng_objects(data):
+def feng_objects(data, name_parts=('lap', 'time')):
     """Decode bounded ObjD fields; field tags are two bytes plus u16 size."""
     result = []
     for match in re.finditer(rb'FOb\xea', data):
@@ -200,7 +200,7 @@ def feng_objects(data):
         if len(names) != 1:
             raise ValueError('missing or duplicate FEng object name')
         name = names[0]
-        if not any(part in name.lower() for part in ('lap', 'time')):
+        if not any(part in name.lower() for part in name_parts):
             continue
         row = dict(name=name, offset=start, fields=[])
         for tag, offset, value in fields:

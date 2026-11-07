@@ -36,3 +36,28 @@ for name,bad_s,bad_r in [
     except (AssertionError,ValueError):print('PASS negative control: '+name)
     else:raise AssertionError('negative control accepted: '+name)
 print('PASS production glow shader/sampler/upload and stable emission binding; not hardware execution')
+
+for filename in ('textured.frag.glsl','textured_opaque.frag.glsl'):
+    shader=(root/'shaders'/filename).read_text()
+    original=shader[shader.index('if(material.alpha.w == 8.0)'):shader.index('// Native skid ribbon:')]
+    assert 'texel.rgb*(material.environment_color.rgb/255.0)*2.0' in original
+    assert 'texel.a*material.alpha.x*2.0' in original
+    assert 'return;' in original
+scene=(root/'src/frontend_scene.cpp').read_text()
+assert 'draw.material.environment_range[3]=2;draw.material.alpha[3]=8;' in scene
+assert 'material.ordinary_world=draw.frontend_sprite_kind!=0;' in scene
+assert 'material.alpha_scale=draw.material.alpha[0]*(material.ordinary_world?2:1);' in scene
+print('PASS scoped FE car flares retain authenticated world.efx RGBA2x on CPU and both GPU variants')
+
+for filename in ('textured.frag.glsl','textured_opaque.frag.glsl'):
+    shader=(root/'shaders'/filename).read_text()
+    neon=shader[shader.index('if(material.alpha.w == 7.0)'):shader.index('if(material.alpha.w == 8.0)')]
+    assert 'uint rgb=uint(material.alpha.z);' in neon
+    assert 'texel.rgb*tint*2.0' in neon and 'texel.a*material.alpha.x' in neon and 'return;' in neon
+print('PASS FE neon packed-color controller has an actual generic GPU fragment consumer')
+
+neon_reference=scene[scene.index('bool draw_frontend_neon('):scene.index('bool draw_frontend_road_sprites(')]
+assert 'material.ordinary_world=true;' in neon_reference
+assert 'options.explicit_camera' in neon_reference
+assert 'clip[k].r=float((rgb>>16)&255)' in neon_reference and 'clip[k].b=float(rgb&255)' in neon_reference
+print('PASS FE neon reference retains RGB2x and explicit current camera')

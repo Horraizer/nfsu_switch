@@ -1,10 +1,10 @@
 #pragma once
 #include <cstdint>
 namespace nfsu {
-// Original6F2280..6F2880: 192 angle/slope records, eight bytes each.
-// SHA256 39bc638916ff039f81e6c23b77583376fe5799ffbbca573dc61215a74e1a6217
+// Original6F2280..6F2900: 208 angle/slope records, eight bytes each.
+// SHA256 ba4b65ceda6b5be5c8f7a7fc2d52b0a16d03d9507d602590bacb78dc98e71a87
 struct PlayerAngleSample { std::uint16_t angle; std::uint32_t slope_bits; };
-inline constexpr PlayerAngleSample kPlayerAngleSamples[192] = {
+inline constexpr PlayerAngleSample kPlayerAngleSamples[208] = {
     {0U, 0x3E230553U},
     {326U, 0x3E231F8AU},
     {652U, 0x3E236E2FU},
@@ -197,5 +197,21 @@ inline constexpr PlayerAngleSample kPlayerAngleSamples[192] = {
     {16132U, 0x40D660AAU},
     {16139U, 0x40DC6B51U},
     {16146U, 0x40E30069U},
+    {16153U, 0x40EA36E3U},
+    {16160U, 0x40F22824U},
+    {16168U, 0x40FAF909U},
+    {16176U, 0x41026944U},
+    {16184U, 0x4107F7CFU},
+    {16192U, 0x410E4D6AU},
+    {16201U, 0x41159CE0U},
+    {16211U, 0x411E2EB2U},
+    {16221U, 0x41286AE8U},
+    {16231U, 0x4134F141U},
+    {16242U, 0x4144C361U},
+    {16255U, 0x4159A3D7U},
+    {16268U, 0x41770831U},
+    {16284U, 0x41928312U},
+    {16302U, 0x41BEF007U},
+    {16326U, 0x42667B30U},
 };
 } // namespace nfsu

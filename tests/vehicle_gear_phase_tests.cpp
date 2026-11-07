@@ -24,9 +24,13 @@ namespace nfsu {
 // Observe every invocation and forward to the unchanged original helper.
 void nfsu_test_player_gear_update(const VehicleHandling& h,int& gear,PlayerGearState& box,
                                 PlayerEngineState& engine,std::array<PlayerWheelWork,4>& wheels,
-                                float throttle,float owner_speed_magnitude) noexcept {
+                                float throttle,float owner_speed_magnitude,
+                                const std::array<float,4>* offset_bounds = nullptr,
+                                std::uint32_t* world_random = nullptr,
+                                bool assisted = false,bool clutch_override = false) noexcept {
     const auto entry=phase(gear,box);
-    player_gear_update(h,gear,box,engine,wheels,throttle,owner_speed_magnitude);
+    player_gear_update(h,gear,box,engine,wheels,throttle,owner_speed_magnitude,
+                       offset_bounds,world_random,assisted,clutch_override);
     updates.push_back({entry,phase(gear,box)});
 }
 }
@@ -91,7 +95,10 @@ void reachable_prefix(const char* name,unsigned limit) {
     for(unsigned k=0;k<limit;++k) {
         const auto before=state;updates.clear();VehicleTelemetry telemetry;
         check(model.step(state,script.input_at(k),VehicleFlatGround{},telemetry),"reachable phase step");
-        if(k==0)check(updates.size()==2,"ordinary initial step has two separately observed updates");
+        // Initial preparation and the derivative callback each refresh the
+        //gearbox.477300 adds one dt0 refresh for each rest/bump result.
+        if(k==0)check(updates.size()>=2&&updates.size()<=4,
+                     "initial step observes preparation and bounded rest/bump refreshes");
         requests+=state.transmission.requested_gear!=before.transmission.requested_gear?1U:0U;
         copies+=attribute_updates(before.gear,state.gear);callbacks+=static_cast<unsigned>(updates.size());
         // Only these reset prefixes have no external mode/clutch edits.

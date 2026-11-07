@@ -37,7 +37,7 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
         for(auto i=first.commands.static_track_draw_count();i<first.commands.draw_count();++i)
             dynamic.push_back(&first.commands.draw_view(i).definition);
         unsigned flame_cells=0,checks=0;
-        auto validate=[&](bool lit,const RaceSession* fresh=nullptr) {
+        auto validate=[&](bool lit,const RaceSession* fresh=nullptr,bool purging=false) {
             RaceGpuFrame frame;check(gpu.frame(fresh?*fresh:run.session(),frame,error),error);
             const auto& c=frame.commands;check(validate_recorded_commands(c,error),error);
             check(c.generation_valid()&&c.package_identity()==package&&c.width==width&&c.height==height&&
@@ -45,10 +45,13 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
             const auto track=c.static_track_draw_count();
             check(c.draw_count()<=gpu.draw_capacity()&&c.draw_count()-track==dynamic.size(),
                   "NOS activation changed prepared dynamic capacity");
-            unsigned flames=0,visible=0;
+            unsigned flames=0,visible=0,purge_slots=0,purge_visible=0;
             for(std::size_t i=0;i<dynamic.size();++i) {
                 const auto view=c.draw_view(track+i);
                 check(!view.track_instance && &view.definition==dynamic[i],"NOS changed prepared definition address/order");
+                if(view.definition.name=="race-nitrous/purge") {
+                    ++purge_slots;if(view.material.alpha[0]>0)++purge_visible;continue;
+                }
                 if(view.definition.name!="race-nitrous/flame")continue;
                 ++flames;
                 check(view.material.alpha[3]==6,"exhaust must use direct emission, not light-streak history");
@@ -56,6 +59,7 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
                 if(view.material.alpha[0]>0){++visible;flame_cells|=1U<<(view.definition.first_index/6);}
             }
             check(flames==1&&visible==(lit?1U:0U),"one reserved authored pipe follows actual NOS state");
+            check(purge_slots==2&&purge_visible==(purging?2U:0U),"purge has its own reserved smoke draws");
             ++checks;
         };
         validate(false);std::cout<<"initial inactive package PASS\n";
@@ -64,6 +68,16 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
             const auto pad=race_input_frame({1,buttons,0},tick++);
             check(run.simulate(pad,error)&&run.commit(error),error);
         };
+        const auto purge_button=gamepad_button_bit(GamepadButton::shoulder_left);
+        while(run.session().timing().stage!=RaceStage::countdown&&tick<300)step(0);
+        step(0); // An already-held button on the first input frame is latched.
+        const auto grid=run.session().car().position;
+        step(purge_button);step(purge_button);
+        check(run.session().nitrous_purging()&&!run.session().nitrous_boosting(),"held grid uses purge, not boost");
+        check(run.session().nitrous().remaining<run.session().nitrous().capacity,"purge uses the NOS resource");
+        check(run.session().car().position.x==grid.x&&run.session().car().position.y==grid.y,"purge cannot launch the car");
+        validate(false,nullptr,true);
+        step(0);validate(false);
         while(race_car_held(run.session().timing())&&tick<300)step(0);
         check(!race_car_held(run.session().timing()),"countdown did not complete within 300 input frames");
         std::cout<<"countdown complete step="<<tick<<"\n";
@@ -144,6 +158,17 @@ int main(int argc,char** argv) { try {
     for(unsigned i=0;i<160;++i)check(a.advance(boosted,error),"depletion");
     check(!a.nitrous().active&&a.nitrous().remaining==0,"empty bottle cannot boost");
     if(argc==2) {
+        RaceSession purge(course,spec);
+        check(purge.prepare_style(argv[1],error)&&purge.start(error),error);
+        unsigned purge_tick=0;
+        const auto step_purge=[&](std::uint32_t buttons) {
+            check(purge.advance(race_input_frame({1,buttons,0},purge_tick++),error),error);
+        };
+        while(purge.timing().stage!=RaceStage::countdown&&purge_tick<300)step_purge(0);
+        step_purge(0);step_purge(nos);step_purge(nos);
+        check(purge.style().total()==150&&purge.style().notice()&&purge.style().notice()->kind==14,"original NOS Purge style award");
+        step_purge(0);step_purge(nos);
+        check(purge.style().total()==150&&purge.style().item(14).count==1,"purge award is limited to one");
         check_nitrous_gpu_package(std::filesystem::path(argv[1]));
         VehicleUpgradeLevels stock,levels;levels.induction=levels.nitrous=1;
         VehicleSpec before,after;
@@ -163,6 +188,22 @@ int main(int argc,char** argv) { try {
         append_race_boost_hud(atlas,{8000,8000,false,true},true,0,1280,720,full,after.nitrous.count);
         check(empty.quads==full.quads&&std::memcmp(empty.vertices.data(),full.vertices.data(),sizeof(empty.vertices))!=0,
               "charge must visibly change original NOS artwork");
+        // Original SR_NOS_Text is independent of charge and turbo presence.
+        // Its diagonal lettering is in the original texture, not font glyphs.
+        for(unsigned bars:{2U,6U}) {
+            RaceHudFrame charged,depleted,absent;
+            append_race_boost_hud(atlas,{8000,8000,false,true},false,0,1280,720,charged,bars);
+            append_race_boost_hud(atlas,{8000,0,false,false},false,0,1280,720,depleted,bars);
+            append_race_boost_hud(atlas,{},false,0,1280,720,absent,bars);
+            check(charged.quads==bars+1 && depleted.quads==bars+1 && absent.quads==0,
+                  "N2O present with installed empty/full bottle, absent when uninstalled");
+            const auto* a=charged.vertices.data()+bars*4;
+            const auto* b=depleted.vertices.data()+bars*4;
+            check(std::memcmp(a,b,4*sizeof(*a))==0,"N2O label does not fade as charge drains");
+            check(std::abs(a[0].px-1084.6685F)<.001F && std::abs(a[0].py-547.6676F)<.001F &&
+                  std::abs(a[2].px-1191.3352F)<.001F && std::abs(a[2].py-654.3342F)<.001F,
+                  "N2O uses original 64x64 SAT relative to gauge needle");
+        }
         std::cout<<"Skyline capacity="<<after.nitrous.capacity_seconds<<" s count="<<after.nitrous.count
                  <<" rate="<<after.nitrous.rate<<" turbo max="<<*std::max_element(after.induction.begin(),after.induction.end())<<'\n';
     }

@@ -86,8 +86,8 @@ CarGlowAnchors collect_car_glow_anchors(const StockFrame& stock) noexcept {
         for (std::size_t i = 0; i < kMarkerHashes.size(); ++i) {
             if (result[i].present || marker.name_hash != kMarkerHashes[i]) continue;
             const GeometryReport* source = marker.geometry_source == 0 ? &stock.car_geometry :
-                marker.geometry_source - 1 < stock.stock_geometry.size() ?
-                &stock.stock_geometry[marker.geometry_source - 1] : nullptr;
+                marker.geometry_source - 1 < stock.geometry_sources().size() ?
+                &stock.geometry_sources()[marker.geometry_source - 1] : nullptr;
             if (!source || marker.source_mesh >= source->meshes.size()) continue;
             const auto& mesh = source->meshes[marker.source_mesh];
             if (marker.index >= mesh.markers.size()) continue;
@@ -107,7 +107,7 @@ CarExhaustAnchors collect_car_exhaust_anchors(const StockFrame& stock) noexcept 
     for(const auto& marker:stock.report.markers) {
         if(car_marker_role(marker.name_hash)!=CarMarkerRole::exhaust || count==out.size())continue;
         const GeometryReport* source=marker.geometry_source==0?&stock.car_geometry:
-            marker.geometry_source-1<stock.stock_geometry.size()?&stock.stock_geometry[marker.geometry_source-1]:nullptr;
+            marker.geometry_source-1<stock.geometry_sources().size()?&stock.geometry_sources()[marker.geometry_source-1]:nullptr;
         if(!source || marker.source_mesh>=source->meshes.size())continue;
         const auto& mesh=source->meshes[marker.source_mesh];
         if(marker.index>=mesh.markers.size())continue;
@@ -119,11 +119,11 @@ CarExhaustAnchors collect_car_exhaust_anchors(const StockFrame& stock) noexcept 
     return out;
 }
 
-bool load_nitrous_flame_texture(const std::filesystem::path& root,
+static bool load_nitrous_texture(const std::filesystem::path& root,std::uint32_t hash,
     RenderTexture& texture,std::string& error) {
     texture={};std::vector<unsigned char> bytes;
     const auto packs=load_texture_pack_set(root/"Global/INGAMEB.BUN",bytes);
-    const std::vector<std::uint32_t> wanted{0xB3095EB7U};
+    const std::vector<std::uint32_t> wanted{hash};
     RenderTextureSource source;source.bytes=&bytes;source.wanted=&wanted;source.complete=packs.complete;
     for(const auto& pack:packs.packs)source.packs.push_back(&pack);
     RenderTextureSet decoded;
@@ -131,7 +131,39 @@ bool load_nitrous_flame_texture(const std::filesystem::path& root,
     for(auto& candidate:decoded.textures)if(candidate.claims_hash(wanted[0])&&candidate.usable()) {
         texture=std::move(candidate);return true;
     }
-    error="original SFX_FIREB nitrous texture missing";return false;
+    error="original nitrous particle texture missing: "+std::to_string(hash);return false;
+}
+bool load_nitrous_flame_texture(const std::filesystem::path& root,
+    RenderTexture& texture,std::string& error) {
+    return load_nitrous_texture(root,0xB3095EB7U,texture,error);
+}
+bool load_nitrous_purge_texture(const std::filesystem::path& root,
+    RenderTexture& texture,std::string& error) {
+    // The two CARFX_NOS_BLOWOFF records in GLOBALB use SMOKEB_CS.
+    return load_nitrous_texture(root,0x454D2975U,texture,error);
+}
+std::array<OriginalCarGlow,2> place_nitrous_purge(const CarGlowAnchors& anchors,
+    const PreparedCarScene& car,const CameraFrame& camera,bool active,std::uint64_t tick) noexcept {
+    std::array<OriginalCarGlow,2> out{};
+    const auto* instance=lamp_instance(car,kSlotHeadlight);
+    if(!active||!instance)return out;
+    for(unsigned i=0;i<out.size();++i) {
+        if(!anchors[i].present)continue;
+        // Approximate the native emitter with a rising pair of soft puffs
+        // attached to the front of the car.
+        const double phase=double((tick+i*4)%16)/16.;
+        auto center=placed_slot(anchors[i].slot,instance->transform);
+        center.y+=.23+.75*phase;
+        const double size=.12+.29*phase;
+        const auto& r=camera.right;const auto& u=camera.up;
+        auto& puff=out[i];
+        puff.transform[0]=float(r.x*size);puff.transform[1]=float(-r.z*size);puff.transform[2]=float(r.y*size);
+        puff.transform[8]=float(u.x*size);puff.transform[9]=float(-u.z*size);puff.transform[10]=float(u.y*size);
+        puff.transform[12]=float(center.x);puff.transform[13]=float(-center.z);puff.transform[14]=float(center.y);
+        puff.transform[15]=1;
+        puff.rgba[0]=puff.rgba[1]=puff.rgba[2]=150;puff.rgba[3]=static_cast<unsigned char>(185*(1-phase));
+    }
+    return out;
 }
 
 std::array<OriginalCarGlow,3> place_nitrous_flames(const CarExhaustAnchors& anchors,
@@ -230,7 +262,8 @@ bool load_original_car_glow_textures(const std::filesystem::path& root,
     RenderTextureSource source;source.bytes=&bytes;source.wanted=&filter;source.complete=packs.complete;
     for(const auto& pack:packs.packs)source.packs.push_back(&pack);
     RenderTextureSet decoded;
-    if(!decode_render_texture_sources({source},{},decoded,error))return false;
+    RenderTextureLimits limits;limits.retain_mips=true;
+    if(!decode_render_texture_sources({source},limits,decoded,error))return false;
     for(unsigned i=0;i<3;++i) {
         for(auto& texture:decoded.textures)if(texture.claims_hash(wanted[i]) && texture.usable())textures[i]=std::move(texture);
         if(!textures[i].usable()){error="original car glow texture missing: "+std::to_string(wanted[i])+" decoded="+std::to_string(decoded.textures.size());textures={};return false;}
@@ -239,14 +272,14 @@ bool load_original_car_glow_textures(const std::filesystem::path& root,
 }
 OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
     const PreparedCarScene& car,const CameraFrame& camera,unsigned display_width,
-    double service_brake) noexcept {
+    double service_brake,bool body_markers) noexcept {
     OriginalCarGlows result{};unsigned output=0;
     for(unsigned i=0;i<anchors.size();++i) {
         const bool head=i<2;const unsigned layers=head?2:1;
         for(unsigned layer=0;layer<layers;++layer) {
             auto& sprite=result[output++];sprite.texture=head?(layer==0?0:2):1;
             if(!anchors[i].present || display_width==0 || !std::isfinite(service_brake))continue;
-            const auto* instance=lamp_instance(car,head?kSlotHeadlight:kSlotBrakelight);
+            const auto* instance=lamp_instance(car,body_markers?kSlotBody:(head?kSlotHeadlight:kSlotBrakelight));
             if(!instance)continue;
             const auto world=placed_slot(anchors[i].slot,instance->transform);
             const Vec3 d=difference(world,camera.eye);const double distance2=dot3(d,d);
@@ -282,6 +315,28 @@ OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
         }
     }
     return result;
+}
+
+bool draw_original_car_glows(Frame& frame,const RenderOptions& options,
+    const std::array<RenderTexture,3>& textures,const OriginalCarGlows& glows,
+    RenderStats& stats,std::string& error) {
+    CameraFrame camera;if(!make_camera_frame(options.camera,options.width,options.height,camera,error))return false;
+    const RenderLimits limits;Rasterizer raster(frame,options,limits,stats);
+    for(const auto& glow:glows) {
+        if(!glow.rgba[3])continue;
+        const auto* m=glow.transform;
+        const auto vertex=[&](double x,double y,double u,double v) {
+            const Vec3 raw{x*m[0]+y*m[8]+m[12],x*m[1]+y*m[9]+m[13],x*m[2]+y*m[10]+m[14]};
+            auto out=project_point(camera,{raw.x,raw.z,-raw.y});out.u=u;out.v=v;
+            out.r=glow.rgba[0];out.g=glow.rgba[1];out.b=glow.rgba[2];out.a=glow.rgba[3];return out;
+        };
+        const auto a=vertex(-1,-1,0,0),b=vertex(1,-1,1,0),c=vertex(1,1,1,1),d=vertex(-1,1,0,1);
+        const ClipVertex first[3]={a,b,c},second[3]={a,c,d};
+        RasterMaterial mat;mat.texture=&textures.at(glow.texture);mat.linear_filter=true;mat.ordinary_world=true;
+        mat.blend=RenderBlendMode::additive;mat.depth_write=false;
+        if(!raster.draw_triangle(first,mat,0x7FFD0000U,error)||!raster.draw_triangle(second,mat,0x7FFD0001U,error))return false;
+    }
+    return true;
 }
 
 OriginalCarGlow place_original_road_glow(const float* point,const float* normal,

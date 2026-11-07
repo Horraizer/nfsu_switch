@@ -212,6 +212,7 @@ nfsu_enable_warnings(nfsu_sha256)
 # own - it hands the options to nfsu_render. Both inherit the global policy.
 # docs/SWITCH_BUILD.md.
 add_library(nfsu_stock_frame
+    src/wheel_paint.cpp
     src/stock_frame.cpp
 )
 

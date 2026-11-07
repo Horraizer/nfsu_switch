@@ -6,6 +6,8 @@
 #include "nfsu/vehicle_track.h"
 
 #include "nfsu/det_sqrt.h"
+#include "nfsu/car_contact.h"
+#include "nfsu/player_powertrain.h"
 
 #include <algorithm>
 #include <array>
@@ -365,6 +367,77 @@ void test_ground() {
           "cast is probe's hit");
 }
 
+#include "player_strut_ground_native.inc"
+void test_native_strut_ground() {
+    using namespace nfsu;
+    const auto bits=[](float f){std::uint32_t b;std::memcpy(&b,&f,4);return b;};
+    for(const auto& witness:strut_ground_native) {
+        VehicleTrackLayout layout;layout.name="native-strut-quad";
+        VehicleTrackQuad q;const float xy[4][2]={{-5,-5},{5,-5},{5,5},{-5,5}};
+        for(unsigned k=0;k<4;++k) {
+            q.corner[k][0]=xy[k][0];q.corner[k][1]=xy[k][1];
+            q.corner[k][2]=witness.slope*xy[k][0];
+        }
+        layout.quads.push_back(q);VehicleTrackCourse course;std::string error;
+        check(build_vehicle_track_course(layout,course,error),"native strut fixture collision decodes");
+        TrackVehicleGround ground(course.world,true,TrackStrutQuery::cached_height);
+        std::array<VehicleVec3,4> hubs;hubs.fill({1,0,witness.z});
+        std::array<VehicleGroundHit,4> hits{};
+        check(ground.strut_heights(hubs,hits),"production cached height provider selected");
+        for(const auto& hit:hits) {
+            check(hit.hit&&hit.has_plane&&hit.surface==0,"original strut receives road plane and material");
+            const auto& p=hit.plane;
+            const float height=-((p[1]*0.F+p[0]*1.F-p[3])/p[2]);
+            const float gap=((height-witness.z)*p[2])/p[2];
+            if(bits(gap)!=witness.gap)std::cout<<"STRUT slope="<<witness.slope<<" z="<<witness.z<<" expected="<<witness.gap<<" actual="<<bits(gap)<<" plane="<<p[0]<<","<<p[1]<<","<<p[2]<<","<<p[3]<<"\n";
+            check(bits(gap)==witness.gap,"original587070 static-road projection bits");
+        }
+    }
+    {
+        VehicleTrackLayout layout;layout.name="strut-ceiling-seam";
+        for(float height:{1.F,0.F}) {
+            VehicleTrackQuad quad;
+            const float xy[4][2]={{-5,-5},{5,-5},{5,5},{-5,5}};
+            for(unsigned k=0;k<4;++k) {
+                quad.corner[k][0]=xy[k][0];quad.corner[k][1]=xy[k][1];quad.corner[k][2]=height;
+            }
+            layout.quads.push_back(quad);
+        }
+        VehicleTrackCourse layered;std::string error;
+        check(build_vehicle_track_course(layout,layered,error),"stacked road fixture decodes");
+        TrackGroundCache above,at;
+        TrackContact upper,lower;
+        check(query_track_ground(layered.world,{1,0,.25},above,upper)&&upper.point[2]==1.F&&
+              query_track_ground(layered.world,{1,0,0},at,lower)&&lower.point[2]==0.F,
+              "440BCB selects the lower road when the upper road equals hub plus one");
+        TrackGroundCache bounds;
+        TrackContact ignored;
+        query_track_ground(layered.world,{0,0,0},bounds,ignored);
+        query_track_ground(layered.world,{8,0,0},bounds,ignored);
+        check(bounds.bounds[2]==8.F,"440A40 keeps the cache at its exact query boundary");
+        query_track_ground(layered.world,{8.25,0,0},bounds,ignored);
+        check(bounds.bounds[2]==16.25F,"4407B0 rebuilds outside the radius-8 query bounds");
+    }
+    const auto course=proving_ground();const auto& model=stock_model();
+    TrackVehicleGround cached(course.world,true,TrackStrutQuery::cached_height),segment(course.world,true);
+    VehicleState initial;VehiclePose pose=course.start;pose.ground.z=9.F;
+    check(model.reset(initial,pose),"under-road source query fixture resets");
+    auto a=initial,b=initial;VehicleTelemetry ta,tb;
+    check(model.step(a,{},cached,ta,0,0,false,true,true,true,1.0/120)&&
+          model.step(b,{},segment,tb,0,0,false,true,true,true,1.0/120),
+          "native and legacy query domains execute the same zero-time component refresh");
+    const auto supported=[](const VehicleState& state){return std::count_if(state.wheels.begin(),state.wheels.end(),[](const auto& w){return w.contact;});};
+    check(supported(a)==4&&supported(b)==0,
+          "original height selection retains compression when the old finite segment starts below road");
+    pose.ground.z=14.F;check(model.reset(initial,pose),"crest airborne source fixture resets");
+    check(model.step(initial,{},cached,ta,0,0,false,true,true,true,1.0/120)&&supported(initial)==0,
+          "knowing road height does not keep airborne struts supported beyond droop");
+    std::array<VehicleVec3,4> nowhere;nowhere.fill({5000,5000,100});
+    std::array<VehicleTrackCast,4> misses{};cached.probe_strut_heights(nowhere,misses);
+    for(const auto& miss:misses)check(!miss.hit.hit&&miss.surface==VehicleTrackSurface::outside,
+                                    "native empty-region query remains a nonfatal outside miss");
+}
+
 // ---------------------------------------------------------------------------
 // Road, seams, slope
 // ---------------------------------------------------------------------------
@@ -545,6 +618,7 @@ void test_slope() {
     pose.ground.z = 13.0;
     nfsu::VehicleTrackSession session(stock_model(), course);
     check(session.start(pose), "the car starts on the ramp");
+    check(session.prepare_grid(180), "ramp placement completes the production ground preparation");
     nfsu::VehicleTrackTelemetry t;
     for (int i = 0; i < 240; ++i) {
         check(session.step(hold.script.input_at(static_cast<std::uint64_t>(i)), t),
@@ -687,11 +761,13 @@ void test_wall_friction() {
     check(rolled > 0.07 && rolled < 0.08,
           "rolled 30 degrees, up.z 0.866 is above 0.7 and the car still slides with 0.1, got " +
               text(rolled));
-    // Rolled 50 degrees, 0.643: 0.3.
+    // Original kind3 uses max(surface friction,.3) below the upright
+    // gate; this wall has the normal .6 surface, not unconditional .3.
+    // Independent original static-response pins cover this selection too.
     const double tilted = wall_friction_ratio(50.0, t);
-    check(tilted > 0.21 && tilted < 0.24,
-          "rolled 50 degrees, up.z 0.643 is below 0.7 and the car slides with 0.3, got " +
-              text(tilted));
+    check(t.audio_contact_count==1 &&
+          std::abs(tilted-double(.6F)*t.audio_contacts[0].slide_mps)<2e-5,
+          "rolled wall uses native surface friction times tangential speed, got " + text(tilted));
 }
 
 // A point just inside a wall on a car already leaving it: the separation
@@ -753,11 +829,34 @@ void test_drop() {
     check(airborne, "dropped, the wheels are over clear air");
     check(landed != 0, "the car lands on the road");
     check(lowest > 9.95, "no hull point goes 5 cm into the road, the lowest " + text(lowest));
-    if(!r.empty())std::cout<<"ordinary drop final_height="<<text(r.back().position.z)
-        <<" final_speed="<<text(speed(r.back().velocity))<<" landed_step="<<landed<<'\n';
-    check(!r.empty() && std::fabs(r.back().position.z - 10.4999) < 0.005 &&
-              speed(r.back().velocity) < 0.05,
-          "three seconds after the drop the car rests on its struts");
+    //47AA40 accepts positive support, including a two-wheel settled pose.
+    //A native bump impulse can change which struts touch at the first rest
+    //transition. Four contacts and one exact ride height were coincidences
+    //of the old callback sequence, not the original rest contract.
+    check(!r.empty() && r.back().model.grounded_wheels > 0 &&
+              r.back().model.body_rest_state==2 && speed(r.back().velocity)<.05 &&
+              speed(r.back().angular_velocity)<.05,
+          "three seconds after the drop the car reaches original supported rest");
+    // Selector1's authenticated idle/clutch producer can drive first gear
+    // even at zero pedal. No-input is not a request to park the car. Keep
+    // the strict settling requirement in a paired actual-brake witness.
+    auto parked=scenario("drop");
+    for(auto& part:parked.script.segments)part.input.brake=1.0;
+    const auto stopped=run(course,parked);
+    // Original47AA40/42AA70 accepts any positive published support,
+    // not only four wheels. The capped landing can freeze with two.
+    // Keep the same three-second speed/spin/rest checks; the unbraked
+    // supported-rest and hull penetration checks remain above.
+    for(unsigned support=0;support<=4;++support)
+        check(nfsu::player_body_rest_state({}, {}, 0, 0, 0,
+                  nfsu::kVehicleGearFirst,support,0,false)==(support?2U:0U),
+              "original47AA40 rest accepts positive support without a four-wheel gate");
+    check(stopped.size()==r.size() && !stopped.empty() &&
+              stopped.back().model.grounded_wheels > 0 &&
+              speed(stopped.back().velocity) < 0.05 &&
+              speed(stopped.back().angular_velocity) < 0.05 &&
+              stopped.back().model.body_rest_state == 2,
+          "the paired brake-held drop reaches original supported rest within three seconds");
 }
 
 // 0x00584F60 holds the impulse to 1000 t m/s and its moment to 10 t m^2/s.
@@ -780,6 +879,11 @@ void test_impulse_clamps() {
           "high up, the step meets nothing");
     falling.position.z = 10.1 + (200.0 - t.position.z);
     check(session.start(falling), "the car starts falling at 4000 m/s");
+    nfsu::VehicleTrackApproximations without_contact;without_contact.body_contact=false;
+    nfsu::VehicleTrackSession precontact(stock_model(),course,without_contact);
+    nfsu::VehicleTrackTelemetry before_contact;
+    check(precontact.start(falling)&&precontact.step({},before_contact),
+          "same solver slice without body contact supplies independent precontact momentum");
     check(session.step(nfsu::VehicleInput{}, t), "the step runs");
     const double unit = nfsu::VehicleApproximations{}.unit_scale;
     check(nfsu::kVehicleTrackImpulseLimit==1000.0&&nfsu::kVehicleTrackAngularLimit==10.0,
@@ -795,18 +899,29 @@ void test_impulse_clamps() {
           "actual capped-body impact gives a positive bounded impulse");
     unsigned observed=0;
     for(const auto& event:t.contact_events)if(speed(event.applied_impulse)>0) {
-        const double inverse_mass=1.0/(stock_model().spec().handling.mass*unit);
-        const double floor_inverse_mass=1.0/(nfsu::kVehicleTrackCollisionMass*unit);
-        const double mass_scale=inverse_mass>floor_inverse_mass?floor_inverse_mass/inverse_mass:1;
-        const nfsu::VehicleVec3 scaled{event.contact_impulse.x*mass_scale,
-            event.contact_impulse.y*mass_scale,event.contact_impulse.z*mass_scale};
-        const double input_size=nfsu::vehicle_sqrt(scaled.x*scaled.x+scaled.y*scaled.y+scaled.z*scaled.z);
-        const double factor=input_size>nfsu::kVehicleTrackImpulseLimit*unit?
-            nfsu::kVehicleTrackImpulseLimit*unit/input_size:1;
-        check(event.applied_impulse.x==scaled.x*factor&&
-              event.applied_impulse.y==scaled.y*factor&&
-              event.applied_impulse.z==scaled.z*factor,
-              "584F60 impulse operation preserves input below cap and scales above cap");
+        //584F60 operates in tonnes/binary32. Diagnostic applied_impulse
+        // is the rounded momentum delta, not an unrounded double J. Start
+        // from the actual no-contact solver prefix (one closing hit here).
+        const float inverse_mass=1.0F/stock_model().spec().handling.mass;
+        const float floor_inverse_mass=1.0F/float(nfsu::kVehicleTrackCollisionMass);
+        const float mass_scale=inverse_mass>floor_inverse_mass?floor_inverse_mass/inverse_mass:1.F;
+        std::array<float,3> applied{{float(event.contact_impulse.x/unit),
+                                   float(event.contact_impulse.y/unit),float(event.contact_impulse.z/unit)}};
+        for(auto& value:applied)value*=mass_scale;
+        const float z=applied[2]*applied[2],y=applied[1]*applied[1],x=applied[0]*applied[0];
+        const float magnitude=float(nfsu::det_sqrt(double((z+y)+x)));
+        if(magnitude>float(nfsu::kVehicleTrackImpulseLimit)) {
+            const float factor=float(nfsu::kVehicleTrackImpulseLimit)/magnitude;
+            for(auto& value:applied)value*=factor;
+        }
+        const auto before=precontact.state().rigid_body.momentum;
+        const double actual[]={event.applied_impulse.x,event.applied_impulse.y,event.applied_impulse.z};
+        for(unsigned k=0;k<3;++k) {
+            const float completed=before[k]+applied[k];
+            check(actual[k]==double(float(completed-before[k]))*unit &&
+                  session.state().rigid_body.momentum[k]==completed,
+                  "584F60 cap uses original binary32 addition and publishes actual momentum delta");
+        }
         check(event.velocity_before.z>=-200.0&&event.velocity_before.z<0,
               "original rigid refresh limits actual incoming speed before impact");
         ++observed;
@@ -964,7 +1079,11 @@ void test_zones_and_off_path() {
     const nfsu::VehicleTrackCourse course = proving_ground();
     // RESET: asked for on the tick the zone is entered, performed on the
     // next, onto the nearest node facing along the path there.
-    const std::vector<nfsu::VehicleTrackTelemetry> zone = run(course, scenario("zone"));
+    // Test zone entry independently of the old approximation's standing
+    // launch rate. The native clutch/engine is checked separately; both reset
+    // fixtures approach their zone at a declared rolling speed.
+    auto zone_input=scenario("zone");zone_input.script.speed=8.0;
+    const std::vector<nfsu::VehicleTrackTelemetry> zone = run(course,zone_input);
     std::size_t asked = 0;
     std::size_t done = 0;
     for (std::size_t i = 0; i < zone.size(); ++i) {
@@ -986,7 +1105,8 @@ void test_zones_and_off_path() {
     }
     // RESET_TO_POINT: performed on the same tick, at the zone's point, facing
     // its direction, at 8.
-    const std::vector<nfsu::VehicleTrackTelemetry> point = run(course, scenario("zone-point"));
+    auto point_input=scenario("zone-point");point_input.script.speed=8.0;
+    const std::vector<nfsu::VehicleTrackTelemetry> point = run(course,point_input);
     std::size_t moved = 0;
     for (std::size_t i = 0; i < point.size(); ++i) {
         if (point[i].reset != nfsu::VehicleTrackReset::none) {
@@ -1008,6 +1128,8 @@ void test_zones_and_off_path() {
               far[1].off_path && far[3].reset == nfsu::VehicleTrackReset::off_path &&
               far[3].position.x == 16.0 && far[3].position.y == 40.0,
           "5000 from the route the car is off the path and is reset onto node 0");
+    check(far.size()>4 && far[4].model.body_rest_state==0 && far[4].model.body_gravity,
+          "original owner recovery blocks rest immediately after the off-path reset");
 }
 
 // A small course: a road slab and, when asked, a deck over part of it.
@@ -1480,23 +1602,48 @@ void test_collision_tensor_selection() {
         // A continuing slice keeps the outer flag, even when contacts now
         // differ from the preceding frame. Both tensor choices are legal.
         check(session.step({},t,0,1.0/240.0,false,4),"wall tensor slice runs");
-        unsigned observed=0;
+        // The canonical model suffix is already post-contact. Obtain the
+        // same force/integration result with only body contacts disabled.
+        nfsu::VehicleTrackApproximations without_contact;without_contact.body_contact=false;
+        nfsu::VehicleTrackSession reference(stock_model(),course,without_contact);
+        nfsu::VehicleTrackTelemetry pre;
+        check(reference.start(state)&&reference.step({},pre,0,1.0/240.0,false,4),
+              "latched tensor counterfactual preserves the exact precontact slice");
+        const auto& initial=reference.state();const auto& h=stock_model().spec().handling;
+        nfsu::ContactBody expected;expected.identity=1;expected.car_scaling=true;
+        expected.inverse_mass=1.F/h.mass;expected.collision_state=initial.collision_state;
+        expected.linear_momentum=initial.rigid_body.momentum;
+        expected.angular_momentum=initial.rigid_body.angular_momentum;
+        expected.cached_velocity={{float(initial.velocity.x),float(initial.velocity.y),float(initial.velocity.z)}};
+        expected.cached_angular_velocity={{float(initial.angular_velocity.x),float(initial.angular_velocity.y),float(initial.angular_velocity.z)}};
+        // Independently choose the required latched branch, then use the
+        // separately native-pinned full tensor/impulse/refresh operations.
+        expected.inverse_inertia=nfsu::player_body_inverse_tensor(h,initial.rigid_body.axes,alternate);
+        auto position=initial.position;unsigned observed=0;
         for(const auto& event:t.contact_events) {
-            if(event.surface!=nfsu::VehicleTrackSurface::wall || !(event.approach<0)) continue;
-            const auto& a=event.arm;const auto& j=event.applied_impulse;
-            nfsu::VehicleVec3 angular{a.y*j.z-a.z*j.y,a.z*j.x-a.x*j.z,a.x*j.y-a.y*j.x};
-            const double length=speed(angular);
-            const double limit=nfsu::kVehicleTrackAngularLimit*1000;
-            const double clamp=length>limit?limit/length:1;
-            // Actual584B10/565060 and46A0C0: stock inverse yaw differs
-            // between normal and alternate;585810 uses it again at refresh.
-            const double inverse=alternate?.21119673550128937:.42239347100257874;
-            const double expected=angular.z*clamp*nfsu::kVehicleTrackAngularFactor*inverse/1000;
-            const double actual=event.angular_after.z-event.angular_before.z;
-            check(std::fabs(actual-expected)<1e-8,
-                  "wall impulse uses its latched normal or alternate yaw tensor");
-            ++observed;
+            position.x+=event.separation.x;position.y+=event.separation.y;position.z+=event.separation.z;
+            expected.position={{float(position.x),float(position.y),float(position.z)}};
+            if(!(speed(event.applied_impulse)>0))continue;
+            const double before[]={event.angular_before.x,event.angular_before.y,event.angular_before.z};
+            for(unsigned k=0;k<3;++k)check(before[k]==double(expected.cached_angular_velocity[k]),
+                "ordered contact uses the actual preceding angular cache");
+            const nfsu::ContactVector impulse{{float(event.contact_impulse.x/1000.),
+                float(event.contact_impulse.y/1000.),float(event.contact_impulse.z/1000.)}};
+            // The actual world adapter narrows the contact point before
+            // subtracting the body's narrowed world position for its arm.
+            const nfsu::ContactVector arm{{float(position.x+event.arm.x)-float(position.x),
+                float(position.y+event.arm.y)-float(position.y),float(position.z+event.arm.z)-float(position.z)}};
+            check(nfsu::apply_car_contact_impulse(expected,impulse,arm)&&
+                  nfsu::refresh_car_contact_velocity(expected,h.mass,200.F),
+                  "native-pinned impulse and refresh accept actual observed inputs");
+            const double after[]={event.angular_after.x,event.angular_after.y,event.angular_after.z};
+            for(unsigned k=0;k<3;++k)check(after[k]==double(expected.cached_angular_velocity[k]),
+                "world impulse uses the complete latched tensor at binary32 precision");
+            if(event.surface==nfsu::VehicleTrackSurface::wall&&event.approach<0)++observed;
         }
+        check(expected.linear_momentum==session.state().rigid_body.momentum&&
+              expected.angular_momentum==session.state().rigid_body.angular_momentum,
+              "ordered native contact applications explain completed body momenta");
         check(observed>0,"wall tensor witness produces a closing impulse");
         check(t.model.alternate_yaw_active==alternate,"collision does not reselect outer tensor");
         const auto& completed=session.state();
@@ -1576,6 +1723,7 @@ int main(int argc, char** argv) {
     test_contact_sqrt();
     test_separation();
     test_ground();
+    test_native_strut_ground();
     test_road_matches_flat_ground();
     test_seams();
     test_slope();

@@ -194,6 +194,29 @@ rigid `+0x140` and body `+0x1D`. That path does not clear `+0x4C2`.
 The report includes both routines and their source constants; collapsing
 them into one boolean sleep state would lose original behavior.
 
+## Port settling implementation and bounded verification
+
+`RaceProps` applies the recovered classifier, momentum writer and retirement
+predicate through `prop_settling.h`. The car-contact clock is refreshed by the
+existing SAT overlap adapter. Static support retains per-polygon creation and
+last-touch clocks in first-admission order. Original scheduler branches
+`0x00420720` and `0x00420AB0` compare last-touch age against `0x007000D8`;
+equality expires the record. This is distinct from the creation age read by
+retirement. `0x00585E6C` rounds each supplied update duration into clock ticks.
+
+`tools/prop_settling_native.py` executes the original clock, predicates and
+momentum writer against bounded synthetic inputs. It authenticates the retail
+executable and explicitly stubs contact lookup, candidate-list maintenance and
+retention branch endpoints. The refresh component list is empty. Compare its
+vectors with `nfsu_prop_settling_tests`; this is not a live trajectory proof.
+The desktop intro viewer's `props-check` additionally checks resting pose
+persistence and reactivation through actual placed-prop collision calls.
+
+The existing vertex support and SAT adapters remain: full original contact
+manifold generation, pair scheduling and streaming lifecycle are not claimed.
+No distance sleep, new physics tolerance or simulation cadence reduction is
+introduced. Source settling constants are tested in `nfsu_prop_settling_tests`.
+
 ## Removal and section streaming are separate
 
 `0x005977F0` has two deletion routes:

@@ -426,6 +426,12 @@ bool parse_path_container(const unsigned char* data,
         zone.box_max[0] = read_f32(bytes + 0x30);
         zone.box_max[1] = read_f32(bytes + 0x34);
         zone.vertex_count = read_s32(bytes + 0x38);
+        if(zone.type==4)for(unsigned k=0;k<6;++k)
+            zone.traffic_spacing[k]=read_s32(bytes+0x7C+4*k);
+        if(zone.type==6)for(unsigned k=0;k<4;++k) {
+            zone.drift_first[k]=read_s32(bytes+0x94+4*k);
+            zone.drift_later[k]=read_s32(bytes+0xA4+4*k);
+        }
         if (zone.type >= kTrackPathZoneTypes) {
             track.issues.push_back(RaceRouteIssue{
                 at, (Message() << "zone type " << zone.type
@@ -564,6 +570,45 @@ void control_point(const TrackPathSpline& spline,
                    float length,
                    float out[3]) noexcept {
     const auto n = static_cast<std::ptrdiff_t>(spline.count);
+    if (spline.open) {
+        // 0x0059CB90's type-2 branch: 0x567500 scales the end difference
+        // (out = base + scalar * vec) into the wrap-copy slots. Before the
+        // start the mirror of P1 through P0 (0x0059CBF2..0x0059CC0F, scalar
+        // -1), after the end the mirror of P(n-2) through P(n-1)
+        // (0x0059CC16..0x0059CC74, scalar +1). The running lengths follow
+        // at 0x0059CC90..0x0059CCA0: -w(P1) and 2*arc - w(P(n-1)), the arc
+        // being the spline length at +0x14 of the spline object.
+        if (j < -1) {
+            const float* p0=spline.points.data();const float* p1=p0+3;
+            for(unsigned k=0;k<3;++k)out[k]=(p0[k]-p1[k])*float(-j)+p0[k];
+            return;
+        }
+        if (j == -1) {
+            const float* p0 = spline.points.data();
+            const float* p1 = p0 + 3;
+            out[0] = (p1[0]-p0[0])*-1.0F+p0[0];
+            out[1] = (p1[1]-p0[1])*-1.0F+p0[1];
+            out[2] = -p1[2];
+            return;
+        }
+        if (j > n) {
+            const float* pa=spline.points.data()+(spline.count-1)*3;const float* pb=pa-3;
+            for(unsigned k=0;k<3;++k)out[k]=(pa[k]-pb[k])*float(j-n+1)+pa[k];
+            return;
+        }
+        if (j == n) {
+            const float* pa = spline.points.data() + (spline.count - 1) * 3;
+            const float* pb = pa - 3;
+            out[0] = (pa[0]-pb[0])+pa[0];
+            out[1] = (pa[1]-pb[1])+pa[1];
+            out[2] = length!=0.0F?2.0F*length-pa[2]:(pa[2]-pb[2])+pa[2];
+            return;
+        }
+        out[0] = spline.points[static_cast<std::size_t>(j) * 3];
+        out[1] = spline.points[static_cast<std::size_t>(j) * 3 + 1];
+        out[2] = spline.points[static_cast<std::size_t>(j) * 3 + 2];
+        return;
+    }
     float shift = 0.0F;
     if (j < 0) {
         j += n;
@@ -630,6 +675,16 @@ void evaluate_at(const TrackPathSpline& spline,
                  int derivative,
                  float length,
                  float out[3]) noexcept {
+    if (spline.open) {
+        // 0x0059CE10's type-2 branch is the identity (0x0059CE96): an open
+        // parameter is never wrapped. 59CEA0 extrapolates control points
+        // beyond the two mirrored endpoint slots.
+        const float whole_f = std::floor(t);
+        const float u = t - whole_f;
+        std::ptrdiff_t whole = static_cast<std::ptrdiff_t>(whole_f);
+        evaluate_segment(spline, whole, u, derivative, length, out);
+        return;
+    }
     const float wrapped = wrap_parameter(t, spline.count);
     float whole = std::floor(wrapped);
     float u = wrapped - whole;
@@ -694,7 +749,7 @@ float nearest_parameter(const TrackPathSpline& spline,
         if (!(step >= move)) {
             move = step;
         }
-        t = wrap_parameter(move + t, spline.count);
+        t = spline.open?move+t:wrap_parameter(move+t,spline.count);
         // 0x0059D6DA..0x0059D6F9: a change of direction halves the step.
         if (move * previous_move < 0.0F) {
             step = step * 0.5F;
@@ -1047,6 +1102,11 @@ int find_zone(const RaceRouteTrack& track,
 // Parsing
 // ---------------------------------------------------------------------
 
+int track_path_zone_index(const RaceRouteTrack& track,std::uint32_t type,
+                          int direction,const float point[2]) noexcept {
+    return find_zone(track,type,direction,point);
+}
+
 RaceRouteTrack parse_race_route_track(const unsigned char* data,
                                       std::size_t size,
                                       const RaceRouteLimits& limits) {
@@ -1152,12 +1212,9 @@ bool build_track_path_spline(const RaceRouteTrack& track,
         }
     }
     const TrackPathRecord& path = track.paths.front();
-    if (path.closed == 0) {
-        error = "the path is open (a point-to-point track); 0x0059CEA0 "
-                "extrapolates past the ends of an open spline and is not "
-                "implemented here";
-        return false;
-    }
+    // An open path (closed byte clear, spline type 2) builds with the
+    // mirrored end points the struct documents; see control_point.
+    spline.open = path.closed == 0;
     spline.count = static_cast<std::size_t>(path.count);
     spline.first_node = static_cast<std::size_t>(path.first);
     spline.path_length = path.length;
@@ -1178,7 +1235,11 @@ bool build_track_path_spline(const RaceRouteTrack& track,
     // which for many counts does not give i back: with 99 control points,
     // i = 7 wraps to 6.9999995 and is evaluated on segment 6.
     float running = 0.0F;
-    for (std::size_t i = 0; i < spline.count; ++i) {
+    //59D9F0 visits count segments for type2 too: its upper parameter limit
+    //is9999999 (59CB38), so the final extrapolated segment contributes to
+    //the arc length used by the mirrored endpoint's distance component.
+    const std::size_t segments = spline.count;
+    for (std::size_t i = 0; i < segments; ++i) {
         spline.points[i * 3 + 2] = running;
         float previous[3];
         evaluate_at(spline, static_cast<float>(i), 0, 0.0F, previous);
@@ -1206,12 +1267,20 @@ bool build_track_path_spline(const RaceRouteTrack& track,
     const float start = spline.distance_offset / spline.path_length * kWrapWhole;
     const float end = (running * spline.distance_scale + spline.distance_offset) /
                       spline.path_length * kWrapWhole;
+    // The 0-to-100 check argues about loops - every percent rule above wraps
+    // by one lap. The six retail drag paths measure their open courses at
+    // 82.0 to 97.8 percent of their records' lengths (1201/1210 82.0, 1202
+    // 87.7, 1206 86.5, 1207 97.8), so an open course only needs finite,
+    // positive measures; its start and finish are anchored by the markers,
+    // not by the 100 percent end.
     if (!std::isfinite(running) || !(running > 0.0F) || !std::isfinite(start) ||
-        !std::isfinite(end) || !(std::fabs(start) <= 1.0F) ||
-        !(std::fabs(end - kWrapWhole) <= 1.0F)) {
+        !std::isfinite(end) ||
+        (!spline.open && (!(std::fabs(start) <= 1.0F) ||
+                          !(std::fabs(end - kWrapWhole) <= 1.0F)))) {
         error = (Message() << "the path's length " << spline.path_length << ", scale "
                            << spline.distance_scale << " and offset "
-                           << spline.distance_offset << " measure its own loop of "
+                           << spline.distance_offset << " measure its own "
+                           << (spline.open ? "course" : "loop") << " of "
                            << running << " from " << start << " to " << end
                            << " percent; a raceable loop runs from 0 to 100, to "
                               "within 1")
@@ -1552,11 +1621,12 @@ void step_race_progress(const RaceRoute& route,
 
     // 0x004338C0: every boundary in table order.
     const float previous = progress.previous_percent;
-    const float travel = wrap_percent(percent - previous);
+    const auto difference=[&](float value){return route.spline.open?value:wrap_percent(value);};
+    const float travel = difference(percent - previous);
     for (std::size_t i = 0; i < route.boundaries.size(); ++i) {
         const float boundary = route.boundaries[i].percent;
-        const float now = wrap_percent(percent - boundary);
-        const float before = wrap_percent(previous - boundary);
+        const float now = difference(percent - boundary);
+        const float before = difference(previous - boundary);
         const int index = static_cast<int>(i);
         const bool in_window = std::fabs(now) <= kRaceCrossingWindow;
         const bool forward = in_window && before < 0.0F && now >= 0.0F;

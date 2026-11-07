@@ -7,6 +7,7 @@ layout (location = 2) in vec2 inTexcoord;
 
 layout (location = 1) out vec4 outColor;
 layout (location = 2) out vec2 outTexcoord;
+layout (location = 3) flat out vec2 outFootprint;
 
 layout (std140, binding = 0) uniform Frame {
     vec4 eye;
@@ -24,7 +25,9 @@ layout (std140, binding = 1) uniform Instance {
 
 void main()
 {
-    vec3 slot = vec3(inPosition.x, inPosition.z, inPosition.y);
+    uint footprint = uint(max(0.0,-inPosition.z-2.0));
+    outFootprint = vec2(footprint >> 10,footprint & 1023u)/1023.0;
+    vec3 slot = vec3(inPosition.x, -1.0, inPosition.y);
     vec3 moved = slot.x * instance.rows[0].xyz + slot.y * instance.rows[1].xyz +
                  slot.z * instance.rows[2].xyz + instance.rows[3].xyz;
     vec3 world = vec3(moved.x, moved.z, -moved.y);

@@ -1,0 +1,4 @@
+# Exercised Python3.12 host gate dependencies; not needed on Switch.
+unicorn==2.1.4
+capstone==5.0.7
+Pillow==12.3.0

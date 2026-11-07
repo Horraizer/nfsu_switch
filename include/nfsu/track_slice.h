@@ -7,15 +7,22 @@
 
 namespace nfsu {
 
-// Event 1, track 1003, STREAML1RA. The recovered permanent set stays resident
-// on the #157 hand path. Each frame selects a bounded frustum from that set.
-// This is a diagnostic path, not a race or the recovered route of #61.
+// Default diagnostic backing is the recovered permanent set, including the
+// original1003 hand-path pins. An optional all-zone GPU backing also supports
+// live zone transitions beyond a point-to-point finish or in free driving.
+// Backing coverage does not change the native live request or visibility set.
 constexpr std::size_t kTrackSliceDrawLimit = 2047;
 constexpr std::size_t kTrackSliceResourceLimit = 8192;
+constexpr std::size_t kTrackZoneBackingResourceLimit = kDrawResourceCapacity;
 struct TrackSlice {
+    // GPU backing coverage, independent of the native live request set.
+    TrackStreamSet backing_set = TrackStreamSet::permanent;
     std::uint32_t event_number = 1;
+    unsigned race_index = 0;
     std::uint32_t track_number = 1003;
     PreparedTrackScene scene;
+    std::vector<std::uint32_t> world_models;
+    std::vector<TextureAnimation> animations;
     TrackObjectReport objects;
     TrackContactWorld contacts;
     std::vector<TrackResidencyPathPoint> path;
@@ -42,7 +49,8 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
                       TrackSlice& slice, std::string& error,
                       AssetCheckObserver* observer = nullptr,
                       TrackSliceLoadObserver* loading = nullptr,
-                      std::uint32_t event_number = 1, bool world_mips = false);
+                      std::uint32_t event_number = 1, bool world_mips = false,unsigned race_index=0,
+                      TrackStreamSet backing_set=TrackStreamSet::permanent);
 
 struct TrackSliceFrame {
     RecordedCommands commands;

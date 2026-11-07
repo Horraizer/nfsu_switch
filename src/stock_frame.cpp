@@ -1,6 +1,8 @@
 #include "nfsu/stock_frame.h"
 
 #include "nfsu/image.h"
+#include "nfsu/car_shading.h"
+#include "nfsu/wheel_paint.h"
 
 #include <algorithm>
 #include <exception>
@@ -321,20 +323,125 @@ bool prepare_stock_frame(
     return prepare_stock_frame(inputs, request, StockFrameSkin{}, frame, error);
 }
 
+const std::vector<GeometryReport>& StockFrame::geometry_sources()const noexcept {
+    return cached_geometry?cached_geometry->shared:stock_geometry;
+}
+
+bool build_stock_frame_geometry_cache(const StockFrameInputs& inputs,StockFrameGeometryCache& cache,std::string& error) {
+    if(!inputs.all_read()){error="frontend geometry cache needs complete source inputs";return false;}
+    try {
+        StockFrameGeometryCache next;
+        const auto parse=[&](const StockFrameInput& input,bool windows) {
+            auto geometry=parse_geometry(input.bytes.data(),input.bytes.size());
+            if(windows)alias_stock_window_textures(geometry);
+            for(const auto& issue:geometry.issues)next.issues.push_back(at(input.path,issue.offset,issue.message));
+            return geometry;
+        };
+        next.car=parse(inputs.file(StockFrameFile::car_geometry),true);
+        for(auto file:kStockGeometryFiles)next.shared.push_back(parse(inputs.file(file),true));
+        if(inputs.tuned)next.shared.push_back(parse(inputs.wheel_geometry,false));
+        if(inputs.exhaust_geometry.read)next.shared.push_back(parse(inputs.exhaust_geometry,false));
+        next.source=&inputs;cache=std::move(next);error.clear();return true;
+    }catch(const std::exception& e){error=std::string("frontend geometry cache: ")+e.what();return false;}
+}
+
 // Each step names the lines of src/viewer_main.cpp's main() it mirrors. The
 // viewer reads a file inside each load_* call and then parses the bytes
 // with the matching parse_* call and its default limits; here the bytes are
 // already in memory, so the parse_* call is made directly. For a file that
 // was read, the two are the same parse of the same bytes.
+static std::uint32_t part_paint_color(const CarPartDatabase& db,std::size_t record) {
+    const char* channels[]={"RED","GREEN","BLUE","GLOSS"};
+    if(record>=db.records.size())return 0xffffffffU;
+    const auto& part=db.records[record];
+    std::uint32_t color=0;
+    for(unsigned k=0;k<4;++k)for(int i=0;i<part.attribute_count;++i) {
+        const auto& attr=db.attributes[part.attribute_index+unsigned(i)];
+        if(attr.key==bin_hash(channels[k])){color|=(attr.value&255U)<<(8*k);break;}
+    }
+    return color;
+}
+
+static void apply_wheel_paint(std::vector<unsigned char>& rgba,
+    const std::vector<unsigned char>& mask,std::uint32_t color) {
+    for(std::size_t at=0;at<rgba.size();at+=4) {
+        std::uint32_t pixel=0;
+        for(unsigned k=0;k<4;++k)pixel|=std::uint32_t(rgba[at+k])<<(8*k);
+        pixel=wheel_paint_pixel(pixel,mask[at+2],color);
+        for(unsigned k=0;k<4;++k)rgba[at+k]=static_cast<unsigned char>(pixel>>(8*k));
+    }
+}
+
+static bool shade_stock_car(StockFrame& frame,const StockFrameInput& globals,
+    const StockFrameSkin& skin,const InstalledPartSelection* preview,std::string& error,unsigned preview_slot=0) {
+    const auto record=[&](unsigned slot) {
+        return preview&&preview->records[slot]?*preview->records[slot]:frame.report.slots[slot].record;
+    };
+    auto base=record(30);
+    if(base==kNoCarPart) {
+        const auto name=frame.car_types.records[frame.report.car_type].base_paint_part_hash;
+        base=find_car_part(frame.parts,kAnyCarType,30,name,kNoCarPart,kAnyUpgradeLevel);
+    }
+    const auto paint=select_car_paint_material_hash(frame.parts,base,
+        skin.enabled?std::optional<std::uint32_t>(skin.selection.base_color):std::nullopt);
+    const auto tint=car_part_material_hash(frame.parts,record(115));
+    std::array<std::uint32_t,4> special{};
+    constexpr unsigned paint_slots[]={41,40,39,38},model_slots[]={17,15,16,11};
+    for(unsigned i=0;i<4;++i) {
+        const auto model=record(model_slots[i]);
+        if(model<frame.parts.records.size()&&frame.parts.records[model].upgrade_level>=1)
+            special[i]=car_part_material_hash(frame.parts,record(paint_slots[i]));
+    }
+    return apply_car_materials(frame.scene,globals.bytes.data(),globals.bytes.size(),paint,tint,error,special,preview_slot);
+}
+
+bool prepare_stock_paint_variant(const StockFrameInputs& inputs,StockFrame& frame,
+    const StockFramePaintCache& cache,const InstalledPartSelection& selection,const StockFrameSkin& skin,
+    std::vector<unsigned char>& rgba,std::string& error) {
+    rgba.clear();
+    if(cache.slot==41) {
+        if(!cache.wheel_source.empty()) {
+            rgba=cache.wheel_source;
+            apply_wheel_paint(rgba,cache.wheel_mask,part_paint_color(frame.parts,selection.records[41].value_or(kNoCarPart)));
+        }
+    }else if(cache.body.request().width) {
+        auto request=cache.body.request();
+        request.base_color=skin.selection.base_color;
+        for(unsigned i=0;i<4;++i)
+            request.special_colors[i]=skin.selection.special_colors[i].value_or(request.base_color);
+        for(std::size_t i=0;i<request.layers.size();++i) {
+            auto& layer=request.layers[i];
+            const auto role=unsigned(cache.body.plan().inputs[cache.body.input_of_layer(i)].role);
+            if(!layer.remap||role<1||role>4)continue;
+            const auto& vinyl=*skin.selection.vinyl_layers[role-1];
+            for(unsigned k=0;k<4;++k)
+                layer.remap_colors[k]=vinyl.remap_colors[k].value_or(skin_default_remap_color(k));
+        }
+        BodySkin32 result;
+        auto markers=cache.markers;
+        if(!composite_body_skin_32(request,cache.target,markers,result,error))return false;
+        rgba.resize(result.pixels.size()*4);
+        for(std::size_t i=0;i<result.pixels.size();++i) {
+            const auto pixel=skin_swap_lane02(result.pixels[i]);
+            for(unsigned k=0;k<4;++k)rgba[4*i+k]=static_cast<unsigned char>(pixel>>(8*k));
+        }
+    }
+    // Engine accents and vinyl remaps alter only the skin. Other paint
+    // types can also replace the material on their own painted surfaces.
+    if(cache.slot==37||cache.slot>=42)return true;
+    return shade_stock_car(frame,inputs.file(StockFrameFile::global_bun),skin,&selection,error,cache.slot);
+}
+
 static bool prepare_stock_frame_impl(
     const StockFrameInputs& inputs,
     const StockSceneRequest& request,
     const StockFrameSkin& skin,
     StockFrame& frame,
     std::string& error, StockFrameInputs* consumed, const fs::path& root,
-    bool car_shading) {
+    bool car_shading,const StockFrameGeometryCache* geometry_cache=nullptr,
+    StockFramePaintCache* paint_cache=nullptr) {
     frame.car_geometry = GeometryReport{};
-    frame.stock_geometry.clear();
+    frame.stock_geometry.clear();frame.cached_geometry=nullptr;
     frame.parts = CarPartDatabase{};
     frame.car_types = CarTypeTable{};
     frame.car_pack = TexturePack{};
@@ -401,6 +508,12 @@ static bool prepare_stock_frame_impl(
                 retained_hashes.insert(retained_hashes.end(), hashes.begin(), hashes.end());
             }
         }
+        if(geometry_cache) {
+            if(consumed||geometry_cache->source!=&inputs){error="frontend geometry cache belongs to different source inputs";return false;}
+            frame.car_geometry=geometry_cache->car;
+            frame.cached_geometry=geometry_cache;
+            frame.issues.insert(frame.issues.end(),geometry_cache->issues.begin(),geometry_cache->issues.end());
+        }else {
         // load_geometry_file(<GEOMETRY.BIN>) and its "geometry issue" lines.
         frame.car_geometry =
             parse_geometry(car_geometry.bytes.data(), car_geometry.bytes.size());
@@ -455,10 +568,11 @@ static bool prepare_stock_frame_impl(
                 frame.issues.push_back(at(input.path, issue.offset, issue.message));
             }
         }
+        }
         if (!consumed) parse_part_tables();
         std::vector<const GeometryReport*> sources;
         sources.push_back(&frame.car_geometry);
-        for (const GeometryReport& source : frame.stock_geometry) {
+        for (const GeometryReport& source : frame.geometry_sources()) {
             sources.push_back(&source);
         }
         const SceneLimits scene_limits;
@@ -542,11 +656,15 @@ static bool prepare_stock_frame_impl(
             frame.lamp_texture_aliases =
                 alias_stock_lamp_textures(present, request.car_type_name,
                                           frame.car_geometry);
+            StockParts installed_lamps;
+            if(!select_installed_parts(frame.parts,request.car_type_name,request.installed_parts,installed_lamps,error))return false;
+            frame.lamp_texture_aliases+=alias_installed_lamp_textures(present,request.car_type_name,
+                frame.parts,installed_lamps,frame.car_geometry);
         }
 
         // "error: no valid meshes to render", exit 2.
         std::size_t valid_meshes = frame.car_geometry.valid_mesh_count();
-        for (const GeometryReport& source : frame.stock_geometry) {
+        for (const GeometryReport& source : frame.geometry_sources()) {
             valid_meshes += source.valid_mesh_count();
         }
         if (valid_meshes == 0) {
@@ -558,6 +676,7 @@ static bool prepare_stock_frame_impl(
         // meshes whose texture hashes a shared source is asked to decode.
         std::vector<SceneMeshRef> mesh_refs;
         bool wants_left_brake = false;
+        std::size_t rim=kNoCarPart,color=kNoCarPart;
         {
             PreparedCarScene unbound;
             StockSceneReport unbound_report;
@@ -568,6 +687,8 @@ static bool prepare_stock_frame_impl(
                 error = "stock car: " + stock_error;
                 return false;
             }
+            rim=unbound_report.slots[17].record;
+            color=unbound_report.slots[41].record;
             for (const PreparedMesh& mesh : unbound.meshes) {
                 mesh_refs.push_back(SceneMeshRef{mesh.source, mesh.source_index});
             }
@@ -576,6 +697,25 @@ static bool prepare_stock_frame_impl(
                     return instance.part_slot == kSlotBrake &&
                            (instance.copy == 0 || instance.copy == 3);
                 });
+        }
+
+        // Native5A9A90/5A9AF0 use the installed rim TEXTURE family.
+        std::uint32_t wheel_source=0,wheel_mask=0,wheel_color=0;
+        if(rim<frame.parts.records.size()&&color<frame.parts.records.size()&&frame.parts.records[rim].upgrade_level) {
+            std::uint32_t family=0;
+            const auto attribute=[&](std::size_t record,std::uint32_t key) {
+                const auto& p=frame.parts.records[record];
+                for(int k=0;k<p.attribute_count;++k) {
+                    const auto& a=frame.parts.attributes[p.attribute_index+unsigned(k)];if(a.key==key)return a.value;
+                }
+                return 0U;
+            };
+            if((family=attribute(rim,0x10c98090U))) {
+                const auto suffix=[](std::uint32_t hash,const char* text){for(;*text;++text)hash=hash*33+static_cast<unsigned char>(*text);return hash;};
+                wheel_source=suffix(family,"_WHEEL");wheel_mask=suffix(family,"_WHEEL_INNER_MASK");
+                wheel_color=part_paint_color(frame.parts,color);
+                frame.wanted.push_back(wheel_source);frame.wanted.push_back(wheel_mask);
+            }
         }
 
         // The decode, shared sources present: the car's pack is source 0 and
@@ -641,6 +781,24 @@ static bool prepare_stock_frame_impl(
         // The runtime body skin: the viewer's "if (skin.enabled)" block,
         // step by step. Nothing here runs without it.
         bool skin_ok = true;
+        if(wheel_source) {
+            auto source=std::find_if(frame.textures.textures.begin(),frame.textures.textures.end(),[&](const auto& t){return t.claims_hash(wheel_source);});
+            const auto mask=std::find_if(frame.textures.textures.begin(),frame.textures.textures.end(),[&](const auto& t){return t.claims_hash(wheel_mask);});
+            if(source==frame.textures.textures.end()||mask==frame.textures.textures.end()||!source->usable()||!mask->usable()||
+               source->width!=mask->width||source->height!=mask->height||source->rgba.size()!=mask->rgba.size()) {
+                // 5AA800 leaves the wheel texture alone when it cannot obtain
+                // the source or the mask. It does not prevent loading the car.
+                frame.issues.push_back("native wheel paint source/mask unavailable");
+            } else {
+                if(paint_cache&&paint_cache->slot==41) {
+                    paint_cache->texture_hash=source->hash;
+                    paint_cache->wheel_source=source->rgba;
+                    paint_cache->wheel_mask=mask->rgba;
+                }
+                apply_wheel_paint(source->rgba,mask->rgba,wheel_color);
+            }
+        }
+
         if (skin.enabled) {
             // Skin input sources in the order they are searched: the car's
             // pack, then each shared source in order (there is no
@@ -773,6 +931,12 @@ static bool prepare_stock_frame_impl(
             frame.skin_plan = assembled.plan();
             frame.skin_owned_bytes = assembled.owned_bytes();
             frame.skinned = true;
+            if(paint_cache&&paint_cache->slot!=41) {
+                paint_cache->texture_hash=frame.skin.target_hash;
+                paint_cache->body=std::move(assembled);
+                paint_cache->markers=markers;
+                paint_cache->target=std::move(target_surface.pixels);
+            }
         }
 
         // The stock scene again, now bound to the decoded textures and,
@@ -792,28 +956,11 @@ static bool prepare_stock_frame_impl(
             ok = ok && set.ok();
         }
         ok = ok && skin_ok && frame.parts.ok() && frame.car_types.ok();
-        for (const GeometryReport& source : frame.stock_geometry) {
+        for (const GeometryReport& source : frame.geometry_sources()) {
             ok = ok && source.ok();
         }
         frame.inputs_ok = ok;
-        if (car_shading) {
-            auto installed=frame.report.slots[30].record;
-            if (installed==kNoCarPart) {
-                const auto name=frame.car_types.records[frame.report.car_type].base_paint_part_hash;
-                installed=find_car_part(frame.parts,kAnyCarType,30,name,kNoCarPart,kAnyUpgradeLevel);
-            }
-            const auto paint=select_car_paint_material_hash(frame.parts,
-                installed,
-                skin.enabled ? std::optional<std::uint32_t>(skin.selection.base_color)
-                             : std::nullopt);
-            // 0x56B577..0x56B5AB: an installed WINDOW_TINT part selects the
-            // material that replaces the production glass; none installed
-            // keeps the geometry's own WINDSHIELD material.
-            const auto tint=car_part_material_hash(frame.parts,
-                frame.report.slots[115].record);
-            if (!apply_car_materials(frame.scene, parts_file.bytes.data(),
-                                     parts_file.bytes.size(), paint, tint, error)) return false;
-        }
+        if(car_shading&&!shade_stock_car(frame,parts_file,skin,nullptr,error))return false;
         return true;
     } catch (const std::bad_alloc&) {
         error = "out of memory while preparing the stock frame";
@@ -825,8 +972,8 @@ static bool prepare_stock_frame_impl(
 
 bool prepare_stock_frame(const StockFrameInputs& inputs, const StockSceneRequest& request,
                          const StockFrameSkin& skin, StockFrame& frame, std::string& error,
-                         bool car_shading) {
-    return prepare_stock_frame_impl(inputs, request, skin, frame, error, nullptr, {}, car_shading);
+                         bool car_shading,const StockFrameGeometryCache* geometry_cache,StockFramePaintCache* paint_cache) {
+    return prepare_stock_frame_impl(inputs, request, skin, frame, error, nullptr, {}, car_shading,geometry_cache,paint_cache);
 }
 
 bool prepare_race_car_frame(StockFrameInputs& inputs, const fs::path& root,
@@ -1001,3 +1148,4 @@ std::vector<std::string> stock_frame_skin_lines(const StockFrame& frame) {
 }
 
 } // namespace nfsu
+

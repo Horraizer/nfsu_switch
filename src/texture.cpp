@@ -1858,4 +1858,70 @@ std::string texture_file_stem(const TextureRecord& texture) {
     return stem;
 }
 
+bool append_texture_animations(const unsigned char* data,std::size_t size,
+    std::vector<TextureAnimation>& animations,std::string& error) {
+    const auto word=[](const unsigned char* p){return std::uint32_t(p[0])|(std::uint32_t(p[1])<<8)|(std::uint32_t(p[2])<<16)|(std::uint32_t(p[3])<<24);};
+    auto next=animations;
+    for(std::size_t at=0;at+8<=size;) {
+        const auto tag=word(data+at),bytes=word(data+at+4);
+        if(bytes>size-at-8){error="texture animation source chunk truncated";return false;}
+        if(tag==0xB0300100U) {
+            const auto* p=data+at+8;
+            if(bytes<24||word(p)!=0x30300101U||word(p+4)!=16){error="texture animation header invalid";return false;}
+            if(word(p+8)==1) {
+                if(bytes<40||word(p+24)!=0x30300102U){error="texture animation definitions absent";return false;}
+                const auto rows=word(p+28);const std::size_t frames_at=32ULL+rows;
+                if(rows%52||rows/52>128||frames_at+8>bytes||word(p+frames_at)!=0x30300103U||word(p+frames_at+4)!=bytes-frames_at-8){error="texture animation tables invalid";return false;}
+                std::size_t frame=frames_at+8;
+                for(std::size_t row=32;row<frames_at;row+=52) {
+                    TextureAnimation value;value.hash=word(p+row+24);
+                    const auto count=word(p+row+28);value.fps=word(p+row+32);value.clock=word(p+row+36);
+                    if(!count||count>512||!value.fps||value.fps>240||value.clock>1||count>(bytes-frame)/16){error="texture animation definition outside bounds";return false;}
+                    for(unsigned i=0;i<count;++i)value.frames.push_back(word(p+frame+i*16));
+                    frame+=count*16;
+                    const auto old=std::find_if(next.begin(),next.end(),[&](const auto& a){return a.hash==value.hash;});
+                    if(old==next.end())next.push_back(std::move(value));
+                    else if(old->fps!=value.fps||old->clock!=value.clock||old->frames!=value.frames){error="conflicting texture animation definition";return false;}
+                }
+                if(frame!=bytes){error="texture animation frame count mismatch";return false;}
+            }
+        }
+        at+=8+bytes;
+    }
+    animations=std::move(next);error.clear();return true;
+}
+bool load_texture_animations(const std::filesystem::path& path,
+    std::vector<TextureAnimation>& animations,std::string& error) {
+    try {
+        std::ifstream input(path,std::ios::binary|std::ios::ate);
+        if(!input||input.tellg()<0){error="animation metadata source unavailable";return false;}
+        const auto size=static_cast<std::uint64_t>(input.tellg());
+        if(size>TextureLimits{}.max_file_size){error="animation source exceeds file bound";return false;}
+        auto next=animations;std::array<unsigned char,8> header{};
+        std::vector<unsigned char> metadata;std::size_t chunks=0;
+        for(std::uint64_t at=0;at<size;) {
+            if(size-at<8||++chunks>TextureLimits{}.max_walk_chunks){error="animation source chunk header truncated or excessive";return false;}
+            input.seekg(static_cast<std::streamoff>(at));
+            if(!input.read(reinterpret_cast<char*>(header.data()),8)){error="animation source header read failed";return false;}
+            const auto tag=read_u32_le(header.data()),bytes=read_u32_le(header.data()+4);
+            if(bytes>size-at-8){error="animation source chunk exceeds file";return false;}
+            if(tag==0xB0300100U) {
+                // Port metadata cap; the parser separately bounds rows/frames.
+                if(bytes>2U*1024U*1024U){error="animation metadata exceeds bounded scratch";return false;}
+                metadata.resize(std::size_t(bytes)+8);std::copy(header.begin(),header.end(),metadata.begin());
+                if(!input.read(reinterpret_cast<char*>(metadata.data()+8),bytes)){error="animation metadata read failed";return false;}
+                if(!append_texture_animations(metadata.data(),metadata.size(),next,error))return false;
+            }
+            at+=8ULL+bytes;
+        }
+        animations=std::move(next);error.clear();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+std::size_t texture_animation_phase(const TextureAnimation& a,std::uint32_t ticks_60hz) noexcept {
+    if(a.frames.empty())return 0;
+    //545EA0 stores integer animation ticks*(1/60) as binary32, then truncates fps*t.
+    const float seconds=float(ticks_60hz)*.01666666753590107F;
+    return std::uint64_t(float(a.fps)*seconds)%a.frames.size();
+}
+
 } // namespace nfsu

@@ -4,6 +4,8 @@
 #include "nfsu/track.h"
 
 #include <algorithm>
+#include <array>
+#include "career_reverse_scenery_native.inc"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1626,6 +1628,16 @@ void test_resolution() {
 } // namespace
 
 int main() {
+    for(const auto& row:kNativeReverseScenery) {
+        nfsu::TrackObjectReport objects;objects.sections.resize(1);auto& section=objects.sections[0];
+        section.valid=true;section.instances.resize(1);auto& instance=section.instances[0];
+        instance.flags=row.flags;instance.position[0]=12.5F;instance.position[1]=-6.25F;instance.position[2]=123;
+        std::copy(row.before.begin(),row.before.end(),instance.matrix);
+        nfsu::apply_reverse_track_scenery(objects);
+        check(std::equal(row.after.begin(),row.after.end(),instance.matrix),"native4462A0 reverse scenery matrix");
+        check(instance.flags==row.flags&&instance.position[0]==12.5F&&instance.position[1]==-6.25F&&instance.position[2]==123,
+              "reverse scenery retains authored position and flags");
+    }
     test_well_formed_section();
     test_child_order_does_not_matter();
     test_section_letter();

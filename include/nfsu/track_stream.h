@@ -272,7 +272,7 @@ bool select_track_texture_spillover_1003(
     TrackStreamSelection& selection,
     std::string& error);
 
-// Same explicit display-source approximation for the two L1RA circuits.
+// Same explicit display-source approximation for the L1RA circuits 1001-1008.
 bool select_track_texture_spillover_l1ra(
     const TrackStreamTable& table, const std::vector<std::size_t>& resident,
     std::uint32_t track, TrackStreamSelection& selection, std::string& error);
@@ -282,6 +282,7 @@ bool select_track_texture_spillover_l1ra(
 // ---------------------------------------------------------------------------
 
 struct TrackStreamSection {
+    std::vector<TextureAnimation> animations;
     std::size_t record = 0;
     TrackStreamReason reason = TrackStreamReason::fixed;
     std::string name;

@@ -96,7 +96,7 @@ void retail(const std::filesystem::path& root, bool print) {
                     f.data()+d.actors[0].visual.offset+0x28,32);
         require(!parse().ok(),"duplicate preset hash rejected"); f=original;
     }
-    mutate(f,static_cast<std::size_t>(d.actors[1].event_source_offset)+0x16,0,"unsupported rival tuning");
+    mutate(f,static_cast<std::size_t>(d.actors[1].event_source_offset)+0x16,11,"out-of-range fixed rival tuning");
     mutate(t,static_cast<std::size_t>(d.actors[0].marker.offset)+0x10,0x7F800000,"infinite marker");
     mutate(t,static_cast<std::size_t>(d.actors[0].marker.offset)+0xC,0,"duplicate marker");
     mutate(t,static_cast<std::size_t>(d.actors[0].marker.offset)+8,0,"missing marker");

@@ -1,4 +1,5 @@
 #include "nfsu/car_shadow.h"
+#include "nfsu/ai_driver.h"
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
 
@@ -37,8 +38,8 @@ bool prepare_car_shadow(const std::string& car_type_name, const StockFrameInputs
                         const TexturePack& pack, CarShadowAsset& out, std::string& error) {
     error.clear();
     // The retail shadow texture of the selected car: <name>_SHADOWIG in the
-    // car's own TEXTURES.BIN, one 128x64 DXT3 image in every retail car
-    // directory (issue #315). The 240SX's hash was 0xF36596F5.
+    // car's own TEXTURES.BIN. Format and authored mip count vary by car.
+    // The 240SX's hash was 0xF36596F5.
     const std::string shadow_name = car_type_name + "_SHADOWIG";
     const std::uint32_t shadow_hash = bin_hash(shadow_name);
     std::vector<std::uint32_t> wanted{shadow_hash};
@@ -47,7 +48,8 @@ bool prepare_car_shadow(const std::string& car_type_name, const StockFrameInputs
     source.packs.push_back(&pack);
     source.wanted = &wanted;
     RenderTextureSet decoded;
-    if (!decode_render_texture_sources({source}, {}, decoded, error)) return false;
+    RenderTextureLimits limits; limits.retain_mips = true;
+    if (!decode_render_texture_sources({source}, limits, decoded, error)) return false;
     if (decoded.textures.size() != 1 || !decoded.textures[0].usable() ||
         decoded.textures[0].hash != shadow_hash) {
         error = shadow_name + " is missing or unusable"; return false;
@@ -76,6 +78,242 @@ bool prepare_car_shadow(const std::string& car_type_name, const StockFrameInputs
         out.triangles[n++] = {static_cast<std::uint16_t>(a+1),static_cast<std::uint16_t>(a+5),static_cast<std::uint16_t>(a+4)};
     }
     return true;
+}
+
+bool prepare_car_shadow_ramp(const StockFrameInputs& inputs, const StockFrame& stock,
+                             RenderTexture& out, std::string& error) {
+    constexpr std::uint32_t hash = 0xbadb4475; // 56A130, SHADOWRAMP
+    const std::vector<std::uint32_t> wanted{hash};
+    RenderTextureSource source;
+    source.bytes = &inputs.file(StockFrameFile::global_bun).bytes;
+    source.wanted = &wanted;
+    if (stock.shared_sets.empty()) { error = "shadow ramp texture pack absent"; return false; }
+    const auto& globals = stock.shared_sets.front();
+    source.complete = globals.complete;
+    for (const auto& pack : globals.packs) source.packs.push_back(&pack);
+    RenderTextureSet decoded;
+    if (!decode_render_texture_sources({source}, {}, decoded, error)) return false;
+    for (auto& texture : decoded.textures) {
+        if (texture.claims_hash(hash) && texture.usable()) {
+            out = std::move(texture);
+            return true;
+        }
+    }
+    error = "original SHADOWRAMP texture unavailable";
+    return false;
+}
+
+bool CarShadowSilhouette::initialize(const VehicleHull& hull, std::string& error) {
+    if (hull.points.size() < 3 || hull.points.size() > kHullLimit) {
+        error = "shadow collision hull outside native projection bounds";
+        return false;
+    }
+    hull_ = hull.points;
+    const auto segments = hull_.size() * 3;
+    vertices_.resize(1 + 2 * (segments + 1));
+    triangles_.reserve(segments * 3);
+    for (std::size_t i = 0; i < segments; ++i) {
+        const auto inner = static_cast<std::uint16_t>(1 + 2*i);
+        const auto outer = static_cast<std::uint16_t>(inner + 1);
+        const auto next = static_cast<std::uint16_t>(inner + 2);
+        const auto next_outer = static_cast<std::uint16_t>(inner + 3);
+        triangles_.push_back({0, inner, next});
+        triangles_.push_back({inner, outer, next_outer});
+        triangles_.push_back({inner, next_outer, next});
+    }
+    return true;
+}
+
+bool CarShadowSilhouette::append(UploadTable& table, const RenderTexture& ramp,
+    std::size_t ramp_resource, RecordedDraw& draw, std::string& error) const {
+    if (vertices_.empty() || !ramp.usable()) { error = "shadow silhouette is not prepared"; return false; }
+    if (ramp_resource == kNoHandle) {
+        UploadResource texture;
+        texture.name = "SHADOWRAMP";
+        texture.kind = UploadResourceKind::texture;
+        texture.memory = UploadMemory::image;
+        texture.data = ramp.rgba.data();
+        texture.bytes = ramp.rgba.size();
+        texture.alignment = kTextureStagingAlignment;
+        texture.element_bytes = 4;
+        texture.elements = std::uint64_t{ramp.width} * ramp.height;
+        texture.texture_hash = ramp.hash;
+        if (!check_texture_upload_format(TextureUploadFormat::rgba8, ramp.width, ramp.height,
+                                         texture.bytes, texture.texture, error, ramp.mip_count)) return false;
+        ramp_resource = table.resources.size();
+        table.resources.push_back(texture);
+        ++table.totals.textures;
+        table.totals.texture_bytes += texture.bytes;
+        table.totals.largest_texture_bytes = std::max(table.totals.largest_texture_bytes, texture.bytes);
+    }
+
+    UploadResource vertices;
+    vertices.name = "shadow silhouette vertices";
+    vertices.kind = UploadResourceKind::vertex_buffer;
+    vertices.data = reinterpret_cast<const unsigned char*>(vertices_.data());
+    vertices.bytes = vertices_.size() * sizeof(MeshVertex);
+    vertices.elements = vertices_.size();
+    vertices.element_bytes = sizeof(MeshVertex);
+    vertices.alignment = kCarVertexAlignment;
+    vertices.streamed_vertices = true;
+    UploadResource indices;
+    indices.name = "shadow silhouette indices";
+    indices.kind = UploadResourceKind::index_buffer;
+    indices.data = reinterpret_cast<const unsigned char*>(triangles_.data());
+    indices.bytes = triangles_.size() * sizeof(MeshTriangle);
+    indices.elements = triangles_.size() * 3;
+    indices.element_bytes = 2;
+    indices.alignment = kIndexAlignment;
+    draw.name = "shadow silhouette";
+    draw.texture_resource = ramp_resource;
+    draw.vertex_resource = table.resources.size();
+    draw.index_resource = draw.vertex_resource + 1;
+    draw.vertex_count = static_cast<std::uint32_t>(vertices.elements);
+    draw.index_count = static_cast<std::uint32_t>(indices.elements);
+    for (const auto& program : shader_manifest::kPrograms) {
+        if (std::strcmp(program.name, "car_textured") != 0) continue;
+        for (std::size_t i = 0; i < program.variant_count; ++i) {
+            if (std::strcmp(program.variants[i].name, "source_over") != 0) continue;
+            draw.program = &program;
+            draw.pipeline = program.variants[i];
+        }
+    }
+    if (!draw.program) { error = "shadow ramp shader variant absent"; return false; }
+    draw.pipeline.cull = shader_manifest::Cull::none;
+    draw.pipeline.depth_write = false;
+    // Reuse the unlit world-effect vertex RGBA x2 material used by skids.
+    draw.material.fallback[3] = 9;
+    draw.material.alpha[0] = 0;
+    table.resources.push_back(vertices);
+    table.resources.push_back(indices);
+    table.totals.resources = table.resources.size();
+    ++table.totals.vertex_buffers;
+    ++table.totals.index_buffers;
+    table.totals.vertex_bytes += vertices.bytes;
+    table.totals.index_bytes += indices.bytes;
+    return true;
+}
+
+VehicleVec3 car_shadow_light_ray(const VehicleVec3& origin, const VehicleVec3& light_position) noexcept {
+    // 56D799 passes horizontal length as X and negative Z as Y to 564DB0.
+    // The resulting angle is elevation above the road, not from vertical.
+    auto light = sub(origin, light_position);
+    const auto horizontal = std::sqrt(light.x*light.x + light.y*light.y);
+    constexpr std::uint16_t min_elevation = 0x1a90;
+    if (track_angle(float(horizontal),float(-light.z)) < min_elevation) {
+        const double sum = std::abs(light.x) + std::abs(light.y);
+        if (sum > 0) {
+            const double length = std::sqrt(dot(light,light));
+            const auto direction = ai_driver_heading(min_elevation);
+            const double scale = length * direction[0] / sum;
+            light.x *= scale;
+            light.y *= scale;
+            light.z = -length * direction[1];
+        }
+    }
+    return light;
+}
+
+void CarShadowSilhouette::update(const VehicleState& state, const VehicleSpec& spec,
+    const TrackContactWorld& world, const VehicleVec3& eye, const VehicleVec3& light_position,
+    bool visible, RecordedDraw& draw) {
+    draw.material.alpha[0] = 0;
+    if (!visible || hull_.empty()) return;
+    const auto relative = sub(state.position, eye);
+    const double distance2 = dot(relative, relative);
+    if (!(distance2 < 45.0*45.0)) return;
+    auto q = state.orientation;
+    const double norm = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+    if (!(norm > 0) || !std::isfinite(norm)) return;
+    q.x /= norm; q.y /= norm; q.z /= norm; q.w /= norm;
+    const auto& com = spec.handling.centre_of_mass;
+    const auto origin = sub(state.position, rotate(q, {com[0], com[1], com[2]}));
+    TrackContact reference;
+    if (!query_track_ground(world, origin, ground_cache_, reference)) return;
+    const auto height = std::clamp((origin.z - reference.point[2]) / 3.0, 0.0, 1.0);
+    const double distance = std::sqrt(distance2);
+    const double distance_fade = std::clamp((45.0 - distance) / 25.0, 0.0, 1.0);
+    const auto opacity = static_cast<unsigned char>(55.0 * (1.0 - height) * distance_fade);
+    if (!opacity) return;
+
+    const auto light = car_shadow_light_ray(origin, light_position);
+    if (!(light.z < 0)) return;
+
+    // 56E591 projects collision vertices into the render-origin plane.
+    std::array<VehicleVec3,kHullLimit> points;
+    for (std::size_t i = 0; i < hull_.size(); ++i) {
+        const auto& v = hull_[i];
+        const auto p = rotate(q, {v[0], v[1], v[2] + 0.275});
+        points[i] = {origin.x + p.x - p.z * light.x / light.z,
+                     origin.y + p.y - p.z * light.y / light.z, 0};
+    }
+    const auto end = points.begin() + hull_.size();
+    std::sort(points.begin(), end, [](const auto& a, const auto& b) {
+        return a.x < b.x || (a.x == b.x && a.y < b.y);
+    });
+    std::array<VehicleVec3,2*kHullLimit> contour;
+    std::size_t count = 0;
+    const auto push = [&](const VehicleVec3& p, std::size_t floor) {
+        while (count >= floor + 2 && cross(sub(contour[count-1],contour[count-2]),
+               sub(p,contour[count-1])).z <= 0) --count;
+        contour[count++] = p;
+    };
+    for (auto p = points.begin(); p != end; ++p) push(*p, 0);
+    const auto lower = count - 1;
+    for (auto p = end - 1; p != points.begin();) push(*--p, lower);
+    --count;
+
+    // 56CF10 and 56CEB0 keep road hits near the reference plane only.
+    std::size_t kept = 0;
+    const VehicleVec3 ref_point{origin.x, origin.y, reference.point[2]};
+    const VehicleVec3 normal{reference.normal[0], reference.normal[1], reference.normal[2]};
+    for (std::size_t i = 0; i < count; ++i) {
+        auto point = contour[i];
+        point.z = reference.point[2] + 0.06;
+        TrackContact ground;
+        if (!query_track_ground(world, point, ground_cache_, ground)) continue;
+        point.z = ground.point[2] + 0.06;
+        if (std::abs(point.z - ref_point.z - 0.06) > 4.0 ||
+            std::abs(dot(sub(point, ref_point), normal)) >= 1.5) continue;
+        contour[kept++] = point;
+    }
+    if (kept < 3 || kept > hull_.size()) return;
+
+    // 56D0C0 cuts each corner at one third of its incoming/outgoing edges.
+    std::array<VehicleVec3,3*kHullLimit> smooth;
+    for (std::size_t i = 0; i < kept; ++i) {
+        const auto p = contour[i];
+        const auto a = mul(sub(contour[(i+kept-1)%kept],p), 0.333);
+        const auto b = mul(sub(contour[(i+1)%kept],p), 0.333);
+        smooth[3*i] = add(p, a);
+        smooth[3*i+1] = add(p, mul(add(a,b), 0.333));
+        smooth[3*i+2] = add(p, b);
+    }
+    count = kept * 3;
+    const auto centre = mul(add(smooth[0], smooth[count/2]), 0.5);
+    const auto store_vertex = [opacity](MeshVertex& vertex, const VehicleVec3& p, float u) {
+        vertex.px = static_cast<float>(p.x);
+        vertex.pz = static_cast<float>(p.y);
+        vertex.py = static_cast<float>(p.z);
+        vertex.u = u;
+        vertex.v = 0;
+        vertex.color[0] = vertex.color[1] = vertex.color[2] = 128;
+        vertex.color[3] = opacity;
+    };
+    store_vertex(vertices_[0], centre, 0);
+    for (std::size_t i = 0; i <= hull_.size()*3; ++i) {
+        const auto point = smooth[i < count ? i : 0];
+        auto rim = add(centre, mul(sub(point, centre), 1.4 - 0.3*height));
+        rim.z = point.z; // 56D870 expands XY but retains contour height.
+        store_vertex(vertices_[1+2*i], point, 0.155F);
+        store_vertex(vertices_[2+2*i], rim, 1);
+    }
+    draw.material.alpha[0] = 1;
+}
+
+std::size_t CarShadowSilhouette::resident_bytes() const noexcept {
+    return sizeof(*this) + hull_.capacity()*sizeof(hull_[0]) +
+           vertices_.capacity()*sizeof(MeshVertex) + triangles_.capacity()*sizeof(MeshTriangle);
 }
 
 CarShadowPlacement place_car_shadow(const RaceSession& session) noexcept {
@@ -147,6 +385,7 @@ CarShadowPlacement place_car_shadow(const VehicleState& state,
     // With fewer than three contacts the plane normal falls back to body up.
     // Use world up for alignment then, so a tilted airborne car still fades.
     const VehicleVec3 alignment_normal = hits >= 3 ? normal : VehicleVec3{0,0,1};
+    out.strength=static_cast<float>(std::abs(dot(body_up,alignment_normal))*(1.0-fade));
     out.alpha = static_cast<float>((228.0/255.0)*std::abs(dot(body_up,alignment_normal))*(1.0-fade));
     return out;
 }
@@ -155,7 +394,7 @@ bool prepare_car_shadow_bounds(const StockFrameInputs&, const StockFrame& car,
     CarShadowAsset& shadow, std::string& error) {
     std::vector<std::uint32_t> loaded;
     for(const auto& mesh:car.car_geometry.meshes)if(mesh.has_directory_entry)loaded.push_back(mesh.directory_hash);
-    for(const auto& source:car.stock_geometry)for(const auto& mesh:source.meshes)
+    for(const auto& source:car.geometry_sources())for(const auto& mesh:source.meshes)
         if(mesh.has_directory_entry)loaded.push_back(mesh.directory_hash);
     std::sort(loaded.begin(),loaded.end());loaded.erase(std::unique(loaded.begin(),loaded.end()),loaded.end());
     float low[3]={std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()};
@@ -207,7 +446,10 @@ CarShadowPlacement project_car_shadow(const CarShadowAsset& asset, const Vehicle
     row(out.transform.rows,2,up);
     row(out.transform.rows,3,add(origin,add(mul(forward,(hx+lx)*0.5F),mul(side,(hy+ly)*0.5F))));
     // 0x56EFD9: quantize the vertex alpha before world.efx doubles it.
-    const float a=std::clamp(std::nearbyint(114.0F*std::abs(static_cast<float>(up.z))*(1.0F-fade)),0.0F,254.0F);
+    //56F025 multiplies alignment by fade before114;674898 truncates.
+    const float strength=std::abs(static_cast<float>(up.z))*(1.0F-fade);
+    out.strength=strength;
+    const float a=std::clamp(std::trunc(114.0F*strength),0.0F,254.0F);
     out.alpha=2.0F*a/255.0F;
     TrackContact wheels[4]{};bool wheel_ok[4]{};
     for(unsigned i=0;i<4;++i) {
@@ -220,7 +462,11 @@ CarShadowPlacement project_car_shadow(const CarShadowAsset& asset, const Vehicle
         const auto& v=asset.vertices[i];
         const auto& m=out.transform.rows;
         const VehicleVec3 point{v.px*m[0]+v.pz*m[4]+m[12],v.px*m[1]+v.pz*m[5]+m[13],v.px*m[2]+v.pz*m[6]+m[14]};
-        TrackContact tap;bool ok=query(point,tap,context);
+        //56ED31 restores the same render-origin Z for every grid tap,
+        //after transforming XY. Pitch/roll must not change which stacked
+        //road is admitted by440A40's origin.z+1 upper bound.
+        auto query_point=point;query_point.z=origin.z;
+        TrackContact tap;bool ok=query(query_point,tap,context);
         float z=ok?tap.point[2]:last;
         if (!ok) {
             const auto w=fallback[i];const auto& plane=wheels[w];
@@ -240,14 +486,17 @@ CarShadowPlacement project_car_shadow(const CarShadowAsset& asset, const Vehicle
     return out;
 }
 
-CarShadowPlacement place_car_shadow(const CarShadowAsset& asset, const RaceSession& session) {
-    // Rendering-only adapter. Retail 0x440A40 uses a cached road plane;
-    // this port queries the loaded collision world, not suspension contact.
-    const auto query=[](const VehicleVec3& p, TrackContact& hit, const void* context) {
-        const float point[3]={static_cast<float>(p.x),static_cast<float>(p.y),static_cast<float>(p.z)};
-        return query_track_contact_point(*static_cast<const TrackContactWorld*>(context),point,1.0F,4.0F,hit)==TrackContactStatus::hit;
+CarShadowPlacement place_car_shadow(const CarShadowAsset& asset,const VehicleState& state,
+                                    const VehicleSpec& spec,const TrackContactWorld& world) {
+    struct Context {const TrackContactWorld& world;CarShadowGroundCache& cache;} context{world,asset.ground_cache};
+    const auto query=[](const VehicleVec3& p,TrackContact& hit,const void* context) {
+        const auto& c=*static_cast<const Context*>(context);
+        return query_car_shadow_ground(c.world,p,c.cache,hit);
     };
-    return project_car_shadow(asset,session.car(),session.spec(),query,&session.course().world);
+    return project_car_shadow(asset,state,spec,query,&context);
+}
+CarShadowPlacement place_car_shadow(const CarShadowAsset& asset,const RaceSession& session) {
+    return place_car_shadow(asset,session.car(),session.spec(),session.course().world);
 }
 
 void update_car_shadow_draw(const CarShadowPlacement& p, RecordedDraw& draw) {
@@ -301,7 +550,7 @@ bool record_car_shadow_commands(const CarShadowAsset& asset,
     texture.elements = std::uint64_t{asset.texture.width}*asset.texture.height;
     texture.texture_hash = asset.texture.hash;
     if (!check_texture_upload_format(TextureUploadFormat::rgba8,asset.texture.width,
-                                     asset.texture.height,texture.bytes,texture.texture,error)) return false;
+                                     asset.texture.height,texture.bytes,texture.texture,error,asset.texture.mip_count)) return false;
     table.resources.push_back(texture);
     table.totals.resources = 3;
     table.totals.vertex_buffers = table.totals.index_buffers = table.totals.textures = 1;

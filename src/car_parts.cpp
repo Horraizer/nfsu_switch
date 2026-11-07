@@ -400,7 +400,7 @@ private:
 // and 12 are empty: with a wide body the routine would also install parts.
 void derive_enabled(const CarPartDatabase& database,
                     std::array<StockPartSlot, kCarSlotCount>& slots,
-                    bool native_installed = false) {
+                    bool native_installed = false, const CarPartRecord* preview = nullptr) {
     const auto at = [&](int slot) -> StockPartSlot& {
         return slots[static_cast<std::size_t>(slot)];
     };
@@ -428,15 +428,19 @@ void derive_enabled(const CarPartDatabase& database,
                 }
             }
         }
-        // The hood rule at 0x57ec29 only changes slot 12, which the stock
-        // routine leaves empty, and the wheel rule at 0x57ebbb needs a
-        // preview part; neither has an effect here. The wide-body branch
-        // of 0x57ed2e is not reproduced: it also installs parts, and the
-        // stock routine never fills slot 6.
+        // Native57EBBB hides rims while previewing callipers or their paint.
+        if (s == kSlotWheel && preview &&
+            (preview->slot == kSlotBrake ||
+             (preview->slot == 30 && preview->hash_0c == bin_hash("CALIPER"))))
+            at(kSlotWheel).enabled = false;
         if (native_installed && s == 8 && installed(kSlotEngine)) {
-            // 0x57EC29 with the native preset and no garage preview part:
-            // expose engine only when the hood is absent or disabled.
-            at(kSlotEngine).enabled = !installed(8) || !at(8).enabled;
+            // Native57EC29: HOSE paint and an upgraded engine preview expose
+            // the engine and suppress the hood and its decals temporarily.
+            const bool show = preview &&
+                ((preview->slot == 30 && preview->hash_0c == bin_hash("HOSE")) ||
+                 (preview->slot == kSlotEngine && preview->upgrade_level != 0));
+            if (show) { at(8).enabled = false; at(kSlotDecalHood).enabled = false; }
+            at(kSlotEngine).enabled = show || !installed(8) || !at(8).enabled;
         }
         if (native_installed && s == kSlotWideBody && installed(kSlotWideBody)) {
             // 0x57ED2E..0x57EF7A. Native preset resolution supplies the four
@@ -796,7 +800,11 @@ bool select_installed_parts(
     }
     const bool native_installed = std::any_of(selection.records.begin(),selection.records.end(),
         [](const auto& record) { return record.has_value(); });
-    derive_enabled(database, parts.slots, native_installed);
+    if (selection.preview && *selection.preview >= database.records.size()) {
+        error = "frontend preview part outside database"; parts = StockParts{}; return false;
+    }
+    derive_enabled(database, parts.slots, native_installed,
+        selection.preview ? &database.records[*selection.preview] : nullptr);
     return true;
 }
 

@@ -13,13 +13,15 @@ struct RaceLapHudSnapshot {
     std::size_t generation = 0, step = 0, actor = 0;
     std::int32_t world_ticks = 0, start_ticks = 0, best_ticks = 0;
     std::int32_t held_since = 0, held_ticks = 0;
+    std::int32_t time_limit_ticks = 0;
     bool start_valid = false, hold_valid = false, finished = false;
     bool free_laps = false;
     int highest_lap = 0, laps = 0;
 };
 
 RaceLapHudSnapshot race_lap_hud_snapshot(const RaceRoute& route,
-    const RaceTimingState& timing, std::size_t actor, bool allow_free_laps = false) noexcept;
+    const RaceTimingState& timing, std::size_t actor, bool allow_free_laps = false,
+    std::int32_t time_limit_ticks = 0) noexcept;
 
 // The selected language producer is recovered, but its live event0 value is
 // unknown. Callers must explicitly supply a recovered option; unknown does not select

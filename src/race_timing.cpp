@@ -1,6 +1,7 @@
 #include "nfsu/race_timing.h"
 
 #include <cmath>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -150,6 +151,7 @@ void emit(std::vector<RaceTimingEvent>& events, RaceTimingEventKind kind,
 }
 
 bool check_config(const RaceRoute& route, const RaceTimingConfig& config, std::string& error) {
+    if(config.time_limit_ticks<0||config.time_limit_ticks>kRaceTicksLimit){error="invalid challenge time limit";return false;}
     if (config.racers == 0 || config.racers > kMaxRacers) {
         error = "a race holds 1 to " + std::to_string(kMaxRacers) + " racers, not " +
                 std::to_string(config.racers);
@@ -193,11 +195,12 @@ bool check_config(const RaceRoute& route, const RaceTimingConfig& config, std::s
         error = "the finish line is not one of the route's boundaries";
         return false;
     }
-    if (route.point_to_point) {
+    if (route.point_to_point && route.laps != 1) {
         // 0x00434C37..0x00434C42 zero the lap counter of a point-to-point
-        // race at go, which the route's own progress does not know; the
-        // route layer refuses the open paths such races run on anyway.
-        error = "a point-to-point race is not timed by this model";
+        // race at go; race_laps() has already collapsed its stored lap
+        // count to the single pass a point-to-point course runs.
+        error = "a point-to-point race is one pass, not " +
+                std::to_string(route.laps) + " laps";
         return false;
     }
     if (!std::isfinite(route.spline.path_length) || !(route.spline.path_length > 0.0F)) {
@@ -273,12 +276,14 @@ bool check_inputs(const RaceRoute& route, const RaceTimingConfig& config,
 }
 
 // 0x00434B50 with 4 (0x00434C0A..0x00434CB9): the race goes.
-void go(RaceTimingState& state, std::int32_t now, std::vector<RaceTimingEvent>& events) {
+void go(const RaceRoute& route, RaceTimingState& state, std::int32_t now, std::vector<RaceTimingEvent>& events) {
     const std::int32_t start = race_quantize_ticks(now);
     for (RaceRacerTiming& racer : state.racers) {
         racer.crossing_valid[0] = true;
         racer.crossing_ticks[0] = start;
         racer.highest_checkpoint = 0;
+        // 434C37..434C42: open-course races start on lap zero at GO.
+        if (route.point_to_point) racer.lap = 0;
     }
     state.stage = RaceStage::racing;
     state.race_start_valid = true;
@@ -447,10 +452,15 @@ const char* race_stage_name(RaceStage stage) noexcept {
 
 const char* racer_status_name(RacerStatus status) noexcept {
     switch (status) {
+    case RacerStatus::blown_engine: return "blown_engine";
+    case RacerStatus::totalled: return "totalled";
+    case RacerStatus::out_of_time: return "out-of-time";
     case RacerStatus::not_finished:
         return "not-finished";
     case RacerStatus::normal_completion:
         return "finished";
+    case RacerStatus::knocked_out:
+        return "knocked-out";
     }
     return "unknown";
 }
@@ -584,7 +594,7 @@ bool step_race_timing(const RaceRoute& route, const RaceTimingConfig& config,
 
     // 0x00435570..0x004355B5: the countdown's end.
     if (state.stage == RaceStage::countdown && countdown_value_at(config, state, now) == 4) {
-        go(state, now, events);
+        go(route, state, now, events);
     }
     const int shown = countdown_value_at(config, state, now);
     if (shown != state.countdown_shown) {
@@ -672,6 +682,11 @@ bool step_race_timing(const RaceRoute& route, const RaceTimingConfig& config,
         }
     }
 
+    //Career type4 uses native runtime mode2 (4B5FDF), not challenge
+    //byte78A346.4358FB accepts an under-limit completed split; the normal
+    //finish below still completes an over-limit route.5A3098 then decides
+    //career success from its recorded time. Never apply435875's unrelated
+    //challenge expiry/reason8 merely because a career deadline exists.
     // 0x00435A17..0x00435A5D: a race with laps finishes every racer whose
     // highest lap equals them, through 0x004350D0 with 1.
     if (route.laps != 0) {
@@ -867,6 +882,53 @@ std::uint32_t advance_race_step_clock(RaceStepClock& clock, std::uint64_t now_us
 
 std::uint32_t advance_race_step_clock(RaceStepClock& clock, TimingService& timing) {
     return advance_race_step_clock(clock, timing.now_us());
+}
+
+namespace {
+bool racer_temporary_ghost(const RaceRacerTiming& r,std::int32_t now) noexcept {
+    return r.ghost_start_ticks!=0 && r.ghost_start_ticks!=kRaceNoTime &&
+        float(now-r.ghost_start_ticks)*.00025F<r.ghost_seconds;
+}
+}
+bool race_racer_body_ghost(const RaceRacerTiming& r,std::int32_t now) noexcept {
+    return r.permanent_ghost||racer_temporary_ghost(r,now);
+}
+bool race_racer_hidden(const RaceRacerTiming& r,std::int32_t now,float dt,std::uint64_t frame) noexcept {
+    if(racer_temporary_ghost(r,now)&&std::abs(dt)>.001F)return (frame&1U)!=0;
+    return r.permanent_ghost;
+}
+
+bool apply_lap_knockout(const RaceTimingConfig& config,RaceTimingState& state,
+                        const unsigned* order,std::size_t count,std::string& error) {
+    if(!order || count!=state.racers.size() || count!=config.racers || count<2 || count>4 || config.humans>count) {
+        error="invalid knockout ranking";return false;
+    }
+    unsigned seen=0;
+    for(std::size_t i=0;i<count;++i) {
+        if(order[i]>=count || (seen&(1U<<order[i]))){error="invalid knockout rank permutation";return false;}
+        seen|=1U<<order[i];
+    }
+    for(std::size_t i=0;i<count;++i) {
+        const auto& trigger=state.racers[order[i]];
+        if(!trigger.new_lap || trigger.highest_lap+int(i)+1!=int(count))continue;
+        for(std::size_t j=i+1;j<count;++j) {
+            auto& victim=state.racers[order[j]];
+            if(victim.status!=RacerStatus::not_finished)continue;
+            victim.status=RacerStatus::knocked_out;
+            victim.position=int(j)+1;
+            victim.finish_valid=false;
+            victim.finish_step=state.step;
+            //435740 passes hide=true only for a non-human actor;435344
+            //keeps its stop action/body but sets permanent ghost and2s blink.
+            if(order[j]>=config.humans) {
+                victim.ghost_start_ticks=state.now_ticks;victim.ghost_seconds=2.F;
+                victim.permanent_ghost=true;
+            }
+        }
+    }
+    if(config.humans && std::all_of(state.racers.begin(),state.racers.begin()+config.humans,
+        [](const auto& r){return r.status!=RacerStatus::not_finished;}))state.outcome=RaceOutcome::finished;
+    error.clear();return true;
 }
 
 } // namespace nfsu

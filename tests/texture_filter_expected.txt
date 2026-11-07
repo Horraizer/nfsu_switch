@@ -1,10 +1,13 @@
+# Start frames refreshed only inside the original 321_Go HUD object.
+# Paired before/after renders retain identical states and trajectories.
+# Camera projection refreshed from original40DD00; simulation/filter unchanged.
 # Original ordinary-world RGB correction; fixture/simulation/sampler modes unchanged.
 # Gameplay linear images with integrated #253 HUD and #275 physics/replay.
 # Generated with texture_filter_evidence.py; legacy pins remain in race_replay_check.py.
 # The linear-on rows re-pinned for the installed-BASE_PAINT material
 # correction (review F2): the painted car shades with its own installed
 # GLOSS_L1_COLOR08 material instead of the swatch surrogate.
-linear-off/180 C72F40C6A05EA606D53CDFFACEBC7318A8D1E7DE2DB15FDC47CAB7F11AA6B914
-linear-off/6000 08306564860CC75A74907F1F5800B9811645C74FE560B66BAE71A7F9B50635C2
-linear-on/180 33F8D50E96BB626FF9165A601D2EFF56DA4603ABA0C00C480763A7C21CA227CC
-linear-on/6000 4DFF7F2F91B5FB43BA713BFDDBE8E3A5D2FB0D07BEBFA939F3202DB881523806
+linear-off/180 638BF02A04A8934C36DA6E4BE4B42E14192547D2BC88AE6C283E84F5405C8F6D
+linear-off/6000 E18CCAEB8B0A6AF544D01F1A36A3CACBF1DC0C1064C147F9DA3D999F5BE4D583
+linear-on/180 19C392AEA59B98AB1F678F89902756D027D7058B3453FFE6A44F7887D95C7CA2
+linear-on/6000 21339F07FB017F226065446B6879DE24278EBF21F690DB80C460ABF73D95F4CD

@@ -30,6 +30,12 @@ std::size_t alias_stock_lamp_textures(const std::set<std::uint32_t>& present,
                                       const std::string& car_type_name,
                                       GeometryReport& geometry) noexcept;
 
+// Installed lamp BINNAME override (0x580DB8..0x580E39) and the same
+// position/state suffix builder. Applied before wanted texture collection.
+std::size_t alias_installed_lamp_textures(const std::set<std::uint32_t>& present,
+    const std::string& car,const CarPartDatabase& database,const StockParts& installed,
+    GeometryReport& geometry);
+
 // The car-part profile of PreparedCarScene: the recovered stock part set
 // (include/nfsu/car_parts.h), the per-LOD mesh hash of every installed part
 // with the fallback the game applies for a missing mesh, and the recovered

@@ -13,6 +13,7 @@ attribute location=2 name=texcoord type=vec2 format=float32x2 buffer=0 offset=16
 
 varying location=1 name=color type=vec4 interpolation=smooth
 varying location=2 name=texcoord type=vec2 interpolation=smooth
+varying location=3 name=footprint type=vec2 interpolation=flat
 
 block name=Frame binding=0 stages=vertex size=112
 member block=Frame name=eye type=vec4 offset=0
@@ -28,6 +29,8 @@ member block=Frame name=options type=uvec4 offset=96
 block name=Instance binding=1 stages=vertex size=64
 member block=Instance name=rows type=vec4[4] offset=0
 
+# Sprites use the default nearest sampler. Font runs bind the linear sampler
+# for the subpixel edge reconstruction in frontend_ui.frag.glsl.
 texture name=baseTexture binding=0 stage=fragment type=sampler2D filter=nearest wrap=repeat
 
 

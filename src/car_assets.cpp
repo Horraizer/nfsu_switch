@@ -36,7 +36,7 @@ bool equals_case_insensitive(const std::string& text, const char* literal) {
 
 } // namespace
 
-bool resolve_car_assets(const CarTypeTable& table,
+static bool resolve_class_assets(unsigned expected_class,const CarTypeTable& table,
                         const std::string& car_type_name,
                         CarAssets& car,
                         std::string& error) {
@@ -56,10 +56,10 @@ bool resolve_car_assets(const CarTypeTable& table,
         return false;
     }
     const CarTypeRecord& record = table.records[found];
-    if (record.class_id != 0) {
+    if (record.class_id != expected_class) {
         error = "'" + record.name + "' is a class " +
                 std::to_string(record.class_id) +
-                " vehicle, not a playable car";
+                (expected_class==0 ? " vehicle, not a playable car" : " vehicle, not traffic");
         return false;
     }
     // The record spells its path with '\' separators and a leading CARS
@@ -96,6 +96,15 @@ bool resolve_car_assets(const CarTypeTable& table,
     car.textures_path = directory + "/TEXTURES.BIN";
     car.vinyls_path = directory + "/VINYLS.BIN";
     return true;
+}
+
+bool resolve_car_assets(const CarTypeTable& table,const std::string& name,
+                        CarAssets& car,std::string& error) {
+    return resolve_class_assets(0,table,name,car,error);
+}
+bool resolve_traffic_assets(const CarTypeTable& table,const std::string& name,
+                            CarAssets& car,std::string& error) {
+    return resolve_class_assets(2,table,name,car,error);
 }
 
 bool load_car_assets(const std::filesystem::path& global_bun,

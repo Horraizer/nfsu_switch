@@ -1,5 +1,6 @@
 #include "nfsu/drive_controls.h"
 
+#include <algorithm>
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +18,18 @@
 #endif
 
 namespace nfsu {
+
+float drive_neutral_throttle(float target,float previous,float rpm,
+                             float idle_rpm,float dt) noexcept {
+    const float upper=previous+1.0F*dt; //7003B0
+    const float lower=previous-1.5F*dt; //7003B4
+    float result=target>lower?target:lower;
+    if(result>upper)result=upper;
+    //461CA7..461CF1 uses raw throttle, published RPM and idle+1000.
+    if(target>0.6F && rpm<idle_rpm+1000.0F && result<0.6F)result=0.6F;
+    if(result<=0.0F)return 0.0F;
+    return result>1.0F?1.0F:result;
+}
 
 const std::array<float, 2 * kDriveRetailThrottlePoints> kDriveRetailThrottleTable = {
     0.0F,   0.0F,    // 0x00700374
@@ -395,6 +408,13 @@ DriveControlsConfig default_drive_controls_config() {
     button(DriveAction::shift_down, GamepadButton::shoulder_left, false);
     button(DriveAction::camera, GamepadButton::face_north, false);
     button(DriveAction::reset, GamepadButton::select, false);
+    return config;
+}
+
+DriveControlsConfig default_drag_controls_config() {
+    auto config=default_drive_controls_config();
+    for(auto& binding:config.bindings)if(binding.action==DriveAction::shift_down)
+        binding.control=gamepad_control(GamepadButton::face_east);
     return config;
 }
 
@@ -784,6 +804,7 @@ void DriveControls::reset() noexcept {
     pending_down_ = false;
     steer_ = 0.0;
     reverse_count_ = 0;
+    reverse_brake_latched_ = false;
 }
 
 void DriveControls::update(const GamepadFrame& frame) {
@@ -866,7 +887,7 @@ void DriveControls::update(const GamepadFrame& frame) {
 }
 
 VehicleInput DriveControls::step(double forward_speed, int gear, VehicleGearbox gearbox,
-                                bool raw_steering) {
+                                bool raw_steering, bool owner_pedals) {
     const double speed_signed = finite(forward_speed) ? forward_speed : 0.0;
     const double speed = speed_signed < 0.0 ? -speed_signed : speed_signed;
 
@@ -913,6 +934,23 @@ VehicleInput DriveControls::step(double forward_speed, int gear, VehicleGearbox 
     pending_up_ = false;
     pending_down_ = false;
 
+    if (owner_pedals && config_.reverse_assist && gearbox == VehicleGearbox::automatic) {
+        // 461A60 uses the published signed speed and keeps the brake latch
+        // until the car moves forward of -2 m/s or the pedal is pressed again.
+        const float longitudinal = static_cast<float>(speed_signed);
+        const float accelerator = static_cast<float>(throttle);
+        const float service = static_cast<float>(brake);
+        if (service > .6F) reverse_brake_latched_ = true;
+        else if (longitudinal > -2.F) reverse_brake_latched_ = false;
+        const bool backing = longitudinal < -30.F || (reverse_brake_latched_ && longitudinal < -2.F);
+        const float forward = backing ? 0.F : accelerator;
+        const float reverse = longitudinal <= .5F ? std::min(service * 2.F, 1.F) : 0.F;
+        const bool use_reverse = forward + .2F < reverse;
+        input.throttle = use_reverse ? reverse : forward;
+        input.brake = longitudinal > .5F ? service : backing ? accelerator : 0.F;
+        input.direction_request = use_reverse ? VehicleDirectionRequest::reverse : VehicleDirectionRequest::automatic;
+        return input;
+    }
     if (config_.reverse_assist && gearbox == VehicleGearbox::automatic) {
         const bool slow = speed < config_.reverse_speed;
         const bool reverse = gear == kVehicleGearReverse;

@@ -10,6 +10,9 @@ namespace nfsu::audio {
 // Bank IDs are metadata indices plus one; entry zero is not a song.
 std::vector<Segment> original_music_playlist(const Bank& bank,
     const std::vector<Segment>& indexed, bool frontend);
+// Resume after the song that actually played, including unequal durations.
+unsigned original_music_next(unsigned first,const std::vector<std::uint64_t>& lengths,
+                             std::uint64_t played_frames) noexcept;
 struct MenuSong { const char* title; const char* artist; const char* album; };
 MenuSong original_menu_song(unsigned index);
 class FrontendMusic {
@@ -22,8 +25,11 @@ public:
     // plays the fade and any original cue. stop() then releases the device.
     void begin_stop();
     bool stop_ready() const;
+    bool playing() const;
     void stop();
     void sound(FrontendSound cue);
+    bool speech(int entry,std::string& error);
+    void stop_speech();
     std::string error() const;
     MenuSong now_playing() const;
 private:

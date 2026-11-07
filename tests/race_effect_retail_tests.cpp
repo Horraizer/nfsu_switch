@@ -106,7 +106,7 @@ void material_frame(const RecordedDraw& d,const DrawMaterialUniform& m,const Dra
     }
     check(!baseline.empty() && baseline==candidate,"CPU race material RGBA frames differ");
 }
-void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std::size_t static_count) {
+void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std::size_t static_count,bool expect_live=false) {
     std::size_t statics=0,world_statics=0,dynamics=0,skipped=0,smoke=0,sparks=0,live=0,glows=0,lamps=0;
     Images images;
     for(std::size_t i=0;i<commands.draw_count();++i) {
@@ -149,7 +149,7 @@ void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std
         std::cout<<"RACE_EFFECT tick="<<tick<<" static="<<statics<<" static_world="<<world_statics<<" dynamic="<<dynamics<<" zero_particles="<<skipped
              <<" smoke="<<smoke<<" sparks="<<sparks<<" live_particles="<<live<<" glows="<<glows<<" reflected_lamps="<<lamps<<'\n';
     check(world_statics>0 && dynamics>0 && smoke>0 && sparks>0 && glows==4 && lamps>0,"real race eligibility witnesses missing");
-    if(tick==1200)check(live>0,"live smoke/spark witness missing");
+    if(expect_live)check(live>0,"live smoke/spark witness missing");
 }
 }
 int main(int argc,char** argv) {
@@ -166,17 +166,23 @@ int main(int argc,char** argv) {
         check(scene.set_texture_filter(filter),"filter selection failed");check(race.prepare_metadata(root,error),error);
         check(scene.load(posix_file_system(),root,error,nullptr,nullptr,false,true,shaded),error);
         check(race.start(root,scene.track(),error),error);
-        for(unsigned tick=0;tick<=1200;++tick) {
-            if(tick==0 || tick==1 || tick==1200) {
+        RaceParticles expected;bool saw_live=false;
+        for(unsigned tick=0;tick<kRaceInputMaxTicks;++tick) {
+            const bool live_witness=!saw_live && expected.smoke_count()>=4 && expected.spark_count()==0;
+            if(tick==0 || tick==1 || tick==1200 || live_witness) {
                 RaceGpuFrame cached,reference;check(scene.frame(race.session(),cached,error),error);
                 check(scene.frame(race.session(),reference,error,nullptr,true),error);
-                inspect(cached.commands,tick,shaded,cached.commands.static_track_draw_count());
-                inspect(reference.commands,tick,shaded,cached.commands.static_track_draw_count());
+                inspect(cached.commands,tick,shaded,cached.commands.static_track_draw_count(),live_witness);
+                inspect(reference.commands,tick,shaded,cached.commands.static_track_draw_count(),live_witness);
+                saw_live=saw_live||live_witness;
             }
-            if(tick==1200)break;
+            if(tick>=1200&&saw_live)break;
+            if(race.session().timing().outcome!=RaceOutcome::running)break;
             GamepadFrame pad;check(replay.next(race.session().timing().step,pad,error),error);
             check(race.simulate(pad,error) && race.commit(error),error);scene.advance_particles(race.session());
+            expected.advance(race.session());
         }
+        check(saw_live,"input replay did not exercise required live smoke/spark coverage");
         std::cout<<"PASS: real cached/reference race eligibility and CPU material-frame parity, static/dynamic uniforms, wet lamps and live effects\n";
     }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}
 }

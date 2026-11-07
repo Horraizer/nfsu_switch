@@ -2,8 +2,16 @@
 #include "nfsu/part_placement.h"
 #include <fstream>
 #include <cstring>
+#include <cmath>
+#include <algorithm>
+#include "nfsu/ai_powertrain.h"
 
 namespace nfsu {
+bool race_rival_throttle_cap(unsigned selector,float& cap) noexcept {
+    static constexpr float values[]{.93F,.97F,1.F};
+    if(selector>=3)return false;
+    cap=values[selector];return true;
+}
 namespace {
 struct LevelField { const char* name; int VehicleUpgradeLevels::*member; };
 constexpr LevelField fields[] = {
@@ -67,24 +75,62 @@ bool performance_levels_equal(const VehicleUpgradeLevels& a, const VehicleUpgrad
 }
 bool make_race_vehicle_spec(const unsigned char* original, std::size_t size,
                             const VehicleUpgradeLevels& levels, VehicleSpec& spec,
-                            std::string& error) {
+                            std::string& error,bool drift,unsigned difficulty) {
+    if(difficulty>2){error="invalid drift difficulty";return false;}
     std::array<unsigned char,kVehicleRecordSize> applied{};
     std::vector<VehicleTuningIssue> issues;
-    if (!apply_vehicle_tuning(original,size,levels,applied.data(),applied.size(),issues)) {
+    //57F2B0 clears both visual aero levels before575960. Normal live
+    // setups derive aero continuously from weight/suspension/tyres below;
+    // the authored individual-part tables remain available in the raw API.
+    auto runtime_levels=levels;
+    if(levels.aero_a<0||levels.aero_a>3||levels.aero_b<0||levels.aero_b>3) {
+        error="performance setup: invalid aero level";return false;
+    }
+    runtime_levels.aero_a=runtime_levels.aero_b=0;
+    if (!apply_vehicle_tuning(original,size,runtime_levels,applied.data(),applied.size(),issues)) {
         error = "performance setup: " + (issues.empty() ? std::string("apply refused") : issues.front().message);
         return false;
     }
-    VehicleSpec next; std::vector<VehicleHandlingIssue> handling_issues;
+    const auto scalar=[](const unsigned char* at){float f;std::memcpy(&f,at,4);return f;};
+    // Runtime 576250..57635A uses binary32. 57F2B0 then blends only the
+    // drift mass toward stock, leaving the already-built inertia matrix.
+    float inertia_mass=scalar(applied.data()+kVehicleMassOffset);
+    if(levels.mass_item) {
+        VehicleTuning tuning;
+        if(!decode_vehicle_tuning(original,size,tuning,issues)) {
+            error="runtime mass tuning refused";return false;
+        }
+        const float scale=(levels.weight>0?tuning.weight[levels.weight-1].mass_scale:1.F)
+            -tuning.item.mass_scale_bonus;
+        inertia_mass=scale*scalar(original+kVehicleMassOffset);
+        std::memcpy(applied.data()+kVehicleMassOffset,&inertia_mass,4);
+    }
+    if(drift && !apply_vehicle_drift_setup(original,size,levels,applied.data(),applied.size())) {
+        error="drift setup refused";return false;
+    }
+    VehicleSpec next;next.drift_mode=drift;next.drift_difficulty=difficulty;
+    std::vector<VehicleHandlingIssue> handling_issues;
     if (!decode_vehicle_handling(applied.data(),applied.size(),next.handling,handling_issues)) {
         error = "performance handling: " + handling_issues.front().message; return false;
     }
+    auto& h=next.handling;
+    const float l2=h.length*h.length,w2=h.width*h.width,h2=h.height*h.height;
+    h.inertia={((h2+w2)*inertia_mass)*0.083333335F,
+               ((h2+l2)*inertia_mass)*0.083333335F,
+               ((w2+l2)*inertia_mass)*0.083333335F};
     const auto word=[&](std::size_t at) {
         return std::uint32_t(applied[at]) | std::uint32_t(applied[at+1])<<8 |
                std::uint32_t(applied[at+2])<<16 | std::uint32_t(applied[at+3])<<24;
     };
     const auto real=[&](std::size_t at) { const auto bits=word(at);float f;std::memcpy(&f,&bits,4);return f; };
+    if(!drift) {
+        const float normalized=float(levels.weight+levels.suspension+levels.tyres)*.1111111119389534F;
+        h.downforce_front+=((scalar(original+0x7d0)+scalar(original+0x800))*normalized);
+        h.downforce_rear+=((scalar(original+0x7d4)+scalar(original+0x804))*normalized);
+        h.aero_preload+=((scalar(original+0x7d8)+scalar(original+0x808))*normalized);
+    }
     for (unsigned k=0;k<9;++k) next.induction[k]=real(0x334+4*k);
-    next.nitrous.installed=levels.nitrous>0;
+    next.nitrous.installed=!drift&&levels.nitrous>0;
     if (next.nitrous.installed) {
         next.nitrous.capacity_seconds=real(0x3B0);
         next.nitrous.count=static_cast<std::int32_t>(word(0x3B4));
@@ -96,7 +142,7 @@ bool make_race_vehicle_spec(const unsigned char* original, std::size_t size,
 }
 bool load_race_vehicle_spec(const std::filesystem::path& global, const std::string& car,
                             const VehicleUpgradeLevels& levels, VehicleSpec& spec,
-                            std::string& error) {
+                            std::string& error,bool drift,unsigned difficulty) {
     const auto table = load_car_type_table(global);
     const auto index = find_car_type(table,car);
     if (!table.ok() || index == kNoCarType) { error = "performance setup: invalid or missing car record"; return false; }
@@ -107,6 +153,7 @@ bool load_race_vehicle_spec(const std::filesystem::path& global, const std::stri
     if (!in || in.gcount() != static_cast<std::streamsize>(original.size())) {
         error = "performance setup: short car record read"; return false;
     }
-    return make_race_vehicle_spec(original.data(),original.size(),levels,spec,error);
+    return make_race_vehicle_spec(original.data(),original.size(),levels,spec,error,drift,difficulty);
 }
+#include "race_adaptive.inc"
 } // namespace nfsu

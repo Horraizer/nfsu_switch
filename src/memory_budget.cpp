@@ -67,6 +67,27 @@ bool make_arena(const Role& role, MemoryCategory category, MemoryArena& arena,
 
 } // namespace
 
+std::uint64_t RacePersistentPayload::total() const noexcept {
+    std::uint64_t bytes = 0;
+    for (const auto value : {cars, course, contacts, commands, audio, hud})
+        bytes = saturating_add(bytes, value);
+    return bytes;
+}
+std::string RacePersistentPayload::description() const {
+    return "cars=" + std::to_string(cars) + " course=" + std::to_string(course) +
+        " contacts=" + std::to_string(contacts) + " commands=" + std::to_string(commands) +
+        " audio=" + std::to_string(audio) + " hud=" + std::to_string(hud) +
+        " total=" + std::to_string(total()) + " limit=" + std::to_string(kPersistentBudgetPlaceholder);
+}
+bool check_race_persistent_payload(const RacePersistentPayload& usage, std::string& error) {
+    if (usage.total() > kPersistentBudgetPlaceholder) {
+        error = "race persistent payload exceeds budget: " + usage.description();
+        return false;
+    }
+    error.clear();
+    return true;
+}
+
 std::uint64_t car_scene_upload_ceiling(const SceneLimits& limits) noexcept {
     return saturating_add(
         saturating_add(saturating_multiply(limits.max_vertices, sizeof(MeshVertex)),

@@ -1,7 +1,9 @@
 #include "nfsu/player_powertrain.h"
+#include "nfsu/race_drift.h"
 
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <limits>
 
@@ -9,6 +11,381 @@ namespace {
 int failures=0;
 void check(bool ok,const char* label) {
     if (!ok) {std::cerr<<"test failure: "<<label<<'\n';++failures;}
+}
+
+#include "surface_native_cases.inc"
+#include "launch_feedback_native.inc"
+#include "gear_policy_native.inc"
+#include "front_drive_torque_native.inc"
+#include "drag_body_native.inc"
+#include "drag_nitrous_grip_native.inc"
+#include "shift_grip_native.inc"
+#include "base_grip_native.inc"
+#include "traction_policy_native.inc"
+#include "differential_policy_native.inc"
+void original_traction_policy() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
+    const auto bits=[](float f){std::uint32_t v;std::memcpy(&v,&f,4);return v;};
+    for(const auto& c:traction_policy_cases) {
+        PlayerOwnerTraction p{int(c[8]),real(c[9]),real(c[10]),real(c[11])};
+        std::array<float,4> load{},slip{};
+        for(unsigned k=0;k<4;++k){load[k]=real(c[12+k]);slip[k]=real(c[16+k]);}
+        const auto factor=player_owner_traction_update(p,real(c[0]),c[1],
+            c[2]>=1&&c[2]<=3&&!c[3],c[4]!=0,real(c[5]),c[6]?.4F:0.F,real(c[7]),load,slip);
+        check(std::uint32_t(p.mode)==c[20]&&bits(p.timer)==c[21]&&
+            bits(p.scale)==c[22]&&bits(p.quiet)==c[23],"original479640 traction state and timers");
+        for(unsigned k=0;k<4;++k)check(bits(.85F*factor[k])==c[24+k],
+            "original479640 diagonal grip, limits and bypasses");
+    }
+    for(const auto& c:differential_policy_cases) {
+        VehicleHandling h;h.rear_drive_fraction=real(c[0]);h.final_drive_rear=3.65F;
+        h.final_drive_front=4.F;h.gear_ratios[c[1]]=c[1]==0?-2.3F:2.3F;
+        PlayerEngineState engine;engine.feedback_torque=real(c[14]);
+        std::array<PlayerWheelWork,4> wheels{};
+        for(unsigned k=0;k<4;++k) {
+            wheels[k].spin=real(c[6+k]);wheels[k].torque=real(c[10+k]);
+            wheels[k].contact=(c[3]&(1U<<k))!=0;wheels[k].locked=(c[4]&(1U<<k))!=0;
+        }
+        player_distribute_torque(h,int(c[1]),engine,wheels,real(c[5]),int(c[2]));
+        for(unsigned k=0;k<4;++k)check(bits(wheels[k].torque)==c[15+k],
+            "original46E020 owner modes, axle split, reverse, neutral and locked wheels");
+        check(bits(engine.feedback_torque)==c[19],"original46E020 owner-mode engine feedback");
+    }
+}
+
+void runtime_traction_policy() {
+    using namespace nfsu;
+    for(bool drift:{false,true})for(bool drag:{false,true})for(bool suppressed:{false,true}) {
+        auto spec=stock_240sx_vehicle_spec();spec.drift_mode=drift;spec.handling.rear_drive_fraction=0;
+        const VehicleModel model(spec);VehicleState state;VehicleTelemetry t;VehiclePose pose;
+        check(model.reset(state,pose),"traction context resets");
+        state.owner_speeds.forward=state.owner_speeds.magnitude=1.F;
+        state.owner_motion.velocity={{1,0,0}};state.owner_slip_angle=0;
+        for(auto& wheel:state.wheels){wheel.prepared_load=3.F;wheel.prepared_slip=6.F;}
+        VehicleInput input;input.race_active=true;input.drag_mode=drag;
+        input.owner_traction_suppressed=suppressed;
+        check(model.step(state,input,VehicleFlatGround{},t,0,1.F/240.F),"traction context advances");
+        const bool assisted=drift&&!drag;
+        const float baseline=assisted?1.F:.85F;
+        check(state.owner_traction.mode==(suppressed?0:4),"original479640 runs in drift and uses previous wheel slip");
+        check(state.wheels[0].owner_grip==baseline&&
+            state.wheels[1].owner_grip==(suppressed?baseline:baseline*.8250000476837158F),
+            "native diagonal grip reaches the production front wheels");
+        if(assisted)check(state.wheels[2].owner_grip==state.wheels[1].owner_grip&&
+            state.wheels[3].owner_grip==baseline,"drift omits the ordinary rear stabilizer");
+        for(unsigned k=0;k<4;++k)
+            check(state.wheels[k].prepared_load==t.wheels[k].skid_load_kn,
+                "native wheel158 retains the completed derivative load");
+    }
+    const VehicleModel model(stock_240sx_vehicle_spec());VehicleState state;VehicleTelemetry t;
+    check(model.reset(state,VehiclePose{}),"traction world interval resets");
+    state.owner_speeds.forward=state.owner_speeds.magnitude=1;
+    state.owner_motion.velocity={{1,0,0}};state.owner_slip_angle=0;
+    state.owner_traction={4,.5F,.75F,0};
+    for(auto& w:state.wheels){w.prepared_load=3;w.prepared_slip=6;}
+    VehicleInput input;input.race_active=true;input.world_clock_valid=true;input.world_frame_seconds=.5001F;
+    const bool stepped=model.step(state,input,VehicleFlatGround{},t,0,1.F/240.F);
+    if(!stepped||state.owner_traction.mode!=3||state.owner_traction.timer!=.5F)
+        std::cerr<<"traction interval: advanced "<<stepped<<" mode "<<state.owner_traction.mode
+                 <<" timer "<<state.owner_traction.timer<<" speed "<<state.owner_speeds.forward<<'\n';
+    check(stepped&&state.owner_traction.mode==3&&state.owner_traction.timer==.5F,
+        "73457C frame interval drives policy, independently of derivative slice");
+}
+void original_drag_body() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
+    const auto bits=[](float f){std::uint32_t v;std::memcpy(&v,&f,4);return v;};
+    for(const auto& c:drag_body_torque_cases) {
+        PlayerRigidBodyState body;body.torque={{.125F,-.25F,.5F}};
+        PlayerOwnerMotion owner;owner.heading=std::uint16_t(c[3]);owner.velocity={{10,0,0}};
+        for(unsigned k=0;k<3;++k) {
+            owner.acceleration[k]=real(c[13+k]);
+            for(unsigned j=0;j<3;++j)owner.axes[k][j]=real(c[4+3*k+j]);
+        }
+        player_drag_body_torque(body,owner,c[0],c[1],c[2]!=0);
+        for(unsigned k=0;k<3;++k)check(bits(body.torque[k])==c[16+k],"original479290 drag pitch torque");
+    }
+    for(const auto& c:owner_acceleration_cases) {
+        PlayerOwnerMotion owner;owner.acceleration={{.125F,-.25F,.5F}};
+        player_publish_owner_acceleration(owner,{real(c[1]),real(c[2]),real(c[3])},
+            {real(c[4]),real(c[5]),real(c[6])},real(c[0]));
+        for(unsigned k=0;k<3;++k)check(bits(owner.acceleration[k])==c[7+k],"original426930 world derivative");
+    }
+    for(const auto& c:drag_nitrous_grip_cases) {
+        const float value=real(c[4])*player_drag_nitrous_grip(c[0]!=0,c[1]!=0,c[2],real(c[3]));
+        check(bits(value)==c[5],"original477B3D drag nitrous grip and clock boundary");
+    }
+    constexpr float initial[4]={1.F,1.1234F,.75F,2.3F};
+    for(const auto& c:shift_grip_cases) {
+        const float scale=player_shift_grip_scale(real(c[2]),real(c[0]),c[1]);
+        for(unsigned k=0;k<4;++k)check(bits(initial[k]*scale)==c[3+k],"original479640 shift-quality grip scaling");
+    }
+    for(const auto& c:base_grip_cases)check(bits(player_owner_base_grip(real(c[3]),c[0],!c[1]&&c[2]))==c[4],
+        "original477775 base grip, owner modes and drag/drift priority");
+}
+
+void runtime_base_grip() {
+    using namespace nfsu;
+    for(bool drift:{false,true})for(bool drag:{false,true}) {
+        auto spec=stock_240sx_vehicle_spec();spec.drift_mode=drift;const VehicleModel model(spec);
+        VehicleState state;VehiclePose pose;VehicleTelemetry t;VehicleInput input;input.drag_mode=drag;
+        check(model.reset(state,pose)&&model.step(state,input,VehicleFlatGround{},t,0,1.F/240.F),"base grip context runs");
+        for(unsigned k=0;k<2;++k)check(state.wheels[k].owner_grip==(drift&&!drag?1.F:.85F),
+            "shared ordinary/drag baseline and assisted drift baseline reach both front wheels");
+    }
+}
+
+void runtime_shift_grip() {
+    using namespace nfsu;
+    for(float drive:{0.F,.5F,1.F})for(unsigned category=0;category<4;++category) {
+        auto spec=stock_240sx_vehicle_spec();spec.handling.rear_drive_fraction=drive;
+        const VehicleModel model(spec);VehicleState normal;VehiclePose pose;pose.speed=10;
+        check(model.reset(normal,pose),"shift grip fixture reset");
+        auto graded=normal;graded.transmission.shift_quality=.5F;
+        VehicleInput input;input.drag_mode=true;input.drag_category=category;input.throttle=1;
+        input.world_clock_valid=true;input.world_clock=input.nitrous_clock=2000;input.nitrous_active=true;
+        VehicleTelemetry a,b;
+        check(model.step(normal,input,VehicleFlatGround{},a,0,1.F/240.F),"base shift grip frame");
+        check(model.step(graded,input,VehicleFlatGround{},b,0,1.F/240.F),"graded shift grip frame");
+        const float scale=player_shift_grip_scale(.5F,drive,category);
+        for(unsigned k=0;k<4;++k)check(graded.wheels[k].owner_grip==normal.wheels[k].owner_grip*scale,
+            "all four shift-grip producers run after nitrous scaling across drive families and classes");
+    }
+}
+
+void runtime_nitrous_grip() {
+    using namespace nfsu;
+    for(bool drift:{false,true})for(bool drag:{false,true}) {
+        auto spec=stock_240sx_vehicle_spec();spec.drift_mode=drift;const VehicleModel model(spec);
+        VehicleState normal;VehiclePose pose;pose.speed=10;check(model.reset(normal,pose),"nitrous grip fixture reset");
+        auto active=normal;VehicleInput input;input.drag_mode=drag;input.throttle=1;
+        input.world_clock_valid=true;input.world_clock=input.nitrous_clock=2000;
+        VehicleTelemetry a,b;
+        check(model.step(normal,input,VehicleFlatGround{},a,0,1.F/240.F),"ordinary grip producer");
+        input.nitrous_active=true;
+        check(model.step(active,input,VehicleFlatGround{},b,0,1.F/240.F),"active nitrous grip producer");
+        for(unsigned k=0;k<4;++k)check(active.wheels[k].owner_grip==normal.wheels[k].owner_grip*(drag?.6F:1.F),
+            "drag-only nitrous factor reaches every wheel without changing drift or ordinary mode");
+    }
+}
+
+void runtime_owner_motion() {
+    using namespace nfsu;
+    auto spec=stock_240sx_vehicle_spec();spec.drift_mode=true;
+    const VehicleModel model(spec);VehicleState base;VehiclePose pose;pose.speed=10;
+    check(model.reset(base,pose),"owner epoch reset");
+    base.owner_motion.axes={{{{1,0,0}},{{0,1,0}},{{0,0,1}}}};
+    base.owner_motion.velocity={{10,0,0}};base.owner_motion.angular_velocity={{0,0,.5F}};
+    base.owner_motion.acceleration={{1.25F,-2.5F,3.75F}};
+    base.owner_motion.heading=0;
+    auto turned=base;turned.owner_motion.heading=1000;
+    const auto held=turned.owner_motion;
+    VehicleInput input;VehicleFlatGround ground;VehicleTelemetry a,b;
+    check(model.step(base,input,ground,a,0,0,false,true,true,true,1.F/240.F),"base drift refresh");
+    check(model.step(turned,input,ground,b,0,0,false,true,true,true,1.F/240.F),"cached drift refresh");
+    const auto drift=drift_forces(1000,.5F,spec.handling.rear_drive_fraction,spec.drift_difficulty);
+    check(drift.torque!=0&&std::abs((turned.prepared_torque.z-base.prepared_torque.z)-drift.torque*spec.approx.unit_scale)<.00001,
+          "drift callback uses published heading and yaw rather than live rigid data");
+    check(turned.owner_motion.axes==held.axes&&turned.owner_motion.velocity==held.velocity&&
+          turned.owner_motion.angular_velocity==held.angular_velocity&&turned.owner_motion.heading==held.heading,
+          "component refresh preserves actor motion epoch");
+    check(model.step(turned,input,ground,b,1.F/60.F,1.F/240.F),"outer actor motion publication");
+    check(turned.owner_motion.axes==turned.rigid_body.axes&&
+          turned.owner_motion.velocity==turned.rigid_body.velocity&&
+          turned.owner_motion.angular_velocity==turned.rigid_body.angular_velocity,
+          "outer publication replaces actor motion from the rigid body");
+    check(turned.owner_motion.acceleration==held.acceleration,
+          "physics publication leaves the world derivative to the post-contact pass");
+}
+void original_gear_policies() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
+    const auto bits=[](float f){std::uint32_t v;std::memcpy(&v,&f,4);return v;};
+    const auto h=stock_240sx_handling();
+    for(const auto& c:gear_policy_cases) {
+        int gear=2;PlayerGearState b;b.mode=int(c[0]);b.clutch=b.mode==2?1.1F:.8F;
+        b.requested_gear=int(c[4]);b.feedback_scale=-.9F;b.shift_pending=true;
+        b.up_offset=-12;b.down_offset=-34;
+        PlayerEngineState e;e.angular_speed=500;e.throttle_multiplier=.123F;
+        std::array<PlayerWheelWork,4> w{};
+        for(unsigned i=0;i<4;++i){w[i].spin=10.F*float(i+1);w[i].contact=true;w[i].cached_slip=real(c[5]);}
+        std::uint32_t rng=12345;
+        player_gear_update(h,gear,b,e,w,real(c[3]),20.F,nullptr,&rng,c[1]!=0,c[2]!=0);
+        const std::uint32_t actual[]={std::uint32_t(gear),std::uint32_t(b.mode),bits(b.clutch),
+            bits(b.feedback_scale),bits(e.throttle_multiplier),bits(e.angular_speed),
+            bits(b.wheel_engine_speed),std::uint32_t(b.shift_pending),bits(b.up_offset),
+            bits(b.down_offset),rng,bits(w[0].spin),bits(w[1].spin),bits(w[2].spin),bits(w[3].spin)};
+        for(unsigned i=0;i<15;++i)check(actual[i]==c[6+i],"original gearbox assist/override state and RNG");
+    }
+    for(const auto& c:shift_boundary_cases)
+        check(bits(player_drag_shift_quality(real(c[0]),real(c[1]),c[2],c[3],real(c[4])))==c[5],
+              "46E940 half-quality equality belongs to .85 tier");
+}
+void original_front_drive_torque() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
+    const auto bits=[](float f){std::uint32_t v;std::memcpy(&v,&f,4);return v;};
+    for(const auto& c:front_drive_torque_cases) {
+        auto h=stock_240sx_handling();h.rear_drive_fraction=real(c[0]);h.centre_of_mass[2]=real(c[3]);
+        PlayerRigidBodyState body;body.torque={{.125F,-.25F,.5F}};
+        for(unsigned k=0;k<3;++k){body.velocity[k]=real(c[4+k]);for(unsigned j=0;j<3;++j)body.axes[k][j]=real(c[7+k*3+j]);}
+        std::array<PlayerWheelWork,4>w{};
+        for(unsigned k=0;k<2;++k){w[k].heading_x=real(c[16+k*4]);w[k].side_x=real(c[17+k*4]);w[k].force_long=real(c[18+k*4]);w[k].force_lat=real(c[19+k*4]);}
+        player_front_drive_torque(h,body,w,c[1],c[2]!=0);
+        for(unsigned k=0;k<3;++k)check(bits(body.torque[k])==c[24+k],"479C30 front-drive published-axis torque and boundary gates");
+    }
+}
+void runtime_gear_policy_dispatch() {
+    using namespace nfsu;
+    for(bool drift:{false,true})for(bool drag:{false,true})for(bool handbrake:{false,true}) {
+        auto spec=stock_240sx_vehicle_spec();spec.drift_mode=drift;const VehicleModel model(spec);
+        VehiclePose pose;pose.speed=2;pose.gearbox=VehicleGearbox::manual;VehicleState state;VehicleTelemetry t;
+        check(model.reset(state,pose),"runtime gearbox policy fixture reset");
+        state.transmission.mode=3;state.transmission.clutch=1;state.transmission.requested_gear=state.gear;
+        VehicleInput input;input.throttle=1;input.drag_mode=drag;input.handbrake=handbrake;
+        check(model.step(state,input,VehicleFlatGround{},t,0,0,false,true,true,true),"runtime policy reaches component callback");
+        check(state.transmission.feedback_scale==(drift&&!drag?-.7F:0.F),"vehicle mode dispatches original assisted feedback");
+        check((state.transmission.mode==1)==(drift&&!drag&&handbrake),"only assisted handbrake overrides clutch phase");
+    }
+}
+void original_launch_feedback() {
+    using namespace nfsu;
+    const auto scalar=[](unsigned w){float f;std::memcpy(&f,&w,4);return f;};
+    const auto bits=[](float f){unsigned w;std::memcpy(&w,&f,4);return w;};
+    const auto h=stock_240sx_handling();
+    for(const auto& c:kLaunchFeedbackNative) {
+        PlayerEngineState engine;engine.angular_speed=scalar(c[3]);engine.feedback_torque=scalar(c[4]);
+        PlayerGearState box;box.mode=int(c[1]);box.feedback_scale=scalar(c[2]);
+        std::array<PlayerWheelWork,4> wheels{};for(auto&w:wheels)w.contact=true;
+        const float crank=player_engine_torque(h,engine,int(c[0]),scalar(c[5]));
+        player_engine_feedback_finalize(h,int(c[0]),box,engine,wheels,scalar(c[5]),crank);
+        check(bits(engine.feedback_torque)==c[6],"original nonzero launch feedback curve");
+    }
+    PlayerEngineState engine;PlayerGearState box;box.mode=3;box.requested_gear=kVehicleGearFirst;
+    std::array<PlayerWheelWork,4> wheels{};int gear=kVehicleGearNeutral;
+    player_gear_update(h,gear,box,engine,wheels,1.F);
+    check(box.feedback_scale==-.9F,"neutral-first retains launch feedback while clutch opens");
+    box.mode=3;gear=kVehicleGearFirst;player_gear_update(h,gear,box,engine,wheels,1.F);
+    check(box.feedback_scale==0,"engaged campaign restores ordinary feedback descriptor");
+}
+#include "drag_launch_native.inc"
+void original_drag_launch() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
+    const auto bits=[](float f){std::uint32_t v;std::memcpy(&v,&f,4);return v;};
+    for(const auto& c:drag_launch_targets) {
+        auto h=stock_240sx_handling();h.rear_drive_fraction=real(c[0]);
+        h.idle_rpm=real(c[1]);h.redline_rpm=real(c[2]);h.shift_fraction=real(c[3]);
+        check(bits(player_drag_launch_rpm(h))==c[4],"original neutral target with drive-class multiplier");
+    }
+    for(const auto& c:drag_launch_requests) {
+        PlayerGearState box;PlayerEngineState engine;box.mode=3;
+        box.requested_gear=2;box.shift_quality=player_drag_shift_quality(real(c[0]),5800.F,c[1],1,real(c[2]));
+        check(bits(box.shift_quality)==c[4],"original neutral to first request quality");
+        engine.throttle_multiplier=1;player_drag_shift_boost(box,engine,40000);
+        check(bits(engine.throttle_multiplier)==c[5],"original launch quality reaches torque multiplier");
+    }
+}
+
+void original_material_surfaces() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
+    const auto bits=[](float f){std::uint32_t v;std::memcpy(&v,&f,4);return v;};
+    for(unsigned i=0;i<29;++i) {
+        PlayerSurfaceFactors f;check(player_surface_factors(i,f),"original material lookup");
+        const std::array<float,5> actual{{f.static_grip,f.sliding_grip,f.rolling_drag,f.bump_frequency,f.bump_amplitude}};
+        for(unsigned j=0;j<5;++j)check(bits(actual[j])==surface_factors[i][j],"original material table bits");
+    }
+    for(const auto& c:surface_bumps) {
+        float value=0;check(player_surface_height(c[0],real(c[1]),real(c[2]),value),"original bump lookup");
+        if(bits(value)!=c[3]) {std::cerr<<"bump material="<<c[0]<<" expected="<<c[3]<<" actual="<<bits(value)<<'\n';++failures;}
+    }
+    for(const auto& c:surface_wheels) {
+        PlayerWheelWork w;check(player_surface_factors(c[0],w.surface),"wheel material lookup");
+        w.spin=real(c[1]);w.velocity_long=real(c[2]);w.velocity_lat=real(c[3]);
+        w.torque=real(c[4]);w.service=real(c[5]);w.locked=c[6]!=0;w.load=3;w.contact=true;w.owner_speed=20;
+        const auto h=stock_240sx_handling();player_wheel_prepare(h,0,w);player_wheel_limit(h,0,w);
+        const std::array<std::uint32_t,7> actual{{bits(w.spin),bits(w.torque),bits(w.force_long),bits(w.force_lat),bits(w.slip),unsigned(w.locked),unsigned(w.sliding)}};
+        for(unsigned j=0;j<7;++j)if(actual[j]!=c[7+j]) {
+            std::cerr<<"surface force material="<<c[0]<<" field="<<j<<" expected="<<c[7+j]<<" actual="<<actual[j]<<'\n';++failures;
+        }
+        const float rate=player_wheel_acceleration(h,0,w,1.F/120.F);
+        check(bits(rate)==c[14]&&bits(w.history_torque)==c[15],"original surface wheel derivative and retained history");
+    }
+    PlayerSurfaceFactors f;f.static_grip=7;float height=9;
+    check(!player_surface_factors(29,f)&&f.static_grip==7,"unknown material refuses without substitution");
+    check(!player_surface_height(29,0,0,height)&&height==9,"unknown bump refuses without substitution");
+}
+
+struct DragHeatCase {std::int32_t clock;bool held;int gear;std::uint32_t quality,angular,heat,time,since,blown;};
+struct DragQualityCase {std::uint32_t rpm,up,category,gear,scale,quality;};
+struct DragBoostCase {int mode;std::uint32_t quality,clock,multiplier,since,after_quality;};
+#include "career_drag_native_cases.inc"
+void original_drag_engine() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t word){float value;std::memcpy(&value,&word,4);return value;};
+    const auto word=[](float value){std::uint32_t result;std::memcpy(&result,&value,4);return result;};
+    VehicleHandling h;h.idle_rpm=1000;h.redline_rpm=7000;h.max_rpm=8000;
+    for(const auto& sequence:drag_heat_cases) {
+        PlayerEngineState engine;PlayerGearState box;
+        for(const auto& v:sequence) {
+            engine.angular_speed=real(v.angular);box.shift_quality=real(v.quality);
+            player_drag_heat_update(h,engine,box,v.gear,v.clock,v.held);
+            check(word(engine.heat)==v.heat&&word(engine.heat_time)==v.time&&
+                  word(engine.overheat_since)==v.since&&engine.blown==bool(v.blown),
+                  "original drag heating, cooling, grid hold and failure state");
+        }
+    }
+    for(const auto& v:drag_quality_cases)
+        check(word(player_drag_shift_quality(real(v.rpm),real(v.up),v.category,v.gear,real(v.scale)))==v.quality,
+              "original drag early, good, perfect and late shift quality");
+    for(const auto& v:drag_boost_cases) {
+        PlayerEngineState engine;PlayerGearState box;
+        box.mode=v.mode;box.shift_quality=real(v.quality);box.shift_boost_since=10.F;
+        player_drag_shift_boost(box,engine,std::int32_t(v.clock));
+        check(word(engine.throttle_multiplier)==v.multiplier&&word(box.shift_boost_since)==v.since&&
+              word(box.shift_quality)==v.after_quality,"original drag shift pulse expiration and clutch gate");
+    }
+}
+
+#include "drag_mechanics_native.inc"
+#include "drag_world_rng_native.inc"
+void original_drag_mechanics() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
+    const auto bits=[](float f){std::uint32_t v;std::memcpy(&v,&f,4);return v;};
+    for(const auto& v:drag_clutch_native) {
+        VehicleHandling h;h.clutch_rate=real(v[4]);PlayerGearState box;
+        box.clutch=.5F;box.mode=int(v[0]);box.requested_gear=int(v[1]);box.shift_quality=real(v[2]);
+        player_gear_integrate(h,box,real(v[5]),real(v[3]));
+        check(bits(box.clutch)==v[6],"original drag quality/profile clutch derivative");
+    }
+    {
+        const auto h=stock_240sx_vehicle_spec().handling;
+        PlayerGearState boxes[2];PlayerEngineState engines[2];int gears[2]={2,2};
+        std::array<PlayerWheelWork,4> wheels{};std::uint32_t world=drag_world_draws[0][1];
+        for(const auto& v:drag_world_draws) {
+            const auto actor=v[0];auto& box=boxes[actor];
+            const auto& b=drag_world_bounds[actor];
+            const std::array<float,4> bounds{{real(b[0]),real(b[1]),real(b[2]),real(b[3])}};
+            check(world==v[1],"original next actor sees prior shared-world RNG");
+            box.mode=1;box.shift_pending=true;box.requested_gear=3;
+            player_gear_update(h,gears[actor],box,engines[actor],wheels,1.F,0.F,&bounds,&world);
+            check(bits(box.up_offset)==v[2]&&bits(box.down_offset)==v[3]&&world==v[4],
+                  "original interleaved A/B/A gear commits consume shared world draws");
+        }
+        const auto before=world;boxes[0].mode=3;boxes[0].requested_gear=gears[0];
+        player_gear_update(h,gears[0],boxes[0],engines[0],wheels,1.F,0.F,nullptr,&world);
+        check(world==before,"ordinary completed clutch does not consume random draws");
+    }
+    for(const auto& v:drag_shift_rng_native) {
+        PlayerGearState box;box.rng_state=v[1];
+        const std::array<float,4> bounds{{real(v[2]),real(v[3]),real(v[4]),real(v[5])}};
+        player_gear_randomize(box,&bounds);
+        check(bits(box.up_offset)==v[6]&&bits(box.down_offset)==v[7]&&box.rng_state==v[8],
+              "original selected-context drag shift randomization");
+    }
 }
 
 void publication_and_reset() {
@@ -167,12 +544,18 @@ void retained_wheel_slip_epoch() {
         for(auto& w:positive.wheels) w.prepared_slip=.01F;
         negative=positive;for(auto& w:negative.wheels) w.prepared_slip=-.01F;
         VehicleInput gas;gas.throttle=1;
-        check(model.step(positive,gas,VehicleFlatGround{},a,0,dt,true)&&
-              model.step(negative,gas,VehicleFlatGround{},b,0,dt,true),
+        // Check the first component callback itself. A whole solver step
+        // performs another wheel producer and gearbox callback, so equality
+        // there does not identify the retained-slip consumer's epoch.
+        check(model.step(positive,gas,VehicleFlatGround{},a,0,0,false,true,true,true)&&
+              model.step(negative,gas,VehicleFlatGround{},b,0,0,false,true,true,true),
               "both saved slip histories complete the initial runtime callback");
         check(positive.wheels[2].spin!=negative.wheels[2].spin&&
               positive.transmission.wheel_engine_speed==positive.engine.angular_speed,
               "runtime wires saved prepared slip into gearbox before new force preparation");
+        check(model.step(positive,gas,VehicleFlatGround{},a,0,dt,true)&&
+              model.step(negative,gas,VehicleFlatGround{},b,0,dt,true),
+              "both retained-slip histories advance after the isolated callback");
         std::array<std::uint8_t,kVehicleTelemetryRecordBytes> ba{},bb{};
         encode_vehicle_telemetry(a,ba);encode_vehicle_telemetry(b,bb);
         check(ba!=bb,"retained slip changes the recorded completed mechanical future");
@@ -449,6 +832,87 @@ void completed_rest_phase() {
           state.rigid_body.momentum==PlayerRigidVector{}&&state.rigid_body.angular_momentum==PlayerRigidVector{},
           "reset clears prepared phase and pending reverse while restoring initial gravity");
 }
+void rest_component_refresh() {
+    using namespace nfsu;
+    const VehicleModel model(stock_240sx_vehicle_spec());
+    const VehicleFlatGround ground;VehicleTelemetry telemetry;
+    for(float speed:{0.F,.4F}) {
+        VehicleState state;VehiclePose pose;pose.speed=speed;
+        check(model.reset(state,pose),"rest component refresh reset");
+        state.gear=state.published_gear=kVehicleGearNeutral;
+        state.gearbox=VehicleGearbox::manual;
+        state.published_support=4;state.forces_prepared=true;
+        state.transmission.requested_gear=kVehicleGearFirst;
+        state.transmission.mode=speed==0?3:0;
+        state.transmission.clutch=speed==0?1.F:0.F;
+        state.engine.throttle_multiplier=1.F;
+        VehicleInput input;input.throttle=.5;
+        auto awake=state;
+        check(model.step(awake,input,ground,telemetry,0,0,false,false,true,true),
+              "explicit awake component refresh completes");
+        check(model.step(state,input,ground,telemetry,0,0,false,true,true,true),
+              "native rest component refresh completes");
+        //47AC00 returns1 for both rest states.477300 then calls46ABD0
+        //again with dt0.46DB60 consumes that second component refresh even
+        //though585410,46D0B0 and46D810 do not integrate another derivative.
+        if(speed==0) {
+            check(state.body_rest_state==2&&state.transmission.mode==0&&
+                  state.engine.throttle_multiplier==0.F&&
+                  awake.engine.throttle_multiplier==1.F,
+                  "rest2 refresh consumes pending clutch phase before engine force");
+        } else {
+            check(state.body_rest_state==1&&state.gear==kVehicleGearFirst&&
+                  state.transmission.mode==2&&awake.gear==kVehicleGearNeutral&&
+                  awake.transmission.mode==1,
+                  "rest1 refresh consumes pending gear phase without another derivative");
+        }
+        check(state.simulation_seconds==0&&state.step==0&&
+              state.engine.angular_speed==awake.engine.angular_speed,
+              "rest refresh advances components without advancing time or crank integration");
+    }
+}
+void original_strut_bump_impulse() {
+    using namespace nfsu;
+    const std::uint32_t rows[][35]={
+#include "player_bump_native.inc"
+    };
+    for(const auto& row:rows) {
+        std::array<float,35> c{};std::memcpy(c.data(),row,sizeof(row));
+        auto h=stock_240sx_handling();h.mass=c[0];PlayerRigidBodyState body;
+        for(unsigned k=0;k<9;++k)body.axes[k/3][k%3]=c[1+k];
+        for(unsigned k=0;k<3;++k) {
+            body.momentum[k]=c[10+k];body.angular_momentum[k]=c[13+k];
+            body.velocity[k]=c[16+k];body.angular_velocity[k]=c[19+k];
+        }
+        const auto before=body;
+        const float scalar=player_strut_bump_impulse(h,body,
+            {{c[22],c[23],c[24]}},{{c[25],c[26],c[27]}});
+        const std::array<float,7> result{{scalar,body.momentum[0],body.momentum[1],
+            body.momentum[2],body.angular_momentum[0],body.angular_momentum[1],body.angular_momentum[2]}};
+        check(std::memcmp(result.data(),row+28,sizeof(result))==0,
+              "native588AB0 inward hub impulse and584E30 caps match bit for bit");
+        check(body.velocity==before.velocity&&body.angular_velocity==before.angular_velocity&&
+              body.axes==before.axes,"bump impulses retain caches until the component refresh");
+    }
+    const VehicleModel model(stock_240sx_vehicle_spec());VehicleState hit,miss;
+    VehiclePose pose;pose.ground.z=-.5;pose.speed=3;
+    check(model.reset(hit,pose),"bump consumer body reset");
+    hit.velocity.z=-3;hit.forces_prepared=true;
+    hit.prepared_force={};hit.prepared_torque={};hit.published_support=4;
+    hit.gearbox=VehicleGearbox::manual;hit.transmission.mode=0;
+    hit.transmission.clutch=0;hit.transmission.requested_gear=kVehicleGearFirst+1;
+    miss=hit;VehicleInput input;input.throttle=.5;
+    VehicleFlatGround floor;VehicleFlatGround no_contact(-100);
+    VehicleTelemetry a,b;
+    check(model.step(hit,input,floor,a,0,1.0/240.0,false)&&
+          model.step(miss,input,no_contact,b,0,1.0/240.0,false),"bump consumer paired slices complete");
+    check(hit.body_rest_state==0&&hit.velocity.z>miss.velocity.z&&
+          hit.rigid_body.momentum[2]>miss.rigid_body.momentum[2],
+          "awake landing applies bump impulses before refreshing body velocity");
+    check(hit.gear==kVehicleGearFirst+1&&hit.transmission.mode==2&&
+          miss.gear==kVehicleGearFirst&&miss.transmission.mode==1,
+          "bump callback refreshes the gearbox without adding a derivative");
+}
 void recovered_rigid_component() {
     using namespace nfsu;
     const auto h=stock_240sx_handling();
@@ -504,7 +968,8 @@ void recovered_rigid_runtime() {
         state.prepared_force={body.force[0]*1000.0,body.force[1]*1000.0,body.force[2]*1000.0};
         auto expected=body;player_rigid_body_integrate(h,expected,static_cast<float>(dt));
         player_rigid_body_normalize(expected);
-        check(model.step(state,wake,VehicleFlatGround(),telemetry,0,dt,false),"rigid runtime slice completes");
+        // Isolate585410/585810 from the separate588AB0 bump callback.
+        check(model.step(state,wake,VehicleFlatGround(-100),telemetry,0,dt,false),"rigid runtime slice completes");
         check(state.body_rest_state==0&&state.rigid_body.position==expected.position&&
               state.rigid_body.momentum==expected.momentum&&state.rigid_body.angular_momentum==expected.angular_momentum&&
               state.rigid_body.velocity==expected.velocity&&state.rigid_body.angular_velocity==expected.angular_velocity&&
@@ -654,17 +1119,21 @@ void strut_numeric_domain() {
     for(const auto& wheel:output.wheels)
         check(wheel.contact&&std::isfinite(wheel.load)&&wheel.load>0,
               "representable tiny flat-ground step retains finite support load");
-    check(model.reset(state,{}),"nonrepresentable rate reset");
+    check(model.reset(state,{}),"retained compression rate reset");
     state.forces_prepared=true;state.prepared_force={};state.prepared_torque={};
-    state.wheels[0].compression=.1F;
+    state.wheels[0].compression=.1F;state.wheels[0].compression_rate=.25F;
+    check(model.step(state,input,VehicleFlatGround{},output,0,smallest,true)&&
+          state.wheels[0].compression_rate==.25F,
+          "original58867F retains the previous rate below its update threshold");
+    state.wheels[0].compression_rate=std::numeric_limits<float>::infinity();
     const auto rate_before=state;output=marker;encode_vehicle_telemetry(output,old_bytes);
     check(!model.step(state,input,VehicleFlatGround{},output,0,smallest,true),
-          "finite time producing a nonrepresentable compression rate is refused");
+          "nonfinite retained compression rate is refused");
     encode_vehicle_telemetry(output,new_bytes);
     check(old_bytes==new_bytes&&state.step==rate_before.step&&
           state.wheels[0].compression==rate_before.wheels[0].compression&&
           state.forces_prepared==rate_before.forces_prepared,
-          "compression-rate refusal preserves state and telemetry");
+          "invalid retained-rate refusal preserves state and telemetry");
 
     struct BumpGround final:VehicleGround {
         double distance;
@@ -685,7 +1154,9 @@ void strut_numeric_domain() {
                   float(output.wheels[k].load/unit)==float(normal.wheels[k].load/spec.approx.unit_scale),
                   "inactive bump does not erase normalized binary32 wheel load");
     }
-    auto tiny_spec=spec;tiny_spec.approx.unit_scale=1e-40;const VehicleModel tiny(tiny_spec);
+    auto tiny_spec=spec;tiny_spec.approx.unit_scale=1e-40;
+    tiny_spec.approx.bump_stop_rate=200000; // Explicit non-native stress coefficient.
+    const VehicleModel tiny(tiny_spec);
     check(tiny.reset(state,{}),"active unrepresentable bump reset");
     const auto bump_before=state;output=marker;encode_vehicle_telemetry(output,old_bytes);
     check(!tiny.step(state,input,bump,output,0,1.0/240.0,true),
@@ -707,6 +1178,74 @@ void strut_numeric_domain() {
     for(const auto& wheel:output.wheels)
         check(wheel.contact&&std::isfinite(wheel.load)&&wheel.load>0,
               "zero bump coefficient retains ordinary spring and preload support");
+}
+
+#include "strut_projection_native.inc"
+void original_strut_projection_witness() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
+    const auto bits=[](float f){std::uint32_t v;std::memcpy(&v,&f,4);return v;};
+    for(const auto& c:strut_projection_native) {
+        float gap=0;
+        const auto accepted=player_strut_ground_projection(
+            {{real(c[6]),real(c[7]),real(c[8]),real(c[9])}},
+            {{real(c[0]),real(c[1]),real(c[2])}},
+            {{real(c[3]),real(c[4]),real(c[5])}},real(c[10]),gap);
+        check(bits(gap)==c[11]&&accepted==(real(c[11])!=-100.0F),
+              "original tilted-road strut projection and alignment refusal");
+    }
+}
+
+#include "strut_refresh_native.inc"
+void original_strut_refresh_witness() {
+    using namespace nfsu;
+    const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
+    const auto bits=[](float f){std::uint32_t v;std::memcpy(&v,&f,4);return v;};
+    for(const auto& c:strut_refresh_native) {
+        const auto& v=strut_refresh_setup[c[0]];
+        const VehicleAxleStrut h{v[0],v[1],v[2],v[3],v[4],v[5],v[6]};
+        const auto out=player_strut_compression(h,real(c[1])+real(c[2]),
+            real(c[3]),real(c[4]),real(c[5]));
+        const float force=out.contact?player_strut_nominal_force(h,out.compression,
+            out.rate,real(c[6]),real(c[7]),out.overflow,real(c[8])):0.0F;
+        check(bits(out.compression)==c[9]&&bits(out.rate)==c[10]&&
+              bits(out.overflow)==c[11]&&bits(force)==c[12]&&out.contact==bool(c[13]),
+              "original compression, retained rate, overflow cap, contact and force");
+    }
+}
+
+void original_bump_overflow_consumer() {
+    using namespace nfsu;
+    struct SuppliedGround final:VehicleGround {
+        double distance;
+        explicit SuppliedGround(double value):distance(value) {}
+        VehicleGroundHit cast(const VehicleVec3&,const VehicleVec3&,double) const override {
+            VehicleGroundHit hit;hit.hit=true;hit.distance=distance;hit.normal={0,0,1};return hit;
+        }
+    };
+    auto spec=stock_240sx_vehicle_spec();
+    spec.approx.bump_stop_rate=200000; // Exercise overflow cap with a nonzero override.
+    const VehicleModel model(spec);
+    VehicleState deep,shallower;VehicleTelemetry a,b;
+    check(model.reset(deep,{}),"bump cap consumer reset");
+    deep.forces_prepared=true;deep.prepared_force={};deep.prepared_torque={};
+    shallower=deep;
+    VehicleInput input;input.throttle=1;input.road_steering=true;
+    input.road_angle_word_valid=true;input.road_angle_word=0;
+    check(model.step(deep,input,SuppliedGround(0.0),a,0,1.0/240.0,true)&&
+          model.step(shallower,input,SuppliedGround(.2),b,0,1.0/240.0,true),
+          "both supplied compressions beyond original overflow cap complete");
+    for(unsigned k=0;k<4;++k)
+        check(a.wheels[k].contact&&b.wheels[k].contact&&
+              a.wheels[k].load==b.wheels[k].load,
+              "original capped bump overflow cannot increase strut load past the cap");
+    check(deep.prepared_force.x==shallower.prepared_force.x&&
+          deep.prepared_force.y==shallower.prepared_force.y&&
+          deep.prepared_force.z==shallower.prepared_force.z&&
+          deep.prepared_torque.x==shallower.prepared_torque.x&&
+          deep.prepared_torque.y==shallower.prepared_torque.y&&
+          deep.prepared_torque.z==shallower.prepared_torque.z,
+          "original bump cap reaches actual prepared body force and moment");
 }
 
 void original_strut_partner_epoch() {
@@ -907,21 +1446,86 @@ void original_aero_and_outer_epoch() {
           !disabled_state.aero.enabled&&disabled_state.aero_preloads==player_aero_preloads(h,20,false),
           "explicit disabled model context omits downforce and moving preload");
 }
+void original_cutoff_boundaries() {
+    auto h=nfsu::stock_240sx_handling();h.max_rpm=8500.F;
+    nfsu::PlayerEngineState e;e.angular_speed=884.8812255859375F;
+    check(e.angular_speed*nfsu::kPlayerRadSToRpm==8450.F,"cutoff witness is exactly the original boundary");
+    nfsu::player_engine_cutoff_update(h,1,e,1.F);
+    check(e.cutoff_until==0,"46CC5C equality must not start cutoff");
+    e.angular_speed=890.1171875F;
+    nfsu::player_engine_cutoff_update(h,1,e,1.F);
+    check(e.cutoff_until==1.03999996185302734375F,"above threshold starts original neutral duration");
+    e.cutoff_until=1.F;
+    nfsu::player_engine_cutoff_update(h,1,e,1.F);
+    check(e.cutoff_until==1.F,"46CCA3 equality must not end cutoff");
+    nfsu::player_engine_cutoff_update(h,1,e,1.0002501010894775390625F);
+    check(e.cutoff_until==0,"time strictly after deadline clears cutoff");
+}
 } // namespace
 
+// Original4773F0, x87 control007F, ordinary owner mode0 and initial globals.
+// Inputs straddle the parking bypass and include the gain saturation branch.
+void original_rear_grip() {
+    using namespace nfsu;
+    const float cases[][7]={
+        {0x0.0p+0F,0x0.0p+0F,0x0.0p+0F,0x0.0p+0F,0x0.0p+0F,0x1.4000000000000p+1F,0x1.0000000000000p+0F},
+        {0x1.47ae140000000p-7F,0x1.99999a0000000p-4F,0x1.4000000000000p+4F,0x0.0p+0F,0x0.0p+0F,0x1.4000000000000p+1F,0x1.2d3a060000000p+0F},
+        {-0x1.47ae140000000p-6F,-0x1.0000000000000p-1F,0x1.4000000000000p+5F,0x0.0p+0F,0x0.0p+0F,0x1.4000000000000p+1F,0x1.5eb8520000000p+0F},
+        {0x1.47ae140000000p-6F,0x1.99999a0000000p-3F,0x1.e000000000000p+4F,0x1.8000000000000p+0F,0x0.0p+0F,0x1.4000000000000p+1F,0x1.051eb80000000p+0F},
+        {0x1.47ae140000000p-6F,0x1.99999a0000000p-2F,0x1.e000000000000p+4F,0x1.8000000000000p+0F,0x0.0p+0F,0x1.4000000000000p+1F,0x1.5eb8520000000p+0F},
+        {0x1.47ae140000000p-7F,0x1.99999a0000000p-4F,0x1.4000000000000p+4F,0x1.0000000000000p-1F,0x0.0p+0F,0x1.4000000000000p+1F,0x1.2d3a060000000p+0F},
+        {0x1.47ae140000000p-7F,0x1.99999a0000000p-4F,0x1.4000000000000p+4F,0x1.0001500000000p-1F,0x0.0p+0F,0x1.4000000000000p+1F,0x1.028f5c0000000p+0F},
+        {0x1.5cf7520000000p-19F,0x1.9206280000000p-13F,0x1.2947ae0000000p+3F,0x0.0p+0F,0x0.0p+0F,0x1.4000000000000p+1F,0x1.0009e60000000p+0F},
+        {0x1.99999a0000000p-4F,0x1.47ae140000000p-6F,0x1.4000000000000p+3F,0x0.0p+0F,0x1.3333340000000p-2F,0x1.3333340000000p+0F,0x1.1c28f60000000p+0F},
+    };
+    for(const auto& c:cases) {
+        VehicleHandling h;h.rear_grip_base=c[4];h.rear_grip_slip=c[5];
+        check(player_rear_grip(h,c[0],c[1],c[2],c[3])==c[6],"original rear grip gain and parking gate");
+    }
+}
+
+void original_race_damping() {
+    using namespace nfsu;
+    const std::uint32_t cases[][6]={
+#include "race_damping_native.inc"
+    };
+    for(const auto& row:cases) {
+        float gas,tilt;std::memcpy(&gas,&row[1],4);std::memcpy(&tilt,&row[3],4);
+        PlayerRigidBodyState body;body.linear_damping=row[4]!=0;body.angular_damping=false;
+        player_race_body_policy(body,row[0]==4,gas,row[2],tilt);
+        check(body.linear_damping==(row[5]!=0),"original active-race outer damping policy");
+        check(!body.angular_damping,"race override preserves angular damping policy");
+    }
+}
+
 int main() {
+    original_gear_policies();original_front_drive_torque();runtime_gear_policy_dispatch();
+    original_drag_body();runtime_owner_motion();runtime_nitrous_grip();
+    original_traction_policy();runtime_traction_policy();
+    runtime_shift_grip();
+    runtime_base_grip();
+    original_launch_feedback();
+    original_race_damping();
+    original_drag_engine();original_drag_mechanics();original_drag_launch();original_material_surfaces();
+    original_rear_grip();
+    original_cutoff_boundaries();
     publication_and_reset();wheel_history_and_player_brake();shift_cycle_and_differential_sync();
     retained_wheel_slip_epoch();
     owner_speed_domains();steered_constraint_witness();strut_hub_and_world_force_witness();
     outer_slice_and_selection_phase();
     body_derivative_epoch();
     completed_rest_phase();
+    rest_component_refresh();
+    original_strut_bump_impulse();
     recovered_rigid_component();
     recovered_rigid_runtime();
     original_front_steering_epoch();
     original_contact_force_and_tyre_wrap();
     original_strut_binary32_witness();
     strut_numeric_domain();
+    original_strut_projection_witness();
+    original_strut_refresh_witness();
+    original_bump_overflow_consumer();
     original_strut_partner_epoch();
     original_wheel_contact_witness();
     original_aero_and_outer_epoch();

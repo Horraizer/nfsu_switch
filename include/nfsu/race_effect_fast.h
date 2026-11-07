@@ -31,7 +31,15 @@ inline DrawMaterialUniform race_effect_gpu_material(const RecordedDraw& d,
 }
 inline bool race_effect_no_output(const RecordedDrawView& draw) {
     const auto& p=draw.definition.pipeline;
-    if(!race_effect_fast_marker(draw.definition,draw.material) || draw.material.alpha[0]!=0 ||
+    const auto* program=draw.definition.program;
+    const bool skid=program && !std::strcmp(program->name,"car_textured") &&
+        draw.material.fallback[3]==9.F && draw.definition.texture_resource!=kNoHandle;
+    const bool original_sprite=program &&
+        (!std::strcmp(program->name,"car_textured") || !std::strcmp(program->name,"track_textured") ||
+         !std::strcmp(program->name,"track_linear_textured")) &&
+        (draw.material.alpha[3]==5.F || draw.material.alpha[3]==6.F) &&
+        draw.definition.texture_resource!=kNoHandle;
+    if((!skid && !original_sprite && !race_effect_fast_marker(draw.definition,draw.material)) || draw.material.alpha[0]!=0 ||
        p.depth_write || p.color_write!=shader_manifest::ColorWrite::rgb ||
        !p.blend || p.blend_op!=shader_manifest::BlendOp::add ||
        p.blend_src!=shader_manifest::BlendFactor::src_alpha ||

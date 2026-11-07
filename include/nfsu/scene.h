@@ -23,6 +23,16 @@ struct GeometryReport;
 
 enum class RenderTextureStorage { rgba8, dxt1, dxt3 };
 
+// Original TextureInfo +52/+58..60 UV transform (40F599,40EC20,40EC90).
+// Rates and offsets retain signed fixed-point source values.
+struct TextureUvAnimation {
+    std::int8_t mode=0;
+    std::int16_t period=0,u_rate=0,v_rate=0,u_offset=0,v_offset=0;
+};
+float texture_world_seconds(std::int32_t world_ticks) noexcept;
+std::array<float,2> texture_uv_offset(const TextureUvAnimation& animation,
+                                    std::int32_t world_ticks) noexcept;
+
 // One pack texture. Compressed blocks and authored mip chains are opt-in.
 struct RenderTexture {
     // Info +36 of the record.
@@ -35,6 +45,8 @@ struct RenderTexture {
     // leave claim_count 0; hash always counts as claimed.
     std::array<std::uint32_t, 3> claims{};
     std::size_t claim_count = 0;
+    // Evidenced missing track textures sharing the retail DEFAULTALPHA.
+    std::vector<std::uint32_t> default_alpha_aliases;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::uint32_t mip_count = 1; // Authored levels, tightly concatenated.
@@ -67,6 +79,7 @@ struct RenderTexture {
     // decoded only by render_draw_layer.
     std::uint8_t layer_order = 0;
     std::uint8_t layer_group = 0;
+    TextureUvAnimation uv_animation;
 
     // True if value is hash or one of the first claim_count claims.
     bool claims_hash(std::uint32_t value) const noexcept;

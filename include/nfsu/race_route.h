@@ -153,6 +153,10 @@ struct TrackPathZone {
     // 0x0044375C).
     std::int32_t vertex_count = 0;
     std::vector<float> vertices;
+    // Drift score zones: original 43ECAD/43ECC2, per performance class.
+    std::int32_t drift_first[4]{},drift_later[4]{};
+    // Traffic density zone attributes +7C..90, read by59B670/59B6A0.
+    std::int32_t traffic_spacing[6]{};
 };
 
 // One 0x00034146 record, 48 bytes.
@@ -205,6 +209,9 @@ struct RaceRouteTrack {
 
     bool ok() const noexcept { return valid && issues.empty(); }
 };
+
+//4436D0: first admitted type/direction polygon, or -1.
+int track_path_zone_index(const RaceRouteTrack&,std::uint32_t,int,const float[2]) noexcept;
 
 // Parses an in-memory, already decompressed TRACKB image. Never throws for
 // malformed input. Rules: the image is at most limits.max_image_size bytes
@@ -264,15 +271,22 @@ struct TrackPathSpline {
     // The race runs backwards along the path (0x004435E0, from
     // 0x0078A2FC == 1 at 0x00449921..0x00449938).
     bool reverse = false;
+    // The path is open (the record's closed byte is clear, spline type 2):
+    // a sprint or drag course. Evaluation never wraps an open parameter
+    // (0x0059CE10's type-2 branch is the identity) and the two control
+    // points past each end are the mirrored points 0x0059CB90's type-2
+    // branch stores: P[-1] = 2*P0 - P1 with running length -w(P1), and
+    // P[n] = 2*P(n-1) - P(n-2) with running length 2*arc - w(P(n-1)).
+    bool open = false;
 };
 
 // Builds the spline of the one path of `track`. False, with a reason, for a
-// track that is not valid, holds more than one path, links nodes, or whose
-// path is open: 0x0059CEA0 extrapolates past the ends of an open spline and
-// is not implemented here, so a sprint or drag route is refused rather than
-// approximated. Also refused, as this project's rule and not the game's: a
-// path whose record's length, scale and offset do not measure the spline's
-// own loop as 0 to 100 percent, to within 1 percent at either end.
+// track that is not valid, holds more than one path, or links nodes. An
+// open path builds with the retail type-2 end treatment the struct
+// documents; open endpoints extrapolate as 0x0059CEA0. Also refused, as this project's rule
+// and not the game's: a path whose record's length, scale and offset do not
+// measure the spline's own course as 0 to 100 percent, to within 1 percent
+// at either end.
 bool build_track_path_spline(const RaceRouteTrack& track,
                              bool reverse,
                              TrackPathSpline& spline,

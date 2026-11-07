@@ -47,10 +47,20 @@ add_library(nfsu_race_route
 target_link_libraries(nfsu_race_route PUBLIC nfsu_core nfsu_track_zones)
 nfsu_enable_warnings(nfsu_race_route)
 
+# Recovered ordinary rival driver. Action planning and selector3 physics are
+# separate owners; RaceSession selects it only for explicitly planned rivals.
+add_library(nfsu_racing_line src/racing_line.cpp)
+target_include_directories(nfsu_racing_line PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(nfsu_racing_line PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_racing_line)
+add_library(nfsu_ai_driver src/ai_driver.cpp src/ai_path.cpp src/ai_path_fitness.cpp src/ai_collision_prediction.cpp src/ai_path_choice.cpp src/ai_road.cpp src/ai_action.cpp src/ai_traffic_action.cpp src/ai_traffic_intersection.cpp src/ai_action_runtime.cpp src/ai_rival_action.cpp src/ai_neighbors.cpp src/ai_strategy.cpp src/ai_catchup.cpp src/ai_recovery.cpp)
+target_link_libraries(nfsu_ai_driver PUBLIC nfsu_race_route nfsu_racing_line nfsu_vehicle)
+nfsu_enable_warnings(nfsu_ai_driver)
+
 # gnu++17 on the console, as for the car-path libraries; the comment at the
 # end of cmake/car_libraries.cmake says why.
 if(NINTENDO_SWITCH)
-    set_target_properties(nfsu_track_zones nfsu_race_route
+    set_target_properties(nfsu_track_zones nfsu_race_route nfsu_ai_driver nfsu_racing_line
         PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS ON)
 endif()
 

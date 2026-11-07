@@ -1815,6 +1815,8 @@ void test_determinism() {
 
 void test_prepared_culler() {
     auto objects = parse_row_region();
+    objects.sections[0].instances[0].flags = 0;
+    objects.sections[0].instances[1].flags = 0x62U;
     nfsu::PreparedTrackCull prepared;
     std::string error;
     const auto frustum = frustum_or_fail(axis_camera(450.0F), "prepared");
@@ -1854,6 +1856,21 @@ void test_prepared_culler() {
                       actual.visible[i].instance_index==expected.visible[i].instance_index,
                       "prepared zone identities match reference");
         }
+    }
+    // The low event8 bridge variant has flags0x62; the valid high bridge
+    // has flags0. Captures may select both. Main-view filtering must also
+    // work in the prepared path and must not persist into the next capture.
+    for (std::uint8_t mask : {std::uint8_t(0), nfsu::kTrackMainViewInstanceMask,
+                              std::uint8_t(0), nfsu::kTrackMainViewInstanceMask}) {
+        nfsu::TrackCullOptions opts; opts.instance_mask = mask;
+        const auto expected = cull_track_region(objects,frustum,opts);
+        check(prepared.cull(frustum,error,nullptr,mask), "prepared view mask culls");
+        const auto& actual = prepared.result();
+        check(visible_indices(actual)==visible_indices(expected), "prepared view mask matches reference");
+        const auto indices=visible_indices(actual);
+        check(std::find(indices.begin(),indices.end(),0)!=indices.end(), "main view retains correct bridge");
+        check((std::find(indices.begin(),indices.end(),1)!=indices.end())==(mask==0),
+              "alternate bridge excluded only from main view");
     }
     auto broken = parse_row_region();
     broken.sections[0].nodes[0].bounds_min[0] = broken.sections[0].nodes[0].bounds_max[0];

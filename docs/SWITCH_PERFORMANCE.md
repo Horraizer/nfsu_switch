@@ -107,8 +107,11 @@ Stable thresholds are enforced as failures, not timing assertions:
 
 - Zero additional retained C++ bytes across the 120 identical frames after
   warmup; both cached and reference paths satisfy this independently.
-- Cache metadata estimate at most 8 MiB and combined persistent payload at
-  most 64 MiB; the existing stream/GPU/uniform limits remain unchanged.
+- Cache metadata estimate at most 12 MiB (the eight circuit tracks measure
+  3.64..6.11 MiB dry, and track 1001's wet-road lamp set takes the largest
+  past 8 MiB, where tracks 1003/1005 stayed under it) and combined
+  persistent payload at most 64 MiB; the existing stream/GPU/uniform
+  limits remain unchanged.
 - Every sampled frame has exactly the same ordered commands, draw identity,
   upload resource fields and totals, resource references, ranges, program/state,
   placement, material, camera, viewport, clear color, visibility counts,

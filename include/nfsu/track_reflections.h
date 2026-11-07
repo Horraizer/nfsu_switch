@@ -30,6 +30,12 @@ struct TrackReflectionCache {
 };
 void prepare_track_reflection_cache(const PreparedTrackScene& scene, TrackReflectionCache& cache);
 TrackTransform track_reflection_transform(const PreparedTrackInstance& instance);
+using TrackReflectionCorners = std::array<Vec3, 8>;
+TrackReflectionCorners track_reflection_corners(const PreparedTrackInstance& instance,
+                                                const std::array<float, 6>& bounds);
+bool track_reflection_visible(const TrackReflectionCorners& corners, const CameraFrame& camera);
+bool track_reflection_visible(const PreparedTrackInstance& instance,
+                              const std::array<float, 6>& bounds, const CameraFrame& camera);
 bool track_reflection_entries(const PreparedTrackScene& scene, const RenderOptions& options,
                               std::vector<TrackDrawListEntry>& entries, std::string& error,
                               const TrackReflectionCache* cache = nullptr, bool cull = true,

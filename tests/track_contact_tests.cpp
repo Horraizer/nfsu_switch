@@ -499,7 +499,23 @@ nfsu::TrackContactStatus column(const nfsu::TrackContactWorld& world, float px,
 nfsu::TrackContactStatus segment(const nfsu::TrackContactWorld& world,
                                  const float from[3], const float to[3],
                                  nfsu::TrackContact& contact) {
-    return nfsu::query_track_contact_segment(world, from, to, contact);
+    // Run the existing seam/nearest-surface scenarios through a fresh and
+    // reused batch leaf too. Compare every observable field, including the
+    // unchanged output on a miss; no struct padding participates.
+    nfsu::TrackContact batch[2]={contact,contact};
+    const auto status=nfsu::query_track_contact_segment(world,from,to,contact);
+    const std::array<float,3> ends[2]={{{to[0],to[1],to[2]}},{{to[0],to[1],to[2]}}};
+    nfsu::TrackContactStatus statuses[2];
+    nfsu::query_track_contact_fan(world,from,ends,2,batch,statuses);
+    for(unsigned i=0;i<2;++i) {
+        const auto& b=batch[i];
+        check(status==statuses[i] && contact.polygon==b.polygon && contact.triangle==b.triangle &&
+              contact.kind==b.kind && std::memcmp(&contact.distance,&b.distance,sizeof(float))==0 &&
+              std::memcmp(contact.point,b.point,sizeof(contact.point))==0 &&
+              std::memcmp(contact.normal,b.normal,sizeof(contact.normal))==0 &&
+              std::memcmp(&contact.up,&b.up,sizeof(float))==0,"segment fixture preserves batch contact bits");
+    }
+    return status;
 }
 
 // ---------------------------------------------------------------------
@@ -610,6 +626,35 @@ void test_world_build() {
     const nfsu::TrackContactWorld refused = world_of(broken);
     check(!refused.valid && refused.triangles.empty(),
           "an image that fails its own checks builds no world");
+}
+
+void test_physical_boundary_height() {
+    Image image;
+    image.polygons.push_back(barrier(8,2,8,30));
+    image.cells.push_back(cell(16,16,{0}));
+    const auto bytes=build(image);
+    auto raw=nfsu::parse_track_collision(bytes.data(),bytes.size(),0);
+    check(raw.valid,"boundary fixture parsed");
+    if(!raw.valid)return;
+    raw.polygons[0].unknown0[3]=22;
+    const auto world=nfsu::build_track_contact_world(raw);
+    // Authenticated43FF30 on TRACKB1003 polygons8920/9950: flag22 turns
+    // the raw [-127,+127] corners into [-508,+508]. Parser stays raw.
+    check(raw.polygons[0].corner[0][2]==-127 &&
+          world.collision.polygons[0].corner[0][2]==-508 &&
+          world.collision.polygons[0].corner[1][2]==508,
+          "physical boundary uses original flag4 height conversion");
+    check(world.collision.cost.corner_min[2]==-508 &&
+          world.collision.cost.corner_max[2]==508,"physical bounds include extended wall");
+    const float from[3]={6,16,200},to[3]={10,16,200};
+    nfsu::TrackContact hit;
+    check(segment(world,from,to,hit)==nfsu::TrackContactStatus::hit,
+          "extended boundary remains collidable above packed height");
+    raw.polygons[0].unknown0[3]=18;
+    const auto control=nfsu::build_track_contact_world(raw);
+    check(segment(control,from,to,hit)==nfsu::TrackContactStatus::clear &&
+          control.collision.polygons[0].corner[1][2]==127,
+          "ordinary flag18 wall keeps its decoded height");
 }
 
 // ---------------------------------------------------------------------
@@ -2168,6 +2213,163 @@ bool write_fixture(const std::vector<fs::path>& paths) {
 
 } // namespace
 
+// Long rays and dense cells must spill work lists without truncating hits,
+// changing tie order, or losing validation of late polygon indices.
+// Exercise cache hits, leaf changes/edges, misses, refusals and a dense
+// spilled list against the scalar query. Compare float bits, not tolerances.
+void check_fan(const nfsu::TrackContactWorld& world,const std::array<float,3>& from,
+               const std::vector<std::array<float,3>>& endpoints,
+               const nfsu::TrackContactQueryLimits& limits={}) {
+    std::vector<nfsu::TrackContact> batched(endpoints.size());
+    std::vector<nfsu::TrackContactStatus> statuses(endpoints.size());
+    for(auto& hit:batched) {hit.distance=-37;hit.point[0]=-0.0F;hit.polygon=987;}
+    nfsu::query_track_contact_fan(world,from.data(),endpoints.data(),endpoints.size(),
+                                batched.data(),statuses.data(),limits);
+    for(std::size_t i=0;i<endpoints.size();++i) {
+        nfsu::TrackContact single;single.distance=-37;single.point[0]=-0.0F;single.polygon=987;
+        const auto status=nfsu::query_track_contact_segment(world,from.data(),endpoints[i].data(),single,limits);
+        const auto& b=batched[i];
+        check(status==statuses[i] && single.polygon==b.polygon && single.triangle==b.triangle &&
+            single.kind==b.kind && std::memcmp(&single.distance,&b.distance,sizeof(float))==0 &&
+            std::memcmp(single.point,b.point,sizeof(single.point))==0 &&
+            std::memcmp(single.normal,b.normal,sizeof(single.normal))==0 &&
+            std::memcmp(&single.up,&b.up,sizeof(float))==0,"fan equals scalar bits and non-hit sentinel");
+    }
+}
+
+void check_pairs(const nfsu::TrackContactWorld& world,const std::array<float,3>& origin,
+                 const std::vector<std::array<float,3>>& endpoints,
+                 const nfsu::TrackContactQueryLimits& limits={}) {
+    std::vector<std::array<float,3>> origins;
+    for(std::size_t i=0;i<endpoints.size();++i)origins.push_back(i%3==0?endpoints[(i+1)%endpoints.size()]:origin);
+    std::vector<nfsu::TrackContact> separate(endpoints.size());
+    std::vector<nfsu::TrackContactStatus> separate_status(endpoints.size());
+    nfsu::query_track_contact_segments(world,origins.data(),endpoints.data(),endpoints.size(),separate.data(),separate_status.data(),limits);
+    for(std::size_t i=0;i<endpoints.size();++i) {
+        nfsu::TrackContact scalar;
+        const auto status=nfsu::query_track_contact_segment(world,origins[i].data(),endpoints[i].data(),scalar,limits);
+        const auto& b=separate[i];
+        check(status==separate_status[i] && scalar.polygon==b.polygon && scalar.triangle==b.triangle && scalar.kind==b.kind &&
+            std::memcmp(&scalar.distance,&b.distance,sizeof(float))==0 && std::memcmp(scalar.point,b.point,sizeof(scalar.point))==0 &&
+            std::memcmp(scalar.normal,b.normal,sizeof(scalar.normal))==0 && std::memcmp(&scalar.up,&b.up,sizeof(float))==0,
+            "distinct origins equal independent scalar queries");
+    }
+    std::vector<nfsu::TrackContactSegmentPair> pairs;
+    for(std::size_t i=0;i<endpoints.size();++i) {
+        // Changing origins, degenerate/refused primary, and a fallback which
+        // would select a different answer if incorrectly evaluated after a hit.
+        const auto& end=endpoints[i];
+        pairs.push_back({i%3==0?end:origin,end,end,origin});
+        pairs.push_back({end,origin,origin,origin});
+    }
+    std::vector<nfsu::TrackContact> batched(pairs.size());
+    std::vector<nfsu::TrackContactStatus> statuses(pairs.size());
+    for(auto& hit:batched){hit.distance=-37;hit.point[0]=-0.0F;hit.polygon=987;}
+    nfsu::query_track_contact_pairs(world,pairs.data(),pairs.size(),batched.data(),statuses.data(),limits);
+    for(std::size_t i=0;i<pairs.size();++i) {
+        nfsu::TrackContact single;single.distance=-37;single.point[0]=-0.0F;single.polygon=987;
+        const auto& p=pairs[i];
+        auto status=nfsu::query_track_contact_segment(world,p.from.data(),p.to.data(),single,limits);
+        if(status!=nfsu::TrackContactStatus::hit)
+            status=nfsu::query_track_contact_segment(world,p.fallback_from.data(),p.fallback_to.data(),single,limits);
+        const auto& b=batched[i];
+        check(status==statuses[i] && single.polygon==b.polygon && single.triangle==b.triangle &&
+            single.kind==b.kind && std::memcmp(&single.distance,&b.distance,sizeof(float))==0 &&
+            std::memcmp(single.point,b.point,sizeof(single.point))==0 &&
+            std::memcmp(single.normal,b.normal,sizeof(single.normal))==0 &&
+            std::memcmp(&single.up,&b.up,sizeof(float))==0,"paired queries equal scalar bits and non-hit sentinel");
+    }
+}
+
+void test_contact_fan() {
+    std::vector<std::size_t> base;
+    auto world=world_of(build(whole_image(sections(),base)));
+    const std::array<float,3> origin{976,-400,52};
+    std::vector<std::array<float,3>> ends;
+    // Repeated short rays, then leaf edges/crossings and back to the cached leaf.
+    for(int i=0;i<40;++i)ends.push_back({970+float(i%12),-408+float(i%15),49+float(i%5)});
+    for(float x:{960.F,992.F,1024.F,1008.F,975.F})ends.push_back({x,-400,49});
+    // Consecutive rays reuse a validated multi-leaf list, including its hits.
+    for(float x:{1000.F,1001.F,1002.F,1000.F})ends.push_back({x,-400,49});
+    check_fan(world,origin,ends);check_pairs(world,origin,ends);
+    // Alternate lists, exceed the four-entry cache, then revisit every set.
+    // Cache eviction may add work but must never discard a surface.
+    Image tiles;
+    for(unsigned i=0;i<8;++i) {
+        const float left=32.F+32.F*i;
+        tiles.polygons.push_back(flat(left,0,left+32,32,float(i)));
+        tiles.cells.push_back(cell(left+16,16,{static_cast<std::uint16_t>(i)}));
+    }
+    const auto tile_world=world_of(build(tiles));
+    std::vector<std::array<float,3>> alternating;
+    for(unsigned round=0;round<3;++round)
+        for(unsigned i:{0U,1U,0U,2U,1U,3U,4U,5U,6U,7U,2U,0U})
+            alternating.push_back({48.F+32.F*i,16.F,-1.F});
+    check_fan(tile_world,{48,16,12},alternating);
+    check_pairs(tile_world,{48,16,12},alternating);
+    nfsu::TrackContactQueryLimits small;small.max_cells=3;
+    check_fan(tile_world,{48,16,12},alternating,small);
+    // Nonfinite bounds must disable the batch prefilter, not lose later hits.
+    ends.push_back(origin);ends.push_back({976,-400,std::numeric_limits<float>::infinity()});
+    ends.push_back({976,-400,49});
+    check_fan(world,origin,ends);check_pairs(world,origin,ends);
+    check_fan(world,{992,-400,52},ends); // Origin on a shared closed leaf edge.
+    check_fan(world,{976,-400,48},ends); // New origin must not reuse prior answers.
+    nfsu::TrackContactQueryLimits limits;limits.max_cells=1;
+    check_fan(world,origin,ends,limits);check_pairs(world,origin,ends,limits);
+    limits.max_length=1;check_fan(world,origin,ends,limits);check_pairs(world,origin,ends,limits);
+    limits.max_cells=0;check_fan(world,origin,ends,limits);check_pairs(world,origin,ends,limits);
+    world.valid=false;check_fan(world,origin,ends);check_pairs(world,origin,ends);
+    nfsu::query_track_contact_fan(world,nullptr,nullptr,0,nullptr,nullptr);
+    nfsu::query_track_contact_pairs(world,nullptr,0,nullptr,nullptr);
+    nfsu::query_track_contact_segments(world,nullptr,nullptr,0,nullptr,nullptr);
+}
+
+void test_query_worklist_spill() {
+    Image dense;
+    auto crowded=cell(48.0F,16.0F,{});
+    for(unsigned i=0;i<200;++i) {
+        dense.polygons.push_back(flat(34,2,62,30,i==199?10.0F:0.0F));
+        crowded.polygons.push_back(static_cast<std::uint16_t>(i));
+    }
+    dense.cells.push_back(crowded);
+    auto world=world_of(build(dense));
+    nfsu::TrackContact hit;
+    check(world.valid && column(world,45,15,20,0,15,hit)==nfsu::TrackContactStatus::hit &&
+          hit.polygon==199 && hit.point[2]==10,"dense cell retains its late nearest polygon");
+    const std::vector<std::array<float,3>> fan_ends{{45,15,0},{46,16,5},{48,20,25},{32,15,0},{45,15,0}};
+    check_fan(world,{45,15,20},fan_ends);check_pairs(world,{45,15,20},fan_ends);
+    // Exclude the 199 lower surfaces, then exclude every surface. The late
+    // upper polygon remains selected, and an empty conservative list is valid.
+    check_fan(world,{45,15,20},{{45,15,5},{46,16,10},{45,15,25}});
+    // The float-plane bound must retain exact endpoint contacts and their
+    // adjacent representable lengths, including almost parallel misses.
+    check_fan(world,{45,15,20},{{45,15,10},
+        {45,15,std::nextafter(10.F,0.F)},{45,15,std::nextafter(10.F,20.F)},
+        {46,15,std::nextafter(20.F,0.F)},{45,15,std::nextafter(20.F,30.F)}});
+    check_pairs(world,{45,15,20},{{45,15,5},{46,16,10},{45,15,25}});
+    check_fan(world,{45,15,20},{{45,15,21},{46,16,25},{45,15,20}});
+    if(world.valid) {
+        world.collision.indices.back()=static_cast<std::uint32_t>(world.collision.polygons.size());
+        check(column(world,45,15,20,0,15,hit)==nfsu::TrackContactStatus::refused,
+              "dense cell still validates late invalid index");
+        check_fan(world,{45,15,20},fan_ends);check_pairs(world,{45,15,20},fan_ends);
+    }
+    Image long_ray;
+    for(unsigned i=0;i<6;++i) {
+        long_ray.polygons.push_back(flat(float(32*i+1),2,float(32*i+31),30,i==5?0.0F:-10.0F));
+        long_ray.cells.push_back(cell(float(32*i+16),16,{static_cast<std::uint16_t>(i)}));
+    }
+    const auto six=world_of(build(long_ray));
+    const float from[]={1.0F,15.0F,10.0F},to[]={190.0F,15.0F,-1.0F};
+    nfsu::TrackContactQueryLimits limits;limits.max_cells=6;
+    check(six.valid && nfsu::query_track_contact_segment(six,from,to,hit,limits)==nfsu::TrackContactStatus::hit &&
+          hit.polygon==5,"long sweep retains hit past the fourth cell");
+    limits.max_cells=5;
+    check(nfsu::query_track_contact_segment(six,from,to,hit,limits)==nfsu::TrackContactStatus::refused,
+          "long sweep preserves explicit cell cap");
+}
+
 int main(int argc, char** argv) {
     if (argc == 5 && std::string(argv[1]) == "--write-fixture") {
         // The build directory can sit under a path that is not ASCII, and
@@ -2189,6 +2391,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     test_world_build();
+    test_physical_boundary_height();
     test_point_queries();
     test_segment_queries();
     test_region_equals_whole();
@@ -2201,6 +2404,8 @@ int main(int argc, char** argv) {
     test_memory_plan();
     test_conversions();
     test_load();
+    test_query_worklist_spill();
+    test_contact_fan();
     if (g_failures != 0) {
         std::cerr << g_failures << " of " << g_checks << " check(s) failed\n";
         return 1;

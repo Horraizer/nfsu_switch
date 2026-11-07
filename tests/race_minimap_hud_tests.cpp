@@ -27,7 +27,16 @@ void focused() {
     check(state.direction==MapPoint{{-1,0}} && state.velocity==MapPoint{},"port reset restarts map history");
     VehicleTrackCourse course;std::string error;
     check(build_vehicle_proving_ground(course,error),"course builds");
-    RaceSession session(course);check(session.start(error),"session starts");
+    RaceSession session(course);
+    std::vector<RaceRivalSetup> rivals;
+    for(unsigned i=0;i<3;++i){auto pose=course.start;pose.ground.x+=4*(i+1);rivals.push_back({stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"});}
+    check(session.set_rivals(rivals,error),"three rivals configured");
+    check(session.start(error),"session starts");
+    // The synthetic proving loop has no authored start-line marker. Give
+    // presentation an explicit line at its existing grid marker.
+    course.route.start=0;
+    if(course.route.boundaries.empty())course.route.boundaries.resize(1);
+    course.route.boundaries[0].marker=course.start_marker;
     RaceHudAtlas atlas;atlas.map.valid=true;atlas.map.hash=0xA4F2F595;
     atlas.map.width=atlas.map.height=256;atlas.map.world_span=1202;
     RaceHudFrame frame;build_race_hud_frame(session,1280,720,frame);
@@ -39,11 +48,34 @@ void focused() {
         check(std::isfinite(v.px) && std::isfinite(v.py) && v.pz>=0 &&
               std::isfinite(v.u) && std::isfinite(v.v),"finite route and affine marker vertices");
     }
+    unsigned blue_vertices=0;
+    for(std::size_t i=count*4;i<frame.quads*4;++i) {const auto& v=frame.vertices[i];blue_vertices+=v.pz==0 && v.color[0]==0 && v.color[1]>0 && v.color[2]>v.color[1];}
+    check(blue_vertices>=12,"three rival markers submit original blue palette");
+    check(frame.vertices[(frame.quads-1)*4].color[0]>0 &&
+          frame.vertices[(frame.quads-1)*4].color[2]==0,
+          "native human marker is last, above overlapping rivals");
+    unsigned line_vertices=0;
+    for(std::size_t i=count*4;i<frame.quads*4;++i) {
+        const auto& v=frame.vertices[i];
+        if(v.pz==0 && v.u>=820.0F/kRaceHudAtlasWidth && v.u<=836.0F/kRaceHudAtlasWidth)++line_vertices;
+    }
+    check(line_vertices>=4,"start/finish line uses its own atlas sprite");
     RaceHudFrame repeated;build_race_hud_frame(session,1280,720,repeated);
     check(append_race_minimap(session,atlas,1280,720,state,repeated),"same snapshot builds again");
     check(frame.quads==repeated.quads && std::memcmp(frame.vertices.data(),repeated.vertices.data(),
           frame.quads*4*sizeof(TrackVertex))==0,"repeated presentation leaves map unchanged");
     check(before==session.record(),"map presentation leaves physics and recording unchanged");
+    // Original58E810 swaps line angles only for reversed point-to-point races.
+    // Distinct start/finish art angles catch accidental circuit swapping.
+    atlas.map.start_angle=4000;atlas.map.finish_angle=26000;
+    RaceHudFrame forward,reverse;RaceMinimapState forward_state{},reverse_state{};
+    build_race_hud_frame(session,1280,720,forward);
+    check(append_race_minimap(session,atlas,1280,720,forward_state,forward),"forward circuit marker");
+    course.route.reverse=true;build_race_hud_frame(session,1280,720,reverse);
+    check(append_race_minimap(session,atlas,1280,720,reverse_state,reverse),"reverse circuit marker");
+    check(forward.quads==reverse.quads && !std::memcmp(forward.vertices.data(),reverse.vertices.data(),
+        forward.quads*4*sizeof(TrackVertex)),"reverse circuit retains authored start-line orientation");
+    course.route.reverse=false;atlas.map.start_angle=atlas.map.finish_angle=0;
     // Far outside the authored image, native WRAP still fills the same HUD
     // window. Clipping by source UV would remove the route altogether.
     atlas.map.offset_x=-12020;
@@ -80,8 +112,13 @@ int capture(const std::filesystem::path& root,const std::filesystem::path& outpu
         !load_vehicle_track_course(root/"Tracks/TRACKB1003.lzc",2,0,0,0,course,error)) {
         std::fprintf(stderr,"FAIL: %s\n",error.c_str());return 1;
     }
-    RaceSession session(course);if(!session.start(error))return 1;
+    RaceSession session(course);
+    std::vector<RaceRivalSetup> rivals;
+    for(unsigned i=0;i<3;++i){auto pose=course.start;pose.ground.x+=8*(i+1);rivals.push_back({stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"});}
+    if(!session.set_rivals(rivals,error)||!session.start(error))return 1;
     std::filesystem::create_directory(output);
+    check(atlas.countdown_ready && atlas.lap_fonts[1]['3'].width && atlas.lap_fonts[1]['G'].width,
+        "original321_Go object and countdown glyphs loaded");
     RaceMinimapState state;
     for (unsigned tick=0;tick<=360;++tick) {
         if (tick==0 || tick==240 || tick==360) {
@@ -101,6 +138,16 @@ int capture(const std::filesystem::path& root,const std::filesystem::path& outpu
             RaceHudFrame ignored;build_race_hud_frame(session,atlas,1280,720,ignored);
             if(!append_race_minimap(session,atlas,1280,720,state,ignored))return 1;
         }
+    }
+    for(double time:{0.0,.2,.5,2.0}) {
+        RaceHudFrame frame;build_race_hud_frame(session,atlas,1280,720,frame);
+        check(append_race_minimap(session,atlas,1280,720,state,frame),"finish map fits");
+        const auto before=frame.quads;append_race_over(atlas,time,1280,720,frame);
+        check(frame.quads>before && frame.quads<kRaceHudMaxQuads,"finish banner fits full HUD");
+        std::vector<unsigned char> rgba(1280*720*4,64);
+        composite_race_hud(atlas,frame,rgba.data(),1280,720,1280*4);
+        std::ofstream stream(output/("finish-"+std::to_string(int(time*1000))+".tga"),std::ios::binary);
+        if(!write_tga(stream,1280,720,rgba,error))return 1;
     }
     std::puts("PASS: retail map/fonts decoded and integrated first-track HUD captures written");
     return failures?1:0;

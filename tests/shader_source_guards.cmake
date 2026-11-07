@@ -200,8 +200,8 @@ endfunction()
 
 # A vertex attribute moved in the shader and not in the manifest.
 nfsu_case("a vertex attribute moved in the stage source"
-    placed.vert.glsl car_textured.manifest
-    "placed.vert.glsl declares vertex attribute location 3 (vec2 inTexcoord), which the manifest does not"
+    placed_headlight.vert.glsl car_textured.manifest
+    "placed_headlight.vert.glsl declares vertex attribute location 3 (vec2 inTexcoord), which the manifest does not"
     "layout (location = 2) in vec2 inTexcoord"
     "layout (location = 3) in vec2 inTexcoord")
 
@@ -214,8 +214,8 @@ nfsu_case("a vertex attribute widened in the stage source"
 # Two attributes of one type swapped: the locations and types still agree,
 # and only the names say what moved.
 nfsu_case("two vertex attribute names swapped"
-    placed.vert.glsl track_textured.manifest
-    "vertex attribute location 0: the manifest names it inPosition, placed.vert.glsl declares inColor"
+    placed_headlight.vert.glsl track_textured.manifest
+    "vertex attribute location 0: the manifest names it inPosition, placed_headlight.vert.glsl declares inColor"
     "layout (location = 0) in vec3 inPosition"
     "layout (location = 0) in vec3 inColor"
     "layout (location = 1) in vec4 inColor"
@@ -235,9 +235,9 @@ nfsu_case("a uniform block binding moved in the stage source"
 
 nfsu_case("a member added to a uniform block"
     textured_opaque.frag.glsl track_textured.manifest
-    "uniform block Material: the manifest lists 5 members, textured_opaque.frag.glsl declares 6"
-    "    vec4 environment_color;\n} material;"
-    "    vec4 environment_color;\n    vec4 extra;\n} material;")
+    "uniform block Material: the manifest lists 13 members, textured_opaque.frag.glsl declares 14"
+    "    vec4 uv_animation;\n} material;"
+    "    vec4 uv_animation;\n    vec4 extra;\n} material;")
 
 nfsu_case("two uniform block members reordered"
     placed.vert.glsl car_fallback.manifest
@@ -246,8 +246,8 @@ nfsu_case("two uniform block members reordered"
     "    vec4 up;\n    vec4 right;")
 
 nfsu_case("a varying's interpolation changed in the stage source"
-    placed.vert.glsl track_textured.manifest
-    "varying location 2 (outTexcoord): the manifest says smooth, placed.vert.glsl declares noperspective"
+    placed_headlight.vert.glsl track_textured.manifest
+    "varying location 2 (outTexcoord): the manifest says smooth, placed_headlight.vert.glsl declares noperspective"
     "layout (location = 2) out vec2 outTexcoord"
     "layout (location = 2) noperspective out vec2 outTexcoord")
 
@@ -265,7 +265,7 @@ nfsu_case("a flat qualifier written before layout in the stage source"
     "flat layout (location = 1) in vec4 inColor")
 
 nfsu_case("a noperspective qualifier written before layout in the stage source"
-    placed.vert.glsl track_textured.manifest
+    placed_headlight.vert.glsl track_textured.manifest
     "qualifies a declaration before its layout(...)"
     "layout (location = 2) out vec2 outTexcoord"
     "noperspective layout (location = 2) out vec2 outTexcoord")
@@ -297,7 +297,7 @@ nfsu_case("a sample qualifier written before layout in the stage source"
 # position before layout(...) - on an output this time, since invariant
 # only applies to outputs.
 nfsu_case("an invariant qualifier written before layout in the stage source"
-    placed.vert.glsl car_textured.manifest
+    placed_headlight.vert.glsl car_textured.manifest
     "qualifies a declaration before its layout(...)"
     "layout (location = 0) out vec3 outWorld"
     "invariant layout (location = 0) out vec3 outWorld")
@@ -323,7 +323,7 @@ nfsu_case("a preprocessor directive that could hide a declaration"
 # The other direction: the manifest edited and the shader not.
 nfsu_case("a vertex attribute moved in the manifest"
     car_textured.manifest car_textured.manifest
-    "placed.vert.glsl declares vertex attribute location 2 (vec2 inTexcoord), which the manifest does not"
+    "placed_headlight.vert.glsl declares vertex attribute location 2 (vec2 inTexcoord), which the manifest does not"
     "attribute location=2 name=texcoord"
     "attribute location=3 name=texcoord")
 
@@ -353,8 +353,8 @@ nfsu_case("a block member offset the std140 layout does not produce"
 # glcpp looks for the */ that closes a block after its /*, so /*/ opens a
 # comment, and it opens whichever of // and /* comes first.
 nfsu_case("a declaration two /*/ comments hide, and a // inside a block comment"
-    placed.vert.glsl car_textured.manifest
-    "placed.vert.glsl declares vertex attribute location 3 (vec2 inTexcoord), which the manifest does not"
+    placed_headlight.vert.glsl car_textured.manifest
+    "placed_headlight.vert.glsl declares vertex attribute location 3 (vec2 inTexcoord), which the manifest does not"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "/* see // below */ layout (location = 3) in vec2 inTexcoord;\n/*/ layout (location = 2) in vec2 inTexcoord; /*/\n")
 
@@ -365,58 +365,58 @@ nfsu_case("a uniform block after a block comment holding a URL"
     "layout (binding = 0) uniform sampler2D baseTexture;\n/* Fog, as https://example.org/fog describes it. */\nlayout (std140, binding = 3) uniform Fog {\n    vec4 fog_color;\n} fog;\n")
 
 nfsu_case("a block comment holding a URL"
-    placed.vert.glsl car_textured.manifest PASS
+    placed_headlight.vert.glsl car_textured.manifest PASS
     "void main()\n"
     "/* Placement as https://example.org/placement describes it. */\nvoid main()\n")
 
 # A backslash at the end of a line joins the next line to it before
 # comments are seen, so a // comment ending in one takes the next line too.
 nfsu_case("a // comment a backslash joins to the declaration below it"
-    placed.vert.glsl car_textured.manifest
-    "vertex attribute location 2 (vec2 inTexcoord) is in the manifest, but placed.vert.glsl does not declare it"
+    placed_headlight.vert.glsl car_textured.manifest
+    "vertex attribute location 2 (vec2 inTexcoord) is in the manifest, but placed_headlight.vert.glsl does not declare it"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "// was: \\\nlayout (location = 2) in vec2 inTexcoord;\nlayout (location = 3) in vec2 inTexcoord;\n")
 
 # glcpp ends a line at a lone CR too; this reader reads LF and CR LF only,
 # and refuses any other CR rather than read the line differently.
 nfsu_case("a lone CR that starts a directive"
-    placed.vert.glsl car_textured.manifest
-    "placed.vert.glsl: has a CR that does not begin a CR LF"
+    placed_headlight.vert.glsl car_textured.manifest
+    "placed_headlight.vert.glsl: has a CR that does not begin a CR LF"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "// texcoord${cr}#define vec2 ivec2\nlayout (location = 2) in vec2 inTexcoord;\n")
 
 set(newline_style CRLF)
-nfsu_case("CR LF line ends" placed.vert.glsl car_textured.manifest PASS)
+nfsu_case("CR LF line ends" placed_headlight.vert.glsl car_textured.manifest PASS)
 set(newline_style LF)
 
 # A directive may follow a vertical tab, a form feed or a block comment.
 nfsu_case("a form feed before a directive"
-    placed.vert.glsl car_textured.manifest
+    placed_headlight.vert.glsl car_textured.manifest
     "`#define vec2 ivec2` is a preprocessor directive the interface check does not follow"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "${ff}#define vec2 ivec2\nlayout (location = 2) in vec2 inTexcoord;\n")
 
 nfsu_case("a vertical tab before a directive"
-    placed.vert.glsl car_textured.manifest
+    placed_headlight.vert.glsl car_textured.manifest
     "`#define vec2 ivec2` is a preprocessor directive the interface check does not follow"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "${vt}#define vec2 ivec2\nlayout (location = 2) in vec2 inTexcoord;\n")
 
 nfsu_case("a block comment before a directive"
-    placed.vert.glsl car_textured.manifest
+    placed_headlight.vert.glsl car_textured.manifest
     "`#define vec2 ivec2` is a preprocessor directive the interface check does not follow"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "/* note */ #define vec2 ivec2\nlayout (location = 2) in vec2 inTexcoord;\n")
 
 nfsu_case("a # that does not begin a line"
-    placed.vert.glsl car_textured.manifest
-    "placed.vert.glsl: has a # that does not begin a line"
+    placed_headlight.vert.glsl car_textured.manifest
+    "placed_headlight.vert.glsl: has a # that does not begin a line"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "layout (location = 2) in vec2 inTexcoord; #define X\n")
 
 nfsu_case("early_fragment_tests in a vertex stage"
-    placed.vert.glsl car_textured.manifest
-    "placed.vert.glsl: early_fragment_tests outside a fragment stage"
+    placed_headlight.vert.glsl car_textured.manifest
+    "placed_headlight.vert.glsl: early_fragment_tests outside a fragment stage"
     "layout (location = 2) in vec2 inTexcoord;\n"
     "layout (early_fragment_tests) in;\nlayout (location = 2) in vec2 inTexcoord;\n")
 
@@ -427,20 +427,20 @@ nfsu_case("early_fragment_tests beside another qualifier"
     "layout (early_fragment_tests, location = 3) in;")
 
 nfsu_case("an @ in a comment"
-    placed.vert.glsl car_textured.manifest PASS
+    placed_headlight.vert.glsl car_textured.manifest PASS
     "in that memory order.\n"
     "in that memory order. Questions: shaders@example.org\n")
 
 # GLSL, C++ and CMake read a leading zero three different ways, so neither
 # side may write one.
 nfsu_case("a location written with a leading zero in the stage source"
-    placed.vert.glsl car_textured.manifest
-    "placed.vert.glsl: `location = 02` is not a decimal without a leading zero"
+    placed_headlight.vert.glsl car_textured.manifest
+    "placed_headlight.vert.glsl: `location = 02` is not a decimal without a leading zero"
     "layout (location = 2) in vec2 inTexcoord"
     "layout (location = 02) in vec2 inTexcoord")
 
 nfsu_case("an array size written with a leading zero in the stage source"
-    placed.vert.glsl car_textured.manifest
+    placed_headlight.vert.glsl car_textured.manifest
     "has an array size that is not a decimal above zero without a leading zero"
     "vec4 rows[4];"
     "vec4 rows[04];")

@@ -62,7 +62,7 @@ def main():
                                      "--out", str(output)], stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE)
             expected = (b"FAIL: output is inside retail installation" if refused else
-                        b"FAIL: event 1 missing or not one race")
+                        b"FAIL: supported event differs from its retail mode or round count")
             require(result.returncode == 1 and expected in result.stdout and not result.stderr,
                     label + ": wrong refusal: " + json.dumps((result.stdout + result.stderr).decode(
                         "utf-8", errors="replace"), ensure_ascii=True))

@@ -607,10 +607,10 @@ no clock, and is classified neutral for the platform-neutrality gate.
   retail bundles.
 - `build_track_path_spline`, `evaluate_track_path` and
   `update_track_path_coordinate` are the spline and the coordinate.
-  A track with more than one path, a linked node or an open path is refused
-  by name: 0x0059CEA0 extrapolates past the ends of an open spline and is
-  not implemented, so a sprint or drag route is refused rather than
-  approximated. So is a path whose record's length, scale and offset do
+  A track with more than one path or a linked node is refused by name; an
+  open path builds with the type-2 end treatment above. The 0-to-100
+  measure check is a loop's argument and does not bind an open course (the
+  six drag paths measure 82.0 to 97.8 percent of their records). So is a path whose record's length, scale and offset do
   not measure the spline's own loop as 0 to 100 percent, to within 1 at
   either end: every rule above wraps a percent by one lap, and retail loops
   measure 99.99993 to 100.00011 percent. A path length of 1e-30 or a scale
@@ -986,11 +986,18 @@ the only survivors of the same first 59.
 
 ## Unknown
 
-- An open path: 0x0059CEA0's extrapolation past the ends and 0x0059CB90's
-  type-2 end points, so every point-to-point route. Not needed for a
-  circuit.
-- What `0x00034122` .. `0x00034124` and the `0x00034121` routes' fields
-  mean, and what 0x004430B0 does with them for a reverse race.
+- Open paths use the type-2 endpoint treatment:
+  0x0059CB90's type-2 branch stores mirrored end control points
+  (P[-1] = 2*P0 - P1 with running length -w(P1); P[n] = 2*P(n-1) - P(n-2)
+  with 2*arc - w(P(n-1))), 0x0059CE10's type-2 branch is the identity -
+  an open parameter is never wrapped, including the nearest-point iteration.
+  0x0059CEA0 extrapolates control points outside the mirrored endpoint slots.
+  0x0059D9F0 measures all count segments, including the extrapolated final
+  segment. The former clamp and count-minus-one measure were incorrect.
+  `nfsu_career_races_tests <retail-root> road-init <1003|1102|1210>` checks
+  route bounds and connection progress against original4430B0 output.
+  `tools/career_road_trace.py` reproduces those native scalar results.
+- Remaining consumers of `0x00034123` and `0x00034124` outside road loading.
 - The zone distances at +0x1C .. +0x24 and every zone type but the four the
   wrong-way test reads.
 - What consumes the car's +0x87C flag (set more than 5000 from the

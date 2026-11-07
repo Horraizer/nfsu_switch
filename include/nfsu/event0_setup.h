@@ -34,10 +34,10 @@ struct Event0ActorConfig {
     std::string event_label; // human label comes from profile, not preset
     bool label_from_profile = false;
     Event0Preset visual;
-    std::optional<VehicleUpgradeLevels> performance; // rivals unresolved
+    std::optional<VehicleUpgradeLevels> performance; // Parser input; runtime grid resolves rivals
     std::array<std::int16_t, 3> difficulty_context{};
     std::int16_t selected_context = 0, tuning_selector = 0;
-    std::uint8_t raw_ai_byte = 0;
+    std::uint8_t raw_ai_byte = 0, ai_mode = 1; //4B420B..4B4227 clamps to0..2, otherwise1
     std::uint64_t event_source_offset = 0;
     std::uint8_t initial_grid = 0, final_grid = 0; // one-based
     Event0GridMarker marker;
@@ -62,6 +62,7 @@ struct Event0SetupDescriptor {
     TrackInfoRecord track;
     RaceSlot race;
     std::array<std::uint32_t, 83> raw_event_words{};
+    unsigned race_index=0,racer_count=4;
     std::uint8_t difficulty = 1;
     std::uint32_t difficulty_producer_va = 0x005A0A65;
     std::uint32_t runtime_mode = 1;
@@ -92,4 +93,11 @@ Event0SetupResult parse_event0_setup(Event0SetupImage front, Event0SetupImage gl
 Event0SetupResult load_event0_setup(const std::filesystem::path& front,
                                    const std::filesystem::path& global,
                                    const std::filesystem::path& track);
+// First campaign racing grids. The human uses the owned stock car; rivals
+// retain their authored presets and difficulty contexts. Drift is separate.
+Event0SetupResult parse_race_grid_setup(Event0SetupImage front, Event0SetupImage global,
+    Event0SetupImage track, unsigned number, const std::string& car, unsigned difficulty,unsigned race_index=0);
+Event0SetupResult load_race_grid_setup(const std::filesystem::path& front,
+    const std::filesystem::path& global, const std::filesystem::path& track,
+    unsigned number, const std::string& car, unsigned difficulty,unsigned race_index=0);
 } // namespace nfsu

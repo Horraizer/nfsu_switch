@@ -19,6 +19,7 @@ struct RaceParticle {
     RaceParticleKind kind = RaceParticleKind::smoke;
     std::uint64_t born_step = 0;
     double solver_dt = kVehicleStepSeconds;
+    double elapsed_seconds = -1; // Managed age after a world-dt transition.
     VehicleVec3 origin;
     VehicleVec3 velocity;
     double size = 0.0; // initial diameter in metres
@@ -46,6 +47,8 @@ private:
     std::size_t smoke_count_ = 0;
     std::size_t spark_count_ = 0;
     std::uint64_t step_ = 0;
+    double seconds_=0,last_solver_dt_=0;
+    bool variable_time_=false;
 };
 
 // A particle's evaluated state at the most recently completed physics step.

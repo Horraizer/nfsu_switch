@@ -43,11 +43,15 @@ nfsu_enable_warnings(nfsu_track_contact)
 # nfsu_track_contact's.
 add_library(nfsu_vehicle_track
     src/vehicle_track.cpp
+    src/track_ground.cpp
+    src/ai_track.cpp
+    src/race_contacts.cpp
+    src/race_hull_query.cpp
     src/vehicle_track_course.cpp
 )
 
 target_link_libraries(nfsu_vehicle_track
-    PUBLIC nfsu_vehicle nfsu_track_contact nfsu_race_route nfsu_sha256)
+    PUBLIC nfsu_vehicle nfsu_track_contact nfsu_race_route nfsu_sha256 nfsu_car_contact)
 # PRIVATE, as for nfsu_track_contact: its float roots - a hull point's arm,
 # a node's distance, a loop's chords - take det_sqrt's correctly rounded
 # root, and vehicle_track.h exposes nothing of it.

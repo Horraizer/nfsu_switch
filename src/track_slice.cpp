@@ -12,16 +12,95 @@
 
 namespace nfsu {
 
+namespace {
+
+// Placed-material hashes a circuit's permanent set requests that no loaded
+// source holds: resident stream sections, the texture-only Y spillover, the
+// track's own TEX pack, INGAMEB and GLOBALB, in that order. Read out of the
+// owner's retail installation by loading every supported circuit event with
+// this pipeline and listing what stayed unresolved beyond the two hashes
+// docs/TRACK_MATERIALS.md documents without a texture-info record
+// (`0x2D1A7A07`, `0x74CFB820`), which stay unresolved exactly as event 1
+// ships them. The original loader's generic fallback substitutes the GLOBALB
+// DEFAULTALPHA record for any missed hash (speed.exe 0x53F9C0/0x5461C0, the
+// pointer chain docs/ATLANTIC.md traces); each hash here is the same
+// recovered rule applied to one more verified-absent material, and the
+// per-circuit tests pin the substitution. 0x828DCF0B is Atlantic's power
+// tower; 0x2F93D9E1 and 0x6D1AFA74 are track 1007's and 1008's own absent
+// materials.
+std::vector<std::uint32_t> absent_placed_hashes(std::uint32_t track) {
+    switch (track) {
+    case 1005: return {0x828DCF0BU};
+    case 1007: return {0x2F93D9E1U, 0x828DCF0BU};
+    case 1008: return {0x6D1AFA74U, 0x828DCF0BU};
+    // The L1RB drift city tracks place the same 19 hashes no source of
+    // their sets provides - verified absent from the stream sections, both
+    // stream files' packs, TEX1301TRACK, INGAMEB, GLOBALB, INGAMEA and
+    // DYNTEX (the scratch hash-scan of the authoring session). The L1RC
+    // drift city tracks place a different 56, verified absent the same
+    // way against their own region's sources.
+    case 1301: case 1302: case 1303: case 1304: return {
+        0x05FA675U, 0x1C99A500U, 0x31403B27U, 0x31403B2AU, 0x31403B2BU,
+        0x31403F69U, 0x31403F6CU, 0x490472FAU, 0x490472FBU, 0x59479E38U,
+        0x59479E39U, 0x59479E3AU, 0x59479E3BU, 0x59479E3CU, 0x59479E3DU,
+        0x6CCD8E3EU, 0xBC64FC61U, 0xCAD1BC2FU, 0xE5500D49U};
+    case 1305: case 1306: case 1307: case 1308: return {
+        0x017B16EE5U, 0x1ADA1600U, 0x1ADA1620U, 0x249C09BDU, 0x2660517BU,
+        0x31403B28U, 0x31403B2CU, 0x31403F69U, 0x31403F6CU, 0x490472FAU,
+        0x490472FBU, 0x4D4FF26EU, 0x4D556E38U, 0x4F0046D5U, 0x558888A9U,
+        0x558888ABU, 0x5671B2B5U, 0x59D41788U, 0x5C9E0EF0U, 0x613A1326U,
+        0x6CCD8E3EU, 0x6D5BBB0BU, 0x6E7C9B65U, 0x7273F516U, 0x76B8B2AFU,
+        0x798875C8U, 0x7ECCB6D7U, 0x8612A877U, 0x8612A890U, 0x089FD9A2U,
+        0x98AF887CU, 0x9BBD21C1U, 0x9DAC57E2U, 0xA9CF103BU, 0xAD960D3DU,
+        0xBC64FC61U, 0xC356E407U, 0xC42945C7U, 0xC567BAC7U, 0xCAD1BC2FU,
+        0xD220B1D2U, 0xD220BA53U, 0xD2427068U, 0xD85A1222U, 0xD85A1223U,
+        0xD9CD6BF6U, 0xDF06401AU, 0xE5500D43U, 0xE5500D49U, 0xE5A6EF40U,
+        0xEBE15E8EU, 0xF1DEFFD4U, 0xFA5F0CF1U, 0xFC1C4688U, 0x0FCB10CU,
+        0x00FE562FU};
+    // The drag tracks' absent sets are small and per shared image: 1201 and
+    // 1210 one four-hash set, 1202 its own pair, 1206 and 1214 one
+    // five-hash set, and 1207 four more (verified absent against each
+    // track's own region sources by the scratch hash-scan; the sets appear
+    // only in other regions' texture-only Y0 sections, which these tracks
+    // never load). 1207 also places 0x74CFB820, which stays unresolved
+    // exactly as tracks 1007 and 1008 ship it.
+    case 1201: case 1210: return {
+        0x31403F69U, 0x31403F6CU, 0x6D37FD79U, 0xE5500D49U};
+    case 1202: return {0x1ADA161EU, 0xB5185FD3U};
+    case 1206: case 1214: return {
+        0x2FD08513U, 0x2FD08514U, 0x2FD08515U, 0x2FD2B698U, 0x2FD2B699U};
+    case 1207: return {0x3EAE8FC3U, 0x5E449534U, 0x647E15CEU, 0x0A1B0C98U};
+    // The sprint tracks place the L1RA family's own absent hashes,
+    // verified absent against each track's own section sources the same
+    // way (1102 and 1103 place nothing absent). 1106, 1107 and 1108 also
+    // place 0x74CFB820, which stays unresolved as ever.
+    case 1104: case 1105: return {0x828DCF0BU};
+    case 1106: case 1107: case 1108: case 1109: return {
+        0x2F93D9E1U, 0x828DCF0BU};
+    default: return {};
+    }
+}
+
+} // namespace
+
 bool load_track_slice(FileSystemService& files, const std::filesystem::path& root,
                       TrackSlice& slice, std::string& error, AssetCheckObserver* observer,
-                      TrackSliceLoadObserver* loading, std::uint32_t event_number, bool world_mips) {
+                      TrackSliceLoadObserver* loading, std::uint32_t event_number, bool world_mips,unsigned race_index,
+                      TrackStreamSet backing_set) {
     slice = {}; error.clear();
-    TrackSlice result;
-    AssetManifest manifest;
-    if (event_number != 1 && event_number != 8) {
-        error = "supported track events are 1 and 8"; return false;
+    if(backing_set!=TrackStreamSet::permanent&&backing_set!=TrackStreamSet::zones) {
+        error="unsupported race backing set";return false;
     }
-    if (!retail_asset_manifest(event_number == 1 ? "first-lap" : "first-lap-1005", manifest) ||
+    TrackSlice result;
+    result.backing_set=backing_set;
+    AssetManifest manifest;
+    SupportedRaceSelection choice;
+    std::string manifest_name;
+    if(!supported_race_selection(event_number,race_index,choice)||
+       !first_lap_asset_set_name(std::uint32_t(choice.slot.track),manifest_name)) {
+        error="unsupported track event or tournament round";return false;
+    }
+    if (!retail_asset_manifest(manifest_name, manifest) ||
         !check_asset_install(files, root, manifest, result.assets, error, observer)) return false;
     if (result.assets.verdict != AssetVerdict::complete) {
         error = std::string("first-lap asset check: ") + asset_verdict_name(result.assets.verdict);
@@ -40,32 +119,46 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
     };
     SupportedRace race;
     if (!load_supported_race(path("FrontEnd/FrontB.lzc"), path("Global/GLOBALB.BUN"),
-                             event_number, race, error)) return false;
-    result.event_number = event_number;
+                             event_number, race, error,race_index)) return false;
+    result.event_number = event_number;result.race_index=race_index;
     result.track_number = static_cast<std::uint32_t>(race.slot.track);
     const auto trackb = path("Tracks/" + track_bundle_file_name(race.slot.track));
     {
         std::vector<unsigned char> image;
         const auto zones = load_track_zones(trackb, image);
         const auto table = parse_track_stream_table(image.data(), image.size());
+        if(!track_world_motion_models(image,result.world_models,error))return false;
         TrackStreamSelection selected;
         if (!zones.ok() || !table.ok() ||
-            !select_track_stream_sections(table, zones, result.track_number, TrackStreamSet::permanent, selected, error)) {
+            !select_track_stream_sections(table, zones, result.track_number, backing_set, selected, error)) {
             if (error.empty()) error = "invalid event-1 track table or visibility zones";
             return false;
         }
-        if (selected.records.size() > 256 || selected.route_numbers_outside || selected.route_zones_missing) {
+        // The native live request remains capped at256. A static GPU backing
+        // union may cover more mutually exclusive zones without making them
+        // simultaneously live in the original residency model.
+        const std::size_t backing_limit=backing_set==TrackStreamSet::zones?1024:256;
+        if (selected.records.size() > backing_limit || selected.route_numbers_outside || selected.route_zones_missing) {
             error = "event-1 path requires sections outside the bounded permanent set";
             return false;
         }
         TrackStreamFiles streams;
-        streams.stream = path("Tracks/STREAML1RA.BUN");
+        // The region stream the track's record names ("STREAM%s.BUN" with
+        // its region): L1RA for the circuits, L1RB for drift track 1301.
+        streams.stream = path("Tracks/" + track_stream_file_name(race.track));
         streams.has_pack = true;
         streams.pack = path("Tracks/" + track_stream_pack_file_name(race.track));
+        // Permanent1003 keeps the event-1 loader policy its pinned replay and
+        // frame hashes were recorded with. Expanded backing and other tracks load the
+        // bounded way Atlantic introduced (issue #327): source bytes are
+        // released section by section and only meshes a valid instance can
+        // select survive, which bounds the loader peak of sets larger than
+        // event 1's.
+        const bool bounded_loader = result.track_number != 1003 || backing_set==TrackStreamSet::zones;
         TrackStreamLoadLimits limits;
         limits.max_total_bytes = kPersistentBudgetPlaceholder;
         limits.release_non_texture_bytes = true;
-        limits.release_source_bytes = event_number==8;
+        limits.release_source_bytes = bounded_loader;
         limits.poll = [&] { checkpoint("stream sections"); };
         TrackStreamLoad load;
         if (!load_track_stream_sections(table, selected, streams, limits, load, error) || !load.ok()) {
@@ -75,7 +168,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         checkpoint("sections parsed and merged");
         result.sections = selected.records.size();
         result.input_bytes = load.bytes_read;
-        if (event_number==8 && !retain_instanced_track_meshes(load.geometry,load.objects,error)) return false;
+        if (bounded_loader && !retain_instanced_track_meshes(load.geometry,load.objects,error,result.world_models)) return false;
         // The merged reports own their arrays. Drop per-section parser
         // copies and non-texture source ranges before texture preparation.
         std::vector<unsigned char>().swap(image);
@@ -84,8 +177,16 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
             section.objects = {};
             if (section.packs.packs.empty()) std::vector<unsigned char>().swap(section.bytes);
         }
+        for(const auto& section:load.sections)for(const auto& a:section.animations)
+            if(std::none_of(result.animations.begin(),result.animations.end(),[&](const auto& old){return old.hash==a.hash;}))result.animations.push_back(a);
         auto wanted = track_region_texture_hashes(load.geometry);
-        if (event_number == 8) {
+        result.animations.erase(std::remove_if(result.animations.begin(),result.animations.end(),[&](const auto& a){
+            return std::none_of(a.frames.begin(),a.frames.end(),[&](auto hash){return std::binary_search(wanted.begin(),wanted.end(),hash);});
+        }),result.animations.end());
+        for(const auto& a:result.animations)wanted.insert(wanted.end(),a.frames.begin(),a.frames.end());
+        std::sort(wanted.begin(),wanted.end());wanted.erase(std::unique(wanted.begin(),wanted.end()),wanted.end());
+        const auto absent = absent_placed_hashes(result.track_number);
+        if (!absent.empty()) {
             wanted.push_back(kTrackDefaultAlphaHash);
             std::sort(wanted.begin(), wanted.end());
             wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
@@ -135,6 +236,27 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         }
         const std::size_t stream_sources = sources.size();
         const std::string names[] = {"Tracks/" + track_texture_file_name(race.slot.track), "Global/INGAMEB.BUN", "Global/GLOBALB.BUN"};
+        // Common race effects (including the neon turn barriers) live in
+        // INGAMEB, not in the track stream. Read metadata before freezing the
+        // wanted texture set; only used families retain their actual frames.
+        auto definitions=result.animations;
+        for(const auto& section:spillover.sections)for(const auto& a:section.animations) {
+            const auto prior=std::find_if(definitions.begin(),definitions.end(),[&](const auto& old){return old.hash==a.hash;});
+            if(prior==definitions.end())definitions.push_back(a);
+            else if(prior->fps!=a.fps||prior->clock!=a.clock||prior->frames!=a.frames) {
+                error="conflicting spillover animation definition";return false;
+            }
+        }
+        for(const auto& name:names) {
+            checkpoint("common animation metadata");
+            if(!load_texture_animations(path(name),definitions,error))return false;
+        }
+        definitions.erase(std::remove_if(definitions.begin(),definitions.end(),[&](const auto& a){
+            return std::none_of(a.frames.begin(),a.frames.end(),[&](auto hash){return std::binary_search(wanted.begin(),wanted.end(),hash);});
+        }),definitions.end());
+        result.animations=std::move(definitions);
+        for(const auto& a:result.animations)wanted.insert(wanted.end(),a.frames.begin(),a.frames.end());
+        std::sort(wanted.begin(),wanted.end());wanted.erase(std::unique(wanted.begin(),wanted.end()),wanted.end());
         sources.resize(sources.size() + 3);
         std::vector<unsigned char> source_bytes;
         TexturePackSet source_packs;
@@ -181,7 +303,8 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         };
         RenderTextureSet textures;
         if (!decode_render_texture_sources(sources, texture_limits, textures, error)) return false;
-        if (event_number == 8 && !bind_track_default_alpha(textures, 0x828DCF0BU, error)) return false;
+        for (const std::uint32_t missing : absent)
+            if (!bind_track_default_alpha(textures, missing, error)) return false;
         checkpoint("textures decoded");
         // RenderTexture owns every retained block. No scene preparation
         // consults the pack parser or its borrowed source bytes again.
@@ -189,6 +312,8 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         std::vector<TrackStreamSection>().swap(load.sections);
         std::vector<TrackStreamSection>().swap(spillover.sections);
         TrackSceneOptions options;
+        for(const auto& a:result.animations)options.region.animation_texture_hashes.insert(
+            options.region.animation_texture_hashes.end(),a.frames.begin(),a.frames.end());
         options.region.max_texture_bytes = kStreamingRegionBudgetPlaceholder;
         std::uint64_t mip_extra=0;
         if(world_mips)for(const auto& texture:textures.textures)if(texture.usable()) {
@@ -205,6 +330,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
             error="world top-level payload exceeds unchanged streaming limit";return false;
         }
         options.region.max_texture_bytes+=mip_extra;
+        if(choice.slot.direction==1)apply_reverse_track_scenery(load.objects);
         checkpoint("scene preparation");
         if (!build_track_scene(std::move(load.geometry), load.objects, std::move(textures), options, result.scene, error)) return false;
         checkpoint("scene prepared");
@@ -212,9 +338,15 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         result.streaming_bytes = result.scene.region.cost.vertex_buffer_bytes +
             result.scene.region.cost.index_buffer_bytes + result.texture_bytes +
             result.scene.instances.size() * sizeof(PreparedTrackInstance);
-        if (result.streaming_bytes + textures.decoded_bytes >
-            kResidentRegionsPlaceholder * kStreamingRegionBudgetPlaceholder + 2*mip_extra) {
-            error = "track texture preparation exceeds the streaming payload plan"; return false;
+        // A fully backed zone union replaces runtime geometry reads with one
+        // bounded static preparation. It uses the existing128MiB persistent
+        // preparation ceiling, not three24MiB live-stream slots.
+        const auto preparation_budget=backing_set==TrackStreamSet::zones?kPersistentBudgetPlaceholder:
+            kResidentRegionsPlaceholder*kStreamingRegionBudgetPlaceholder+2*mip_extra;
+        if (result.streaming_bytes + textures.decoded_bytes > preparation_budget) {
+            error = "track texture preparation exceeds the streaming payload plan: prepared="+
+                std::to_string(result.streaming_bytes)+" decoded="+std::to_string(textures.decoded_bytes)+
+                " mip_extra="+std::to_string(mip_extra); return false;
         }
         result.objects = std::move(load.objects);
         // Raw section bytes, parser mesh copies, external packs and the
@@ -228,7 +360,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
     checkpoint("collision loaded");
     std::vector<TrackResidencyVertex> vertices;
     std::vector<TrackResidencySample> samples;
-    if (event_number == 1) {
+    if (event_number != 8 && event_number != 3) {
         if (!parse_track_residency_path(kTrackResidencyHandPath1003, vertices, error)) return false;
     } else {
         std::vector<unsigned char> route_bytes;

@@ -1,3 +1,4 @@
+#include "nfsu/scene.h"
 #include "nfsu/image.h"
 #include "nfsu/texture.h"
 #include "nfsu/texture_export.h"
@@ -2016,7 +2017,51 @@ void test_export_safety() {
 
 } // namespace
 
+#include <cmath>
+#include "texture_uv_equation.h"
+#include "career_texture_uv_native.inc"
 int main() {
+    for(const auto& row:kNativeTextureUv) {
+        nfsu::TextureUvAnimation a;
+        a.mode=static_cast<std::int8_t>(row.mode);a.period=static_cast<std::int16_t>(row.period);
+        a.u_rate=a.u_offset=static_cast<std::int16_t>(row.u);
+        a.v_rate=a.v_offset=static_cast<std::int16_t>(row.v);
+        const auto uv=nfsu::texture_uv_offset(a,row.ticks);
+        check(uv[0]==row.result[0] && uv[1]==row.result[1],"native world texture UV transform");
+        const float seconds=nfsu::texture_world_seconds(row.ticks);
+        const float u_rate=float(row.u)*(row.mode==3?-1.F:1.F)/32768;
+        const float v_rate=float(row.v)*(row.mode==3?-1.F:1.F)/32768;
+        check(animatedWorldUvAxis(0,u_rate,float(row.period)/256,float(row.mode),seconds)==row.result[0] &&
+              animatedWorldUvAxis(0,v_rate,float(row.period)/256,float(row.mode),seconds)==row.result[1],
+              "actual production GLSL world UV scalar matches native x86");
+    }
+    {
+        std::vector<unsigned char> data(148);const auto put=[&](std::size_t at,std::uint32_t v){for(unsigned k=0;k<4;++k)data[at+k]=static_cast<unsigned char>(v>>(k*8));};
+        put(0,0xB0300100);put(4,140);put(8,0x30300101);put(12,16);put(16,1);
+        put(32,0x30300102);put(36,52);put(64,0x11);put(68,3);put(72,2);
+        put(92,0x30300103);put(96,48);put(100,0x11);put(116,0x22);put(132,0x33);
+        std::vector<nfsu::TextureAnimation> animations;std::string problem;
+        check(nfsu::append_texture_animations(data.data(),data.size(),animations,problem),"authored texture animation parses");
+        check(animations.size()==1&&animations[0].frames==std::vector<std::uint32_t>({0x11,0x22,0x33}),"original frame order retained");
+        if(!animations.empty()) {
+            check(nfsu::texture_animation_phase(animations[0],29)==0&&nfsu::texture_animation_phase(animations[0],30)==1&&
+                  nfsu::texture_animation_phase(animations[0],60)==2&&nfsu::texture_animation_phase(animations[0],90)==0,"authored 2fps loop boundaries");
+        }
+        {
+            const auto fixture=std::filesystem::temp_directory_path()/unique_fixture("animation_source");
+            std::vector<unsigned char> source(8+19,0);source[0]=0x77;source[4]=19;
+            source.insert(source.end(),data.begin(),data.end());
+            {std::ofstream file(fixture,std::ios::binary);file.write(reinterpret_cast<const char*>(source.data()),source.size());}
+            std::vector<nfsu::TextureAnimation> loaded;
+            check(nfsu::load_texture_animations(fixture,loaded,problem)&&loaded.size()==1&&loaded[0].frames==animations[0].frames,
+                  "metadata file scan skips unrelated payload and retains authored frames");
+            {std::ofstream file(fixture,std::ios::binary|std::ios::trunc);file.write(reinterpret_cast<const char*>(source.data()),source.size()-1);}
+            check(!nfsu::load_texture_animations(fixture,loaded,problem)&&loaded.size()==1&&loaded[0].frames==animations[0].frames,
+                  "truncated metadata source refuses without changing prior animations");
+            check(std::filesystem::remove(fixture),"owned animation fixture cleanup");
+        }
+        put(68,4);check(!nfsu::append_texture_animations(data.data(),data.size(),animations,problem)&&animations.size()==1,"truncated animation refuses transactionally");
+    }
     test_hash();
     test_valid_pack();
     test_alpha_state();

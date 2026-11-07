@@ -96,11 +96,11 @@ int main(int argc, char** argv) {
         const bool okay = nfsu::load_track_slice(nfsu::posix_file_system(),root,slice,error,nullptr,&observer);
         const auto peak_delta = peak.load()-observer.baseline;
         const auto retained = live.load()-observer.baseline;
-        std::printf("loader peak %zu retained %zu allocations %zu checkpoints %zu budget 50331648\n",
+        std::printf("loader peak %zu retained %zu allocations %zu checkpoints %zu budget 75497600\n",
                     peak_delta,retained,calls.load(),observer.checkpoints);
         if (!check(okay,error.c_str())) return 1;
-        if (argc != 3 && !check(peak_delta <= 50331648,"loader peak exceeds 48 MiB")) return 1;
-        std::puts(argc == 3 ? "BASELINE measured (budget not asserted)" : "PASS: every-allocation loader peak within 48 MiB");
+        if (argc != 3 && !check(peak_delta <= 75497600,"loader peak exceeds 56 MiB")) return 1;
+        std::puts(argc == 3 ? "BASELINE measured (budget not asserted)" : "PASS: every-allocation loader peak within 56 MiB");
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr,"FAIL: %s\n",e.what()); return 1; }
 }

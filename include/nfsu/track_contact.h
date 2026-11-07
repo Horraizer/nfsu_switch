@@ -3,6 +3,7 @@
 #include "nfsu/memory_arena.h"
 #include "nfsu/track_collision.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -79,6 +80,9 @@ const char* track_contact_kind_name(TrackContactKind kind) noexcept;
 // degenerate: its normal is zero, it is counted, and no query ever hits it.
 struct TrackContactTriangle {
     float normal[3] = {0.0F, 0.0F, 0.0F};
+    // Immutable query operands, derived from the same corner operations as
+    // the segment routines. Avoid rebuilding them for every hull/wheel ray.
+    float edge1[3]{},edge2[3]{},low[3]{},high[3]{};
     // |normal[2]|, the cosine of the triangle's slope.
     float up = 0.0F;
     TrackContactKind kind = TrackContactKind::wall;
@@ -305,6 +309,39 @@ TrackContactStatus query_track_contact_segment(
     const float from[3],
     const float to[3],
     TrackContact& contact,
+    const TrackContactQueryLimits& limits = TrackContactQueryLimits{});
+
+// Independent segments with one common origin, in input order. Geometry must
+// remain immutable during the call. Reuses a validated containing leaf list;
+// each segment retains its own cells, limits, nearest/tie and seam handling.
+// For count > 0, endpoints/contacts/statuses must name count valid elements;
+// input/output buffers must not overlap. A zero count permits null buffers.
+// On a non-hit, that output contact is unchanged, as with the scalar query.
+void query_track_contact_fan(
+    const TrackContactWorld& world, const float from[3],
+    const std::array<float,3>* endpoints, std::size_t count,
+    TrackContact* contacts, TrackContactStatus* statuses,
+    const TrackContactQueryLimits& limits = TrackContactQueryLimits{});
+
+
+// Independent segments with distinct origins. Same contract as fan, without
+// assuming that nearby wheels have the same attachment or contact surface.
+void query_track_contact_segments(
+    const TrackContactWorld& world, const std::array<float,3>* origins,
+    const std::array<float,3>* endpoints, std::size_t count,
+    TrackContact* contacts, TrackContactStatus* statuses,
+    const TrackContactQueryLimits& limits = TrackContactQueryLimits{});
+
+// Independent primary/fallback segment pairs, in input order. A fallback is
+// evaluated only when its primary is not a hit, including refused primaries.
+// Shares only validated containing-leaf candidates across queries; geometry
+// is immutable for this call. Same buffer/non-hit contract as the fan above.
+struct TrackContactSegmentPair {
+    std::array<float,3> from{},to{},fallback_from{},fallback_to{};
+};
+void query_track_contact_pairs(
+    const TrackContactWorld& world, const TrackContactSegmentPair* pairs,
+    std::size_t count, TrackContact* contacts, TrackContactStatus* statuses,
     const TrackContactQueryLimits& limits = TrackContactQueryLimits{});
 
 // The surface under a point: the segment from `rise` world units above it

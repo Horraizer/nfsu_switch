@@ -308,11 +308,17 @@ bool run(const Corridor& corridor, const std::vector<nfsu::TrackResidencySample>
         error);
     check(ok, "the simulation runs: " + error);
     if (ok) {
-        const auto costs = nfsu::track_residency_table_costs(corridor.table);
+        auto costs = nfsu::track_residency_table_costs(corridor.table);
+        auto startup_options = options;
         nfsu::TrackResidencySession live;
         std::vector<nfsu::TrackResidencyStep> incremental;
-        check(live.start(corridor.table,corridor.zones,kTrack,costs,options,incremental,error),
+        check(live.start(corridor.table,corridor.zones,kTrack,costs,startup_options,incremental,error),
               "incremental startup: " + error);
+        // Later transitions must not read the caller's expired startup input.
+        // Alter valid storage first so regressions fail without a dangling read.
+        std::fill(costs.begin(),costs.end(),nfsu::TrackResidencyCost{});
+        startup_options = plain_options(0);
+        startup_options.policy = nfsu::TrackResidencyPolicy::zone_only;
         for (const auto& sample : samples) {
             nfsu::TrackResidencyStep step;
             check(live.advance(sample,step,error),"incremental sample: " + error);

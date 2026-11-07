@@ -1,5 +1,5 @@
 # tools/race_replay_check.py under CTest (issue #233): the 16 pinned race
-# frames, the result lines, the per-step state file, the 120 Hz trajectory
+# frames, the result lines, the per-step state file, the 240 Hz trajectory
 # and, with --check-driver, the regenerated recording, for one nfsu_race.
 # The script's assertions are its own; this wrapper adds none and relaxes
 # none. It only gives the script the fresh output directory it insists on.
@@ -60,7 +60,7 @@ if(NOT result EQUAL 0)
 endif()
 # The script prints one PASS line per executable when every pin held; an
 # exit status of 0 without it is not a pass.
-if(NOT output MATCHES "(^|\n)PASS [^\n]*48332 step hashes, result, ${expected_frames} frames, clean 120 Hz trajectory, generated recording")
+if(NOT output MATCHES "(^|\n)PASS [^\n]*48260 step hashes, result, ${expected_frames} frames, clean 240 Hz trajectory, generated recording")
     message(FATAL_ERROR "FAIL: race_replay_check.py exited 0 without its PASS line")
 endif()
 if(NOT output MATCHES "PASS wet replay:")

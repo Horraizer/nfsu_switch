@@ -13,6 +13,7 @@ using MapPoint = std::array<float, 2>;
 struct MinimapResource {
     bool valid = false;
     std::uint32_t hash = 0;
+    unsigned track=0; //Set by the authenticated loader; zero retains legacy synthetic fixtures.
     std::uint32_t width = 0, height = 0;
     std::uint64_t info_offset = 0, payload_offset = 0;
     std::uint32_t payload_bytes = 0;
@@ -21,7 +22,7 @@ struct MinimapResource {
     std::uint16_t rotation = 0, start_angle = 0, finish_angle = 0;
 };
 bool load_minimap_resource(const std::filesystem::path& retail,
-                           MinimapResource& out, std::string& error);
+                           MinimapResource& out, std::string& error, unsigned track=1003);
 // 0x00564B10 polynomial, not libm sine. Rounded to float at native stores.
 float minimap_scalar_sine(std::uint16_t angle) noexcept;
 bool project_minimap_world(const MinimapResource& resource, MapPoint raw_xy,

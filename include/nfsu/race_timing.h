@@ -113,7 +113,11 @@ const char* race_stage_name(RaceStage stage) noexcept;
 // game; one race of the first lap needs these two.
 enum class RacerStatus : std::uint8_t {
     not_finished = 0,
-    normal_completion = 1
+    normal_completion = 1,
+    knocked_out = 3,
+    blown_engine = 6,
+    totalled = 7,
+    out_of_time = 8
 };
 
 const char* racer_status_name(RacerStatus status) noexcept;
@@ -133,6 +137,7 @@ const char* race_outcome_name(RaceOutcome outcome) noexcept;
 struct RaceTimingConfig {
     // Steps a second, and the ticks each adds to the world timer.
     int steps_per_second = 60;
+    std::int32_t time_limit_ticks = 0; // Original78A314; zero disables the challenge clock.
     std::int32_t ticks_per_step = 67;
     float countdown_step_seconds = kRaceCountdownStepSeconds;
     // The world timer when the race is built.
@@ -193,6 +198,11 @@ struct RaceRacerTiming {
     bool finish_valid = false;
     std::int32_t finish_ticks = 0;
     std::size_t finish_step = 0;
+    // Actor884/888/8A8 after435344: blink briefly, then stay hidden and
+    // non-solid. Human knockout does not request this actor transition.
+    std::int32_t ghost_start_ticks = 0;
+    float ghost_seconds = 0;
+    bool permanent_ghost = false;
     // What the HUD's lap timer holds after a completed lap (0x004A19D7..
     // 0x004A19F2): the world time the lap completed and its time.
     bool lap_shown_valid = false;
@@ -459,5 +469,17 @@ std::uint32_t advance_race_step_clock(RaceStepClock& clock, std::uint64_t now_us
 
 // The same, reading timing.now_us() once.
 std::uint32_t advance_race_step_clock(RaceStepClock& clock, TimingService& timing);
+
+//4356DC..43577A: after live ranking, a new highest lap plus the racer's
+// one-based rank equal to the original field size eliminates those behind.
+// order is the stable current ranking; no actor is teleported or removed.
+// Original466890 and570B90 for the ordinary single-player view. The world
+// clock owns the temporary ghost interval; the render frame owns blinking.
+bool race_racer_body_ghost(const RaceRacerTiming&,std::int32_t now) noexcept;
+bool race_racer_hidden(const RaceRacerTiming&,std::int32_t now,float world_dt,
+                       std::uint64_t render_frame) noexcept;
+
+bool apply_lap_knockout(const RaceTimingConfig&,RaceTimingState&,
+    const unsigned* order,std::size_t count,std::string& error);
 
 } // namespace nfsu

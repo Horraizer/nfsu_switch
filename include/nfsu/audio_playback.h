@@ -18,7 +18,7 @@
 namespace nfsu::audio {
 
 constexpr std::uint32_t kOutputRate = 48000;
-constexpr std::size_t kMixVoices = 12;
+constexpr std::size_t kMixVoices = 113;
 
 // PCM is interleaved signed 16-bit at its original rate. Loop end is exclusive.
 struct PcmClip {
@@ -31,6 +31,11 @@ struct PcmClip {
     bool valid() const noexcept;
 };
 
+// Recovered652FD0/6533C0/6512F0 software stereo publication. Fresh127
+// normal gain, master1, speaker angles90/270; not DirectSound/HRTF mixing.
+std::array<float,2> stereo_pan_gains(std::uint16_t azimuth,
+                                  std::uint32_t gain_q15) noexcept;
+
 // The caller serializes control and render calls. No allocation, clock or I/O
 // occurs in render; all arithmetic and voice order are fixed.
 class Mixer {
@@ -40,7 +45,11 @@ public:
               bool fade_in = false) noexcept;
     void control(std::size_t slot, std::uint32_t gain_q15,
                  std::uint32_t pitch_q16) noexcept;
+    // Native64D280 applies angular panning only to mono sources. Generic
+    // UI/music playback retains its existing level until explicitly bound.
+    void pan(std::size_t slot, std::uint16_t azimuth) noexcept;
     void stop(std::size_t slot) noexcept;
+    void release(std::size_t slot) noexcept;
     bool active(std::size_t slot) const noexcept;
     std::uint64_t clipped_samples() const noexcept { return clipped_samples_; }
     // Opt-in stereo-linked peak limiter. Instant attack, linear 50 ms release.
@@ -63,6 +72,10 @@ private:
         std::uint32_t ramp_left = 0;
         std::uint32_t pitch_q16 = 65536;
         bool loop = false;
+        bool angular_pan = false;
+        std::uint16_t azimuth = 0;
+        std::uint32_t pan_gain = UINT32_MAX;
+        std::array<float,2> channel_gains{};
     };
     std::array<Voice, kMixVoices> voices_{};
     std::uint64_t clipped_samples_ = 0;
@@ -78,6 +91,20 @@ public:
     void apply(std::int16_t* stereo, std::size_t frames, bool muted) noexcept;
 private:
     std::uint32_t level_ = 0;
+};
+
+// Original FE music mix: profile8 music26500, speech profile9 music6300.
+// The speech profile attacks over .25s and releases over 2s. This envelope
+// applies the original absolute fresh-profile music descriptor gain as well.
+// Relative mode preserves a caller's existing master and applies only the
+// speech envelope ratio; the original default path is unchanged.
+// Voice and menu cues retain their separately owned gain.
+class SpeechMusicDuck {
+public:
+    void apply(std::int16_t* stereo,std::size_t frames,bool speech,bool relative=false) noexcept;
+private:
+    bool active_=false;
+    std::uint32_t origin_=26500,level_=26500,elapsed_=0,duration_=0;
 };
 
 // A fixed-capacity stereo frame queue. push/pop are nonblocking; short pop

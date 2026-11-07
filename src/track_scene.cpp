@@ -219,6 +219,18 @@ bool prepare(
         }
     }
 
+    for(auto hash:limits.animation_texture_hashes) {
+        MeshMaterial material;material.texture_slot=0;
+        const auto binding=resolve_material(std::vector<std::uint32_t>{hash},material,textures);
+        if(binding.kind!=BindingKind::resolved){error="authored animation frame unresolved";return false;}
+        const auto i=binding.texture_index;
+        if(handle_of[i]!=kNoHandle)continue;
+        const auto& source=textures.textures[i];std::uint64_t total=region.cost.texture_bytes;
+        if(!add_within(total,source.payload().size(),limits.max_texture_bytes,total)){error="animation frames exceed track texture budget";return false;}
+        handle_of[i]=region.textures.size();
+        if(owned_textures)region.textures.emplace_back();else region.textures.push_back(source);
+        region.cost.texture_bytes=total;++region.animation_texture_count;
+    }
     // Resolve every material before moving texture payloads: usable() must
     // still see the original bytes when a later mesh uses the same texture.
     if (owned_report) {
@@ -281,6 +293,9 @@ bool prepare(
     if (!validate_prepared_track_region(region, error)) {
         return false;
     }
+    // Parsed draw/texture lists grow incrementally. Their spare capacity is
+    // not a runtime cache; release it before immutable upload pointers exist.
+    region.meshes.shrink_to_fit();region.draws.shrink_to_fit();region.textures.shrink_to_fit();
     out = std::move(region);
     return true;
 }
@@ -442,6 +457,7 @@ bool validate_prepared_track_region(
     std::set<std::uint32_t> texture_claims;
     for (const RenderTexture& texture : region.textures) {
         texture_claims.insert(texture.hash);
+        texture_claims.insert(texture.default_alpha_aliases.begin(), texture.default_alpha_aliases.end());
         const std::size_t used =
             std::min(texture.claim_count, texture.claims.size());
         texture_claims.insert(texture.claims.begin(),
@@ -606,7 +622,8 @@ bool validate_prepared_track_region(
                 " draws but its meshes account for " + std::to_string(draw);
         return false;
     }
-    if (next_texture != region.textures.size()) {
+    if (region.animation_texture_count>region.textures.size() ||
+        next_texture != region.textures.size()-region.animation_texture_count) {
         error = std::to_string(region.textures.size() - next_texture) +
                 " prepared textures are never drawn";
         return false;
@@ -649,6 +666,19 @@ bool validate_prepared_track_region(
     return true;
 }
 
+        // Adapted from GLM's track-1301 recovery, commit 6c987ce.
+bool bind_drift_track_default_alpha(RenderTextureSet& textures,std::string& error) {
+            constexpr std::uint32_t absent[] = {
+                0x05FA675U,0x1C99A500U,0x31403B27U,0x31403B2AU,0x31403B2BU,
+                0x31403F69U,0x31403F6CU,0x490472FAU,0x490472FBU,0x59479E38U,
+                0x59479E39U,0x59479E3AU,0x59479E3BU,0x59479E3CU,0x59479E3DU,
+                0x6CCD8E3EU,0xBC64FC61U,0xCAD1BC2FU,0xE5500D49U};
+            for (const auto hash : absent)
+                if (!bind_track_default_alpha(textures, hash, error)) return false;
+    return true;
+}
+
+
 bool bind_track_default_alpha(RenderTextureSet& textures, std::uint32_t missing_hash,
                               std::string& error) {
     error.clear();
@@ -662,11 +692,13 @@ bool bind_track_default_alpha(RenderTextureSet& textures, std::uint32_t missing_
         return false;
     }
     auto& texture = textures.textures[fallback.texture_index];
-    if (texture.claim_count >= texture.claims.size()) {
+    if (texture.default_alpha_aliases.size() >= 64 ||
+        std::find(texture.default_alpha_aliases.begin(), texture.default_alpha_aliases.end(),
+                  missing_hash) != texture.default_alpha_aliases.end()) {
         error = "retail DEFAULTALPHA alias capacity exceeded";
         return false;
     }
-    texture.claims[texture.claim_count++] = missing_hash;
+    texture.default_alpha_aliases.push_back(missing_hash);
     return true;
 }
 

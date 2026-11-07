@@ -152,6 +152,18 @@ void controls_tests() {
     check(controls.held(), "another connected slot keeps request held");
     frame.pads[1].buttons = 0; controls.update(frame);
     check(!controls.held(), "last slot releases request");
+    for(bool installed:{false,true}) {
+        check(controls.configure(nfsu::default_drag_controls_config(),installed,error),"drag bindings configure with or without NOS");
+        frame={};frame.pads[0].connected=true;controls.update(frame);
+        frame.pads[0].buttons=nfsu::gamepad_button_bit(nfsu::GamepadButton::face_east);controls.update(frame);
+        check(controls.driving().frame_state().shift_down&&!controls.held(),"drag A shifts down without nitrous");
+        frame.pads[0].buttons=0;controls.update(frame);
+        frame.pads[0].buttons=nfsu::gamepad_button_bit(nfsu::GamepadButton::shoulder_right);controls.update(frame);
+        check(controls.driving().frame_state().shift_up,"drag R shifts up");
+        frame.pads[0].buttons=0;controls.update(frame);
+        frame.pads[0].buttons=nfsu::gamepad_button_bit(nfsu::GamepadButton::shoulder_left);controls.update(frame);
+        check(!controls.driving().frame_state().shift_down&&controls.held()==installed,"drag L never shifts down");
+    }
 }
 void torque_tests() {
     std::array<std::uint8_t, 36> encoded{};

@@ -1,6 +1,7 @@
 #pragma once
 #include "deko_renderer.h"
 #include "nfsu/heap_usage.h"
+#include "nfsu/memory_budget.h"
 #include "nfsu/frame_profile_stats.h"
 #include "nfsu/race_frame_stats.h"
 #include "nfsu/screen_text.h"
@@ -160,15 +161,16 @@ inline ProfilePages build_profile_pages(std::vector<std::string> replay_rows,
     const auto& heap = context.heap;
     add_page("LOAD/MEMORY",{
         profile_format("LOAD %.0f ms | initial upload %.0f ms",context.load_ms,context.upload_ms),
-        profile_format("CPU STREAM %llu / 50331648 | PERSISTENT %llu / 67108864",
-            (unsigned long long)context.stream_bytes,(unsigned long long)context.persistent_bytes),
-        profile_format("GPU BLOCKS %llu / 268435456 bytes",(unsigned long long)context.gpu_bytes),
+        profile_format("CPU STREAM %llu / 75497600 | PERSISTENT %llu / %llu",
+            (unsigned long long)context.stream_bytes,(unsigned long long)context.persistent_bytes,
+            (unsigned long long)kPersistentBudgetPlaceholder),
+        profile_format("GPU BLOCKS %llu / BASE %llu bytes",(unsigned long long)context.gpu_bytes,(unsigned long long)kGpuBudgetPlaceholder),
         profile_format("FRAME UNIFORMS %llu bytes",(unsigned long long)context.memory.frame_uniform_bytes),
         profile_format("STATIC UNIFORMS %llu bytes",(unsigned long long)context.memory.static_uniform_bytes),
         profile_format("PREPARED COMMANDS %llu bytes",(unsigned long long)context.memory.prepared_command_bytes),
-        profile_format("LOAD HEAP ABS %llu | DELTA %llu / 50331648 | OVER %llu",
+        profile_format("LOAD HEAP ABS %llu | DELTA %llu / 75497600 | OVER %llu",
             (unsigned long long)heap.load_peak,(unsigned long long)heap.load_delta(),
-            (unsigned long long)heap.load_overrun(50331648))
+            (unsigned long long)heap.load_overrun(75497600))
     });
     if (!failure.empty()) {
         const auto wrapped = wrap_screen_text(failure,80);

@@ -2,6 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
+#include <utility>
+#include <vector>
 
 namespace nfsu {
 
@@ -21,6 +24,23 @@ void deko_visit_opaque_first(std::size_t count, IsOpaque is_opaque, Visit visit)
 inline bool deko_draw_in_opaque_pass(bool sky, bool blend, bool alpha_tested,
                                      bool depth_write, bool sky_with_opaque) {
     return sky ? sky_with_opaque : !blend && !alpha_tested && depth_write;
+}
+
+// Preserve the source index (uniform address) and order for every cube face.
+// View 0 is shared by all faces; views 10..15 belong to one face. Group runs
+// once instead of rescanning the entire cube draw list six times per frame.
+using DekoCubeRanges = std::array<std::vector<std::pair<std::size_t,std::size_t>>,6>;
+template<class View>
+void deko_cube_ranges(std::size_t count, View view, DekoCubeRanges& ranges) {
+    for (auto& face:ranges) face.clear();
+    for (std::size_t first=0;first<count;) {
+        const auto tag=view(first);
+        auto end=first+1;
+        while(end<count && view(end)==tag) ++end;
+        if(tag==0) for(auto& face:ranges) face.emplace_back(first,end);
+        else if(tag>=10 && tag<16) ranges[tag-10].emplace_back(first,end);
+        first=end;
+    }
 }
 
 // The regular textured shader has no discard. Material alpha tests use the

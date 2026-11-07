@@ -1,5 +1,7 @@
 #pragma once
 
+#include "nfsu/camera_surge.h"
+
 #include "nfsu/vehicle.h"
 
 #include <array>
@@ -24,7 +26,8 @@ namespace nfsu {
 // car's heading and its velocity, lags behind it with an angle spring, and
 // places the eye at the anchor's offset in the lagged frame. POVs 0, 1 and 4
 // get that chase treatment (the id tests at 0x00489E5E..0x00489E6D); 2 and 3
-// are fixed to the car and are not implemented here.
+// are fixed to the car; POV 2 is the normal bumper view, POV 3 is excluded
+// by the ordinary retail camera cycle (0x0042E020).
 //
 // DETERMINISM. Angles are kept as speed.exe keeps them, 65536 units to the
 // turn in 16-bit integers, so the lag and every wrap are integer arithmetic.
@@ -178,6 +181,8 @@ void encode_chase_camera_rules(const ChaseCameraRules& rules,
 // view +0xC4 was not traced. It is what EA's renderers of the period hold,
 // and the game drew 4:3, where 71.52 degrees across is 56.75 degrees high.
 enum class ChaseFovMode : std::uint8_t {
+    // Primary-view projection40DD00: independent truncated native angles.
+    retail,
     // The angle is the horizontal field of view whatever the viewport: a
     // wider screen shows the same width and less height, as the retail game
     // would on a 16:9 mode. On 16:9 the chase POVs are 44.11 degrees high.
@@ -253,10 +258,15 @@ struct ChaseCameraSubject {
     // The body's +x axis, and the velocity of the centre of mass, m/s.
     VehicleVec3 forward{1.0, 0.0, 0.0};
     VehicleVec3 velocity;
+    //426930 publishes the completed outer-update velocity derivative.
+    VehicleVec3 acceleration;
+    // Body +z for the fixed bumper view; the chase views stay upright.
+    VehicleVec3 body_up{0.0, 0.0, 1.0};
 };
 
 // The subject of a vehicle state: origin = position - R * centre of mass.
-ChaseCameraSubject chase_subject(const VehicleState& state, const VehicleSpec& spec) noexcept;
+ChaseCameraSubject chase_subject(const VehicleState& state, const VehicleSpec& spec,
+                                 const VehicleVec3& acceleration = {}) noexcept;
 
 // One camera, in the vehicle's world frame.
 struct ChaseCameraView {
@@ -281,12 +291,11 @@ struct ChaseCameraView {
     double far_plane = 2000.0;
 };
 
-// The POVs the chase camera follows, in the order `next_pov` cycles them;
-// the first the table names is where a camera starts. APPROXIMATION of the
-// order and of the start: speed.exe cycles a per-player list of four POV
-// bytes (0x0042E020) whose initial values were not traced. POV 0 is the
-// one that shows the whole car on a 4:3 view.
-constexpr std::array<int, 3> kChasePovs{{0, 1, 4}};
+// Ordinary retail cycle: player list 0,1,2,4; 42E020 skips slot 3
+// unless the special high-camera mode is active. 4B6390 and 6F1D68..70
+// establish the list; 4BE6C0 also bounds the normal option to indices 0..2.
+constexpr std::array<int, 3> kChasePovs{{0, 1, 2}};
+constexpr std::array<int, 4> kDriftChasePovs{{0, 1, 2, 4}};
 
 class ChaseCamera {
 public:
@@ -300,7 +309,7 @@ public:
     const std::string& error() const noexcept { return error_; }
     const ChaseCameraApproximations& approximations() const noexcept { return approx_; }
 
-    // Selects a chase POV (0, 1 or 4) that the single-player list names.
+    // Selects a driving POV (0, 1, 2 or the explicit high view 4) that the single-player list names.
     // False, with nothing changed, otherwise.
     bool set_pov(int pov) noexcept;
     int pov() const noexcept { return pov_; }
@@ -310,7 +319,8 @@ public:
     // the lag zeroed (0x00489398) and the previous target seeded from car
     // +0x3B4 (0x0048938E); whether a POV change rebuilds the mover or keeps
     // it was not traced.
-    void next_pov() noexcept;
+    // Drift keeps the fourth configured high view (native42E020).
+    void next_pov(bool drift = false) noexcept;
 
     // Puts the camera straight behind the subject, with no lag and nothing
     // hit, and makes the view.
@@ -348,6 +358,7 @@ private:
     std::uint16_t target_ = 0;
     std::int16_t lag_ = 0;
     double reach_ = 1.0;
+    CameraSurge surge_;
 };
 
 // The target heading of 0x0048A0B6..0x0048A1C9 for a subject: the heading

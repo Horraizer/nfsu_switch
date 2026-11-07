@@ -12,6 +12,26 @@
 #include <utility>
 
 namespace nfsu {
+float texture_world_seconds(std::int32_t world_ticks) noexcept {
+    // FILD retains the integer before the binary32 world-clock multiplier.
+    return static_cast<float>(double(world_ticks)*double(.00025F));
+}
+std::array<float,2> texture_uv_offset(const TextureUvAnimation& a,std::int32_t ticks) noexcept {
+    if(!a.mode)return {};
+    if(a.mode==3)return {{float(a.u_offset)*(-1.F/32768),float(a.v_offset)*(-1.F/32768)}};
+    float phase=texture_world_seconds(ticks);
+    if(a.mode==2) {
+        // A zero period is malformed input; avoid an undefined integer conversion.
+        if(!a.period)return {};
+        phase=std::trunc(phase/(float(a.period)/256.F));
+    }
+    const auto axis=[&](std::int16_t rate) {
+        const float value=phase*(float(rate)/32768.F);
+        return value-std::trunc(value); // Native FTOL truncates, including negative rates.
+    };
+    return {{axis(a.u_rate),axis(a.v_rate)}};
+}
+
 
 bool is_stock_dummy_decal_hash(std::uint32_t hash) noexcept {
     return hash >= 0x910E6654U && hash <= 0x910E665BU;
@@ -123,7 +143,9 @@ bool RenderTexture::claims_hash(std::uint32_t value) const noexcept {
     }
     const std::size_t used = std::min(claim_count, claims.size());
     return std::find(claims.begin(), claims.begin() + used, value) !=
-           claims.begin() + used;
+           claims.begin() + used ||
+           std::find(default_alpha_aliases.begin(), default_alpha_aliases.end(), value) !=
+               default_alpha_aliases.end();
 }
 
 bool RenderTexture::usable() const noexcept {
@@ -925,6 +947,7 @@ bool validate_scene(const PreparedCarScene& scene, std::string& error) {
             return false;
         }
         texture_claims.insert(texture.hash);
+        texture_claims.insert(texture.default_alpha_aliases.begin(), texture.default_alpha_aliases.end());
         const std::size_t used = std::min(texture.claim_count, texture.claims.size());
         texture_claims.insert(texture.claims.begin(), texture.claims.begin() + used);
     }

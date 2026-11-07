@@ -17,7 +17,8 @@ from unicorn.x86_const import *
 import argparse
 parser=argparse.ArgumentParser(description='Bounded original FE_SKYLINE preset, enable and sponsor witness')
 parser.add_argument('retail_root',type=Path)
-root=parser.parse_args().retail_root
+parser.add_argument('--preset',default='FE_SKYLINE')
+args=parser.parse_args();root=args.retail_root
 exe=(root/'speed.exe').read_bytes()
 assert hashlib.sha256(exe).hexdigest()=='c0fad450912952f53809a54690d235aa8b4e25b9f46650693c7cbee1b4c074b7'
 global_b=(root/'Global/GLOBALB.BUN').read_bytes()
@@ -25,7 +26,7 @@ front_raw=(root/'FrontEnd/FrontB.lzc').read_bytes()
 assert hashlib.sha256(global_b).hexdigest()=='39df38fac2be7ca0f0d0a92e0113caaeda5b1c60e14436c612b3d0874afc8db9'
 assert hashlib.sha256(front_raw).hexdigest()=='76f368d5e5e30f96a8182bf457dba4491395e075c3f336d86a32012b56e16f90'
 front=jdlz(front_raw)
-row=preset_records(front)[name_hash('FE_SKYLINE')]
+row=preset_records(front)[name_hash(args.preset)]
 def payload(tag):
  matches=[(a,b) for t,a,b in chunks(global_b) if t==tag]
  assert len(matches)==1
@@ -63,12 +64,21 @@ def hook(uc,a,size,data):
   uc.reg_write(UC_X86_REG_EAX,len(text));uc.reg_write(UC_X86_REG_EIP,m.integer(esp));uc.reg_write(UC_X86_REG_ESP,esp+4)
  if a==0:raise RuntimeError('unexpected null native call')
 m.uc.hook_add(UC_HOOK_CODE,hook)
-m.write(m.stack,m.stop);m.write(m.stack+4,ride);m.uc.reg_write(UC_X86_REG_ESP,m.stack);m.uc.reg_write(UC_X86_REG_EAX,name_hash('FE_SKYLINE'))
+m.write(m.stack,m.stop);m.write(m.stack+4,ride);m.uc.reg_write(UC_X86_REG_ESP,m.stack);m.uc.reg_write(UC_X86_REG_EAX,name_hash(args.preset))
 m.uc.emu_start(0x4b26f0,m.stop,count=20000000)
 assert m.uc.reg_read(UC_X86_REG_EIP)==m.stop
 values=[m.integer(ride+0x44c+k*4) for k in range(120)]
-assert calls==[dict(stock_car=19)]
+expected=next(k for k in range(35) if bytes(types[k*0xc90:k*0xc90+32]).split(b'\0')[0].decode('ascii')==row['car'])
+assert calls==[dict(stock_car=expected)]
 m.run(0x56c3d0,(0x2330000,ride))
 assert m.uc.reg_read(UC_X86_REG_EIP)==m.stop
+lamp_bases={}
+for slot in (13,14):
+ pointer=values[slot]
+ if pointer:
+  m.run(0x4bbd70,registers={UC_X86_REG_ECX:pointer})
+  seed=m.uc.reg_read(UC_X86_REG_EAX)
+  fallback=name_hash(row['car']+('_KIT00_HEADLIGHT' if slot==13 else '_KIT00_BRAKELIGHT'))
+  lamp_bases[str(slot)]=dict(source=m.integer(pointer+8),target=seed or fallback)
 print('DECALS',[[hex(m.integer(0x2330000+0xab0+panel*0x80+k*16)) for k in range(8)] for panel in range(7)])
-print(json.dumps(dict(calls=calls,enabled=list(m.uc.mem_read(ride+0x6a4,120)),parts=[(v-record_base)//48 if v else None for v in values])))
+print(json.dumps(dict(lamp_bases=lamp_bases,calls=calls,enabled=list(m.uc.mem_read(ride+0x6a4,120)),parts=[(v-record_base)//48 if v else None for v in values])))

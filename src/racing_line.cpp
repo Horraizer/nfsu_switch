@@ -115,6 +115,18 @@ private:
         route.index = read_s16(header + 0x0A);
         const std::uint32_t kind = read_u32(header + 0x0C);
         route.point_count = read_s16(header + 0x10);
+        route.reverse = header[0x15] != 0;
+        route.progress_begin = read_f32(header + 0x18);
+        route.progress_end = read_f32(header + 0x1C);
+        for (unsigned k = 0; k < 4; ++k) route.bounds[k] = read_f32(header + 0x20 + 4*k);
+        for (unsigned k = 0; k < 10; ++k)
+            route.category_enabled[k] = header[(k+1)*0x34] != 0 || header[(k+1)*0x34+1] != 0;
+        for (unsigned k = 0; k < 6; ++k) {
+            if (!std::isfinite(read_f32(header + 0x18 + 4*k))) {
+                add(at, "nonfinite route spatial header");
+                return false;
+            }
+        }
         const std::int16_t count_copy = read_s16(header + 0x12);
 
         if (route.index < 0 || route.index > kRouteMaxIndex) {
@@ -273,6 +285,9 @@ private:
         point.unknown_30 = read_f32(bytes + 0x30);
         point.unknown_34 = read_f32(bytes + 0x34);
         point.path_distance = read_f32(bytes + 0x38);
+        for(std::size_t slot=0;slot<point.driving_offset.size();++slot)
+            point.driving_offset[slot]=static_cast<float>(read_s16(bytes+0x3C+2*slot))*
+                kRouteLaneOffsetScale;
 
         for (std::size_t axis = 0; axis < 2; ++axis) {
             if (std::fabs(point.position[axis]) > limits_.coordinate_limit) {
@@ -292,6 +307,7 @@ private:
                 static_cast<float>(read_s16(bytes + offset)) *
                 kRouteLaneOffsetScale;
         }
+        for (std::size_t k = 0; k < point.speed.size(); ++k) point.speed[k] = bytes[0x6A + k];
         point.event_a = bytes[0x81];
         point.event_b = bytes[0x82];
         point.route_index = bytes[0x83];

@@ -70,7 +70,7 @@ struct RoutePoint {
     // docs/RACE_ROUTE.md uses for a path node. 0x00456EC8..0x00456ED0
     // subtracts them from a car position.
     float position[2] = {0.0F, 0.0F};
-    // +0x08: height. No traced instruction reads it.
+    // +0x08: height, used by forward AI projection4422B0.
     float height = 0.0F;
     // +0x0C, +0x10: a unit vector. 0x00456EDC..0x00456EF1 crosses it with
     // the car offset to get a signed lateral distance. Measured over all
@@ -90,19 +90,14 @@ struct RoutePoint {
     // that side.
     float distance_to_next = 0.0F;
     float distance_to_previous = 0.0F;
-    // +0x24, +0x28: 0 to 33.589 and 0 to 33.2152, zero at 16 and 19 of the
-    // 32460 retail points. Unknown. They are not chord lengths, and they do
-    // not bound the lane offsets in either order: 2890 of the 86024 enabled
-    // lane offsets fall outside [-(+0x24), +0x28] and 2832 outside
-    // [-(+0x28), +0x24]. The debug events
-    // JOY_EVENT_TRACKROUTE_EDITOR_EDIT_LEFT_WIDTH and _EDIT_RIGHT_WIDTH
-    // (0x006BADA8, 0x006BADD4) say an editor edits a left and a right width
-    // somewhere in the record; which offsets they write is unknown.
+    // +0x24, +0x28: forward compact-cell bounds5A7960/5A78B0 use
+    // -unknown_24 - lane and unknown_28 - lane. Keep the historical names
+    // until reverse-road/editor writers are recovered too.
     float unknown_24 = 0.0F;
     float unknown_28 = 0.0F;
-    // +0x2C, +0x30, +0x34: unknown. +0x30 and +0x34 are a mirrored pair
-    // (-2.70805..3.16066 and -3.16066..2.70805 over all retail points) and
-    // neither is the heading of +0x0C or +0x14.
+    // +0x2C/+0x30: forward projection4422B0 multiplies these by lateral
+    // and longitudinal displacement respectively, then adds height.
+    // +0x34 belongs to the other direction; not consumed by forward AI.
     float unknown_2c = 0.0F;
     float unknown_30 = 0.0F;
     float unknown_34 = 0.0F;
@@ -112,9 +107,14 @@ struct RoutePoint {
     // length]; on 1201 and 1210 the smallest is negative (-43.935 and
     // -53.834), which an open path allows.
     float path_distance = 0.0F;
+    // +0x3C..+0x44: ordinary AI categories0..4, consumed directly by
+    // 5A7270/455160/4422B0. These are independent of lane enable flags.
+    std::array<float, 10> driving_offset{};
     // +0x3C + 2 * (0x0B + slot), s16 in 1/256. Only a slot the route
     // header enables is read.
     std::array<float, kRouteLaneSlots> lane_offset{};
+    // +0x6A..+0x80: authored speed by category/direction, used by44C550.
+    std::array<std::uint8_t,23> speed{};
     // +0x81, +0x82: indices into the 0x00034122 table after 0x004430B0
     // sorts it; kRouteNoEvent for none. 0x004430B0 rewrites both through
     // the sort permutation (0x004431B0..0x004431D2).
@@ -124,7 +124,8 @@ struct RoutePoint {
     // as an index into 0x0077AF30 at 0x00456EA8 and 0x004552DC. It equals
     // the containing record's own +0x0A for all 32460 retail points.
     std::uint8_t route_index = 0;
-    // +0x84..+0x87: four bytes no traced instruction reads.
+    // +0x84..+0x87: packed flags. 44ADC0/442690 use role bits and
+    // 5A55B0 tests the 0x1F00000 corridor mask. Retain every raw byte.
     std::array<std::uint8_t, 4> unknown_84{};
 };
 
@@ -138,6 +139,13 @@ struct Route {
     RouteKind kind = RouteKind::racing;
     // +0x10, and the same value again at +0x12 in all 504 retail records.
     std::int16_t point_count = 0;
+    // +0x15 and +0x18..+0x2C: traversal and spatial admission44ADC0/442690.
+    bool reverse = false;
+    float progress_begin = 0, progress_end = 0;
+    std::array<float,4> bounds{}; // minX,minY,maxX,maxY
+    // Ten category records: five forward, five reverse. 45AD30/5A75C0
+    // accept either of the first two bytes of each 0x34-byte record.
+    std::array<bool,10> category_enabled{};
     // +0x265 + 0x0B + slot, 0 or 1 in every retail record.
     std::array<bool, kRouteLaneSlots> lane_enabled{};
     std::vector<RoutePoint> points;

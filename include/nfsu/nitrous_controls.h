@@ -19,8 +19,8 @@ public:
     bool released() const noexcept { return released_; }
     const DriveControls& driving() const noexcept { return driving_; }
     const DriveFrameState& frame_state() const noexcept { return driving_.frame_state(); }
-    VehicleInput step(double speed, int gear, VehicleGearbox gearbox, bool raw_steering = false) {
-        return driving_.step(speed, gear, gearbox, raw_steering);
+    VehicleInput step(double speed, int gear, VehicleGearbox gearbox, bool raw_steering = false, bool owner_pedals = false) {
+        return driving_.step(speed, gear, gearbox, raw_steering, owner_pedals);
     }
 private:
     DriveControls driving_;

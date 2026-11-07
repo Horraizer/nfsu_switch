@@ -27,7 +27,8 @@ constexpr std::array<RaceLapHudBinding, kRaceLapHudFields> bindings{{
 } // namespace
 
 RaceLapHudSnapshot race_lap_hud_snapshot(const RaceRoute& route,
-    const RaceTimingState& timing, std::size_t actor, bool allow_free_laps) noexcept {
+    const RaceTimingState& timing, std::size_t actor, bool allow_free_laps,
+    std::int32_t time_limit_ticks) noexcept {
     RaceLapHudSnapshot result;
     if (actor >= timing.racers.size() || route.finish < 0 ||
         static_cast<std::size_t>(route.finish) >= kRaceBoundaryLimit) return result;
@@ -46,6 +47,7 @@ RaceLapHudSnapshot race_lap_hud_snapshot(const RaceRoute& route,
     result.held_since = record.lap_shown_since; result.held_ticks = record.lap_shown_ticks;
     result.highest_lap = record.highest_lap; result.laps = route.laps;
     result.free_laps = route.laps == 0;
+    result.time_limit_ticks = time_limit_ticks;
     result.finished = record.status != RacerStatus::not_finished;
     return result;
 }
@@ -118,10 +120,13 @@ void build_race_lap_hud_panel(const RaceLapHudSnapshot& snapshot,
         // x87 multiplies an integer by float at 0x006CCA38 in extended
         // precision, then compares against 3. Double preserves this result;
         // rounding the product to float first would hold at 12000 ticks.
-        panel.current_held = snapshot.hold_valid &&
+        panel.current_held = snapshot.time_limit_ticks==0 && snapshot.hold_valid &&
             double(difference(snapshot.world_ticks, snapshot.held_since))*double(0.00025F) <= 3.0;
-        const auto ticks = panel.current_held ? snapshot.held_ticks :
-                           difference(snapshot.world_ticks, snapshot.start_ticks);
+        //4A1932..4A19AF: career mode4 builds native runtime mode2. Its
+        //current timer counts down from78A310 and bypasses the lap hold.
+        const auto ticks = snapshot.time_limit_ticks>0 ?
+            difference(snapshot.time_limit_ticks,difference(snapshot.world_ticks,snapshot.start_ticks)) :
+            panel.current_held ? snapshot.held_ticks : difference(snapshot.world_ticks,snapshot.start_ticks);
         current_formatted = format_lap_hud_ticks(ticks, style, panel.fields[0].text);
     } else {
         panel.fields[0].localized_hash = 0x61C9B7A2;

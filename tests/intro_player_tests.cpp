@@ -195,6 +195,36 @@ int main() {
         require(r.outcome==nfsu::IntroOutcome::error&&starts==stops,"presentation error cleanup");
         r=nfsu::play_original_intro((dir/"absent").string(),normal,noop);
         require(r.outcome==nfsu::IntroOutcome::error&&starts==stops,"missing media cleanup");
+        write(dir/"Movies"/"01_DAY.mad",fixture(7));
+        shown=0;
+        r=nfsu::play_underground_prologue(dir.string(),normal,[&](const nfsu::MovieFrame& f){
+            require(f.display_width==640&&f.display_height==480,"prologue display geometry");++shown;
+        });
+        require(r.outcome==nfsu::IntroOutcome::completed&&r.movies_completed==1&&shown==1&&starts==stops,"UG0 prologue only, complete and release audio");
+        const auto before=starts;
+        r=nfsu::play_underground_prologue(dir.string(),[]{return nfsu::IntroControl::skip;},noop);
+        require(r.outcome==nfsu::IntroOutcome::skipped&&starts==before,"prologue skip does not start audio");
+        // Only the actual fresh-career filename exists: a wrong suffix or
+        // accidentally replaying the prologue must fail this sequence.
+        std::filesystem::remove(dir/"Movies"/"01_DAY.mad");
+        write(dir/"Movies"/"02_FAN_s.mad",fixture(11));
+        shown=0;r=nfsu::play_underground_epilogue(dir.string(),normal,[&](const nfsu::MovieFrame& f){
+            require(f.display_width==640&&f.display_height==480,"epilogue display geometry");++shown;
+        });
+        require(r.outcome==nfsu::IntroOutcome::completed&&r.movies_completed==1&&shown==1&&starts==stops,"UG0 epilogue filename and cleanup");
+        shown=0;r=nfsu::play_underground_epilogue(dir.string(),[&]{return shown?nfsu::IntroControl::skip:nfsu::IntroControl::continue_playback;},[&](const nfsu::MovieFrame&){++shown;});
+        require(r.outcome==nfsu::IntroOutcome::skipped&&starts==stops,"epilogue active skip cleanup");
+        for(const char* name:{"02_FAN_e.mad","04_GUM_s.mad"}) {
+            write(dir/"Movies"/name,fixture(13));shown=0;
+            r=nfsu::play_career_movie(dir.string(),name,normal,[&](const nfsu::MovieFrame&){++shown;});
+            require(r.outcome==nfsu::IntroOutcome::completed&&r.movies_completed==1&&shown==1&&starts==stops,"career movie complete and output released");
+            shown=0;r=nfsu::play_career_movie(dir.string(),name,[&]{return shown?nfsu::IntroControl::skip:nfsu::IntroControl::continue_playback;},[&](const nfsu::MovieFrame&){++shown;});
+            require(r.outcome==nfsu::IntroOutcome::skipped&&starts==stops,"career movie active skip releases output");
+            shown=0;r=nfsu::play_career_movie(dir.string(),name,[&]{return shown?nfsu::IntroControl::quit:nfsu::IntroControl::continue_playback;},[&](const nfsu::MovieFrame&){++shown;});
+            require(r.outcome==nfsu::IntroOutcome::quit&&starts==stops,"career movie quit is not completion");
+        }
+        r=nfsu::play_career_movie(dir.string(),"../movie.mad",normal,noop);
+        require(r.outcome==nfsu::IntroOutcome::error&&starts==stops,"career movie basename remains inside Movies");
         std::filesystem::remove_all(dir);std::puts("PASS intro decoder/player lifecycle");return 0;
     } catch(const std::exception& e){std::filesystem::remove_all(dir);std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}
 }

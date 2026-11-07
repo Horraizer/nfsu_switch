@@ -6595,7 +6595,7 @@ int run_vehicle_track(const VehicleTrackArgs& args) {
               << '\n';
     if (!scenario.pinned.empty() && !args.has_steps) {
         std::cout << "pinned: " << (digest == scenario.pinned ? "EQUAL to" : "DIFFERENT from")
-                  << " docs/VEHICLE_TRACK.md " << scenario.pinned << '\n';
+                  << " stored scenario " << scenario.pinned << '\n';
     }
     return 0;
 }

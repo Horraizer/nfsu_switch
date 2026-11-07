@@ -43,7 +43,7 @@ void expire(std::array<RaceParticle,N>& slots, std::size_t& count,
     std::size_t keep = 0;
     for (std::size_t i=0; i<count; ++i)
         if (step >= slots[i].born_step &&
-            static_cast<double>(step-slots[i].born_step)*slots[i].solver_dt <
+            (slots[i].elapsed_seconds>=0?slots[i].elapsed_seconds:static_cast<double>(step-slots[i].born_step)*slots[i].solver_dt) <
             static_cast<double>(life)*kVehicleStepSeconds)
             slots[keep++] = slots[i];
     count = keep;
@@ -62,7 +62,7 @@ void emit(std::array<RaceParticle,N>& slots, std::size_t& count,
 
 void RaceParticles::reset() noexcept {
     smoke_count_ = spark_count_ = 0;
-    step_ = 0;
+    step_ = 0;seconds_=last_solver_dt_=0;variable_time_=false;
 }
 
 void RaceParticles::advance(const RaceSession& session) noexcept {
@@ -74,7 +74,20 @@ void RaceParticles::advance(const VehicleTrackTelemetry& t,
                             const VehicleSpec& spec) noexcept {
         if (!t.step || t.step <= step_) return;
         if (step_ && t.step != step_+1) { smoke_count_ = 0; spark_count_ = 0; }
+        const auto previous_step=step_;
         step_ = t.step;
+        const double solver_dt=t.model.solver_dt;
+        if(!(solver_dt>0.0)||!std::isfinite(solver_dt))return;
+        const double previous_seconds=seconds_;
+        variable_time_=variable_time_||(last_solver_dt_>0&&last_solver_dt_!=solver_dt);
+        seconds_=variable_time_?seconds_+solver_dt:double(step_)*solver_dt;
+        last_solver_dt_=solver_dt;
+        if(variable_time_) {
+            const auto age=[&](auto& particles,std::size_t count){for(std::size_t i=0;i<count;++i){auto& p=particles[i];
+                if(p.elapsed_seconds<0)p.elapsed_seconds=double(previous_step-p.born_step)*p.solver_dt;
+                p.elapsed_seconds+=solver_dt;}};
+            age(smoke_,smoke_count_);age(sparks_,spark_count_);
+        }
         expire(smoke_,smoke_count_,step_,kSmokeLife);
         expire(sparks_,spark_count_,step_,kSparkLife);
         if (t.reset != VehicleTrackReset::none) {
@@ -87,12 +100,10 @@ void RaceParticles::advance(const VehicleTrackTelemetry& t,
             {-com[0],-com[1],-com[2]}));
         const double speed = std::sqrt(t.velocity.x*t.velocity.x+
                                        t.velocity.y*t.velocity.y);
-        const double solver_dt=t.model.solver_dt;
-        if(!(solver_dt>0.0) || !std::isfinite(solver_dt)) return;
         const auto emission_step=static_cast<std::uint64_t>(
-            static_cast<double>(step_)*solver_dt/kVehicleStepSeconds+1e-9);
+            (variable_time_?seconds_:static_cast<double>(step_)*solver_dt)/kVehicleStepSeconds+1e-9);
         const auto previous_emission_step=static_cast<std::uint64_t>(
-            static_cast<double>(step_-1)*solver_dt/kVehicleStepSeconds+1e-9);
+            (variable_time_?previous_seconds:static_cast<double>(step_-1)*solver_dt)/kVehicleStepSeconds+1e-9);
         for (std::uint32_t wheel=0; wheel<kVehicleWheelCount; ++wheel) {
             const auto& w = t.model.wheels[wheel];
             const double slip = std::max(std::abs(w.slip_ratio),std::abs(w.slip_lateral));
@@ -105,7 +116,7 @@ void RaceParticles::advance(const VehicleTrackTelemetry& t,
             RaceParticle p;
             p.kind = RaceParticleKind::smoke;
             p.born_step = step_;
-            p.solver_dt = solver_dt;
+            p.solver_dt = solver_dt;p.elapsed_seconds=variable_time_?0:-1;
             p.origin = add(body_origin,rotate(q,local));
             p.velocity = {t.velocity.x*0.20+jitter(emission_step,wheel,0)*0.28,
                           t.velocity.y*0.20+jitter(emission_step,wheel,1)*0.28,
@@ -114,19 +125,22 @@ void RaceParticles::advance(const VehicleTrackTelemetry& t,
             emit(smoke_,smoke_count_,p);
         }
         if (t.impulses && speed > 1.0) {
-            // APPROXIMATION: telemetry has an impulse but no contact point.
-            // Place the burst on the body's side opposite the impulse.
-            const double length = std::sqrt(t.impulse.x*t.impulse.x+
-                                            t.impulse.y*t.impulse.y);
-            if (length <= 0.0) return;
-            const VehicleVec3 point{t.position.x-t.impulse.x/length*0.85,
-                                    t.position.y-t.impulse.y/length*0.85,
-                                    t.position.z-0.18};
+            //Use a real solver witness, never a guessed body-side point.
+            //The emission threshold/appearance below remain port policy.
+            const VehicleContactObservation* hit=nullptr;double largest=0;
+            for(std::size_t i=0;i<std::min(t.audio_contact_count,t.audio_contacts.size());++i){const auto& c=t.audio_contacts[i];
+                const double magnitude=(c.impulse.x*c.impulse.x+c.impulse.y*c.impulse.y)+c.impulse.z*c.impulse.z;
+                if(std::isfinite(magnitude)&&magnitude>largest&&std::isfinite(c.point.x)&&std::isfinite(c.point.y)&&std::isfinite(c.point.z)){
+                    hit=&c;largest=magnitude;
+                }
+            }
+            if(!hit)return;
+            const VehicleVec3 point=hit->point;
             for (std::uint32_t lane=0; lane<2; ++lane) {
                 RaceParticle p;
                 p.kind = RaceParticleKind::spark;
                 p.born_step = step_;
-                p.solver_dt = solver_dt;
+                p.solver_dt = solver_dt;p.elapsed_seconds=variable_time_?0:-1;
                 p.origin = point;
                 p.velocity = {t.velocity.x*0.10+jitter(step_,lane,4)*2.0,
                               t.velocity.y*0.10+jitter(step_,lane,5)*2.0,
@@ -144,10 +158,11 @@ bool race_particle_visual(const RaceParticle& particle, std::uint64_t step,
     if (step < particle.born_step) return false;
     const double elapsed_steps=static_cast<double>(step-particle.born_step);
     const double life_steps=static_cast<double>(life)*kVehicleStepSeconds/particle.solver_dt;
-    if(elapsed_steps>=life_steps) return false;
-    const double age=particle.solver_dt==kVehicleStepSeconds?elapsed_steps/120.0:
-        elapsed_steps*particle.solver_dt;
-    const double fraction=elapsed_steps/life_steps;
+    const bool managed=particle.elapsed_seconds>=0;
+    if(managed?particle.elapsed_seconds>=double(life)*kVehicleStepSeconds:elapsed_steps>=life_steps)return false;
+    const double age=managed?particle.elapsed_seconds:(particle.solver_dt==kVehicleStepSeconds?elapsed_steps/120.0:
+        elapsed_steps*particle.solver_dt);
+    const double fraction=managed?age/(double(life)*kVehicleStepSeconds):elapsed_steps/life_steps;
     position = {particle.origin.x+particle.velocity.x*age,
                 particle.origin.y+particle.velocity.y*age,
                 particle.origin.z+particle.velocity.z*age};

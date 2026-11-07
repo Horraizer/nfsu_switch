@@ -12,11 +12,16 @@ struct DekoSceneFrame {
     std::uint32_t car_draws = 0;
     bool active = false;
     std::uint64_t ordinal = 0;
+    bool sample = true; // False skips timestamp commands, not scene rendering.
+    std::uint64_t diagnostic_id = 0; // Independent of AB trace ordinal.
 };
 
 // Accumulates completed GPU scene pairs since the last explicit profile reset.
 // The tick range exposes the window when a long run was resumed near its end.
 struct DekoGpuProfile {
+    struct Completed {std::uint64_t frame=0;double ms=-1;};
+    std::array<Completed,8> recent{};
+    std::size_t recent_cursor=0;
     ProfileDistribution scene;
     std::uint64_t dropped = 0;
     std::uint64_t invalid = 0;
@@ -30,6 +35,7 @@ struct DekoGpuProfile {
         const auto previous_max = scene.max();
         scene.add(ms);
         if (scene.count() == previous_count) return;
+        if(frame.diagnostic_id){recent[recent_cursor]={frame.diagnostic_id,ms};recent_cursor=(recent_cursor+1)%recent.size();}
         if (!previous_count) first_tick = last_tick = frame.tick;
         else {
             if (frame.tick < first_tick) first_tick = frame.tick;

@@ -2,11 +2,31 @@
 #include <array>
 #include "nfsu/car_shading.h"
 #include <cstdint>
+#include "nfsu/render.h"
 namespace nfsu {
 // Original 0x564B10 fixed-angle polynomial, not host-library sine.
 float frontend_fixed_sine(std::uint16_t phase) noexcept;
 // Native 0x4B18F7..0x4B192A uses wheel 0 radius for all four wheels.
 std::uint16_t frontend_wheel_phase(std::uint16_t phase, float travel, float radius) noexcept;
+// Original browser camera: 486C93 constructor, 487CC0 preparation,
+// 487DA0 departure, 487E20 arrival and 4870C0 eased update.
+struct FrontendBrowserCamera {
+    std::array<float,5> pose{{93,115,6,0,45}}, source=pose, destination=pose;
+    std::array<float,3> translation{{0,.75F,0}},translation_source=translation,translation_destination=translation;
+    std::array<float,3> target{{0,0,.75F}},target_source=target,target_destination=target;
+    float elapsed=0, duration=0;
+    bool tracking=false;
+    bool focus(unsigned slot) noexcept;
+    void magazine(const std::array<float,11>& values)noexcept;
+    void prepare() noexcept;
+    void depart() noexcept;
+    void arrive() noexcept;
+    void update(float seconds) noexcept;
+    bool settled() const noexcept {return elapsed>=duration;}
+    CameraFrame frame(float car_travel,unsigned width,unsigned height) const noexcept;
+private:
+    void begin(float pitch,float yaw,float scale) noexcept;
+};
 // Original5443F0 type9 quad. All vectors are in the raw slot frame.
 // View visibility is decided by the caller; this function never invents it.
 struct FrontendRoadGlow {

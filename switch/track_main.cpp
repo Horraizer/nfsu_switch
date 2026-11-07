@@ -1,3 +1,4 @@
+#include "nfsu/memory_budget.h"
 // Bounded event-1 track diagnostic. All SD inputs are read-only; RomFS
 // contains checked shaders only. The scene is drawn by deko3d, then read
 // back for a libnx framebuffer with a photographable measurement panel.
@@ -88,12 +89,12 @@ public:
             char text[512];
             std::snprintf(text, sizeof text,
                 "Loading: %s\nHeap in-use before %llu now %llu observed HWM %llu\n"
-                "Load delta HWM %llu / 50331648 | over %llu\nHOME serviced; + cancels.", phase,
+                "Load delta HWM %llu / 75497600 | over %llu\nHOME serviced; + cancels.", phase,
                 static_cast<unsigned long long>(heap_.before_load),
                 static_cast<unsigned long long>(heap_.current),
                 static_cast<unsigned long long>(heap_.load_peak),
                 static_cast<unsigned long long>(heap_.load_delta()),
-                static_cast<unsigned long long>(heap_.load_overrun(50331648)));
+                static_cast<unsigned long long>(heap_.load_overrun(75497600)));
             screen_.show(text);
         }
     }
@@ -184,10 +185,10 @@ bool run(const std::string& root, Screen& screen, PadState& pad, std::string& er
             "Draws %zu (%zu fallback) | triangles %llu | resources %zu | load %.0f ms\n"
             "GPU record/submit/wait %.2f ms | readback %.2f ms | last cull/record %.2f ms\n"
             "Previous full frame %.2f ms (includes readback, text and vsync)\n"
-            "CPU payload EST %llu / 50331648 | textures %llu | collision %llu\n"
-            "GPU blocks %llu / 268435456 | LOAD HEAP OVER %llu bytes\n"
+            "CPU payload EST %llu / 75497600 | textures %llu | collision %llu\n"
+            "GPU blocks %llu / base %llu | LOAD HEAP OVER %llu bytes\n"
             "HEAP IN USE before %llu | after load %llu | now %llu\n"
-            "HEAP LOAD OBS HWM %llu | delta %llu / 50331648\n"
+            "HEAP LOAD OBS HWM %llu | delta %llu / 75497600\n"
             "HEAP RUN OBS HWM %llu | arena now %llu | arena OBS HWM %llu\n"
             "%s\n"
             "A play/pause | left/right +/-10s | left stick look | B reset | + exit | photograph this panel",
@@ -198,7 +199,8 @@ bool run(const std::string& root, Screen& screen, PadState& pad, std::string& er
             static_cast<unsigned long long>(slice.streaming_bytes), static_cast<unsigned long long>(slice.texture_bytes),
             static_cast<unsigned long long>(slice.contacts.memory.resident_bytes),
             static_cast<unsigned long long>(renderer.gpu_bytes()),
-            static_cast<unsigned long long>(heap.load_overrun(50331648)),
+            static_cast<unsigned long long>(nfsu::kGpuBudgetPlaceholder),
+            static_cast<unsigned long long>(heap.load_overrun(75497600)),
             static_cast<unsigned long long>(heap.before_load),
             static_cast<unsigned long long>(heap.after_load),
             static_cast<unsigned long long>(heap.current),

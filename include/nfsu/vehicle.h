@@ -177,6 +177,8 @@ struct VehicleHandling {
     float service_brake = 0.0F;                 // +0x384, kN m / axis
     float parking_brake = 0.0F;                 // +0x388, kN m / axis
     float brake_balance = 0.0F;                 // +0x38C, rear service fraction
+    float rear_grip_base = 0.0F;               // +0x390, setup280
+    float rear_grip_slip = 0.0F;               // +0x394, setup284
     float yaw_torque_limit = 0.0F;              // +0x398, physics setup288 / rigid1E0
 };
 
@@ -228,9 +230,9 @@ constexpr std::size_t kVehicleYawTorqueLimitOffset = 0x398;
 // kVehicle240sxRecordBytesSha256. `nfsu_probe vehicle-sim --handling`
 // compares a decoded record against this table field by field.
 VehicleHandling stock_240sx_handling();
-constexpr std::size_t kVehicle240sxRecordBytes = 360;
+constexpr std::size_t kVehicle240sxRecordBytes = 368;
 constexpr const char* kVehicle240sxRecordBytesSha256 =
-    "62AD341F90C46BB42CA4EDB41CC0480BE3BE88CB64A5D83F88A69895262FBBA7";
+    "D592EF5854C79CE0D76C5676300A71F99D2D7674317FC42E7EE3A1F3A343EAD2";
 
 struct VehicleHandlingIssue {
     // Offset of the offending field inside the record.
@@ -311,8 +313,11 @@ struct VehicleApproximations {
     // from zero, m/s.
     double rolling_resistance = 0.015;
     double rolling_fade_speed = 0.5;
-    // Bump stop rate beyond the strut's bump limit, N/m.
-    double bump_stop_rate = 200000.0;
+    // Original588A5D reads BSS734538. Authenticated live UG0, circuit,
+    // drag and drift captures observe zero; do not add a compatibility spring.
+    // Units N/m; explicit diagnostic overrides remain available. Excess
+    // compression is capped separately by player_strut_compression.
+    double bump_stop_rate = 0.0;
     // The ground probe starts this far above each strut's attachment point,
     // so a strut pushed into a slope still finds the surface, m.
     double probe_lift = 0.5;
@@ -374,6 +379,12 @@ struct VehicleSpec {
     VehicleApproximations approx;
     PlayerInitialAeroConfiguration aero;
     VehicleNitrousSetup nitrous;
+    bool drift_mode = false;
+    unsigned drift_difficulty = 0;
+    // Original gearbox DC defaults1; quick-race476DCC may override it.
+    // Underground mode1 retains1 and uses476DFE selected AI offset bounds.
+    float drag_clutch_scale = 1.F;
+    std::array<float,4> drag_shift_offsets{{-100.F,0.F,-100.F,0.F}};
     // Applied original +334 curve, already added into handling.torque.
     std::array<float,9> induction{};
 };
@@ -414,26 +425,38 @@ struct VehicleGroundHit {
     double distance = 0.0;
     // Unit surface normal in the world frame, facing up out of the ground.
     VehicleVec3 normal{0.0, 0.0, 1.0};
-    // Surface identifier, passed through to telemetry. The retail surface
-    // table at 0x006EF2F0 (stride 0x94) scales friction per surface; this
-    // model uses surface 0's factors, 1.0 and 1.0, for every surface.
+    // Original6EF2D0 material ID; scales tyre grip, rolling drag and bumps.
     std::uint32_t surface = 0;
+    //Selected retail polygon plane. Selection remains the ground adapter;
+    //440A79/587106 supply binary32 height/projection after selection.
+    bool has_plane = false;
+    std::array<float,4> plane{};
 };
 
-// What the model asks of the world: for each wheel, once a step, the first
-// ground surface along a segment from `from`, in the unit direction
-// `direction` (the car body's down axis), no longer than `length`. Issue #60
-// implements this over the track collision; an implementation must answer
-// deterministically and must not keep state between calls that changes an
-// answer. The model treats as a miss a hit whose distance is not on the
-// segment or whose normal is not finite, has no length, or faces away from
-// the car, and it makes the normal unit length itself.
+// The world supplies original587070 height samples at strut attachments,
+// or the legacy segment adapter when it does not implement strut_heights.
+// Height queries retain original440A40 ordered cache state; determinism is
+// defined by the same query order, rather than independent stateless rays.
+// The model validates normals and projects a selected plane along body-up.
+// Only segment adapters clip hits to their supplied length.
 class VehicleGround {
 public:
     virtual ~VehicleGround() = default;
     virtual VehicleGroundHit cast(const VehicleVec3& from,
                                   const VehicleVec3& direction,
                                   double length) const = 0;
+    // True means this provider supplies height samples for all four struts.
+    // Each hit then requires has_plane; distance is unused. False selects
+    // the legacy cast_wheels adapter. A miss remains an explicit empty hit.
+    virtual bool strut_heights(const std::array<VehicleVec3,kVehicleWheelCount>&,
+        std::array<VehicleGroundHit,kVehicleWheelCount>&) const {return false;}
+    // Batched queries retain the scalar contract and order by default.
+    virtual void cast_wheels(const std::array<VehicleVec3,kVehicleWheelCount>& from,
+        const VehicleVec3& direction,const std::array<double,kVehicleWheelCount>& length,
+        std::array<VehicleGroundHit,kVehicleWheelCount>& hits) const {
+        for(std::size_t i=0;i<kVehicleWheelCount;++i)hits[i]=cast(from[i],direction,length[i]);
+    }
+
 };
 
 // The horizontal plane z = height, facing up, surface 0.
@@ -467,6 +490,10 @@ enum class VehicleGearbox : std::uint8_t {
     manual = 1,
 };
 
+enum class VehicleDirectionRequest : std::uint8_t {
+    legacy, automatic, reverse
+};
+
 // One step's controls. Throttle and brake are 0..1, steer -1 (right) to +1
 // (left). A value out of range is clamped and a non-finite one read as 0, so
 // a caller cannot put the state out of its domain. `shift` is an edge: it
@@ -477,6 +504,7 @@ struct VehicleInput {
     double steer = 0.0;
     bool handbrake = false;
     VehicleShift shift = VehicleShift::none;
+    VehicleDirectionRequest direction_request = VehicleDirectionRequest::legacy;
     // #251 caller-computed road-wheel angle. When enabled, this replaces
     // the approximate lock AND slew. Legacy input/telemetry bytes omit it.
     bool road_steering = false;
@@ -490,15 +518,34 @@ struct VehicleInput {
     bool nitrous_active = false;
     std::uint32_t nitrous_clock = 0;
     float nitrous_activation_seconds = 0;
+    float drafting = 0; // original actor47C, world426450 sum capped at .9
+    bool race_active = false; // original world stage4, separate from race type
+    //4280A0 timed owner gate; false in the supported normal racer context.
+    bool owner_traction_suppressed = false;
+    //73AD34 is shared by every actor and constant across a frame's slices.
+    //Standalone physics fixtures may retain their explicit local clock.
+    // World interval, independent of display cadence; selector3 uses it once per frame.
+    float world_frame_seconds = 1.F/60.F;
+    bool world_clock_valid = false;
+    std::int32_t world_clock = 0;
+    bool drag_mode = false;
+    std::int32_t drag_clock = 0;
+    unsigned drag_category = 3;
+    float drag_shift_scale = 1.F;
+    // Non-owning race RNG, stable for this session and retained contact input.
+    // Original46D760 consumes the same world state as AI planning.
+    std::uint32_t* drag_world_random = nullptr;
 };
 
 struct VehicleWheelState {
+    std::uint32_t surface=0; // wheel+150, retained with prepared forces
     // Rolling speed of the wheel, rad/s; positive rolls the car forward.
     double spin = 0.0;
     // Strut compression as the force rule uses it, metres, clamped to
     // [droop_limit, bump_limit], and its value one step earlier.
     double compression = 0.0;
     double previous_compression = 0.0;
+    float compression_rate = 0.0F; //58869F; retained for interval <= .0001F
     bool contact = false;
     // Source wheel+130 contact-point cache. A miss retains it; force
     // application consumes it only on contact. Diagnostic, omitted from bytes.
@@ -511,7 +558,10 @@ struct VehicleWheelState {
     //58747D writes identical160/164 raw slip copies. prepared_slip also retains
     //164 for46D830 after next component refresh clears160 alone.
     float prepared_torque = 0.0F, prepared_force_long = 0.0F, prepared_slip = 0.0F;
+    float prepared_load = 0.0F; // wheel158, retained until the next component refresh
     bool prepared_sliding = false;
+    float owner_grip = 1; // wheel+178, latched by ordinary4774A0
+    float drift_grip = 1; // wheel+180, published after force preparation
 };
 
 struct PlayerEngineState {
@@ -519,6 +569,8 @@ struct PlayerEngineState {
     float feedback_torque = 0.0F;
     float throttle_multiplier = 1.0F;
     float cutoff_until = 0.0F;
+    float heat = 0.0F, heat_time = 0.0F, overheat_since = 0.0F;
+    bool blown = false;
 };
 
 struct PlayerOwnerSpeeds {
@@ -536,6 +588,9 @@ struct PlayerGearState {
     // Deterministic fixture seed; the original game shares a global seed.
     std::uint32_t rng_state = 12345;
     bool shift_pending = false; // gearbox+48, request transition in progress
+    float shift_quality = 0.0F, shift_boost_since = 0.0F;
+    //46DB60 gearbox+E4; neutral->first retains descriptor+68 until engaged.
+    float feedback_scale = 0.0F;
 };
 
 // Original selector3 brake-axis latch, after wheel integration and before
@@ -555,7 +610,25 @@ struct PlayerRigidBodyState {
     bool linear_damping = true,angular_damping = true,alternate_yaw = false,gravity = true;
 };
 
+// Actor motion is published by4789D0, separately from each rigid derivative.
+//426930 replaces acceleration only after the completed world contact branch.
+struct PlayerOwnerMotion {
+    PlayerRigidVector velocity{},angular_velocity{},acceleration{};
+    PlayerRigidMatrix axes{{{{1,0,0}},{{0,1,0}},{{0,0,1}}}};
+    std::uint16_t heading = 0;
+};
+
+//479640 owner3C8/CC/D0/D4. Owner policy is not part of rigid integration history.
+struct PlayerOwnerTraction {
+    int mode = 0;
+    float timer = 0, scale = 1, quiet = 0;
+};
+
 struct VehicleState {
+    std::uint32_t collision_state = 0; // original actor38, distinct from rest
+    bool drag_totalled=false; // actor874, latched by465D00 before race status update
+    float collision_support_since = 0; // actor4CC, continuous support start
+    std::int8_t collision_body_flag = 0; // collision body1C; ordinary actor=0
     std::uint64_t step = 0;
     double simulation_seconds = 0.0; // deterministic port clock, not retail world timer
     bool alternate_yaw_active = true; // rigid138, latched at outer selection
@@ -573,6 +646,10 @@ struct VehicleState {
     std::uint32_t shift_hold = 0;
     PlayerEngineState engine;
     PlayerGearState transmission;
+    float owner_slip_angle = 0; //464ED0 from the last outer publication
+    PlayerOwnerMotion owner_motion;
+    float grip_recovery = 1; // physics7C, handbrake recovery
+    PlayerOwnerTraction owner_traction;
     PlayerOwnerSpeeds owner_speeds; // retained until unsplit frame publication
     PlayerAeroCache aero;
     std::array<float, kVehicleWheelCount> aero_preloads{}; // kN, held per outer call
@@ -610,6 +687,10 @@ struct VehicleWheelTelemetry {
     double slip_ratio = 0.0;    // (spin * radius - v_long) / max(|v_long|, floor)
     double slip_lateral = 0.0;  // v_lat / max(|v_long|, floor)
     VehicleVec3 ground_point, ground_normal; // diagnostic only; omitted from bytes
+    // Original wheel F0/world hub velocity, side axis and normalized168*158 inputs.
+    // Output only: no effect on integration, replay or handling encoding.
+    VehicleVec3 skid_velocity, skid_side;
+    float skid_friction_usage=0,skid_load_kn=0;
     double force_long = 0.0;    // N, along the wheel's heading on the ground
     double force_lat = 0.0;     // N, toward the wheel's left on the ground
     double drive_torque = 0.0;  // N m from the first clutch distribution
@@ -639,6 +720,9 @@ struct VehicleTelemetry {
     double engine_rpm = 0.0;
     double wheel_rpm = 0.0;
     double engine_torque = 0.0; // N m at the crankshaft
+    //478FA9 publishes gearbox+70 before the audio normalizer; original kN m.
+    // Output-only diagnostic, excluded from legacy replay bytes and hashes.
+    float audio_transmitted_torque = 0;
     PlayerEngineState engine;
     PlayerGearState transmission;
     PlayerOwnerSpeeds owner_speeds;
@@ -704,7 +788,7 @@ void encode_vehicle_telemetry(const VehicleTelemetry& record,
 // and Release builds produce it: the pin docs/VEHICLE.md records, which
 // nfsu_vehicle_tests requires and nfsu_switch_vehicle compares the
 // console's run against.
-constexpr const char* kVehiclePinnedMixedSha256 = "42EB9280BF7812434EEE60E0017873A6819536764557BC4BB3E0ECF8ACA93AFE";
+constexpr const char* kVehiclePinnedMixedSha256 = "0BD6A3668B340A4A24AC61D36D710FE8556013069D893892EBEFE3D36008B9BD";
 
 // SHA-256 over the encoded records of a run, in step order.
 class VehicleTelemetryHash {
@@ -738,6 +822,7 @@ public:
     // Ordinary request selection uses separate original binary32 tables;
     // these getters retain the existing placement compatibility behavior.
     const std::array<double, kVehicleGearSlots>& upshift_rpm() const noexcept { return upshift_; }
+    const std::array<float,kVehicleGearSlots>& request_upshift_rpm() const noexcept {return request_upshift_;}
     const std::array<double, kVehicleGearSlots>& downshift_rpm() const noexcept { return downshift_; }
 
     // The recovered torque curves at an engine speed, kN m as stored
@@ -760,13 +845,23 @@ public:
     // remain positive in binary32, the component solver's time representation.
     // Returns false, leaving state and telemetry untouched, on an invalid
     // model/state/time or an unrepresentable active strut contribution.
+    // allow_rest=false is reserved for stationary pre-race terrain settling.
+    // contact_completion admits zero duration only with no request/publication,
+    // for the original queued collision continuation's completion callback.
+    // refresh_only performs its preceding component refresh without integration,
+    // publication or an outer policy change; it requires contact_completion.
     bool step(VehicleState& state,
               const VehicleInput& input,
               const VehicleGround& ground,
               VehicleTelemetry& telemetry,
               double publication_dt = kVehicleStepSeconds,
               double solver_dt = kVehicleStepSeconds,
-              bool select_request = true) const;
+              bool select_request = true,
+              bool allow_rest = true,
+              bool contact_completion = false,
+              bool refresh_only = false,
+              float refresh_interval = 0,
+              double outer_dt = -1) const;
 
 private:
     struct Derived {
@@ -810,6 +905,11 @@ double vehicle_uniform_curve(const float* values, std::size_t count, double x0,
                              double x1, double x) noexcept;
 
 // ---------------------------------------------------------------------------
+// Shared port boundary for rigid components, rendering and contact adapters.
+// Import preserves P/L and the float matrix unless public pose/velocity changed.
+void vehicle_import_rigid(const VehicleHandling&,VehicleState&) noexcept;
+void vehicle_publish_rigid(VehicleState&) noexcept;
+
 // Scripted input sequences
 // ---------------------------------------------------------------------------
 

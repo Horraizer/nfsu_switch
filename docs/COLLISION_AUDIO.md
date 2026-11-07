@@ -109,8 +109,8 @@ The initial deck index is zero before a rising edge. Gain first uses configured
 Pitch is the pitch-curve output plus its ramp; the nominal pitch parameter is
 not copied to this path. `0x00651E84..0x00651EFA` stores the graph's control
 delta with 10..100 bounds and a fallback; the tool reports its exact constants.
-The port evaluates the graph at 60 Hz with a private RNG; original scheduling
-and seed remain unknown. The smokeable
+The port evaluates the graph at60Hz. Callback jitter/decks use the recovered
+shared SND generator; natural runtime graph scheduling remains open. The smokeable
 scrape export is absent from this bank; no world-scrape fallback is proved.
 
 ## Lifetime, scope and missing evidence
@@ -130,7 +130,8 @@ not yet reproduced. No fixed ten-tick impact cooldown was found.
 
 Remaining evidence: pair creation/reset cadence;
 car-class variants; smokeable impact parameter path; exact scrape sample
-loop/restart/fade semantics; global voice admission; category/spatial settings; audio RNG seed;
+loop/restart/fade semantics; global voice admission; nondefault mix/device
+settings and natural callback order;
 matched original event0 recordings and Switch listening. Synthetic typed
 car/prop events cannot prove live actors exist. Original evidence request:
 https://git.accad.pro/murzintsevav/nfsu-switch/issues/222#issuecomment-7025
@@ -153,12 +154,12 @@ race tick includes countdown; it is never multiplied to infer contact time.
 Empty-contact expiry uses the copied physics clock, so countdown cannot expire
 live contacts. No audio object holds a mutable RaceSession reference.
 
-The live backend supplies only car-vs-track contacts. It uses contiguous
-polygon observations as contact episodes, with a new accumulator after a gap;
-these are NOT recovered retail body-pair IDs or reset semantics. Typed kind 4
-inputs use the proved world path; kind 0 and 1 are explicitly unsupported and
-produce no guessed fallback. Live car/prop acceptance stays open until those
-backends exist. Episode starts select a variant, subsequent hits update the
+The live backend now copies player world and car-pair contacts, including
+the physical witness point; smokeable props use their own selected bank.
+Contiguous polygon observations still form port world episodes. Those are
+not recovered retail body-pair IDs or complete reset/admission semantics.
+Car contacts retain their source subtype selection; props retain their
+separate material family. Natural contact/listening acceptance stays open. Episode starts select a variant, subsequent hits update the
 same voice's parameters from accumulated magnitudes; there is no invented
 impulse threshold or ten-tick cooldown. Duplicate ticks are ignored; pause
 holds the scheduler; an unchanged physics clock also holds graph controls.
@@ -167,9 +168,22 @@ are idempotent. A physical clock rewind starts a fresh scheduler epoch.
 
 Two impact slots and two looping scrape slots are bounded port voice policy.
 Scrape separation ramps the voice to zero using the mixer's existing gain
-ramp, without claiming the original fader duration. Spatial/category settings,
-retail record admission and exact retail random sequence are not reproduced.
-These limitations prevent a claim of complete collision-audio parity.
+ramp, without claiming the original fader duration. Bank jitter and decks now
+consume common process SND state without reseeding on contact clear. The
+world/car spatial profile, camera pan and category7 now reach impact/scrape
+controls and Mixer; impact uses the fresh normal-preference5365E0 output,
+while531080 scrape omits that extra stage. Spatial and category multiplication
+precede the binary32 bank gain product. Smokeable input receives category7
+and the impact-global stage; its spatial producer remains separate.
+
+collision_position_native.py compares actual531350 profile/consumer output
+and original bank35 controls on supplied record/listener states. The compiled
+race-audio test connects the physical point copy, scheduler and pan output.
+race_audio_mix_native.py checks consecutive category7 publication/consumption;
+audio_position_native.py checks fresh preferences and5365E0. These bounded
+witnesses do not close natural record admission, transient536C80 commands,
+nondefault settings, speaker/device/mastering or exact runtime actor order.
+They do not establish final listening equivalence.
 
 | Scenario | Listen / record |
 | --- | --- |

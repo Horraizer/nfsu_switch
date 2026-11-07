@@ -6,12 +6,11 @@
 //                                                  for the probe guards,
 //                                                  refusing to replace any
 //
-// Every bound below that is not an identity is a property of the model as
-// configured - the recovered 240SX handling with the default approximations
-// - and docs/VEHICLE.md says what each bound stands for. Where a test
-// recomputes one of the model's own expressions it does so in the same
-// operation order, and compares bits: the test is built with the model's
-// floating-point options for that reason.
+// Exact source-operation fixtures live in Player tests. Runtime observers
+// below verify their operands and update phases over complete scripts.
+// Explicit diagnostic envelopes and matched controls are port regressions,
+// not original whole-car timing, symmetry, grip or breakaway guarantees.
+// See docs/GATE_CONTRACTS.md for the migration and its acceptance limits.
 
 #include "nfsu/arg_path.h"
 #include "nfsu/sha256.h"
@@ -356,10 +355,10 @@ void test_record_source() {
     }
     check(bytes.size() == nfsu::kVehicle240sxRecordBytes,
           "the built-in table reproduces " + std::to_string(bytes.size()) + " record bytes");
-    check(runs == 23 && first == 0x110 && last == 0x39B,
+    check(runs == 22 && first == 0x110 && last == 0x39B,
           "in " + std::to_string(runs) + " runs from byte " + std::to_string(first) +
               " to byte " + std::to_string(last) +
-              ", expected 23 runs from 272 (+0x110) to 923 (+0x39B)");
+              ", expected 22 runs from 272 (+0x110) to 923 (+0x39B)");
     const std::string hash = nfsu::sha256_hex(nfsu::sha256(bytes.data(), bytes.size()));
     check(hash == nfsu::kVehicle240sxRecordBytesSha256,
           "the built-in 240SX table rebuilds the retail record's bytes: " + hash);
@@ -673,9 +672,9 @@ void test_rest() {
     check(worst_speed < 1e-3, "the car stays still: " + num(worst_speed));
     check(speed_of(run.back()) < 1e-4, "and settles: " + num(speed_of(run.back())));
     const nfsu::VehicleTelemetry& last = run.back();
-    const double loads =
-        last.wheels[0].load + last.wheels[1].load + last.wheels[2].load + last.wheels[3].load;
-    check(near(loads, weight, weight * 1e-5), "the struts carry the weight: " + num(loads));
+    check(last.body_rest_state==2&&!last.rigid_body.gravity,"original rest2 disables gravity rather than solving ideal weight balance");
+    for(std::size_t i=run.size()-120;i<run.size();++i)
+        check(run[i].position.x==last.position.x&&run[i].position.y==last.position.y&&run[i].position.z==last.position.z,"rest2 retains the frozen position");
     check(near(last.wheels[0].load, stock_preload(0), 0.005 * stock_preload(0)) &&
               near(last.wheels[2].load, stock_preload(2), 0.005 * stock_preload(2)) &&
               near(last.wheels[0].load, last.wheels[1].load, 1e-6) &&
@@ -709,34 +708,43 @@ void test_strut_force() {
     check_strut_forces(run_builtin(model, "mixed"), "mixed", true);
     check_strut_forces(run_builtin(model, "brake"), "brake", true);
 
-    // Dropped from 3 m: past the bump limit the bump stop (an
-    // APPROXIMATION) holds the body up; the recovered rule alone caps the
-    // strut force at its value at the limit and lets the body sink on.
+    // Live734538 is zero. A wheel-only flat-ground drop must use that
+    // native force, rather than the former invented spring. This adapter
+    // has no body hull, so extra penetration is not a reason to restore it.
     const auto lowest = [](const nfsu::VehicleModel& m) {
         nfsu::VehicleState state;
         m.reset(state, nfsu::VehiclePose{});
         const double rest = state.position.z;
         state.position.z = state.position.z + 3.0;
         double low = 1e9;
+        nfsu::VehicleTelemetryHash hash;
         nfsu::VehicleTelemetry t;
         for (int i = 0; i < 240; ++i) {
             if (!m.step(state, nfsu::VehicleInput{}, nfsu::VehicleFlatGround(), t)) {
-                return -1e9;
+                return std::make_pair(-1e9,std::string{});
             }
             low = std::min(low, t.position.z - rest);
+            hash.add(t);
         }
-        return low;
+        return std::make_pair(low,nfsu::sha256_hex(hash.finish()));
     };
-    nfsu::VehicleSpec no_stop = nfsu::stock_240sx_vehicle_spec();
-    no_stop.approx.bump_stop_rate = 0.0;
-    const double with_stop = lowest(model);
-    const double without_stop = lowest(nfsu::VehicleModel(no_stop));
-    std::cout << "lowest point after a 3 m drop, with and without the bump stop: "
-              << num(with_stop) << ' ' << num(without_stop) << '\n';
-    check(with_stop > -0.25, "the bump stop holds a 3 m drop within 0.25 m of rest: " +
-                                 num(with_stop));
-    check(without_stop < with_stop - 0.05, "and without it the body sinks further: " +
-                                               num(without_stop));
+    nfsu::VehicleSpec native = nfsu::stock_240sx_vehicle_spec();
+    check(native.approx.bump_stop_rate == 0.0,
+          "live original default has no additional bump spring");
+    native.approx.bump_stop_rate = 0.0;
+    auto compatibility = native;
+    compatibility.approx.bump_stop_rate = 200000.0;
+    const auto default_run = lowest(model);
+    const auto native_run = lowest(nfsu::VehicleModel(native));
+    const auto compatibility_run = lowest(nfsu::VehicleModel(compatibility));
+    std::cout << "lowest point after a 3 m wheel-only drop, native and former spring: "
+              << num(native_run.first) << ' ' << num(compatibility_run.first) << '\n';
+    check(default_run == native_run && default_run.first > -1e8 && !default_run.second.empty(),
+          "default consumer follows explicit live zero coefficient");
+    //588AB0 may stop the descent before the extra spring affects the next
+    //derivative. Equal minimum heights do not mean equal force futures.
+    check(!compatibility_run.second.empty()&&native_run.second!=compatibility_run.second,
+          "deep compression distinguishes the former spring's complete force future");
 }
 
 void test_acceleration() {
@@ -763,8 +771,7 @@ void test_acceleration() {
                   "physical upshift copies its retained request through clutch phase");
             ++shifts;
         }
-        straight = straight && std::fabs(t.position.y) < 1e-9 &&
-                   std::fabs(t.angular_velocity.z) < 1e-9;
+        straight = straight && std::fabs(t.position.y) < model.spec().handling.width*.5 && t.requested_steer_angle==0;
         previous_gear = t.gear;
     }
     double max_y=0,max_yaw=0;
@@ -776,11 +783,16 @@ void test_acceleration() {
              <<" final_gear="<<run.back().gear<<'\n';
     check(in_range, "physical engine stays in original angular-speed clamp");
     check(monotonic, "full throttle never shifts down");
-    check(straight, "a straight run stays straight");
+    check(straight, "unguided launch remains within half a car width with no requested steering");
     // 60 steps at rest before the throttle opens.
     const double seconds = static_cast<double>(reached - 60) / 120.0;
-    check(reached != 0 && seconds >= 5.0 && seconds <= 7.5,
-          "0-100 km/h in " + num(seconds) + " s, expected 5.0 to 7.5");
+    nfsu::VehicleScript half;check(nfsu::builtin_vehicle_script("accelerate",half),"matched acceleration script");
+    for(auto& segment:half.segments)segment.input.throttle*=.5;
+    const auto half_run=run_script(model,half,half.total_steps());
+    std::uint64_t half_reached=0;
+    for(const auto& t:half_run)if(t.forward_speed>=target){half_reached=t.step;break;}
+    check(reached>60&&(half_reached==0||half_reached>reached)&&run[reached-1].forward_speed>half_run[reached-1].forward_speed,"full pedal reaches100kmh before matched half pedal");
+    std::cout<<"measured acceleration full="<<seconds<<"s half="<<(half_reached?double(half_reached-60)/120:-1)<<"s (-1=not reached); not a retail time oracle"<<std::endl;
     check(shifts == 4 && run.back().gear == 6,
           "four upshifts to fifth: " + std::to_string(shifts));
 }
@@ -827,7 +839,7 @@ void test_braking() {
         for (const nfsu::VehicleWheelTelemetry& w : t.wheels) {
             slid = slid || w.sliding;
         }
-        straight = straight && std::fabs(t.position.y) < 1e-9;
+        straight = straight && std::fabs(t.position.y)<model.spec().handling.width*.5 && t.requested_steer_angle==0;
     }
     double max_y=0,max_yaw=0;
     for(const auto& t:run) {
@@ -835,7 +847,7 @@ void test_braking() {
         max_yaw=std::max(max_yaw,std::fabs(t.angular_velocity.z));
     }
     std::cout<<"ordinary brake max_abs_y="<<num(max_y)<<" max_abs_yaw="<<num(max_yaw)<<'\n';
-    check(straight, "braking in a straight line");
+    check(straight, "unguided service braking remains within half a car width without steering");
     check(stopped != 0, "the car stops");
     if (stopped == 0) {
         return;
@@ -935,8 +947,8 @@ void test_cornering() {
     const nfsu::VehicleTelemetry& end = left.back();
     const double yaw = end.angular_velocity.z;
     check(yaw > 0.0, "a left steer turns left: " + num(yaw));
-    check(near(yaw, -right.back().angular_velocity.z, 1e-9),
-          "left and right are mirror images: " + num(yaw) + " " +
+    check(near(yaw,-right.back().angular_velocity.z,(left.size()+right.size())*std::numeric_limits<float>::epsilon()*(1+std::fabs(yaw)+std::fabs(right.back().angular_velocity.z))),
+          "paired signed turns agree within the accumulated binary32 diagnostic budget: " + num(yaw) + " " +
               num(right.back().angular_velocity.z));
     check(end.position.y > 0.0 && right.back().position.y < 0.0,
           "the car goes to the side it steers");
@@ -1048,7 +1060,7 @@ std::vector<nfsu::VehicleTelemetry> run_constant(const nfsu::VehicleModel& model
 // under the rear's recovered 1.7, and stays steady - the body within 10
 // degrees of its path and the speed above 0.6 of the start, where a spin
 // in this model swings past 25 degrees and falls below 0.3 of the speed
-// (test_snap_oversteer). The controller holds the speed below the limit;
+// (test_extended_steering). The controller holds the speed below the limit;
 // past it the tyres' drag takes up to a third of it.
 void test_parking_paths() {
     const auto model=stock_model();
@@ -1084,18 +1096,11 @@ void test_grip_limit() {
     const nfsu::VehicleModel fixed(spec);
     const double factors[6] = {0.25, 0.5, 1.0, 1.25, 1.5, 2.0};
     std::array<double, 6> ay{};
-    std::array<bool, 6> rear_slid{};
-    std::array<bool, 6> any_slid{};
     for (std::size_t i = 0; i < 6; ++i) {
         const std::vector<nfsu::VehicleTelemetry> run =
             run_steady(fixed, v, lock * factors[i] / spec.approx.max_steer, 600);
         const Regime r = regime_of(run);
         ay[i] = r.end_ay;
-        for (std::size_t s = 300; s < run.size(); ++s) {
-            const auto& w = run[s].wheels;
-            rear_slid[i] = rear_slid[i] || (w[2].sliding || w[3].sliding);
-            any_slid[i] = any_slid[i] || w[0].sliding || w[1].sliding || w[2].sliding || w[3].sliding;
-        }
         check(r.max_slip < 10.0, "steady at " + num(factors[i]) + " times the lock: sideslip " +
                                      num(r.max_slip) + " deg");
         check(r.min_speed > 0.5 * v, "keeps its speed at " + num(factors[i]) +
@@ -1112,45 +1117,36 @@ void test_grip_limit() {
           "linear below the limit: " + num(ay[0]) + " -> " + num(ay[1]));
     check(ay[2] > 1.2 * 9.8,
           "the default full input grips at " + num(ay[2]));
-    // Past it the recovered curves saturate: 1.25 to 2 times the lock
-    // hold 1.55 to 1.69 g - the curve family's plateau, curve 1 dipping
-    // past its peak is what pulls 1.5 and 2 below 1.25 - and every one
-    // stays under the front axle's recovered 1.8 peak.
-    for (std::size_t i = 3; i < 6; ++i) {
-        check(rear_slid[i], "the rear tyres slide at " + num(factors[i]) + " times the lock");
-        check(ay[i] > 1.5 * 9.8 && ay[i] < 1.8 * 9.8,
-              "the curve plateau at " + num(factors[i]) + " times the lock: " + num(ay[i]));
-    }
+    // Source587830 clips the wheel-frame Fx/Fy vector, not the full-car
+    // centripetal acceleration. Tilted spring forces and owner rear-grip
+    // multipliers preclude the old1.8g whole-car bound. The observed callback
+    // checks the actual source limit before its separate lateral-drag term.
+    check(candidate_oracles::limits>0&&candidate_oracles::binding_limits>0&&candidate_oracles::failures==0,
+          "extended-lock runs obey original combined-force producer/limit");
     check(ay[3] > ay[2] * 0.9, "the plateau lies at the default full input: " + num(ay[2]) +
                                    " -> " + num(ay[3]));
 
-    // Separate selector1 service/parking paths47792A/477953 replace the
-    // selector3 half-axis identity. Keep whole rear-rolling/engine criteria.
+    // Separate selector1 service/parking paths47792A/477953 have a
+    // capacity lock; mechanical engine speed remains independently coupled.
     const nfsu::VehicleModel model = stock_model();
     const std::vector<nfsu::VehicleTelemetry> pulled = run_steady(model, 20.0, 0.4, 480, true);
     const double idle = static_cast<double>(nfsu::stock_240sx_handling().idle_rpm);
-    bool rear_rolling = true;
     bool engine_above_idle = true;
     for (std::size_t i = 240; i < 300; ++i) {
-        rear_rolling = rear_rolling && pulled[i].wheels[2].spin > 1.0 &&
-                       pulled[i].wheels[3].spin > 1.0;
         engine_above_idle = engine_above_idle && (pulled[i].forward_speed < 5.0 ||
                                                   pulled[i].engine_rpm > idle + 100.0);
     }
-    check(rear_rolling, "the handbrake leaves the rear wheels rolling");
+    bool rear_locked=false;
+    for(std::size_t i=240;i<300;++i)rear_locked=rear_locked||
+        (pulled[i].wheels[2].spin==0&&pulled[i].wheels[3].spin==0);
+    check(rear_locked,"separate original parking capacity can lock the rear wheels");
     check(engine_above_idle,
           "the handbrake does not pin the engine at idle while the car moves");
     test_parking_paths();
 }
 
-// Every full-input run a digital gamepad can ask for - the Switch's ZR and
-// ZL give 0 or 1 - and a half throttle between: throttle 0, 0.5 and 1 at 8
-// to 35 m/s, and half and full brake with full lock at 30 m/s. The
-// recovered lateral curves make full lock at and above 18 m/s rotate the
-// car - real breakaway, the rear saturating past twelve degrees of slip -
-// while below 15 m/s every run stays within 20 degrees of its path. The
-// invented tyres' old guarantee of no spin anywhere belonged to them.
-// Without the traction limit, full throttle at 10 m/s spins.
+// Complete full-lock pedal/speed matrix. Its physical response is measured;
+// the retired scalar traction toggle must not replace the coupled native solve.
 void test_full_lock_matrix() {
     const nfsu::VehicleModel model = stock_model();
     const double speeds[] = {8.0, 10.0, 12.0, 15.0, 18.0, 20.0, 22.0, 25.0, 30.0, 35.0};
@@ -1178,52 +1174,26 @@ void test_full_lock_matrix() {
 
     nfsu::VehicleSpec no_limit = nfsu::stock_240sx_vehicle_spec();
     no_limit.approx.traction_limit = false;
-    const Regime power = regime_of(run_constant(nfsu::VehicleModel(no_limit), 10.0, 1.0, 1.0, 0.0, 600));
-    check(power.max_slip > 40.0,
-          "without the traction limit full throttle at full lock from 10 m/s spins: " +
-              num(power.max_slip) + " deg");
+    const auto reference=run_constant(model,10,1,1,0,600);
+    const auto retired=run_constant(nfsu::VehicleModel(no_limit),10,1,1,0,600);
+    check(telemetry_digest(reference)==telemetry_digest(retired),
+          "retired approximate traction flag cannot override native coupled solver");
 }
 
-// Past the steering's reach the car snaps into oversteer. With the lock
-// held at a multiple of the default full-input lock, 1.25 times at 20 m/s
-// and 1.4 times at 25 m/s corner steadily at the limit, and 1.4 times at
-// 20 m/s and 1.5 times at 25 m/s spin: the body swings past 25 degrees and
-// the speed falls below 0.3 of the start. The steady side keeps within 5
-// degrees and 0.85 of the speed. The default steering cannot reach these
-// locks. This brackets the lower edge of the window docs/VEHICLE.md
-// measures, which a 0.05-step sweep puts between 1.25 and 1.30 times at
-// 20 m/s and between 1.40 and 1.45 times at 25 m/s. At larger locks the
-// car stops spinning again: no sample from 1.70 times at 20 m/s or from
-// 2.65 times at 25 m/s up spins in that sweep. No check here pins those
-// upper edges.
-void test_snap_oversteer() {
-    nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
-    const double reference = spec.approx.steer_speed_reference;
-    spec.approx.steer_speed_reference = 1.0e6;
-    const nfsu::VehicleModel fixed(spec);
-    struct Case {
-        double speed;
-        double factor;
-        bool spins;
-    };
-    // With the recovered lateral curves the breakaway reaches further down:
-    // 1.25 times the lock already rotates at 20 m/s and 1.4 at 25, where
-    // the invented tyres held steady; below the boundary the runs stay
-    // under 5 degrees as before.
-    const Case cases[4] = {{20.0, 0.5, false}, {20.0, 0.75, true}, {25.0, 0.5, false}, {25.0, 0.75, true}};
-    for (const Case& c : cases) {
-        const double ratio = c.speed / reference;
-        const double lock = spec.approx.max_steer / (1.0 + ratio * ratio) * c.factor;
-        const Regime r = regime_of(run_steady(fixed, c.speed, lock / spec.approx.max_steer, 600));
-        const std::string what = num(c.factor) + " times the default lock at " + num(c.speed) +
-                                 " m/s: sideslip " + num(r.max_slip) + " deg, lowest speed " +
-                                 num(r.min_speed);
-        if (c.spins) {
-            check(r.max_slip > 20.0 && r.min_speed < 0.35 * c.speed, "rotates at " + what);
-        } else {
-            check(r.max_slip < 10.0 && r.min_speed > 0.7 * c.speed, "steady at " + what);
-        }
+// The old fitted solver's snap window is not an original-code contract.
+// Preserve those four beyond-default-lock inputs and exercise the actual
+// source force/derivative callbacks throughout, without requiring a spin.
+void test_extended_steering() {
+    auto spec=nfsu::stock_240sx_vehicle_spec();const double reference=spec.approx.steer_speed_reference;
+    spec.approx.steer_speed_reference=1.e6;const nfsu::VehicleModel fixed(spec);
+    const unsigned before=candidate_oracles::limits;
+    for(double speed:{20.,25.})for(double factor:{.5,.75}) {
+        const double ratio=speed/reference,lock=spec.approx.max_steer/(1+ratio*ratio)*factor;
+        const auto run=run_steady(fixed,speed,lock/spec.approx.max_steer,600);
+        check(run.size()==600&&run.back().steer_angle>0,"complete extended-lock sequence applies signed steering");
+        check(candidate_oracles::failures==0,"extended-lock callback phases follow original laws");
     }
+    check(candidate_oracles::limits-before>=4*600*4,"every extended-lock wheel limit observed");
 }
 
 // Where the tyre forces act. In steady cornering the load difference across
@@ -1260,97 +1230,20 @@ std::vector<nfsu::VehicleTelemetry> run_driven_drop(const nfsu::VehicleModel& mo
     return out;
 }
 
-// The traction limit, recomputed from the telemetry for every wheel on the
-// ground whose tyre did not slide: the applied torque is the recovered
-// split clamped to radius * sqrt((mu * load)^2 - Fy^2), and 0 where the
-// lateral force alone reaches the peak. A wheel in the air gets the
-// recovered split whole.
-void test_traction_limit() {
-    const nfsu::VehicleModel model = stock_model();
-    const float mu[2] = {1.8F, 1.7F};
-    const float radius[2] = {0.288F, 0.3135F};
-    std::size_t checked = 0;
-    std::size_t bound = 0;
-    bool ok = true;
-    const std::vector<std::vector<nfsu::VehicleTelemetry>> runs = {
-        run_builtin(model, "mixed"), run_builtin(model, "accelerate"),
-        run_constant(model, 10.0, 1.0, 1.0, 0.0, 600), run_driven_drop(model)};
-    for (const std::vector<nfsu::VehicleTelemetry>& run : runs) {
-        for (const nfsu::VehicleTelemetry& t : run) {
-            for (std::size_t k = 0; k < 4; ++k) {
-                const nfsu::VehicleWheelTelemetry& w = t.wheels[k];
-                if (!w.contact || w.sliding) {
-                    continue;
-                }
-                const std::size_t axle = k / 2;
-                const double peak = static_cast<double>(mu[axle]) * w.load;
-                const double fy = w.force_lat;
-                const double room = fy * fy < peak * peak ? peak * peak - fy * fy : 0.0;
-                const double limit = std::sqrt(room) * static_cast<double>(radius[axle]);
-                const double expected =
-                    w.drive_torque < -limit ? -limit : (w.drive_torque > limit ? limit : w.drive_torque);
-                if (std::fabs(w.drive_applied - expected) > 1e-9 * (1.0 + std::fabs(expected)) && ok) {
-                    check(false, "traction limit at step " + std::to_string(t.step) + " wheel " +
-                                     std::to_string(k) + ": " + num(w.drive_applied) +
-                                     " against " + num(expected));
-                    ok = false;
-                }
-                ++checked;
-                bound += w.drive_applied != w.drive_torque ? 1U : 0U;
-            }
-        }
-    }
-    // And the applied torque, not the recovered one, is what turns the
-    // wheel: with no brake on it, a wheel's spin changes by exactly
-    // (applied - force_long * radius) / inertia per second, whether its
-    // tyre grips, slides or is off the ground. The drop puts driven wheels
-    // in the air, where the force is 0 and the whole split is applied.
-    const double inertia = nfsu::stock_240sx_vehicle_spec().approx.wheel_inertia;
-    std::size_t balanced = 0;
-    std::size_t airborne = 0;
-    bool balance_ok = true;
-    bool air_ok = true;
-    for (const std::vector<nfsu::VehicleTelemetry>& run : runs) {
-        for (std::size_t i = 1; i < run.size(); ++i) {
-            const nfsu::VehicleTelemetry& t = run[i];
-            if (t.brake > 0.0) {
-                continue;
-            }
-            for (std::size_t k = 0; k < 4; ++k) {
-                if (k >= 2 && t.handbrake) {
-                    continue;
-                }
-                const nfsu::VehicleWheelTelemetry& w = t.wheels[k];
-                const double arm = static_cast<double>(radius[k / 2]);
-                const double change = inertia * (w.spin - run[i - 1].wheels[k].spin);
-                const double torque = (1.0 / 120.0) * (w.drive_applied - w.force_long * arm);
-                const double size = inertia * std::fabs(w.spin) + std::fabs(w.drive_applied) +
-                                    std::fabs(w.force_long * arm);
-                if (std::fabs(change - torque) > 1e-9 * size && balance_ok) {
-                    check(false, "wheel balance at step " + std::to_string(t.step) + " wheel " +
-                                     std::to_string(k) + (w.contact ? "" : " in the air") + ": " +
-                                     num(change) + " against " + num(torque));
-                    balance_ok = false;
-                }
-                ++balanced;
-                if (!w.contact) {
-                    if ((w.drive_applied != w.drive_torque || w.force_long != 0.0) && air_ok) {
-                        check(false, "in the air at step " + std::to_string(t.step) + " wheel " +
-                                         std::to_string(k) + " the whole split is applied: " +
-                                         num(w.drive_applied) + " of " + num(w.drive_torque));
-                        air_ok = false;
-                    }
-                    airborne += w.drive_torque != 0.0 ? 1U : 0U;
-                }
-            }
-        }
-    }
-    check(balanced > 20000, std::to_string(balanced) + " wheel-steps balanced");
-    check(airborne > 100, std::to_string(airborne) + " of them driven in the air");
-    std::cout << "traction limit: " << checked << " wheel-steps checked, binding on " << bound
-              << ", " << balanced << " balanced, " << airborne << " driven in the air" << '\n';
-    check(checked > 10000, std::to_string(checked) + " wheel-steps checked");
-    check(bound > 100, "the limit binds on " + std::to_string(bound) + " of them");
+// Observe native force-vector limiting, previous prepared derivatives and
+// sign-clamped wheel integration. Torque is not the capped quantity; end-step
+// telemetry already contains the next force callback and is the wrong epoch.
+void test_coupled_wheel_phases() {
+    const unsigned limits=candidate_oracles::limits,binding=candidate_oracles::binding_limits;
+    const unsigned derivatives=candidate_oracles::derivatives,integrations=candidate_oracles::integrations;
+    const auto model=stock_model();
+    const std::vector<std::vector<nfsu::VehicleTelemetry>> runs={run_builtin(model,"mixed"),run_builtin(model,"accelerate"),run_constant(model,10,1,1,0,600),run_driven_drop(model)};
+    unsigned airborne=0;
+    for(const auto& run:runs)for(const auto& t:run)for(const auto& w:t.wheels)if(!w.contact&&w.drive_torque!=0)++airborne;
+    check(candidate_oracles::failures==0,"original force-limit, history derivative and sign-clamp runtime callbacks");
+    check(candidate_oracles::limits-limits>20000&&candidate_oracles::binding_limits-binding>100,"actual combined-force limit exercised and binding");
+    check(candidate_oracles::derivatives-derivatives>20000&&candidate_oracles::integrations-integrations>20000&&airborne>100,"previous prepared derivative exercised on ground and driven airborne wheels");
+    std::cout<<"original wheel callbacks limits="<<candidate_oracles::limits-limits<<" derivatives="<<candidate_oracles::derivatives-derivatives<<" driven airborne="<<airborne<<std::endl;
 }
 
 void test_top_speed() {
@@ -1359,21 +1252,19 @@ void test_top_speed() {
     const nfsu::VehicleTelemetry& end = run.back();
     const double v = end.forward_speed;
     check(v >= 60.0 && v <= 70.0, "top speed " + num(v * 3.6) + " km/h, expected 216 to 252");
-    check(end.gear == 6 && end.engine_rpm < 7500.0, "in fifth, below the redline");
+    check(end.gear==6&&end.engine_rpm<=model.spec().handling.max_rpm,"in fifth within the original engine clamp, not a redline hard stop");
     const double gain = v - run[run.size() - 1201].forward_speed;
     check(gain >= 0.0 && gain < 0.1, "the speed has settled: " + num(gain) + " m/s in 10 s");
-    // Drag-limited: the tyres' drive balances the recovered drag, 0.0004 kN
-    // per (m/s)^2, and the rolling resistance.
-    double drive = 0.0;
-    double load = 0.0;
-    for (const nfsu::VehicleWheelTelemetry& w : end.wheels) {
-        drive += w.force_long;
-        load += w.load;
-    }
-    const double speed = speed_of(end);
-    const double resist = 0.4 * speed * speed + 0.015 * load;
-    check(near(drive, resist, 0.01 * resist),
-          "drive " + num(drive) + " N balances drag and rolling " + num(resist) + " N");
+    // The original material-dependent rolling torque and orientation-aware
+    // aero callback replace the old fitted0.015*normal-load approximation.
+    // A controlled paired coast checks that the actual enabled drag matters.
+    auto free_spec=model.spec();free_spec.aero.enabled=false;
+    const nfsu::VehicleModel free_model(free_spec);nfsu::VehicleState a,b;
+    nfsu::VehiclePose moving;moving.speed=60;
+    check(model.reset(a,moving)&&free_model.reset(b,moving),"paired aero coast resets");
+    nfsu::VehicleTelemetry drag,free;
+    check(model.step(a,{},nfsu::VehicleFlatGround(),drag)&&free_model.step(b,{},nfsu::VehicleFlatGround(),free),"paired aero coast steps");
+    check(drag.forward_speed<free.forward_speed,"enabled original aero slows matched coast more than disabled aero");
 
     // Coasting from there slows the car on engine braking.
     nfsu::VehiclePose pose;
@@ -1632,9 +1523,9 @@ void test_input_sanitising() {
     check(fall > 0.8 * expected && fall < 1.2 * expected, "free fall: " + num(fall));
 }
 
-// The same run from another place and heading, over ground at another
-// height, is the same motion turned and moved: #60 puts the car anywhere on
-// a track.
+// A displaced and rotated diagnostic under binary32 world coordinates.
+// Accumulated ULP allowances are port regression budgets, not exact real-
+// arithmetic equivariance or a proof of original whole-trajectory fidelity.
 void test_pose_invariance() {
     const nfsu::VehicleModel model = stock_model();
     nfsu::VehicleScript script;
@@ -1661,8 +1552,10 @@ void test_pose_invariance() {
             break;
         }
     }
-    check(worst < 1e-6, "the turned run follows the same path: " + num(worst));
-    check(near(t.forward.y, home.back().forward.x, 1e-9), "the turned car points the turned way");
+    const auto ulp=[](double x){const float f=float(x);return double(std::nextafter(f,std::numeric_limits<float>::infinity())-f);};
+    const double budget=2400*(ulp(pose.ground.x)+ulp(pose.ground.y)+ulp(pose.ground.z));
+    check(worst<budget,"translated binary32 path remains within accumulated coordinate-ULP budget: "+num(worst)+" / "+num(budget));
+    check(near(t.forward.y,home.back().forward.x,2400*std::numeric_limits<float>::epsilon()), "turned heading agrees within accumulated binary32 angular budget");
 }
 
 void test_flat_ground() {
@@ -1996,7 +1889,7 @@ int main(int argc, char** argv) {
     if(argc==2&&std::string(argv[1])=="--candidate-check") {
         test_rest();test_strut_force();test_drive_layouts();test_idle_threshold();
         test_forced_first_gear();test_acceleration();test_braking();test_cornering();
-        test_grip_limit();test_snap_oversteer();test_tyre_force_height();test_drivetrain();
+        test_grip_limit();test_extended_steering();test_tyre_force_height();test_drivetrain();
         check(candidate_oracles::failures==0,"all observed original runtime operations");
         std::cout<<"SUMMARY ordinary candidate failures="<<g_failures
                  <<" oracle_failures="<<candidate_oracles::failures<<'\n';
@@ -2028,9 +1921,9 @@ int main(int argc, char** argv) {
     test_cornering();
     test_grip_limit();
     test_full_lock_matrix();
-    test_snap_oversteer();
+    test_extended_steering();
     test_tyre_force_height();
-    test_traction_limit();
+    test_coupled_wheel_phases();
     test_top_speed();
     test_drivetrain();
     test_input_sanitising();

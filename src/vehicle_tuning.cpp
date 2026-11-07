@@ -1,6 +1,7 @@
 #include "nfsu/vehicle_tuning.h"
 
 #include <cstring>
+#include <cmath>
 
 namespace nfsu {
 
@@ -942,6 +943,45 @@ bool apply_vehicle_tuning(const unsigned char* record,
     write_f32(sub(out_record, 0x134), inertia[1]);
     write_f32(sub(out_record, 0x148), inertia[2]);
 
+    return true;
+}
+
+bool apply_vehicle_drift_setup(const unsigned char* original,std::size_t size,
+                               const VehicleUpgradeLevels& levels,unsigned char* applied,
+                               std::size_t applied_size) {
+    if(!original||!applied||size!=kVehicleRecordSize||applied_size!=size||
+       levels.weight<0||levels.weight>3||levels.tyres<0||levels.tyres>3||
+       levels.suspension<0||levels.suspension>3)return false;
+    // Original 6F0FC0 rows: balance, tyre/weight scales, alternate yaw,
+    // aero and drive split. Table choice precedes the new drive split.
+    constexpr float balance[]={.550000011920929F,.5F,.6000000238418579F};
+    constexpr float tyre[3][4]={{0,.2F,.3F,.5F},{0,.2F,.3F,.5F},{0,.15F,.2F,.3F}};
+    constexpr float mass[]={0,.05F,.1F,.15F};
+    constexpr float yaw[]={1,.95F,.9F,.85F};
+    constexpr float split[]={.17499999701976776F,.5F,.824999988079071F};
+    const float rear=read_f32(applied+0x2d0);
+    if(!std::isfinite(rear))return false;
+    const unsigned drive=rear<.20000000298023224F?0:rear>.800000011920929F?2:1;
+    const auto blend=[&](std::size_t offset,float gain) {
+        const float stock=read_f32(original+offset);
+        const float difference=read_f32(applied+offset)-stock;
+        write_f32(applied+offset,difference*gain+stock);
+    };
+    blend(0x220,mass[levels.weight]);blend(0x270,yaw[levels.weight]);
+    for(unsigned axle=0;axle<2;++axle) {
+        const double side=axle?balance[drive]:1.-balance[drive];
+        for(unsigned field:{0x1ecU,0x1f0U}) {
+            const auto offset=field+axle*32;
+            const float stock=read_f32(original+offset);
+            write_f32(applied+offset,float(((double(read_f32(applied+offset))-stock)*side)*tyre[drive][levels.tyres]+stock));
+        }
+    }
+    write_f32(applied+0x2d0,split[drive]);
+    const float level=float(double(levels.weight+levels.suspension+levels.tyres)*.1111111119389534F);
+    for(unsigned k=0;k<3;++k) {
+        const double authored=double(read_f32(original+0x7d0+k*4))+read_f32(original+0x800+k*4);
+        write_f32(applied+0x374+k*4,float((authored*level)*.3499999940395355F+read_f32(applied+0x374+k*4)));
+    }
     return true;
 }
 

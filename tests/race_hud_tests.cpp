@@ -1,4 +1,5 @@
 #include "nfsu/race_hud.h"
+#include "nfsu/race_debug_input.h"
 #include <limits>
 #include "nfsu/arg_path.h"
 
@@ -56,6 +57,22 @@ void build_needle_fixture(const nfsu::VehicleState& car, double max, double red,
                      std::uint32_t width, std::uint32_t height,
                      nfsu::RaceHudFrame& frame) {
     nfsu::build_race_hud_frame_for_car(car,max,red,width,height,frame);
+}
+
+void test_published_speed() {
+    nfsu::VehicleState car{};nfsu::RaceHudFrame frame;
+    car.velocity={12,0,16};car.owner_speeds.magnitude=20.F;
+    nfsu::build_race_hud_frame_for_car(car,8500,8000,1280,720,frame);
+    check(frame.readout.mph==44,"HUD includes published vertical speed on slopes/jumps");
+    car.velocity={0,0,0};
+    nfsu::build_race_hud_frame_for_car(car,8500,8000,1280,720,frame);
+    check(frame.readout.mph==44,"HUD consumes completed publication, not a new velocity sample");
+    car.owner_speeds.magnitude=-20.F;
+    nfsu::build_race_hud_frame_for_car(car,8500,8000,1280,720,frame);
+    check(frame.readout.mph==44,"original HUD takes absolute published speed");
+    car.owner_speeds.magnitude=0;
+    nfsu::build_race_hud_frame_for_car(car,8500,8000,1280,720,frame);
+    check(frame.readout.mph==0,"fresh zero publication clears speed");
 }
 
 void test_needle_cadence() {
@@ -297,7 +314,7 @@ void test_needle_over_scale() {
 }
 
 void test_gear_and_speed() {
-    nfsu::VehicleState car{};
+    nfsu::VehicleState car{};car.transmission.mode=3;
     nfsu::RaceHudFrame frame;
     car.gear = nfsu::kVehicleGearNeutral;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
@@ -309,6 +326,7 @@ void test_gear_and_speed() {
           "reverse uses the R glyph");
     check(frame.quads == 9, "zero mph has one speed glyph and three unit letters");
     car.velocity.x = 45.0;
+    car.owner_speeds.magnitude=45.F;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
     check(frame.quads == 11, "100 mph has three speed glyphs and three unit letters");
     check(frame.vertices[8].color[3] == 255, "Tach face has full SAT alpha");
@@ -317,13 +335,20 @@ void test_gear_and_speed() {
     const auto* units=&frame.vertices[8*4];
     check(gear[0].color[0]==0 && gear[0].color[1]==128 &&
           gear[0].color[2]==192 && gear[0].color[3]==255,
-          "3rdPersonGear uses SAD 0x4680 blue at full alpha");
+          "engaged gearbox publishes blue gear at full alpha");
     check(speed[0].color[0]==0 && speed[0].color[1]==128 &&
           speed[0].color[2]==192 && speed[0].color[3]==255,
           "3rdPersonSpeed uses SAD 0x42F0 blue at full alpha");
     check(units[0].color[0]==150 && units[0].color[1]==190 &&
           units[0].color[2]==255 && units[0].color[3]==255,
           "3rdPersonSpeedUnits uses SAD 0x43EC at full alpha");
+    for(int mode=0;mode<4;++mode) {
+        car.transmission.mode=mode;
+        nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,frame);
+        const auto* tint=frame.vertices[4*4].color;
+        check(tint[0]==(mode==3?0:255) && tint[1]==128 && tint[2]==(mode==3?192:64),
+              "original clutch flag controls live gear color, including repeated frames");
+    }
 }
 
 void test_layout_and_current_state() {
@@ -353,6 +378,7 @@ void test_layout_and_current_state() {
     // Narrow 1 and wide 0 have different bearings and advances. Their
     // pen endpoints share the original right anchor for one/three digits.
     car.velocity.x=45.0;
+    car.owner_speeds.magnitude=45.F;
     nfsu::build_race_hud_frame_for_car(car,8000,7500,1280,720,full);
     speed=&full.vertices[5*4];
     const auto* second=&full.vertices[6*4];
@@ -390,19 +416,26 @@ void test_layout_and_current_state() {
     const nfsu::VehicleModel model(spec);
     nfsu::VehiclePose pose; pose.speed=20; pose.gearbox=nfsu::VehicleGearbox::manual;
     check(model.reset(car,pose),"manual shift fixture reset");
-    for (int i=0;i<6;++i) {
-        nfsu::VehicleInput input;
-        input.shift=i==2 ? nfsu::VehicleShift::up :
-                    i==4 ? nfsu::VehicleShift::down : nfsu::VehicleShift::none;
-        nfsu::VehicleTelemetry telemetry;
-        check(model.step(car,input,nfsu::VehicleFlatGround(),telemetry),"manual shift fixture step");
-        nfsu::build_race_hud_frame_for_car(car,spec.handling.max_rpm,
-                                          spec.handling.redline_rpm,1280,720,full);
-        check(full.readout.physics_step==telemetry.step &&
-              full.readout.engine_rpm==telemetry.engine_rpm &&
-              full.readout.gear==telemetry.gear,
-              "completed model step, gear and HUD readout have the same timestamp");
-        check(car.gear==(i>=2 && i<4 ? 3 : 2),"manual up/down fixture actually changes gear");
+    // A manual request passes through clutch release/change/engage. Do not
+    // assert an instantaneous physical gear change two solver ticks later.
+    for (const auto request:{nfsu::VehicleShift::up,nfsu::VehicleShift::down}) {
+        const int wanted=car.transmission.requested_gear+
+                         (request==nfsu::VehicleShift::up?1:-1);
+        bool reached=false;
+        for (int tick=0;tick<120;++tick) {
+            nfsu::VehicleInput input;input.throttle=0.5;
+            input.shift=tick==0?request:nfsu::VehicleShift::none;
+            nfsu::VehicleTelemetry telemetry;
+            check(model.step(car,input,nfsu::VehicleFlatGround(),telemetry),"manual shift fixture step");
+            nfsu::build_race_hud_frame_for_car(car,spec.handling.max_rpm,
+                                              spec.handling.redline_rpm,1280,720,full);
+            check(full.readout.physics_step==telemetry.step &&
+                  full.readout.engine_rpm==telemetry.engine_rpm &&
+                  full.readout.gear==telemetry.gear,
+                  "completed model step, gear and HUD readout have the same timestamp");
+            if(car.gear==wanted && car.transmission.mode==3) {reached=true;break;}
+        }
+        check(reached,"manual request completes physical shift and clutch engagement");
     }
     nfsu::build_race_hud_frame_for_car(car,8000,7500,0,0,full);
     check(full.quads==0,"zero-sized canvas emits no stale geometry");
@@ -493,6 +526,7 @@ int capture(const std::filesystem::path& root, const std::filesystem::path& out)
     for (const auto& fixture:fixtures) {
         nfsu::VehicleState car{}; car.engine_rpm=fixture.rpm; car.gear=fixture.gear;
         car.velocity.x=(fixture.mph+0.01)/2.237;
+        car.owner_speeds.magnitude=float(car.velocity.x);
         nfsu::RaceHudFrame frame;
         nfsu::build_race_hud_frame_for_car(car,fixture.max,fixture.red,1280,720,frame);
         std::vector<unsigned char> pixels(1280*720*4,64);
@@ -602,9 +636,63 @@ void test_capture_paths() {
     check(!error,"own capture safety fixture cleaned");
 }
 
+void test_standings() {
+    {
+        using namespace nfsu;
+        RaceGapMap map;map.valid=true;map.rate.fill(.01F);map.lap_seconds=100;
+        for(unsigned i=0;i<256;++i)map.elapsed[i]=float(i)*100/256;
+        check(std::abs(map.time(1.25F)-125)<.001F,"gap map unwraps the next lap");
+        RaceGapActor player{.5F,false,0,0},ahead{.55F,false,0,0},behind{.45F,false,0,0};
+        check(race_gap_ticks(map,ahead,player,20000)<-19990,"ahead gap is negative");
+        check(race_gap_ticks(map,behind,player,20000)>19990,"behind gap is positive");
+        player.progress=1.01F;ahead.progress=.99F;
+        check(std::abs(race_gap_ticks(map,ahead,player,0)-8000)<10,"gap continuous across finish line");
+        player={2,true,2,400000};ahead={2,true,2,392000};
+        check(race_gap_ticks(map,ahead,player,410000)==8000,"two finished racers use recorded times");
+        player={1.9F,false,1,0};
+        check(race_gap_ticks(map,ahead,player,400000)==-47999,"finished opponent uses elapsed race clock");
+        check(race_gap_text(4936)=="+   1.23" && race_gap_text(-4936)=="-   1.23" &&
+              race_gap_text(240004)=="+1:00.00","original flags2 gap text");
+        RaceLeaderboardCycle cycle;cycle.update(4000);cycle.update(44000);
+        check(cycle.shown==RaceLeaderboardMode::gaps,"gap phase at original boundary");
+        cycle.update(44067);cycle.update(44134);
+        check(cycle.shown==RaceLeaderboardMode::names,"names phase follows gap phase");
+        cycle.update(52134);cycle.update(52201);
+        check(cycle.shown==RaceLeaderboardMode::gaps,"names return to gaps");
+        cycle.update(92268);cycle.update(92335);
+        check(cycle.shown==RaceLeaderboardMode::cars,"next short phase shows car names");
+        cycle.update(92335);check(cycle.shown==RaceLeaderboardMode::cars,"paused clock preserves phase");
+        cycle={};cycle.update(4000);check(cycle.shown==RaceLeaderboardMode::gaps,"restart resets phase");
+    }
+
+    {
+        nfsu::RaceStandings table;
+        std::array<nfsu::RaceStandingSample,4> samples{{{-1,0},{-2,0},{-3,0},{-4,0}}};
+        table.update(samples,4);
+        check(table.position(0)==1 && table.position(3)==4,"starting order from actual progress");
+        samples[2].progress=1;table.update(samples,4);
+        check(table.position(2)==1 && table.position(0)==2,"overtake updates rank and order");
+        samples[0].progress=1;table.update(samples,4);
+        check(table.position(2)==1,"equal progress preserves previous order");
+        samples[0].progress=200;samples[0].finish_place=2;
+        samples[2].progress=200;samples[2].finish_place=1;table.update(samples,4);
+        check(table.position(2)==1 && table.position(0)==2,"finish places retained");
+        samples[0]={.01,0};samples[1]={-.01,0};samples[2]={-.02,0};samples[3]={-.03,0};
+        table.update(samples,4);
+        check(table.position(0)==1,"start crossing does not put the car behind the grid");
+        table=nfsu::RaceStandings{};table.update(samples,1);
+        check(table.count==1 && table.position(1)==0,"fresh single-car session has no stale rivals");
+    }
+}
+
 } // namespace
 
 int main(int argc,char** argv) {
+    if(argc==2 && std::strcmp(argv[1],"--standings")==0) {
+        test_standings();
+        std::printf("standings: %s\n",failures?"FAIL":"PASS");
+        return failures?1:0;
+    }
     if (argc!=1) {
         std::string error;
         if (!nfsu::check_arguments(argc,argv,1,error)) {
@@ -625,9 +713,37 @@ int main(int argc,char** argv) {
         check(history.count==90 && history.intervals[89]==100 && history.mean_ms()>17,
               "FPS retains a long stutter and evicts oldest sample");
     }
+    {
+        using namespace nfsu;
+        const auto left=gamepad_button_bit(GamepadButton::stick_left);
+        const auto right=gamepad_button_bit(GamepadButton::stick_right);
+        const auto gas=gamepad_button_bit(GamepadButton::face_south);
+        for (bool left_first : {false,true}) {
+            RaceDebugInput chord;
+            check(!chord.update(true,left_first,!left_first),"single stick does not toggle FPS");
+            GamepadFrame input;input.pads[0].buttons=right|gas;
+            chord.filter(input);
+            check(input.pads[0].buttons==(right|gas),"ordinary rear view survives");
+            check(chord.update(true,true,true),"second stick toggles FPS in either order");
+            for(int i=0;i<120;++i) {
+                check(!chord.update(true,true,true),"held chord toggles only once");
+                input.pads[0].buttons=left|right|gas;chord.filter(input);
+                check(input.pads[0].buttons==gas,"chord suppresses camera but preserves driving input");
+            }
+            check(!chord.update(true,false,true),"partial release does not rearm");
+            input.pads[0].buttons=right;chord.filter(input);
+            check(input.pads[0].buttons==0,"partial release does not trigger rear view");
+            check(!chord.update(true,true,true),"repress before full release does not toggle");
+            check(!chord.update(true,false,false),"full release rearms without toggle");
+            check(chord.update(true,true,true),"next full chord can turn overlay off");
+            check(!chord.update(false,true,true)&&!chord.consuming_sticks,"disconnect clears chord latch");
+        }
+    }
+    test_standings();
     test_dial();
     test_rpm();
     test_needle_cadence();
+    test_published_speed();
     test_needle_over_scale();
     test_gear_and_speed();
     test_layout_and_current_state();

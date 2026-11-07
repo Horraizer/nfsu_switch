@@ -5,6 +5,7 @@
 #include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/race_hud.h"
 #include "nfsu/deko_scene_target.h"
+#include "nfsu/speed_blur.h"
 #include <memory>
 
 namespace nfsu {
@@ -57,8 +58,15 @@ public:
               bool opaque_first = false, bool sky_with_opaque = false,
               std::uint32_t scene_height = 0,
               const RaceHudAtlas* hud_atlas = nullptr);
+    // Replace drained scene uploads without detaching the native window or
+    // changing the displayed image. Both source owners survive this call.
+    bool replace_frontend(const RecordedCommands&,std::size_t capacity,std::string& error);
     bool open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error,
-                       std::uint32_t scene_height=0,bool profile_passes=false,StartupJournal* startup_journal=nullptr);
+                       std::uint32_t scene_height=0,bool profile_passes=false,StartupJournal* startup_journal=nullptr,
+                       std::size_t draw_capacity=0);
+    // Finish-screen transition after all race submissions have completed.
+    bool set_frontend_overlay(const FrontendUiAtlas& atlas,std::string& error,bool final=true);
+    bool restore_race_overlay(const RaceHudAtlas& atlas,std::string& error);
     bool present_frontend(const FrontendUiFrame& frame,std::string& error,DekoPresentTiming* timing=nullptr);
     // Mode changes replace the swapchain and its scene/depth images after
     // waiting for GPU work. Resident assets are uploaded again on this rare path.
@@ -81,6 +89,9 @@ public:
     bool present(std::string& error, DekoPresentTiming* timing = nullptr,
                  const DekoSceneFrame* scene_frame = nullptr,
                  const RaceHudFrame* hud_frame = nullptr);
+    void set_speed_blur(const SpeedBlurFrame& frame);
+    void enable_speed_blur_probe(bool enabled) noexcept;
+    bool speed_blur_probe_complete() const noexcept;
     void prepare_ab_trace(bool passes = true);
     void dump_ab_trace() const;
     void reset_gpu_profile();

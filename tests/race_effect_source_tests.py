@@ -17,16 +17,23 @@ def block(source, token):
 def check(shaders, renderer):
     branches = []
     for index, shader in enumerate(shaders):
-        world = block(shader, 'if (material.fallback.w == 6.0)')
+        world_branch = block(shader, 'if (material.fallback.w == 6.0)')
+        world = world_branch if index == 0 else block(shader, 'void shadeWorldDiffuse(')
         assert world.count('ordinary_world_channel(sampled.') == 3
         for lane, stored in [('r','b'),('g','g'),('b','r')]:
             assert f'ordinary_world_channel(sampled.{lane}, inColor.{stored})' in world
-        assert 'float(race_effect_alpha(texel.a, material.alpha.x)) / 255.0' in world
-        assert 'return;' in world
+        texel_alpha = 'texel.a' if index == 0 else 'texel_alpha'
+        assert f'float(race_effect_alpha({texel_alpha}, material.alpha.x)) / 255.0' in world
+        assert 'return;' in world_branch
         assert 'return texel * vertex * 2.0;' in block(shader, 'float ordinary_world_channel(')
-        assert shader.index(world) < shader.index('vec3 normal = cross')
+        assert shader.index(world_branch) < shader.index('vec3 normal = cross')
         if index == 0:
-            assert shader.index('if (texel.a < frame.options.w)') < shader.index(world)
+            assert shader.index('if (texel.a < frame.options.w)') < shader.index(world_branch)
+        else:
+            assert 'shadeWorldDiffuse(sampled,texel.a);' in world_branch
+            specialized = block(shader, 'void raceWorldMain(')
+            assert 'shadeWorldDiffuse(sampled,uint(sampled.a*255.0+0.5));' in specialized
+            assert 'shadeWorldReflect();' in specialized
         branch = block(shader, 'if (race_fast)')
         branches.append(branch)
         assert branch.count('race_effect_channel(') == 3
@@ -71,6 +78,8 @@ def check(shaders, renderer):
     assert 'static_alpha_cutoff[slot] == commands->frame.options[3]' in visible
     assert 'if (unchanged) return true;' in visible
     assert 'static_uniforms.getGpuAddr() + (static_instances+index)*256' in visible
+    assert 'race_world_available && commands->frame.options[3] == 0' in visible
+    assert 'if (world_available && previous && use_world != world_draw(*previous)) previous = nullptr;' in visible
     loop = renderer[renderer.index('const auto first_dynamic = package ?', renderer.index('bool record_frame(')):]
     loop = loop[:loop.index('cmd.barrier(DkBarrier_Fragments, 0);')]
     skip = 'if(!frontend && !commands->frontend_light_enabled && race_effect_no_output(view))continue;'
@@ -100,6 +109,8 @@ for name, old, new, shader_mutation in [
     ('stale skipped state', 'if(!frontend && !commands->frontend_light_enabled && race_effect_no_output(view))continue;', 'previous_dynamic = &view.definition; if(!frontend && !commands->frontend_light_enabled && race_effect_no_output(view))continue;', False),
     ('uniform compaction', 'const auto index = i - first_dynamic;', 'const auto index = 0;', False),
     ('static cutoff cache removed', 'static_alpha_cutoff[slot] == commands->frame.options[3]', 'true', False),
+    ('world shader ignores cutoff', 'race_world_available && commands->frame.options[3] == 0', 'race_world_available', False),
+    ('world shader transition keeps stale binding', 'use_world != world_draw(*previous)', 'false', False),
 ]:
     try:
         check([s.replace(old, new, 1) for s in shaders] if shader_mutation else shaders,

@@ -108,8 +108,10 @@ def stock_bank(image, car_index=18, upgrade=0, event_type=12):
                 bank=m.cstring(m.ri(manager+0x2C)), instructions=len(m.visited))
 
 
-def engine_parameters(image, rpm, load, gain=32767, crossfade=0, group=2):
+def engine_parameters(image, rpm, load, gain=32767, crossfade=0, group=2, game_producer=False, pan=32768):
     m = Machine(image, [(0x5236D0, 0x523888), (0x674898, 0x674910)])
+    if game_producer:
+        m.uc.reg_write(x.UC_X86_REG_FPCW, 0x007F)
     owner, event, tune = 0x1100000, 0x1103000, 0x1104000
     m.wi(owner+0x1760, event)
     m.wi(owner+0x1F0C, tune)
@@ -117,7 +119,7 @@ def engine_parameters(image, rpm, load, gain=32767, crossfade=0, group=2):
     m.wi(owner+0x23C, gain)
     m.wf(owner+0x1F1C, rpm)
     m.wf(owner+0x1F8C, load)
-    m.wi(owner+0x6C, 32768)
+    m.wi(owner+0x6C, pan)
     m.wi(owner+0x2AC, crossfade)
     m.wi(owner+0x1FD4, 16383)
     # Event handle zero deliberately excludes the OS/event dispatch in 64BC30.

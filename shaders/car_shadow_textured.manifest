@@ -61,3 +61,4 @@ output location=0 name=color type=vec4 format=rgba8
 # A blended draw writes depth, as the retail path does; the frame's alpha
 # is never written, because the reference keeps it at 255.
 variant name=source_over alpha_test=always blend=on blend_src=src_alpha blend_dst=one_minus_src_alpha blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none
+variant name=additive alpha_test=always blend=on blend_src=src_alpha blend_dst=one blend_op=add depth_test=less_equal depth_write=off color_write=rgb cull=none

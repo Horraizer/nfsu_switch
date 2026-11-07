@@ -1,7 +1,9 @@
 #include "nfsu/car_contact.h"
 #include <cstring>
+#include <cmath>
 #include <iostream>
 #include <limits>
+#include "drag_contact_native.inc"
 
 namespace {
 using namespace nfsu;
@@ -60,7 +62,114 @@ void check(bool pass,const char* name) {
     if(!pass) { ++failures;std::cerr<<"FAIL: "<<name<<'\n'; }
 }
 }
+#include "car_contact_rotation_pins.inc"
 int main() {
+    const auto real=[](unsigned v){float f;std::memcpy(&f,&v,4);return f;};
+    {
+        // Actual 46BAE0 kind1/kind1 and kind1/kind3 witnesses, mass2 cubes.
+        ContactBody first,second;
+        first.identity=1;second.identity=2;
+        first.car_scaling=second.car_scaling=false;
+        first.inverse_mass=second.inverse_mass=.5F;
+        first.cached_velocity={8,3,0};second.position={1.9F,0,0};
+        first.inverse_inertia=second.inverse_inertia={{{1,0,0},{0,1,0},{0,0,1}}};
+        ContactResponse response;const ContactGeometry geometry{{1,0,0},{.95F,0,0}};
+        check(calculate_car_contact_response(first,second,geometry,response,1.F,{.07F,.08F},false,{.02F,.04F})&&
+            response.closing&&std::abs(response.current_impulse[0]+8.5600004196F)<.000001F&&
+            std::abs(response.current_impulse[1]+.6848000288F)<.000001F,
+            "two props use both original materials without car friction or mass scaling");
+        second.inverse_mass=0;second.inverse_inertia={};second.position={};
+        check(calculate_car_contact_response(first,second,geometry,response,1.F,{.1F,.6F},false,{.02F,.04F})&&
+            response.closing&&std::abs(response.current_impulse[0]+17.6000003815F)<.000001F&&
+            std::abs(response.current_impulse[1]+10.5600004196F)<.000001F,
+            "prop road response uses original surface material without upright car modifiers");
+    }
+    {
+        // 46BAE0 with the original car and Smokeable material getters.
+        ContactBody car,prop;
+        car.identity=1;car.inverse_mass=.5F;car.cached_velocity={8,3,0};
+        prop.identity=2;prop.inverse_mass=.5F;prop.car_scaling=false;
+        prop.position={2.0005F,.6F,.2F};
+        car.inverse_inertia=prop.inverse_inertia={{{1,0,0},{0,1,0},{0,0,1}}};
+        const ContactGeometry geometry{{1.F,-.0002384358667768538F,-.0001192179333884269F},
+            {1.000249981880188F,.9999999403953552F,.5999999046325684F}};
+        struct Row {ContactMaterial prop_material;ContactVector impulse;};
+        const Row rows[]{
+            {{0,0},{-4.72104263F,-1.41508591F,.00011288485F}},
+            {{.2F,.2F},{-5.15022850F,-1.54373026F,.00012314715F}},
+            {{.1F,.6F},{-4.72137976F,-2.83129740F,-.00033702300F}},
+            {{.5F,.45F},{-6.43801498F,-2.89526105F,-.00015282136F}},
+        };
+        for(const auto& row:rows) {
+            ContactResponse response;
+            check(calculate_car_contact_response(car,prop,geometry,response,1.F,row.prop_material)&&
+                response.closing,"original Smokeable material response");
+            for(unsigned i=0;i<3;++i)
+                check(std::abs(response.current_impulse[i]-row.impulse[i])<.00001F,
+                    "original Smokeable material impulse");
+        }
+        prop.inverse_mass=0;prop.inverse_inertia={};
+        ContactResponse pinned;
+        check(calculate_car_contact_response(car,prop,geometry,pinned,1.F,{.1F,.6F},true)&&pinned.closing&&
+            std::abs(pinned.current_impulse[1]+.840627134F)<.00001F,"pinned prop uses upright-car friction");
+        car.cached_velocity[0]=40;
+        check(calculate_car_contact_response(car,prop,geometry,pinned,1.F,{.1F,.6F},true)&&pinned.closing&&
+            std::abs(pinned.current_impulse[0]+42.53471375F)<.00001F&&
+            std::abs(pinned.impulse_b[0]-42.13583374F)<.00001F&&
+            std::abs(pinned.arm_a[0]-.64896512F)<.00001F,
+            "pinned prop applies native high-speed drag and arm scaling only to the car");
+    }
+    for(const auto& row:kNativeDragContact) {
+        bool totalled=false;
+        check(drag_contact_failure({real(row[4]),real(row[5]),real(row[6])},row[0]!=0,row[1],row[2],row[3],totalled)&&
+              totalled==(row[7]!=0),"actual original drag failure threshold/mode/selector");
+        check(row[8]==(totalled?0x3fc00000U:0U),"original totalled heat publication");
+    }
+    for(const auto& row:kNativeDragCallback) {
+        ContactBody body[2];
+        for(unsigned i=0;i<2;++i) {
+            auto& b=body[i];const auto* p=row.before[i];unsigned k=0;b.identity=i+1;
+            b.inverse_mass=real(p[k++]);b.collision_state=p[k++];b.state_timer=real(p[k++]);
+            for(auto* v:{&b.position,&b.cached_velocity,&b.cached_angular_velocity,&b.linear_momentum,&b.angular_momentum})
+                for(float& f:*v)f=real(p[k++]);
+            for(auto& axis:b.inverse_inertia)for(float& f:axis)f=real(p[k++]);
+        }
+        ContactGeometry geometry;
+        for(unsigned i=0;i<3;++i){geometry.normal[i]=real(row.geometry[i]);geometry.point[i]=real(row.geometry[3+i]);}
+        ContactRecord record;ContactResponse response;ContactCallbackContext context{12345};
+        context.drag=row.drag!=0;context.has_physical_bounds=true;context.physical_lateral_bounds={{{-1,1},{-1,1}}};
+        check(resolve_prepared_car_contact(body[0],body[1],record,true,geometry,5,response,&context)==ContactResolution::applied,"native drag callback applies");
+        for(unsigned i=0;i<2;++i) {
+            const auto& b=body[i];const auto* e=row.after[i];
+            check(same(b.linear_momentum,{real(e[0]),real(e[1]),real(e[2])})&&
+                same(b.angular_momentum,{real(e[3]),real(e[4]),real(e[5])})&&
+                b.collision_state==e[6]&&b.state_timer==real(e[7]),"whole original drag callback/extra impulses");
+        }
+        check(context.world_seed==row.seed,"original drag callback RNG order");
+    }
+    static const float static_pins[][29]={
+#include "static_response_native.inc"
+    };
+    for(const auto& p:static_pins) {
+        ContactBody a;a.identity=1;a.inverse_mass=.5F;a.collision_state=unsigned(p[15]);
+        a.inverse_inertia={{{{1,0,0}},{{0,1,0}},{{0,0,1}}}};
+        ContactGeometry g;g.normal={{1,0,0}};
+        for(unsigned k=0;k<3;++k){a.cached_velocity[k]=p[k];a.linear_momentum[k]=p[k]*2;g.point[k]=p[3+k];}
+        ContactResponse response;
+        check(calculate_track_contact_response(a,g,{{p[6],p[7],p[8]}},{{p[12],p[13],p[14]}},.6F,response),
+              "original kind3 static response accepts");
+        check(response.closing==(p[16]!=0),"original static separating gate");
+        if(response.closing) {
+            bool impulse=true;for(unsigned k=0;k<3;++k)impulse=impulse&&
+                response.current_impulse[k]==p[17+k]&&response.arm_a[k]==p[20+k];
+            check(impulse,"original static friction, side restitution and fast-car lever");
+            check(apply_car_contact_impulse(a,response.current_impulse,response.arm_a),"static impulse applies");
+        }
+        bool momentum=true;for(unsigned k=0;k<3;++k)momentum=momentum&&
+            a.linear_momentum[k]==p[23+k]&&a.angular_momentum[k]==p[26+k];
+        check(momentum,"original static linear and angular momentum");
+    }
+    callback_rotation_pins();collision_recovery_pins();
     using namespace nfsu;
     for(const auto& p:kRecordTickPins) {
         ContactRecord record;
@@ -150,14 +259,14 @@ int main() {
                   &&missing_bounds.world_seed==p.seed_before,"missing physical bounds transactional");
         }
     }
-    // Unsupported existing record state never impersonates a complete solve.
+    // Original retained record gates survive actor recovery to state0.
     {
         const auto& p=kPairPins[0];auto a=p.a,b=p.b;
         ContactRecord record;record.state_gate=true;ContactResponse response;
         ContactCallbackContext context{12345};
         check(resolve_prepared_car_contact(a,b,record,true,p.geometry,5,response,&context)
-              ==ContactResolution::needs_state_callback,"existing record callback gate");
-        check(same_boundary(a,p.a)&&same_boundary(b,p.b),"existing record transactional");
+              ==ContactResolution::applied,"recovered actor retains pair lever gate");
+        a=p.a;b=p.b;
         a.cached_velocity={50,50,0};b.cached_velocity={-50,-50,0};
         const auto before_a=a,before_b=b;record={};
         check(resolve_prepared_car_contact(a,b,record,true,{{1,0,0},{1,0,0}},5,response,&context)

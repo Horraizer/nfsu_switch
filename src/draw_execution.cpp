@@ -1,4 +1,5 @@
 #include "nfsu/draw_execution.h"
+#include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/memory_budget.h"
 
 namespace nfsu {
@@ -38,9 +39,9 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
     if (c.clear_color[3] != 255) {
         error = "deko3d executor requires opaque background alpha (255)"; return false;
     }
-    if (c.width != 1280 || c.height != 720 || c.draw_count() > 4096 ||
-        c.resource_table().resources.size() > 8192) {
-        error = "deko3d stock executor: requires 1280x720 and at most 4096 draws and 8192 resources";
+    if (c.width != 1280 || c.height != 720 || c.draw_count() > (c.package_identity() ? kDekoPreparedDrawCapacity : 4096) ||
+        c.resource_table().resources.size() > kDrawResourceCapacity) {
+        error = "deko3d stock executor: requires 1280x720, at most 4096 immediate or 8192 prepared draws and 16384 resources";
         return false;
     }
     // Prepared scenery constants live in the persistent static package.
@@ -60,7 +61,7 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
     out.descriptor_bytes = static_cast<std::uint32_t>((c.resource_table().resources.size() + 2) * kDrawDescriptorBytes);
     out.sampler_offset = static_cast<std::uint32_t>(c.resource_table().resources.size() * kDrawDescriptorBytes);
     out.command_bytes = static_cast<std::uint32_t>(65536 +
-        (c.draw_count() + c.resource_table().resources.size()) * kDekoMemBlockAlignment);
+        (c.draw_count() - static_draws + deko_track_list_calls(static_cast<std::uint32_t>(static_draws)) + c.resource_table().resources.size()) * kDekoMemBlockAlignment);
     // Ledger's tight copies, optional padded copies, and at most 31 bytes
     // of alignment slack per allocation. Keep the original conservative
     // allowance of 32 bytes per resource, including non-textures.
@@ -93,7 +94,7 @@ bool validate_draw_update(const UploadTable& uploaded, const RecordedCommands& n
     }
     for (std::size_t i = 0; i < uploaded.resources.size(); ++i) {
         const auto& a = uploaded.resources[i]; const auto& b = next.resource_table().resources[i];
-        if (a.kind != b.kind || a.data != b.data || a.bytes != b.bytes ||
+        if (a.kind != b.kind || a.data != b.data || a.bytes != b.bytes || a.streamed_vertices != b.streamed_vertices ||
             a.element_bytes != b.element_bytes || a.elements != b.elements ||
             a.texture.format != b.texture.format || a.texture.width != b.texture.width ||
             a.texture.height != b.texture.height || a.texture.mip_count != b.texture.mip_count || a.texture.row_bytes != b.texture.row_bytes) {

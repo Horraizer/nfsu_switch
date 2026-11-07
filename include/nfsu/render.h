@@ -183,6 +183,10 @@ struct ReferenceDraw {
     // The separate track sky pass, whose copy is numbered one past the
     // scenery instances.
     bool sky = false;
+    bool linear_filter = false; // observed CPU sampler at submission
+    // Legacy deliberately retains the documented shaded-car CPU/GPU sampler
+    // difference. Record caller policy separately instead of hiding that fact.
+    bool requested_linear = false;
 };
 using ReferenceDrawObserver = std::function<void(const ReferenceDraw&)>;
 
@@ -273,6 +277,7 @@ std::array<CameraFrame,6> car_environment_cameras(const CameraFrame& primary,
                                                 const Vec3& body_origin);
 class Frame;
 struct RenderOptions {
+    std::int32_t world_ticks=0; // Original world clock; zero keeps static diagnostics unchanged.
     TextureFilterMode texture_filter = TextureFilterMode::legacy;
     bool car_shading = false; // static environment approximation; opt-in
     const FrontendLighting* frontend_lighting = nullptr; // separate native FE consumer
@@ -405,6 +410,12 @@ public:
     std::uint32_t width() const noexcept { return width_; }
     std::uint32_t height() const noexcept { return height_; }
     const std::vector<unsigned char>& rgba() const noexcept { return rgba_; }
+    // Color-only postprocessing leaves depth, IDs and blend ownership intact
+    // so later geometry still tests against the unmodified scene depth.
+    bool replace_colors(std::vector<unsigned char> colors) noexcept {
+        if(colors.size()!=rgba_.size())return false;
+        rgba_.swap(colors);return true;
+    }
     const std::vector<double>& depth() const noexcept { return depth_; }
     // Id of the triangle that owns each pixel, kNoTriangle if none.
     const std::vector<std::uint32_t>& ids() const noexcept { return ids_; }

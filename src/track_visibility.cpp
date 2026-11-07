@@ -885,10 +885,11 @@ bool PreparedTrackCull::prepare(const TrackObjectReport& objects, std::string& e
     return true;
 }
 bool PreparedTrackCull::cull(const TrackFrustum& frustum, std::string& error,
-                             const TrackResidency* residency) {
+                             const TrackResidency* residency, std::uint8_t instance_mask) {
     error.clear();
     if (!impl_) { error = "culler is not prepared"; return false; }
     auto& c = *impl_;
+    c.options.instance_mask = instance_mask;
     c.report.visible.clear(); c.report.sections.clear(); c.report.stats = {};
     if (c.objects->sections.data() != c.section_data || c.objects->sections.size() != c.trees.size()) {
         error = "prepared culler source changed"; return false;

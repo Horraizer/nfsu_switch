@@ -11,7 +11,7 @@ def check(root,source):
     nontexture=upload.index('if (r.kind != UploadResourceKind::texture)')
     select=upload.index('if(first_texture==kNoHandle)first_texture=i;')
     if nontexture>=select or 'continue;' not in upload[nontexture:select]:raise ValueError('safe texture is not an ordinary uploaded image')
-    emit=source[source.index('void emit_draw('):source.index('static bool same_fixed_state(')]
+    emit=source[source.index('void emit_draw('):source.index('bool prepare_static_commands(')]
     if 'out.bindTextures(DkStage_Fragment, 0,' not in emit:raise ValueError('base sampler not bound per draw')
     # Recorder binding trace: scene-global safe image then each real draw's
     # base image. Infer shader requirements from both compiled-stage sources.

@@ -27,11 +27,21 @@ def check(root,renderer,main):
     assert 'main_sprites=%.3f upscale=%.3f' in renderer
     assert 'consume_frontend_query(slot);' in renderer
     assert 'frontend_query_pending[slot]=frontend && frontend_profile_passes;' in renderer
-    transition=main[main.index('} else if (action==FrontendAction::free_drive)'):main.index('const auto music_error=')]
+    transition=main[main.index('if (action==FrontendAction::underground || action==FrontendAction::free_drive)'):main.index('const auto music_error=')]
     assert transition.index('frontend_renderer.reset();')<transition.index('frontend_gpu_profile.reset();')<transition.index('run(root,')
+    assert transition.count('run(root,')==3
+    close=transition[transition.index('const auto close_career='):transition.index('const auto prepare_garage=')]
+    assert close.index('frontend_renderer->close(')<close.index('frontend_renderer.reset();')<close.index('frontend_gpu_profile.reset();')
+    for start, call in (('}else if(accept&&row==Row::start)', 'do { result=run(root,'),
+                        ('}else if(profile.page==CareerPage::briefing)', 'outcome=run(root,')):
+        begin=transition.index(start)
+        launch=transition[begin:transition.index(call,begin)]
+        assert 'close_career();music.stop();' in launch
+    assert 'selected_car,screen,pad,false,nullptr,0,&art)' in transition
+    assert 'while(intro_result==RaceReturn::restart && appletMainLoop())' in transition
     assert main.index('std::unique_ptr<HandheldGpuProfile> frontend_gpu_profile;')<main.index('std::unique_ptr<DekoRenderer> frontend_renderer;')
-    assert 'deko_effective_scene_height(scene_height,menu_docked,true)' in main
-    assert 'art.atlas(),frontend_error,menu_height,profile_frame && !ab_minimal,active_trace)' in main
+    assert 'constexpr std::uint32_t menu_height=720;' in main
+    assert 'art.atlas(),frontend_error,menu_height,profile_frame && !ab_minimal,active_trace,frontend_scene.draw_capacity())' in main
     assert 'std::make_unique<HandheldGpuProfile>(gpu_boost)' in main
     # Normal cadence reads only an existing post-present timestamp. It adds
     # no GPU command, wait or barrier and excludes opt-in profiling runs.
@@ -50,7 +60,7 @@ def check(root,renderer,main):
 
 p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);root=p.parse_args().root
 r=(root/'switch/deko_renderer.cpp').read_text();m=(root/'switch/race_main.cpp').read_text();check(root,r,m)
-for name,bad_r,bad_m in [('minimal menu pass profiling enabled',r,m.replace('menu_height,profile_frame && !ab_minimal,active_trace','menu_height,profile_frame,active_trace')),('FXAA applied to menu',r.replace('fxaa_enabled=presentation && source.race_environment;','fxaa_enabled=presentation;'),m),('profiling always on',r.replace('if(!frontend || !frontend_profile_passes)return;',''),m),('timestamp overlap',r.replace('slot*208+point*16','slot*32+point*16'),m),('extra sprite barrier',r.replace('cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);','cmd.barrier(DkBarrier_Fragments,0); cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);'),m),('power guard held into race',r,m.replace('frontend_gpu_profile.reset();','')),('UI target lowered',r.replace('cmd.bindRenderTargets(&present_view, nullptr);',''),m),('profile counter mixed in',r,m.replace('!profile_frame && frontend_presentation_stats.sample','frontend_presentation_stats.sample')),('reentry counter not reset',r,m.replace('frontend_presentation_stats.reset();','')),('extra counter GPU wait',r,m.replace('FrontendPresentationWindow presentation_window;','FrontendPresentationWindow presentation_window; frontend_renderer->wait();'))]:
+for name,bad_r,bad_m in [('minimal menu pass profiling enabled',r,m.replace('menu_height,profile_frame && !ab_minimal,active_trace','menu_height,profile_frame,active_trace')),('FXAA applied to menu',r.replace('fxaa_enabled=presentation && source.race_environment;','fxaa_enabled=presentation;'),m),('profiling always on',r.replace('if(!frontend || !frontend_profile_passes)return;',''),m),('timestamp overlap',r.replace('slot*208+point*16','slot*32+point*16'),m),('extra sprite barrier',r.replace('cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);','cmd.barrier(DkBarrier_Fragments,0); cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);'),m),('power guard held into race',r,m.replace('frontend_gpu_profile.reset();','')),('menu scene height lowered',r,m.replace('menu_height=720;','menu_height=540;')),('UI target lowered',r.replace('cmd.bindRenderTargets(&present_view, nullptr);',''),m),('profile counter mixed in',r,m.replace('!profile_frame && frontend_presentation_stats.sample','frontend_presentation_stats.sample')),('reentry counter not reset',r,m.replace('frontend_presentation_stats.reset();','')),('extra counter GPU wait',r,m.replace('FrontendPresentationWindow presentation_window;','FrontendPresentationWindow presentation_window; frontend_renderer->wait();'))]:
     try:check(root,bad_r,bad_m)
     except (AssertionError,ValueError):print('PASS negative control: '+name)
     else:raise AssertionError('negative control accepted: '+name)

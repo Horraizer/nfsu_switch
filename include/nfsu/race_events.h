@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -57,8 +58,7 @@ constexpr std::size_t kTrackInfoNumberCopyOffset = 0x6E;
 // +0x74, the quick-race mode mask. 0x004AB49F switches on a quick-race mode
 // 0..6 and tests one bit each (table 0x004AB4EC: 0x01, 0x04, 0x40, 0x10,
 // 0x20, 0x02, 0x08), and 0x004BA204 leaves a track with bit 0x08 out of the
-// reverse-direction pass of the quick-race track list. Which mode is which
-// is not decoded; the mask is reported raw.
+// reverse-direction pass of the quick-race track list.
 constexpr std::size_t kTrackInfoModeMaskOffset = 0x74;
 
 // One decoded track record. Only fields with a traced reader are decoded.
@@ -71,6 +71,7 @@ struct TrackInfoRecord {
     std::int16_t number = 0;
     std::int16_t number_copy = 0;
     std::uint32_t mode_mask = 0;
+    std::array<std::int8_t,8> traffic_pool{};
 };
 
 // ---------------------------------------------------------------------
@@ -145,6 +146,31 @@ enum class RaceType : std::uint32_t {
     time_trial = 4,
     lap_knockout = 5,
 };
+
+enum class QuickRaceMode : unsigned { circuit, sprint, drag, drift, lap_knockout, free_run };
+struct QuickRaceOptions {
+    QuickRaceMode mode=QuickRaceMode::free_run;
+    unsigned traffic=1,opponents=3,laps=2,difficulty=1;
+    bool catch_up=true;
+    std::uint32_t seed=0x12345678U;
+};
+constexpr unsigned kQuickRaceModeCount=6;
+constexpr std::uint32_t quick_race_track_mask(QuickRaceMode mode) noexcept {
+    constexpr std::uint32_t masks[]={1,4,2,8,0x40,0x10};
+    return masks[unsigned(mode)];
+}
+constexpr RaceType quick_race_type(QuickRaceMode mode,RaceType backing) noexcept {
+    constexpr RaceType types[]={RaceType::circuit,RaceType::sprint,RaceType::drag,
+        RaceType::drift,RaceType::lap_knockout};
+    return mode==QuickRaceMode::free_run?backing:types[unsigned(mode)];
+}
+constexpr unsigned quick_race_laps(const QuickRaceOptions& options) noexcept {
+    return options.mode==QuickRaceMode::free_run?0:
+        options.mode==QuickRaceMode::lap_knockout?options.opponents:
+        options.mode==QuickRaceMode::sprint||options.mode==QuickRaceMode::drag?1:options.laps;
+}
+// 4B3AE6 selects a pool by traffic setting and direction. Zero bypasses it.
+int race_traffic_pool_size(const TrackInfoRecord&,unsigned density,unsigned direction) noexcept;
 
 // "circuit", "drag", "sprint", "drift", "time-trial", "lap-knockout", or
 // "unknown" for any other value.
@@ -343,16 +369,324 @@ bool race_event_available(const RaceEventTable& table,
                           const RaceEventRecord& event,
                           const std::vector<std::uint8_t>& status) noexcept;
 
-// The two explicitly supported player diagnostics. Selection is validated
-// against the owner's retail tables; this does not unlock career events.
+// The explicitly supported player races: every career event of the retail
+// table that is exactly one circuit race on one of the eight circuit tracks
+// 1001-1008, and the drift events of kSupportedDriftRows. Selection is
+// validated against the owner's retail tables; this does not unlock career
+// events.
 struct SupportedRace {
-    std::uint32_t event = 1;
+    std::uint32_t event = 1,type = 0;
+    unsigned race_index = 0,race_count = 1;
     RaceSlot slot;
     TrackInfoRecord track;
 };
 bool load_supported_race(const std::filesystem::path& front,
                          const std::filesystem::path& global,
                          std::uint32_t event, SupportedRace& race,
-                         std::string& error);
+                         std::string& error,unsigned race_index=0);
+
+// One row of the supported-circuit list below, transcribed once from the
+// retail event table (the pinned `nfsu_probe race-events` listing of
+// docs/RACE_EVENTS.md). The retail table itself is the authority:
+// load_supported_race re-reads it and refuses any event whose parsed record
+// differs from the row here, so a modified installation fails closed instead
+// of silently following this copy.
+struct SupportedCircuitRow {
+    std::uint32_t event;
+    std::int16_t track;
+    std::int8_t laps;
+    std::int8_t direction; // 0 forward, 1 reverse
+};
+
+// The 26 single-race circuit events of the retail career table, in event
+// order: every circuit type-0 event with exactly one race slot, all on the
+// L1RA circuit tracks. Multi-race circuit tournaments and lap-knockout
+// events are not here, and neither is event 0: the new-career path enters
+// it before the table offers anything, and the event0 intro flow owns it.
+constexpr SupportedCircuitRow kSupportedCircuitRows[] = {
+    {1, 1003, 2, 0},   {8, 1005, 3, 0},   {16, 1006, 2, 1},  {19, 1001, 3, 0},
+    {32, 1008, 3, 0},  {35, 1006, 6, 1},  {37, 1005, 6, 1},  {45, 1008, 3, 1},
+    {52, 1005, 2, 1},  {53, 1006, 2, 1},  {59, 1002, 4, 1},  {71, 1004, 6, 0},
+    {75, 1008, 5, 1},  {81, 1004, 4, 0},  {87, 1004, 4, 1},  {89, 1004, 3, 0},
+    {96, 1001, 6, 1},  {99, 1007, 6, 0},  {104, 1004, 7, 1}, {107, 1007, 3, 1},
+    {111, 1007, 5, 1}, {113, 1001, 4, 0}, {120, 1001, 3, 0}, {121, 1003, 3, 0},
+    {122, 1006, 3, 0},
+};
+
+// The row for `event`, or nullptr when the event is not a supported circuit.
+constexpr const SupportedCircuitRow* supported_circuit_row(std::uint32_t event) {
+    for (const SupportedCircuitRow& row : kSupportedCircuitRows)
+        if (row.event == event) return &row;
+    return nullptr;
+}
+
+// One row of the supported-drift list, transcribed once from the same
+// pinned `nfsu_probe race-events` listing. load_supported_race re-reads the
+// retail tables and refuses any event whose parsed record differs from the
+// row here, the same fail-closed check the circuit rows get, so a modified
+// installation fails closed instead of silently following this copy.
+struct SupportedDriftRow {
+    std::uint32_t event;
+    std::int16_t track;
+    std::int8_t laps;
+    std::int8_t direction; // 0 forward, 1 reverse
+    const char* region;    // the stream region the track must live in
+};
+
+// The drift career events the port supports, in event order: every
+// single-race drift event of the retail table. The drift tournament event
+// 38 is not here (three races, the same exclusion the circuit list makes),
+// and every supported drift race runs forward. Tracks 1301-1304 live in
+// region L1RB, 1305-1308 in L1RC.
+constexpr SupportedDriftRow kSupportedDriftRows[] = {
+    {3, 1301, 4, 0, "L1RB"},
+    {13, 1302, 4, 0, "L1RB"},   {18, 1302, 4, 0, "L1RB"},
+    {25, 1303, 4, 0, "L1RB"},   {33, 1303, 4, 0, "L1RB"},
+    {50, 1303, 4, 0, "L1RB"},
+    {28, 1304, 4, 0, "L1RB"},   {40, 1304, 4, 0, "L1RB"},
+    {64, 1304, 4, 0, "L1RB"},   {73, 1304, 4, 0, "L1RB"},
+    {44, 1305, 4, 0, "L1RC"},   {56, 1305, 4, 0, "L1RC"},
+    {65, 1306, 4, 0, "L1RC"},   {86, 1306, 4, 0, "L1RC"},
+    {90, 1307, 4, 0, "L1RC"},   {93, 1307, 4, 0, "L1RC"},
+    {105, 1308, 4, 0, "L1RC"},  {109, 1308, 4, 0, "L1RC"},
+};
+
+// The row for `event`, or nullptr when the event is not a supported drift.
+constexpr const SupportedDriftRow* supported_drift_row(std::uint32_t event) {
+    for (const SupportedDriftRow& row : kSupportedDriftRows)
+        if (row.event == event) return &row;
+    return nullptr;
+}
+
+// The track, laps and direction of any supported event, circuit or drift.
+// Selection only: load_supported_race validates the event against its row.
+struct SupportedEventSelection {
+    std::int16_t track = 0;
+    std::int8_t laps = 0;
+    std::int8_t direction = 0;
+};
+constexpr bool supported_event_selection(std::uint32_t event,
+                                         SupportedEventSelection& selection) {
+    if (const SupportedCircuitRow* row = supported_circuit_row(event)) {
+        selection = {row->track, row->laps, row->direction};
+        return true;
+    }
+    if (const SupportedDriftRow* row = supported_drift_row(event)) {
+        selection = {row->track, row->laps, row->direction};
+        return true;
+    }
+    return false;
+}
+
+// One row of the supported-drag list, transcribed once from the same
+// pinned retail listing and validated the same fail-closed way. Drag
+// tracks carry lap-skip 1 - the point-to-point rule race_laps() applies -
+// where the circuit and drift rows pin 0.
+struct SupportedDragRow {
+    std::uint32_t event;
+    std::int16_t track;
+    std::int8_t laps;
+    std::int8_t direction; // 0 forward, 1 reverse
+    const char* region;    // the stream region the track must live in
+    std::int8_t lap_skip;  // pinned: 1 on every drag track
+};
+
+// The single-race drag career events the port supports, in event order,
+// on the six drag tracks. The drag tournaments (events 9, 20 and 80) are
+// not here - the same exclusion the circuit and drift lists make.
+constexpr SupportedDragRow kSupportedDragRows[] = {
+    {4, 1210, 2, 1, "L1RB", 1},
+    {11, 1202, 2, 0, "L1RC", 1},
+    {17, 1201, 2, 1, "L1RB", 1},
+    {21, 1201, 2, 0, "L1RB", 1},
+    {29, 1201, 2, 1, "L1RB", 1},
+    {36, 1206, 2, 0, "L1RB", 1},
+    {42, 1202, 2, 0, "L1RC", 1},
+    {46, 1201, 2, 0, "L1RB", 1},
+    {51, 1210, 2, 0, "L1RB", 1},
+    {55, 1206, 2, 1, "L1RB", 1},
+    {62, 1206, 2, 0, "L1RB", 1},
+    {63, 1201, 2, 1, "L1RB", 1},
+    {70, 1214, 2, 0, "L1RB", 1},
+    {76, 1206, 2, 1, "L1RB", 1},
+    {79, 1206, 2, 0, "L1RB", 1},
+    {83, 1207, 2, 0, "L1RE", 1},
+    {88, 1210, 2, 0, "L1RB", 1},
+    {98, 1207, 2, 1, "L1RE", 1},
+    {106, 1206, 2, 1, "L1RB", 1},
+    {108, 1202, 2, 1, "L1RC", 1},
+};
+
+// The row for `event`, or nullptr when the event is not a supported drag.
+constexpr const SupportedDragRow* supported_drag_row(std::uint32_t event) {
+    for (const SupportedDragRow& row : kSupportedDragRows)
+        if (row.event == event) return &row;
+    return nullptr;
+}
+
+// One row of the supported-sprint list, transcribed once from the same
+// pinned retail listing and validated the same fail-closed way. Sprint
+// tracks carry lap-skip 1 like the drag tracks - the point-to-point rule
+// race_laps() applies - but live in the L1RA region.
+struct SupportedSprintRow {
+    std::uint32_t event;
+    std::int16_t track;
+    std::int8_t laps;
+    std::int8_t direction; // 0 forward, 1 reverse
+    const char* region;    // the stream region the track must live in
+    std::int8_t lap_skip;  // pinned: 1 on every sprint track
+};
+
+// The single-race sprint career events the port supports, in event order,
+// on the eight open sprint tracks 1102-1109. The
+// tournaments use their own round rows below; kind5 event112 uses the
+// same authored sprint route, with its special career rewards and movies.
+constexpr SupportedSprintRow kSupportedSprintRows[] = {
+    {2, 1102, 2, 0, "L1RA", 1},
+    {12, 1103, 2, 0, "L1RA", 1},
+    {22, 1103, 2, 1, "L1RA", 1},
+    {41, 1103, 2, 0, "L1RA", 1},
+    {23, 1104, 2, 0, "L1RA", 1},
+    {43, 1104, 2, 1, "L1RA", 1},
+    {67, 1104, 2, 0, "L1RA", 1},
+    {34, 1105, 2, 1, "L1RA", 1},
+    {54, 1105, 2, 0, "L1RA", 1},
+    {61, 1105, 2, 1, "L1RA", 1},
+    {101, 1105, 2, 1, "L1RA", 1},
+    {27, 1106, 2, 0, "L1RA", 1},
+    {57, 1106, 2, 1, "L1RA", 1},
+    {100, 1106, 2, 1, "L1RA", 1},
+    {74, 1107, 2, 0, "L1RA", 1},
+    {78, 1108, 2, 0, "L1RA", 1},
+    {82, 1108, 2, 0, "L1RA", 1},
+    {95, 1108, 2, 1, "L1RA", 1},
+    {94, 1109, 2, 0, "L1RA", 1},
+    {110, 1109, 2, 1, "L1RA", 1},
+    {112, 1108, 2, 1, "L1RA", 1},
+};
+
+// The row for `event`, or nullptr when the event is not a supported
+// sprint.
+constexpr const SupportedSprintRow* supported_sprint_row(std::uint32_t event) {
+    for (const SupportedSprintRow& row : kSupportedSprintRows)
+        if (row.event == event) return &row;
+    return nullptr;
+}
+
+// One row of the supported lap-knockout list: every such event is a kind-0
+// single three-lap race on one of the closed circuit tracks, whose
+// manifests and lanes the circuit families already carry. The knockout
+// elimination itself needs opponents the solo port does not simulate, so
+// the port runs the race as its laps (documented in RACE_EVENTS.md).
+struct SupportedKnockoutRow {
+    std::uint32_t event;
+    std::int16_t track;
+    std::int8_t laps;
+    std::int8_t direction; // 0 forward, 1 reverse
+};
+
+constexpr SupportedKnockoutRow kSupportedKnockoutRows[] = {
+    {5, 1003, 3, 1},   {10, 1003, 3, 1},
+    {24, 1006, 3, 1},  {39, 1006, 3, 1},
+    {31, 1005, 3, 0},
+    {49, 1008, 3, 0},  {58, 1008, 3, 1},
+    {60, 1006, 3, 0},
+    {72, 1001, 3, 0},  {84, 1001, 3, 1},  {103, 1001, 3, 0},
+    {91, 1007, 3, 0},
+};
+
+// The row for `event`, or nullptr when it is not a supported knockout.
+constexpr const SupportedKnockoutRow* supported_knockout_row(std::uint32_t event) {
+    for (const SupportedKnockoutRow& row : kSupportedKnockoutRows)
+        if (row.event == event) return &row;
+    return nullptr;
+}
+
+// One row of the supported time-trial list: the seven kind-2 and kind-3
+// single-race time-trial events, the unlockable races the career's
+// availability rule treats specially (a prerequisite of kind 2 or 3 also
+// counts when its status is 4 or 5). Each is one point-to-point pass on a
+// sprint track whose manifest and loader the sprint family carries.
+struct SupportedTimetrialRow {
+    std::uint32_t event;
+    std::int16_t track;
+    std::int8_t laps;
+    std::int8_t direction; // 0 forward, 1 reverse
+    const char* region;    // the stream region the track must live in
+    std::int8_t lap_skip;  // pinned: 1, the sprint tracks' point-to-point
+};
+
+constexpr SupportedTimetrialRow kSupportedTimetrialRows[] = {
+    {7, 1102, 2, 1, "L1RA", 1},
+    {15, 1104, 2, 0, "L1RA", 1},
+    {26, 1105, 2, 0, "L1RA", 1},
+    {47, 1103, 2, 1, "L1RA", 1},
+    {68, 1106, 2, 0, "L1RA", 1},
+    {77, 1107, 2, 1, "L1RA", 1},
+    {97, 1109, 2, 0, "L1RA", 1},
+};
+
+// The row for `event`, or nullptr when it is not a supported time-trial.
+constexpr const SupportedTimetrialRow* supported_timetrial_row(std::uint32_t event) {
+    for (const SupportedTimetrialRow& row : kSupportedTimetrialRows)
+        if (row.event == event) return &row;
+    return nullptr;
+}
+
+//Original campaign tournaments, including every authored round. A round keeps its parent event identity;
+//it never borrows another single event's grid, rewards or AI configuration.
+struct SupportedTournamentRow {
+    std::uint32_t event;RaceType type;
+    std::array<SupportedEventSelection,kRaceEventRaceSlots> rounds;
+    const char* region;std::int8_t lap_skip;unsigned count=3;
+    std::array<const char*,kRaceEventRaceSlots> regions{};
+};
+constexpr SupportedTournamentRow kSupportedTournamentRows[]={
+    {6,RaceType::circuit,{{{1003,2,0},{1003,2,1},{1006,2,0}}},"L1RA",0,3},
+    {9,RaceType::drag,{{{1210,2,1},{1210,2,0},{1201,2,1}}},"L1RB",1,3},
+    {14,RaceType::circuit,{{{1006,4,0},{1005,4,1},{1002,4,0}}},"L1RA",0,3},
+    {20,RaceType::drag,{{{1210,2,1},{1202,2,0},{1201,2,0},{1206,2,0}}},"L1RB",1,4,{{"L1RB","L1RC","L1RB","L1RB"}}},
+    {30,RaceType::circuit,{{{1003,2,1},{1008,2,0},{1002,2,0}}},"L1RA",0,3},
+    {38,RaceType::drift,{{{1303,4,0},{1304,4,0},{1305,4,0}}},"L1RB",0,3,{{"L1RB","L1RB","L1RC"}}},
+    {48,RaceType::circuit,{{{1003,2,0},{1006,2,0},{1005,2,0}}},"L1RA",0,3},
+    {66,RaceType::sprint,{{{1103,2,1},{1105,2,0},{1104,2,1}}},"L1RA",1,3},
+    {69,RaceType::circuit,{{{1008,3,0},{1005,3,1},{1002,4,0}}},"L1RA",0,3},
+    {80,RaceType::drag,{{{1214,2,0},{1214,2,1},{1214,2,0},{1214,2,1}}},"L1RB",1,4},
+    {92,RaceType::circuit,{{{1002,3,1},{1004,3,1},{1007,3,1}}},"L1RA",0,3},
+    {102,RaceType::sprint,{{{1106,2,1},{1107,2,0},{1103,2,0}}},"L1RA",1,3}
+};
+constexpr const SupportedTournamentRow* supported_tournament_row(std::uint32_t event) {
+    for(const auto& row:kSupportedTournamentRows)if(row.event==event)return &row;
+    return nullptr;
+}
+struct SupportedRaceSelection {
+    SupportedEventSelection slot;RaceType type=RaceType::circuit;
+    const char* region="L1RA";std::int8_t lap_skip=0;unsigned count=1;
+};
+constexpr bool supported_race_selection(std::uint32_t event,unsigned round,SupportedRaceSelection& out) {
+    if(const auto* row=supported_tournament_row(event)) {
+        if(round>=row->count)return false;
+        out={row->rounds[round],row->type,row->regions[round]?row->regions[round]:row->region,row->lap_skip,row->count};return true;
+    }
+    if(round)return false;
+    if(const auto* row=supported_circuit_row(event==0?1:event)) {out={{row->track,row->laps,row->direction},RaceType::circuit,"L1RA",0,1};return true;}
+    if(const auto* row=supported_drift_row(event)) {out={{row->track,row->laps,row->direction},RaceType::drift,row->region,0,1};return true;}
+    if(const auto* row=supported_drag_row(event)) {out={{row->track,row->laps,row->direction},RaceType::drag,row->region,row->lap_skip,1};return true;}
+    if(const auto* row=supported_sprint_row(event)) {out={{row->track,row->laps,row->direction},RaceType::sprint,row->region,row->lap_skip,1};return true;}
+    if(const auto* row=supported_knockout_row(event)) {out={{row->track,row->laps,row->direction},RaceType::lap_knockout,"L1RA",0,1};return true;}
+    if(const auto* row=supported_timetrial_row(event)) {out={{row->track,row->laps,row->direction},RaceType::time_trial,row->region,row->lap_skip,1};return true;}
+    return false;
+}
+
+// Whether `event` is any supported event: circuit, drift, drag, sprint,
+// lap-knockout or time-trial.
+constexpr bool is_supported_event(std::uint32_t event) {
+    SupportedEventSelection unused{};
+    return supported_tournament_row(event) != nullptr || supported_event_selection(event, unused) ||
+           supported_drag_row(event) != nullptr ||
+           supported_sprint_row(event) != nullptr ||
+           supported_knockout_row(event) != nullptr ||
+           supported_timetrial_row(event) != nullptr;
+}
 
 } // namespace nfsu

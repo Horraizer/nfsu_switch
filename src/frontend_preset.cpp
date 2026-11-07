@@ -15,19 +15,21 @@ std::uint32_t attribute(const CarPartDatabase& db,const CarPartRecord& r,std::ui
     return 0;
 }
 }
-bool resolve_frontend_skyline_parts(const std::vector<unsigned char>& front,
+bool resolve_frontend_preset_parts(const std::vector<unsigned char>& front,
+    std::size_t offset,const std::string& car_name,const std::string& preset_name,
     const CarPartDatabase& db,InstalledPartSelection& selection,std::string& error) {
     selection=InstalledPartSelection{};
     if(!db.ok()) {error="invalid frontend part database";return false;}
     // The row belongs to decoded FrontB chunk 0x30220; validate its identity
     // before consuming the fixed-size ordered slot table, including repeats.
-    constexpr std::size_t offset=11949952,row_size=0x408;
-    if(front.size()<offset+row_size ||
-       std::memcmp(front.data()+offset+8,"SKYLINE\0",8)!=0 ||
-       std::memcmp(front.data()+offset+0x28,"FE_SKYLINE\0",11)!=0) {
-        error="original frontend Skyline preset absent";return false;
+    constexpr std::size_t row_size=0x408;
+    if(car_name.empty() || preset_name.empty() || car_name.size()>=32 || preset_name.size()>=32 ||
+       offset>front.size() || row_size>front.size()-offset ||
+       std::memcmp(front.data()+offset+8,car_name.c_str(),car_name.size()+1)!=0 ||
+       std::memcmp(front.data()+offset+0x28,preset_name.c_str(),preset_name.size()+1)!=0) {
+        error="original frontend preset identity mismatch";return false;
     }
-    const auto car=bin_hash("SKYLINE");
+    const auto car=bin_hash(car_name);
     const auto lookup=[&](std::uint32_t type,int slot,std::uint32_t name) {
         return find_car_part(db,type,slot,name,kNoCarPart,kAnyUpgradeLevel);
     };
@@ -69,8 +71,8 @@ bool resolve_frontend_skyline_parts(const std::vector<unsigned char>& front,
     error.clear();return true;
 }
 
-bool resolve_frontend_skyline_skin(const std::vector<unsigned char>& globals,
-    const CarPartDatabase& db,const InstalledPartSelection& parts,
+bool resolve_frontend_preset_skin(const std::vector<unsigned char>& globals,
+    const std::string& car_name,const CarPartDatabase& db,const InstalledPartSelection& parts,
     BodySkinSelection& skin,std::string& error) {
     skin=BodySkinSelection{};
     const auto part=[&](unsigned slot)->const CarPartRecord* {
@@ -93,7 +95,7 @@ bool resolve_frontend_skyline_skin(const std::vector<unsigned char>& globals,
     if(!db.ok() || !base || !paint(*base,skin.base_color)) {
         error="original frontend base paint attributes absent";return false;
     }
-    skin.car_name="SKYLINE";
+    skin.car_name=car_name;
     skin.doorline=SkinDoorlineSelection{part(6)?SkinDoorlineVariant::wide_body:SkinDoorlineVariant::plain};
     for(unsigned k=0;k<4;++k) if(const auto* selected=part(37+k)) {
         std::uint32_t color=0;if(!paint(*selected,color)) {error="invalid frontend special paint";return false;}
@@ -143,6 +145,15 @@ bool resolve_frontend_skyline_skin(const std::vector<unsigned char>& globals,
         skin.vinyl_layers[layer]=std::move(vinyl);
     }
     error.clear();return true;
+}
+bool resolve_frontend_skyline_parts(const std::vector<unsigned char>& front,
+    const CarPartDatabase& db,InstalledPartSelection& selection,std::string& error) {
+    return resolve_frontend_preset_parts(front,11949952,"SKYLINE","FE_SKYLINE",db,selection,error);
+}
+bool resolve_frontend_skyline_skin(const std::vector<unsigned char>& globals,
+    const CarPartDatabase& db,const InstalledPartSelection& parts,
+    BodySkinSelection& skin,std::string& error) {
+    return resolve_frontend_preset_skin(globals,"SKYLINE",db,parts,skin,error);
 }
 bool resolve_frontend_sponsors(const CarPartDatabase& db,const StockParts& parts,
     FrontendSponsorHashes& hashes,std::string& error) {

@@ -103,6 +103,14 @@ The owner's Switch pad, named by position (docs/INPUT.md):
 
 `start`, +, is left to the application.
 
+Switch drag also accepts right-stick up/down for one upshift/downshift per
+deflection. Return the vertical axis through center before the next gesture.
+Press/release hysteresis is defined by DragPadInput in switch/drag_input.h;
+holding the stick or jitter near its activation threshold does not repeat.
+This owner-requested binding shares the bounded HID/transition queue with
+the alternate R/A buttons. R3 remains hold-to-look-back. A stick held outside
+center on entry, controller change or resume must center before it can shift.
+
 ## The remapping file
 
 ASCII, one directive per line; `format_drive_controls_config` writes the
@@ -218,11 +226,9 @@ traced. The chase camera therefore looks level from 1.7 m and down 16.7
 degrees from 3.45 m.
 
 The built-in `stock_240sx_chase_camera_table()` holds the 240SX's 176 bytes,
-+0xB50..+0xBFF of record 18 (file bytes 1739648..1739823), under the owner's
-rule of PR #169 comment 3860: they hash to
-`608892D5C3C134AD0CB55BBCAD56A343C3563766513BD70D61067EDE771C9EE9`, and
-`nfsu_drive_tests` encodes the table into a record image and requires that
-hash. `drive-replay --root` compares the retail record with it:
++0xB50..+0xBFF of record 18 (file bytes 1739648..1739823), as required by
+PR #169 comment 3860. `nfsu_drive_tests` owns the encoded table hash and
+checks it against a reconstructed record image. `drive-replay --root` compares the retail record with it:
 `camera anchors: 240SX record +0xB50 equal to the built-in 240SX table`.
 
 **The field of view.** 0x0048ACA4 writes a per-POV word from 0x006FBDF4
@@ -423,23 +429,25 @@ arguments are parsed.
 
 **The frames.** `drive-replay --demo --every 0 --root <game> --render-every
 120`, 640x360. These document-only retail pins were refreshed from a
-successful default-build run at `64a2a91`, after correcting the tyre
-arctangent. The stream and written-file hashes were checked. Agreement with
-Release for this candidate remains an independent validation requirement:
+successful default-build run after restoring the shared native477775 base
+grip,479640/46E020 traction policy and the complete477300 rest/bump refresh
+with588AB0 landing impulses. The stream hash remains test-owned
+in `nfsu_drive_tests`; written frames were checked against the printed
+hashes. Default and Release streams and all11 written frames match:
 
 | Frame | POV | SHA-256 |
 | ---: | ---: | --- |
-| 120 | 0 | `268D610490A6FECB4133029744E0E384F41836DCA8F1C38233F7C9AB9B40791C` |
-| 240 | 0 | `AE17A2274A8FCD54603B001BB2CA94981C4B75C348E970039562D8C0654C8389` |
-| 360 | 0 | `DF0BFAA8EB745341AA47996658FE37483CAA463F1B2B3A73EE0F5553355FA396` |
-| 480 | 0 | `B5913D420E2FD4C35D5694AD4472D31A1E0A9F555514FB263BF959F44ED2DC42` |
-| 600 | 0 | `46A418F3145D5358B289D4141F70C065FC0CA4AD5ED85872AE2E6BE61561F242` |
-| 720 | 0 | `918ACCAB755587D3284F62017816953596534405F905D4CE2C76F0502E473991` |
-| 840 | 1 | `412114436C7FC4BC4BF7EE015DA6F684F20BBA60E25C8D4DC7254DD126E33452` |
-| 960 | 1 | `B8CD4546A2AD2A772A25EF26A1110E465DF739784C3A6AB5ECD84BA9EDBA6AA6` |
-| 1080 | 1 | `59B529B58C79EE098CE72EF27E7BBE47283FA6A23D9F17D2E7B36C67A1AF0569` |
-| 1200 | 1 | `56C846310A599E141093B50A125EEF88CEC4D60404A0BBCA6CC0BAC0DB7877AA` |
-| 1320 | 1 | `D415AFC5A02CB8686AB3839DB6D0DBBF7C745C6A55D1424C9AF4DC7721B869D1` |
+| 120 | 0 | `6999531685863C172B2519598D6AE04B9150B76670616649CA1C69CDAC198911` |
+| 240 | 0 | `B74055E7AA1FD294D036C275445DB8DF3BB4DBE28507C235DAB1F0FAD8C54C81` |
+| 360 | 0 | `0493D75E9B113764661B1C4A2996AAD532215721080A054E67D8B075A44B564E` |
+| 480 | 0 | `5859972853989A7F38120930BE1FD3D1D6EFA3F82C96AA5797D2AFD4AB1D9B88` |
+| 600 | 0 | `3DBD68EDCCEA387404ED1A13DEE9663CFFEF13AD68CC72CD8B220A6171E7BF24` |
+| 720 | 0 | `9EDA6021CBEB26A74CBB5FDF130CCAF3149E14AA508D38F5453E80BA0D9D9391` |
+| 840 | 1 | `7577F178946C95AAADAEF787E0A6B1E8AB3A537CDACE91C41A4F41C7BD7AF867` |
+| 960 | 1 | `F7D0D48B240E477B0965F96E4E5D8A94FB601F82EB3B90F9D73BDDC478508166` |
+| 1080 | 1 | `CE549706D880497BE880FFD190C304451C61531132D2C6A4CBBC9BE75AB24ED2` |
+| 1200 | 1 | `D06F899F0B1635C2CA54591F45547A69463A88D8CFD0E18D7F721630383C0CFE` |
+| 1320 | 1 | `B7F71A9E74A86C17386B9FDE082204C93621876198EBBC7AEE2663211D974BCD` |
 
 The stock lateral placement correction is retained. `drive-replay` does not
 pass a car animation state to `drive_place_instances`, so these frames do

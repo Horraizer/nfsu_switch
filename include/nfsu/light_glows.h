@@ -27,6 +27,8 @@ CarGlowAnchors collect_car_glow_anchors(const StockFrame& stock) noexcept;
 struct CarExhaustAnchor { CarGlowAnchor marker; unsigned slot=0; };
 using CarExhaustAnchors=std::array<CarExhaustAnchor,3>;
 CarExhaustAnchors collect_car_exhaust_anchors(const StockFrame& stock) noexcept;
+bool load_nitrous_purge_texture(const std::filesystem::path& root,
+    RenderTexture& texture,std::string& error);
 bool load_nitrous_flame_texture(const std::filesystem::path& root,
     RenderTexture& texture,std::string& error);
 CarGlowSprites place_car_glows(const CarGlowAnchors& anchors,
@@ -41,6 +43,8 @@ struct OriginalCarGlow {
     unsigned texture = 0;
 };
 using OriginalCarGlows = std::array<OriginalCarGlow,7>;
+std::array<OriginalCarGlow,2> place_nitrous_purge(const CarGlowAnchors& anchors,
+    const PreparedCarScene& car,const CameraFrame& camera,bool active,std::uint64_t tick) noexcept;
 // Authored exhaust markers and SFX_FIREB; port axial billboard animation.
 std::array<OriginalCarGlow,3> place_nitrous_flames(const CarExhaustAnchors& anchors,
     const PreparedCarScene& car,const CameraFrame& camera,bool active,std::uint64_t tick) noexcept;
@@ -51,7 +55,10 @@ bool load_original_car_glow_textures(const std::filesystem::path& root,
     std::array<RenderTexture,3>& textures,std::string& error);
 OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
     const PreparedCarScene& car,const CameraFrame& camera,unsigned display_width,
-    double service_brake) noexcept;
+    double service_brake,bool body_markers=false) noexcept;
+
+bool draw_original_car_glows(Frame&,const RenderOptions&,
+    const std::array<RenderTexture,3>&,const OriginalCarGlows&,RenderStats&,std::string&);
 
 OriginalCarGlow place_original_road_glow(const float* point,const float* normal,
     const CameraFrame& camera,unsigned display_width) noexcept;

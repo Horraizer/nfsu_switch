@@ -5,6 +5,8 @@
 #include "nfsu/shader_manifest.h"
 
 namespace nfsu {
+// Bounded upload namespace, including static backing not selected this frame.
+constexpr std::size_t kDrawResourceCapacity=16384;
 
 // std140 payloads for the blocks in every shaders/*.manifest. These are
 // values, not GPU allocations. reserve_draw_uniforms places their aligned
@@ -17,6 +19,11 @@ struct DrawFrameUniform {
     float projection[4]{};
     float light[4]{};
     std::uint32_t options[4]{};
+};
+struct DrawHeadlightUniform {
+    float eye[4]{},right[4]{},up[4]{},forward[4]{},projection[4]{},light[4]{};
+    std::uint32_t options[4]{};
+    // Six pooled traffic lights, five vec4 per projector; no extra world pass.
 };
 struct DrawInstanceUniform {
     float rows[16] = {1, 0, 0, 0, 0, 1, 0, 0,
@@ -32,6 +39,9 @@ struct DrawMaterialUniform {
     float environment_range[4]{};
     float environment_color[4] = {0, 0, 0, 1};
     CarShadingMaterial surface;
+    // Track TextureInfo UV transform: U/V rate (offset in mode3), period, mode.
+    // Static material metadata; the world clock occupies Frame.light.w.
+    float uv_animation[4]{};
 };
 
 struct RecordedDraw {
@@ -47,7 +57,7 @@ struct RecordedDraw {
     std::size_t vertex_resource = kNoHandle;
     std::size_t index_resource = kNoHandle;
     std::size_t texture_resource = kNoHandle;
-    // Whole mesh vertex buffer, triangle-list u16 indices, base vertex zero.
+    // Whole mesh vertex buffer, triangle-list u16 indices plus first_vertex.
     std::uint32_t first_vertex = 0;
     std::uint32_t vertex_count = 0;
     std::uint32_t first_index = 0;
@@ -69,11 +79,14 @@ struct RecordedDrawView {
     const DrawInstanceUniform& placement;
     const DrawMaterialUniform& material;
     bool track_instance = false;
+    // Hidden dynamic actors retain their definition and uniform slot.
+    bool submit = true;
     std::string diagnostic_name() const;
 };
 
 // Immutable resource/definition owner; selection and animated constants may
 // change only between frames. A generation invalidates earlier frame views.
+struct DrawTextureAlias {std::size_t resource=kNoHandle,frame=kNoHandle;};
 class PreparedCommandSource {
 public:
     virtual ~PreparedCommandSource() = default;
@@ -81,6 +94,9 @@ public:
     virtual std::size_t selected_draw_count() const = 0;
     virtual RecordedDrawView selected_draw(std::size_t i) const = 0;
     virtual std::uint64_t command_generation() const = 0;
+    virtual std::size_t texture_alias_count() const {return 0;}
+    virtual DrawTextureAlias texture_alias(std::size_t) const {return {};}
+
     virtual std::size_t reflection_draw_count() const { return 0; }
     virtual const RecordedDraw& reflection_draw(std::size_t) const = 0;
     // Immutable package enumerated once at renderer open. Track selections
@@ -88,6 +104,7 @@ public:
     virtual std::size_t static_track_draw_count() const = 0;
     virtual std::size_t static_track_instance_count() const = 0;
     virtual const DrawInstanceUniform& static_track_instance(std::size_t i) const = 0;
+    virtual bool movable_track_instance(std::size_t) const { return false; }
     virtual std::size_t static_track_definition_count() const = 0;
     virtual const RecordedDraw& static_track_definition(std::size_t i) const = 0;
 };
@@ -107,13 +124,14 @@ public:
     std::size_t reflection_draw_count() const;
     const RecordedDraw& reflection_draw(std::size_t i) const;
     DrawFrameUniform frame;
-    DrawFrameUniform headlight_frame;
+    DrawHeadlightUniform headlight_frame;
     std::size_t headlight_texture = kNoHandle;
     bool race_environment = false;
     unsigned cube_face_mask = 63;
     DrawFrameUniform frontend_floor_frame;
     FrontendLighting frontend_light;
     bool frontend_light_enabled=false;
+    bool frontend_car_only=false; // Authored magazine photo composition.
     std::array<DrawFrameUniform,6> frontend_cube_frames;
     std::vector<RecordedDraw> frontend_cube_draws;
     std::uint32_t width = 0;
@@ -136,11 +154,15 @@ public:
     std::size_t draw_count() const;
     RecordedDrawView draw_view(std::size_t i) const;
     bool generation_valid() const;
+    std::size_t texture_alias_count() const;
+    DrawTextureAlias texture_alias(std::size_t) const;
+
     bool borrowed() const noexcept { return source_ != nullptr; }
     const PreparedCommandSource* package_identity() const noexcept { return source_; }
     std::size_t static_track_draw_count() const;
     std::size_t static_track_instance_count() const;
     const DrawInstanceUniform& static_track_instance(std::size_t i) const;
+    bool movable_track_instance(std::size_t i) const;
     std::size_t static_track_definition_count() const;
     const RecordedDraw& static_track_definition(std::size_t i) const;
 private:
@@ -171,18 +193,21 @@ bool record_track_commands(const PreparedTrackScene& scene,
                            const TrackDrawList& list,
                            const RenderOptions& options,
                            const RenderLimits& limits,
-                           RecordedCommands& commands, std::string& error);
+                           RecordedCommands& commands, std::string& error,
+                           const std::vector<std::size_t>& model_meshes = {});
 
 struct TrackReflectionCache;
 bool record_lamp_reflections(const RenderOptions& options, const UploadTable& uploads,
-                             std::vector<RecordedDraw>& draws, std::string& error);
+                             std::vector<RecordedDraw>& draws, std::string& error,
+                             const CameraFrame* camera = nullptr);
 bool record_track_reflections(const PreparedTrackScene& scene, const RenderOptions& options,
                               const UploadTable& uploads, std::vector<RecordedDraw>& draws,
-                              std::string& error, bool cull = true, const TrackResidency* residency = nullptr);
+                              std::string& error, bool cull = true, const TrackResidency* residency = nullptr,
+                              const TrackReflectionCache* cache = nullptr);
 
 // One arena allocation, released by the caller after its last-use fence.
 // Frame at allocation.offset; draw i's Instance at offset + (1+2*i)*256,
-// Material at offset + (2+2*i)*256. Payload sizes are 112, 64 and 192 bytes;
+// Material at offset + (2+2*i)*256. Payload sizes are 112, 64 and 208 bytes;
 // padding is not read. Failure leaves allocation and arena unchanged.
 bool reserve_draw_uniforms(const RecordedCommands& commands, MemoryArena& arena,
                            ArenaAllocation& allocation, std::string& error);
@@ -196,5 +221,10 @@ DrawValidationAudit* set_draw_validation_audit(DrawValidationAudit* audit) noexc
 // Check borrowed payloads, manifest identity, ranges and state before a
 // hardware backend dereferences a command. No SDK dependency or GPU work.
 bool validate_recorded_commands(const RecordedCommands& commands, std::string& error);
+
+// Prepared dynamic slots may retire a suffix (start crowd at GO), while
+// every active definition keeps its initial identity and allocation.
+bool validate_prepared_dynamic_prefix(const std::vector<const RecordedDraw*>&,
+                                      const RecordedCommands&, std::string& error);
 
 } // namespace nfsu

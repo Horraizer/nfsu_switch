@@ -87,3 +87,13 @@ smoke frame is pinned by `nfsu_race_particle_frame_guards` when
 `NFSU_RETAIL_ROOT` names the read-only install. A console photograph and
 paired GPU measurement must be added from the owner's hardware before the
 standing acceptance of #181 can be considered complete.
+
+## Later solver-witness correction
+
+The earlier body-side spark origin is historical. The world contact observer
+now carries the actual prepared solver point through VehicleContactObservation.
+RaceParticles selects a real current witness and emits no guessed burst when
+one is unavailable. This is output-only: no contact order, impulses, physical
+state or replay encoding is changed. The synthetic renderer test retains its
+old supplied point and separately displaces only that witness. Triggers,
+particle appearance and the complete original emitter runtime remain open.

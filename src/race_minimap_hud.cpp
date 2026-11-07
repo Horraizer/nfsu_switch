@@ -30,7 +30,7 @@ void update_race_minimap_direction(MapPoint target,std::int32_t ticks,
 bool append_race_minimap(const RaceSession& session,const RaceHudAtlas& atlas,
                          unsigned width,unsigned height,RaceMinimapState& state,
                          RaceHudFrame& frame) noexcept {
-    if (!atlas.map.valid) return true;
+    if (session.start_cinematic() || (session.is_drift() && !session.timing().go_valid) || !atlas.map.valid) return true;
     if (!width || !height) return false;
     const auto& camera=session.camera();
     const MapPoint target{{float(camera.forward.x),float(camera.forward.y)}};
@@ -51,12 +51,47 @@ bool append_race_minimap(const RaceSession& session,const RaceHudAtlas& atlas,
     const auto& car=session.car();const auto& q=car.orientation;
     MinimapActor player;player.id=0;player.raw_xy={{float(car.position.x),float(car.position.y)}};
     player.heading=chase_angle(1-2*(q.y*q.y+q.z*q.z),2*(q.x*q.y+q.w*q.z));
-    // Explicit single driven port actor. No inferred retail roster/gate writers.
+    // Explicit port roster. No inferred retail live gate writers.
     player.raw_gates_valid=true;player.gate_4d0=player.gate_8a9=1;
     player.color={{172,53,0}};player.kind=1;player.texture_hash=0x7E22DED8;
     player.size_x=player.size_y=float(0.09589000046253204);
+    std::array<MinimapActor,6> actors{};std::size_t actor_count=0;
+    const auto& course=session.course();
+    //58E8C8..58E9D2: circuit draws one START_LINE; point-to-point adds
+    // the separate finish. Native start/finish angles already describe art
+    // orientation; convert to the actor-heading convention of the kernel.
+    const auto line=[&](int boundary,std::uint16_t orientation,std::int16_t id) {
+        if(boundary<0 || std::size_t(boundary)>=course.route.boundaries.size())return;
+        const int index=course.route.boundaries[std::size_t(boundary)].marker;
+        if(index<0 || std::size_t(index)>=course.track.markers.size())return;
+        const auto& marker=course.track.markers[std::size_t(index)];
+        auto& a=actors[actor_count++];a=player;a.id=id;a.kind=13;
+        a.raw_xy={{marker.position[0],marker.position[1]}};
+        a.heading=std::uint16_t(0x4000-orientation);
+        a.texture_hash=0x72974A14;a.color={{132,169,235}}; //7313E6
+        a.size_x=0.024999000132083893F;a.size_y=0.1349949985742569F;
+    };
+    line(course.route.start,course.route.reverse && course.route.point_to_point?atlas.map.finish_angle:atlas.map.start_angle,-1);
+    if(course.route.point_to_point)
+        line(course.route.finish,course.route.reverse?atlas.map.start_angle:atlas.map.finish_angle,-2);
+    for(std::size_t i=0;i<session.rival_count();++i) {
+        const auto& s=session.rival(i).car();const auto& r=s.orientation;
+        auto& actor=actors[actor_count++];actor=player;actor.id=unsigned(i+1);
+        //435746..435756 passes hide=true for eliminated non-human actors;
+        //43535D clears8A9, which58EA00 tests before drawing their map marker.
+        //Keep the result row for standings; this gate hides only the marker.
+        actor.gate_8a9=session.timing().racers.at(i+1).status==RacerStatus::knocked_out?0:1;
+        actor.raw_xy={{float(s.position.x),float(s.position.y)}};
+        actor.heading=chase_angle(1-2*(r.y*r.y+r.z*r.z),2*(r.x*r.y+r.w*r.z));
+        // Original 58EA88: rival palette7313DD and marker kind5.
+        actor.color={{0,66,255}};actor.kind=5;
+    }
+    //58E810 submits the single human after remote racers: overlapping
+    //markers must keep the player on top, independent of roster order.
+    actors[actor_count++]=player;
     MinimapGeometry geometry;
-    if (build_minimap_geometry(atlas.map,style,presentation,player.raw_xy,&player,1,geometry)!=MinimapResult::ok)
+    if (build_minimap_geometry(atlas.map,style,presentation,player.raw_xy,actors.data(),
+        actor_count,geometry)!=MinimapResult::ok)
         return false;
     // Native clips to the HUD window, not to rotating texture coordinates.
     // The isolated atlas sampler wraps the route artwork without changing it.
@@ -64,7 +99,8 @@ bool append_race_minimap(const RaceSession& session,const RaceHudAtlas& atlas,
     if (frame.lap_first_quad==kRaceHudMaxQuads) frame.lap_first_quad=frame.quads;
     for (std::size_t i=0;i<geometry.count;++i) {
         const auto& piece=geometry.pieces[i];
-        const int tx=piece.route?513:780,ty=1,tw=piece.route?256:32;
+        const bool line=piece.texture_hash==0x72974A14;
+        const int tx=piece.route?513:line?820:780,ty=1,tw=piece.route?256:line?16:32;
         for (std::size_t j=0;j<4;++j) {
             const auto& in=piece.vertices[j];auto& out=frame.vertices[frame.quads*4+j];
             const float u=in.uvq[0]/in.uvq[2],v=in.uvq[1]/in.uvq[2];

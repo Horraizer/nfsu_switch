@@ -311,7 +311,20 @@ The 44 circuit slots and the 12 lap-knockout slots all name tracks
 1301-1304 (drift, mask 0x08). The drift tracks there have a lap-skip byte
 of 0 and their events store 4 laps; event 3, one of the five races offered
 with race 1, is a 4-lap drift on 1301. That is a statement of what the
-data holds, not a choice between the two.
+data holds, not a choice between the two. The owner's 2026-10-12 first-drift
+task makes that event the port's first supported drift race, and the
+2026-10-14 follow-up restored the rest: `nfsu::kSupportedDriftRows` names
+every single-race drift event (tracks 1301-1308, all forward, four laps;
+the three-race tournament event 38 stays refused), and
+`load_supported_race` fails closed unless the retail record still reads one
+drift race on the row's track, region `L1RB` for 1301-1304 and `L1RC` for
+1305-1308, lap-skip 0. The owner's 2026-10-15 drag task restores the drag
+family the same way: `nfsu::kSupportedDragRows` names the twenty
+single-race drag events on tracks 1201, 1202, 1206, 1207, 1210 and 1214
+(both directions, stored 2 laps on a lap-skip-1 course the port times as
+one point-to-point pass), and `load_supported_race` fails closed unless
+the retail record still reads one drag race on the row's track, region and
+lap-skip 1. The drag tournaments 9, 20 and 80 stay refused. The owner's 2026-10-17 sprint task restores the last track family the same way: `nfsu::kSupportedSprintRows` names the twenty single-race sprint events of kinds 0 and 6 on the open tracks 1102-1109, validated against region `L1RA` and lap-skip 1; the tournaments 66 and 102 and the kind-5 event 112 (whose kind no reader has traced) stay refused. The 2026-10-18 lap-knockout task restores the last event family the same way: `nfsu::kSupportedKnockoutRows` names the twelve kind-0 single-race lap-knockout events (three laps each on the closed circuit tracks), validated like the circuit rows; the elimination rule needs opponents the solo port does not simulate, so the port runs each as its laps. The seven kind-2 and kind-3 time-trial events (the unlockable races the availability rule treats specially) close the single-race coverage the same day: `nfsu::kSupportedTimetrialRows` names them, one point-to-point pass each on the sprint tracks.
 
 ## The probe
 

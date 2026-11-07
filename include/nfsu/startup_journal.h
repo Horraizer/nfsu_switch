@@ -45,7 +45,7 @@ public:
         return fd_>=0 || fail("open");
     }
     const char* error() const noexcept {return error_;}
-    bool mark(const char* stage,const char* detail) noexcept {
+    bool mark(const char* stage,const char* detail,bool echo=true) noexcept {
         if(fd_<0) {errno=EBADF;return fail("mark");}
         char line[768];
         const int size=std::snprintf(line,sizeof line,"MENU STARTUP seq=%u stage=%s %s\n",++sequence_,stage,detail);
@@ -60,7 +60,7 @@ public:
             done+=static_cast<std::size_t>(count);
         }
         if(sync_(fd_)!=0)return fail("fsync");
-        if(std::fwrite(line,1,size,stdout)!=static_cast<std::size_t>(size) || std::fflush(stdout)!=0)
+        if(echo && (std::fwrite(line,1,size,stdout)!=static_cast<std::size_t>(size) || std::fflush(stdout)!=0))
             return fail("stdout");
         return true;
     }

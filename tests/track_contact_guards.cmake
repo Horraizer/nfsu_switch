@@ -17,7 +17,7 @@
 # Exit 5 and exit 0 differ by whether a query ran at all.
 #
 # One exit no case here reaches: 4, the Switch plan refusing the world. The
-# fixture's 4696 resident bytes cannot fill the 64 MiB persistent
+# fixture's 5944 resident bytes cannot fill the persistent
 # placeholder, and the refusal path itself is covered by the
 # test_memory_plan cases of nfsu_track_contact_tests.
 #
@@ -152,17 +152,19 @@ endif()
 
 # The four sections as one image, the whole summary: counts, triangle kinds,
 # the frame, every memory figure, and the Switch plan.
+#26 triangle records now include48 bytes of immutable query operands each;
+#this changes storage, not the decoded collision geometry or query verdicts.
 set(summary
     "collision: valid polygons 13 cells 11 indices 20 nodes 52\n"
     "bounds: px -830 .. 1682 pz -411 .. 734 py -127 .. 127\n"
     "triangles: road 15 wall 10 degenerate 1 (road when |normal py| >= 0.5)\n"
     "frame: raw slot order (px, pz, py), py up, world units"
     "render x = px, y = py, z = -pz\n"
-    "memory resident: 4696 bytes in 5 allocations: polygons 1248 cells 352 indices 80 nodes 2496 triangles 520\n"
+    "memory resident: 5944 bytes in 5 allocations: polygons 1248 cells 352 indices 80 nodes 2496 triangles 1768\n"
     "memory stored: 1048 bytes as the file holds the same arrays\n"
-    "memory ceiling: 30932992 resident bytes at the default collision limits\n")
+    "memory ceiling: 37224448 resident bytes at the default collision limits\n")
 nfsu_case("the packed fixture loads" 0
-          "file size: 1313 image bytes 1152 unused packed bytes 0\n;${summary};memory load: packed 1313 image 1152 peak 6641\n;switch plan: persistent 4696 of 67108864 bytes (0 per mille) extent 4696;streaming load peak 2465 of 50331648 bytes (0 per mille), released\n;probe: no point given"
+          "file size: 1313 image bytes 1152 unused packed bytes 0\n;${summary};memory load: packed 1313 image 1152 peak 6641\n;switch plan: persistent 5944 of 134217728 bytes (0 per mille) extent 5944;streaming load peak 2465 of 75497472 bytes (0 per mille), released\n;probe: no point given"
           "issue;probe column;probe segment"
           "${packed}")
 set(packed_listing "${last_stdout}")

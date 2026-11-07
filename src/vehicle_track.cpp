@@ -1,10 +1,12 @@
 #include "nfsu/vehicle_track.h"
+#include "nfsu/race_contacts.h"
 
 #include "nfsu/det_sqrt.h"
 #include "nfsu/player_powertrain.h"
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -15,6 +17,58 @@
 #endif
 
 namespace nfsu {
+bool VehicleTrackSession::meet_track(const RaceContactPose& history,const RaceTrackContactJob& job,
+    float friction,RaceContactContext& context,RacePairContact& result) {
+    if(!started_)return false;
+    const auto saved=state_;const auto saved_ai=ai_;const bool saved_started=ai_started_;
+    const auto record=context.record;
+    if(resolve_swept_race_track_contact(state_,model_->spec(),history,job,friction,context,result)&&
+       (!result.searched||continue_contact(result.remaining_a,&saved,context.refresh!=nullptr)))return true;
+    state_=saved;ai_=saved_ai;ai_started_=saved_started;context.record=record;result={};return false;
+}
+bool VehicleTrackSession::meet_external(VehicleState& other,const VehicleSpec& spec,
+    const RaceContactBox& self_box,const RaceContactBox& other_box,RacePairContact& result,
+    const RaceContactPose* previous,const RaceContactPose* other_previous,RaceContactContext* context,const RaceContactJob* prepared,bool self_is_b,bool other_fixed_world) {
+    if(!started_)return false;
+    const auto saved=state_,saved_other=other;const auto saved_ai=ai_;
+    const bool saved_started=ai_started_;
+    const auto saved_record=context?context->record:ContactRecord{};
+    const auto saved_seed=context?context->world_seed:0U;
+    bool ok=false;
+    if(self_is_b) {
+        ok=previous&&other_previous?
+            resolve_swept_race_pair(other,spec,other_box,state_,model_->spec(),self_box,result,*other_previous,*previous,context,prepared,{other_fixed_world,false}):
+            resolve_race_pair(other,spec,other_box,state_,model_->spec(),self_box,result,nullptr,context);
+    } else {
+        ok=previous&&other_previous?
+            resolve_swept_race_pair(state_,model_->spec(),self_box,other,spec,other_box,result,*previous,*other_previous,context,prepared,{false,other_fixed_world}):
+            resolve_race_pair(state_,model_->spec(),self_box,other,spec,other_box,result,nullptr,context);
+    }
+    if(ok&&(!(result.applied||result.searched)||continue_contact(self_is_b?result.remaining_b:result.remaining_a,&saved,context&&context->refresh)))return true;
+    state_=saved;other=saved_other;ai_=saved_ai;ai_started_=saved_started;
+    if(context){context->record=saved_record;context->world_seed=saved_seed;}
+    result={};return false;
+}
+
+bool VehicleTrackSession::meet(VehicleTrackSession& other,const RaceContactBox& self_box,
+                              const RaceContactBox& other_box,RacePairContact& result,
+                              const RaceContactPose* previous,const RaceContactPose* other_previous,RaceContactContext* context,const RaceContactJob* prepared) {
+    if(this==&other || !started_ || !other.started_)return false;
+    const auto saved=state_,saved_other=other.state_;
+    const auto saved_ai=ai_,saved_other_ai=other.ai_;
+    const bool saved_started=ai_started_,saved_other_started=other.ai_started_;
+    const auto saved_record=context?context->record:ContactRecord{};
+    const auto saved_seed=context?context->world_seed:0U;
+    const bool ok=previous&&other_previous?
+        resolve_swept_race_pair(state_,model_->spec(),self_box,other.state_,other.model_->spec(),other_box,result,*previous,*other_previous,context,prepared):
+        resolve_race_pair(state_,model_->spec(),self_box,other.state_,other.model_->spec(),other_box,result,nullptr,context);
+    if(ok&&(!(result.applied||result.searched)||(continue_contact(result.remaining_a,&saved,context&&context->refresh)&&other.continue_contact(result.remaining_b,&saved_other,context&&context->refresh))))return true;
+    state_=saved;other.state_=saved_other;ai_=saved_ai;other.ai_=saved_other_ai;
+    ai_started_=saved_started;other.ai_started_=saved_other_started;
+    if(context){context->record=saved_record;context->world_seed=saved_seed;}
+    result={};return false;
+}
+
 namespace {
 
 VehicleVec3 v3(double x, double y, double z) noexcept {
@@ -204,6 +258,31 @@ public:
         return answer.hit;
     }
 
+    void cast_wheels(const std::array<VehicleVec3,kVehicleWheelCount>& from,
+        const VehicleVec3& direction,const std::array<double,kVehicleWheelCount>& length,
+        std::array<VehicleGroundHit,kVehicleWheelCount>& hits) const override {
+        std::array<VehicleTrackCast,kVehicleWheelCount> out{};
+        inner_.probe_wheels(from,direction,length,out);
+        for(std::size_t i=0;i<kVehicleWheelCount;++i) {
+            hits[i]=out[i].hit;
+            if(calls_<kVehicleWheelCount)surfaces_[calls_]=out[i].surface;
+            ++calls_;
+        }
+    }
+
+    bool strut_heights(const std::array<VehicleVec3,kVehicleWheelCount>& hubs,
+        std::array<VehicleGroundHit,kVehicleWheelCount>& hits) const override {
+        if(!inner_.uses_cached_struts())return false;
+        std::array<VehicleTrackCast,kVehicleWheelCount> out{};
+        inner_.probe_strut_heights(hubs,out);
+        for(std::size_t i=0;i<kVehicleWheelCount;++i) {
+            hits[i]=out[i].hit;
+            if(calls_<kVehicleWheelCount)surfaces_[calls_]=out[i].surface;
+            ++calls_;
+        }
+        return true;
+    }
+
     const std::array<VehicleTrackSurface, kVehicleWheelCount>& surfaces() const noexcept {
         return surfaces_;
     }
@@ -328,6 +407,46 @@ VehicleHull stock_240sx_hull() {
             hull.points[k][axis] = float_of_bits(k240sxHullBits[k][axis]);
         }
     }
+    //472F30 support adjacency from the same authenticated240SX_CV records.
+    hull.neighbors={
+        {1,13,4,12,16},
+        {5,13,0,4,25,26},
+        {26,3,25,11},
+        {7,33,26,14,31,15,2,11},
+        {5,1,9,8,0,23,16},
+        {9,25,1,4},
+        {},
+        {3,11,33,18,34},
+        {9,4,19,23},
+        {5,27,8,4,11,25,32,19},
+        {},
+        {7,27,9,34,20,21,32,2,25,3},
+        {13,0,29,16,28},
+        {1,26,0,28,31,12},
+        {22,31,15,3},
+        {35,33,14,22,3},
+        {4,0,29,23,12},
+        {35,22,18,24,36,29,30,28},
+        {7,35,33,34,17,36},
+        {9,8,32,23,30},
+        {24,11,32,21},
+        {34,24,20,11,36},
+        {35,14,31,17,28,15},
+        {8,19,4,29,30,16},
+        {21,20,17,30,32,36},
+        {5,1,9,26,2,11},
+        {1,25,3,31,13,2},
+        {9,11,32},
+        {13,31,22,29,17,12},
+        {23,30,16,17,28,12},
+        {19,24,32,29,23,17},
+        {26,13,14,28,22,3},
+        {27,9,19,24,20,11,30},
+        {7,35,3,18,15},
+        {7,11,18,21,36},
+        {22,17,18,33,15},
+        {34,18,24,21,17},
+    };
     return hull;
 }
 
@@ -351,22 +470,17 @@ bool encode_vehicle_hull(const VehicleHull& hull, unsigned char* payload,
 // The ground
 // ---------------------------------------------------------------------------
 
-VehicleTrackCast TrackVehicleGround::probe(const VehicleVec3& from,
-                                           const VehicleVec3& direction,
-                                           double length) const {
-    VehicleTrackCast out;
-    out.surface = VehicleTrackSurface::refused;
-    const double squared = dot(direction, direction);
-    if (world_ == nullptr || !finite(from) || !finite(direction) || !finite(length) ||
-        !(length > 0.0) || !(squared > 0.0) || !finite(squared)) {
-        return out;
-    }
-    const VehicleVec3 to = add(from, scale(direction, length));
-    float from_f[3];
-    float to_f[3];
-    narrow(from, from_f);
-    narrow(to, to_f);
-    out.status = query_track_contact_segment(*world_, from_f, to_f, out.contact);
+std::array<float,4> vehicle_track_ground_plane(const TrackContactWorld& world,std::size_t polygon) {
+    const auto& p=world.collision.polygons[polygon];
+    std::array<ContactVector,4> corners;
+    for(unsigned i=0;i<4;++i)std::copy_n(p.corner[i],3,corners[i].begin());
+    const auto n=race_track_polygon_normal(corners);
+    const float d=(corners[0][2]*n[2]+corners[0][1]*n[1])+corners[0][0]*n[0];
+    return {n[0],n[1],n[2],d};
+}
+namespace {
+VehicleTrackCast ground_answer(VehicleTrackCast out,const VehicleVec3& from,
+    const VehicleVec3& direction,double length,double squared) {
     switch (out.status) {
     case TrackContactStatus::hit:
         out.surface = out.contact.kind == TrackContactKind::road ? VehicleTrackSurface::road
@@ -399,6 +513,116 @@ VehicleTrackCast TrackVehicleGround::probe(const VehicleVec3& from,
     out.hit.normal = widen(out.contact.normal);
     out.hit.surface = 0;
     return out;
+}
+} // namespace
+
+VehicleTrackCast TrackVehicleGround::probe(const VehicleVec3& from,
+                                           const VehicleVec3& direction,
+                                           double length) const {
+    VehicleTrackCast out;
+    out.surface = VehicleTrackSurface::refused;
+    const double squared = dot(direction, direction);
+    if (world_ == nullptr || !finite(from) || !finite(direction) || !finite(length) ||
+        !(length > 0.0) || !(squared > 0.0) || !finite(squared)) {
+        return out;
+    }
+    const VehicleVec3 to = add(from, scale(direction, length));
+    float from_f[3];
+    float to_f[3];
+    narrow(from, from_f);
+    narrow(to, to_f);
+    out.status = query_track_contact_segment(*world_, from_f, to_f, out.contact);
+    out=ground_answer(out,from,direction,length,squared);
+    if(out.hit.hit){out.hit.plane=vehicle_track_ground_plane(*world_,out.contact.polygon);out.hit.has_plane=true;}
+    // 43FF39 copies polygon+2 to body+B; 440A97 returns that surface code.
+    if(materials_&&out.hit.hit)out.hit.surface=world_->collision.polygons[out.contact.polygon].unknown0[2];
+    return out;
+}
+
+void TrackVehicleGround::probe_wheels(const std::array<VehicleVec3,kVehicleWheelCount>& from,
+    const VehicleVec3& direction,const std::array<double,kVehicleWheelCount>& length,
+    std::array<VehicleTrackCast,kVehicleWheelCount>& out) const {
+    const double squared=dot(direction,direction);
+    bool valid=world_&&finite(direction)&&squared>0&&finite(squared);
+    for(std::size_t i=0;i<kVehicleWheelCount;++i)
+        valid=valid&&finite(from[i])&&finite(length[i])&&length[i]>0;
+    if(!valid) {
+        for(std::size_t i=0;i<kVehicleWheelCount;++i)out[i]=probe(from[i],direction,length[i]);
+        return;
+    }
+    std::array<std::array<float,3>,kVehicleWheelCount> origins{},ends{};
+    std::array<TrackContact,kVehicleWheelCount> contacts{};
+    std::array<TrackContactStatus,kVehicleWheelCount> statuses{};
+    for(std::size_t i=0;i<kVehicleWheelCount;++i) {
+        narrow(from[i],origins[i].data());
+        narrow(add(from[i],scale(direction,length[i])),ends[i].data());
+    }
+    query_track_contact_segments(*world_,origins.data(),ends.data(),kVehicleWheelCount,
+        contacts.data(),statuses.data());
+    for(std::size_t i=0;i<kVehicleWheelCount;++i) {
+        VehicleTrackCast answer;answer.contact=contacts[i];answer.status=statuses[i];
+        out[i]=ground_answer(answer,from[i],direction,length[i],squared);
+        if(out[i].hit.hit){out[i].hit.plane=vehicle_track_ground_plane(*world_,out[i].contact.polygon);out[i].hit.has_plane=true;}
+        if(materials_&&out[i].hit.hit)out[i].hit.surface=world_->collision.polygons[out[i].contact.polygon].unknown0[2];
+    }
+}
+
+void TrackVehicleGround::probe_strut_heights(
+    const std::array<VehicleVec3,kVehicleWheelCount>& hubs,
+    std::array<VehicleTrackCast,kVehicleWheelCount>& out) const {
+    for(std::size_t i=0;i<kVehicleWheelCount;++i) {
+        auto& answer=out[i];answer={};
+        if(!world_||!world_->valid||!finite(hubs[i])) {
+            answer.surface=VehicleTrackSurface::refused;continue;
+        }
+        const bool road=query_track_ground(*world_,hubs[i],strut_cache_,answer.contact);
+        const float x=float(hubs[i].x),y=float(hubs[i].y),limit=float(hubs[i].z)+1.F;
+        const auto rank=[limit](float height){return height<limit?height:height-50000.F;};
+        float best=road?rank(answer.contact.point[2]):0.F;
+        if(support_faces_)for(const auto& face:*support_faces_) {
+            if(face.plane[2]<=0||x<face.low[0]||x>face.high[0]||y<face.low[1]||y>face.high[1])continue;
+            bool inside=true;
+            for(unsigned j=0;j<4;++j) {
+                const auto& a=face.corners[j];const auto& b=face.corners[(j+1)%4];
+                if((x-a[0])*(b[1]-a[1])-(b[0]-a[0])*(y-a[1])>0.F){inside=false;break;}
+            }
+            if(!inside)continue;
+            const auto& p=face.plane;
+            const float height=-((x*p[0]+y*p[1]-p[3])/p[2]);
+            const float candidate=rank(height);
+            if((road||answer.hit.hit)&&candidate<=best)continue;
+            best=candidate;
+            answer.status=TrackContactStatus::hit;
+            answer.surface=VehicleTrackSurface::road;
+            answer.hit.hit=true;answer.hit.has_plane=true;answer.hit.plane=p;
+            answer.hit.normal={p[0],p[1],p[2]};
+            // WorldObjectCollisionBody +54 returns material zero.
+        }
+        if(answer.hit.hit)continue;
+        if(!road) {
+            std::array<std::size_t,4> cells{};std::size_t count=0;
+            if(!query_track_collision_cells(world_->collision,float(hubs[i].x),float(hubs[i].y),
+                float(hubs[i].x),float(hubs[i].y),cells.data(),cells.size(),count)) {
+                answer.surface=VehicleTrackSurface::refused;continue;
+            }
+            answer.surface=count?VehicleTrackSurface::clear:VehicleTrackSurface::outside;
+            answer.status=count?TrackContactStatus::clear:TrackContactStatus::outside;continue;
+        }
+        answer.status=TrackContactStatus::hit;answer.surface=VehicleTrackSurface::road;
+        answer.hit.hit=true;answer.hit.normal=widen(answer.contact.normal);
+        answer.hit.plane=vehicle_track_ground_plane(*world_,answer.contact.polygon);
+        answer.hit.has_plane=true;
+        if(materials_)answer.hit.surface=world_->collision.polygons[answer.contact.polygon].unknown0[2];
+    }
+}
+
+bool TrackVehicleGround::strut_heights(
+    const std::array<VehicleVec3,kVehicleWheelCount>& hubs,
+    std::array<VehicleGroundHit,kVehicleWheelCount>& hits) const {
+    if(!uses_cached_struts())return false;
+    std::array<VehicleTrackCast,kVehicleWheelCount> out{};probe_strut_heights(hubs,out);
+    for(std::size_t i=0;i<kVehicleWheelCount;++i)hits[i]=out[i].hit;
+    return true;
 }
 
 VehicleGroundHit TrackVehicleGround::cast(const VehicleVec3& from,
@@ -491,8 +715,8 @@ VehicleTrackApproximations vehicle_track_first_lap_approximations() noexcept {
 VehicleTrackSession::VehicleTrackSession(const VehicleModel& model,
                                          const VehicleTrackCourse& course,
                                          const VehicleTrackApproximations& approx,
-                                         const VehicleHull& hull)
-    : model_(&model), course_(&course), approx_(approx), ground_(course.world) {
+                                         const VehicleHull& hull,TrackStrutQuery struts)
+    : model_(&model), course_(&course), approx_(approx), ground_(course.world,true,struts,&course.support_faces) {
     if (!model.valid()) {
         error_ = "the vehicle model is not valid: " + model.error();
         return;
@@ -567,6 +791,11 @@ bool VehicleTrackSession::start(const VehicleState& state) {
         return false;
     }
     state_ = state;
+    ground_.reset_strut_cache();
+    ai_={};ai_started_=false;
+    last_input_={};last_solver_dt_=kVehicleStepSeconds;last_ai_gear_request_=-1;
+    owner_recovery_start_=0;
+    last_ghost_overlap_=0;
     progress_ = RaceProgress{};
     if (course_->has_route) {
         const float xy[2] = {static_cast<float>(state_.position.x),
@@ -591,6 +820,35 @@ void VehicleTrackSession::request_reset() noexcept {
     }
 }
 
+namespace {
+float recovery_age(std::uint32_t now,std::uint32_t then) noexcept {
+    const auto delta=now-then;
+    std::int32_t elapsed;
+    std::memcpy(&elapsed,&delta,sizeof(elapsed));
+    return float(elapsed)*.0002500000118743628F;
+}
+}
+
+bool VehicleTrackSession::owner_recovery_active(std::int32_t now) const noexcept {
+    if(owner_recovery_start_==0||owner_recovery_start_==std::numeric_limits<std::int32_t>::max())
+        return false;
+    //4280A0 compares the wrapped world clock at 4000 ticks per second.
+    return recovery_age(std::uint32_t(now),std::uint32_t(owner_recovery_start_))<2.F;
+}
+
+void VehicleTrackSession::extend_owner_recovery(std::int32_t now) noexcept {
+    if(pending_!=VehicleTrackReset::none||last_ghost_overlap_==0||
+       last_ghost_overlap_==0x7fffffffU||!owner_recovery_active(now))return;
+    //4266D9 reads the timestamp from the previous ghost-pair query.
+    const auto tick=std::uint32_t(now);
+    const auto start=std::uint32_t(owner_recovery_start_);
+    const float age=recovery_age(tick,last_ghost_overlap_);
+    if(recovery_age(tick,start)>1.5F&&age>=0.F&&age<.5F) {
+        const auto extended=start+2000U;
+        std::memcpy(&owner_recovery_start_,&extended,sizeof(extended));
+    }
+}
+
 bool VehicleTrackSession::ground_under(double x, double y, double& z) const {
     const float from[3] = {static_cast<float>(x), static_cast<float>(y),
                            static_cast<float>(column_top_)};
@@ -599,6 +857,36 @@ bool VehicleTrackSession::ground_under(double x, double y, double& z) const {
     if (query_track_contact_segment(course_->world, from, to, contact) !=
         TrackContactStatus::hit) {
         return false;
+    }
+    z = static_cast<double>(contact.point[2]);
+    return true;
+}
+
+// The ground a reset places a car on: like ground_under, but it walks past
+// each hit that is not a drivable road, so on the multi level spots of the
+// newer circuits the car lands on the road rather than the roof or overpass
+// deck above it (witnessed on track 1006 reverse, node 4: reset to py 57.89
+// on a deck while the road below it is the drivable surface). The bounds
+// check keeps ground_under's any-surface rule.
+bool VehicleTrackSession::ground_under_road(double x, double y, double& z) const {
+    const float from[3] = {static_cast<float>(x), static_cast<float>(y),
+                           static_cast<float>(column_top_)};
+    const float to[3] = {from[0], from[1], static_cast<float>(column_bottom_)};
+    TrackContact contact;
+    if (query_track_contact_segment(course_->world, from, to, contact) !=
+        TrackContactStatus::hit) {
+        return false;
+    }
+    for (int surface = 0; surface < 8; ++surface) {
+        if (contact.kind == TrackContactKind::road && contact.up > 0.5F) break;
+        const float next_from[3] = {from[0], from[1],
+                                    contact.point[2] - 0.05F};
+        if (next_from[2] <= to[2]) break;
+        TrackContact below;
+        if (query_track_contact_segment(course_->world, next_from, to, below) !=
+            TrackContactStatus::hit)
+            break;
+        contact = below;
     }
     z = static_cast<double>(contact.point[2]);
     return true;
@@ -624,8 +912,8 @@ bool VehicleTrackSession::sunk(const VehicleState& s) const {
            TrackContactStatus::hit;
 }
 
-void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t) const {
-    const Mat3 r = rotation(s.orientation);
+bool VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t) const {
+    const auto axes = race_contact_axes(s);
     const VehicleVec3 centre = s.position;
     float from[3];
     narrow(centre, from);
@@ -634,15 +922,29 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
     // the hull, out to the point. What it meets lies between the two, so
     // the point is on or beyond that surface, by the depth along the
     // surface's normal, which faces the centre.
-    std::vector<HullHit> hits;
-    hits.reserve(hull_.size());
+    std::array<HullHit,256> hits;
+    std::size_t hit_count=0;
+    // Constructor validates the 256-point bound. Transform in the original
+    // order, then share validated leaf candidates across this body's rays.
+    std::array<VehicleVec3,256> points;
+    std::array<std::array<float,3>,256> endpoints;
+    std::array<TrackContact,256> contacts;
+    std::array<TrackContactStatus,256> statuses;
+    for(std::size_t k=0;k<hull_.size();++k) {
+        float transformed[3];
+        const float local[3]={float(hull_[k].x),float(hull_[k].y),float(hull_[k].z)};
+        for(unsigned j=0;j<3;++j)
+            transformed[j]=((local[2]*axes[2][j]+local[1]*axes[1][j])
+                +local[0]*axes[0][j])+from[j];
+        points[k]=widen(transformed);
+        narrow(points[k],endpoints[k].data());
+    }
+    query_track_contact_fan(course_->world,from,endpoints.data(),hull_.size(),
+                            contacts.data(),statuses.data());
     for (std::size_t k = 0; k < hull_.size(); ++k) {
-        const VehicleVec3 point = add(centre, r.apply(hull_[k]));
-        float to[3];
-        narrow(point, to);
-        TrackContact contact;
-        if (query_track_contact_segment(course_->world, from, to, contact) !=
-            TrackContactStatus::hit) {
+        const VehicleVec3 point=points[k];
+        const TrackContact& contact=contacts[k];
+        if (statuses[k] != TrackContactStatus::hit) {
             continue;
         }
         HullHit hit;
@@ -659,16 +961,16 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         if (!(hit.depth > 0.0)) {
             hit.depth = 0.0;
         }
-        hits.push_back(hit);
+        hits[hit_count++]=hit;
     }
-    t.hull_hits = static_cast<std::uint32_t>(hits.size());
-    if (hits.empty()) {
-        return;
+    t.hull_hits = static_cast<std::uint32_t>(hit_count);
+    if (hit_count==0) {
+        return true;
     }
     // The game pairs the car's body with each polygon's body; here each
     // polygon is one contact, at its deepest point (the lowest point index
     // on a tie), and the contacts are taken in polygon order.
-    std::sort(hits.begin(), hits.end(), [](const HullHit& a, const HullHit& b) {
+    std::sort(hits.begin(), hits.begin()+hit_count, [](const HullHit& a, const HullHit& b) {
         if (a.polygon != b.polygon) {
             return a.polygon < b.polygon;
         }
@@ -678,38 +980,12 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         return a.point < b.point;
     });
 
-    const VehicleVec3 up = r.column(2);
     const double unit = model_->spec().approx.unit_scale;
-    const double inverse_mass = 1.0 / mass_;
-    const double floor_inverse_mass = 1.0 / collision_mass_;
-    // 0x0046A080: the solver's inverse mass of the car, never above that of
-    // the collision mass.
-    const double solver_inverse_mass =
-        inverse_mass > floor_inverse_mass ? floor_inverse_mass : inverse_mass;
-    // 0x0046A260: the impulse is scaled so the car answers as the
-    // collision mass would.
-    const double mass_scale = inverse_mass > floor_inverse_mass
-                                  ? floor_inverse_mass / inverse_mass
-                                  : 1.0;
-    // 0x0046C00C..0x0046C0A3: against a body that cannot move, an upright
-    // car - its up axis's vertical part above 0.7 - slides with friction 0.1
-    // and takes the fast-car rule below; a car tilted further keeps 0.3.
-    const bool upright = up.z > kVehicleTrackUprightUp;
-    const double friction = upright ? kVehicleTrackUprightFriction : kVehicleTrackFriction;
-    const VehicleVec3 forward = r.column(0);
-    const double car_speed = vehicle_sqrt(dot(s.velocity, s.velocity));
-    const auto inverse_inertia = [&](const VehicleVec3& world) {
-        const VehicleVec3 body = r.apply_transpose(world);
-        //46A0DE and58593F select the same rigid138 normal/alternate tensor
-        // for the solver and refreshed impulse response. Keep the latched
-        // outer flag; wheel constraints continue to use their normal tensor.
-        return r.apply(v3(body.x / inertia_.x, body.y / inertia_.y,
-            (body.z/unit)*player_body_inverse_yaw(model_->spec().handling,s.alternate_yaw_active)));
-    };
+    const VehicleVec3 forward = widen(axes[0].data()), up = widen(axes[2].data());
 
     VehicleVec3 moved;
     VehicleVec3 applied_total;
-    for (std::size_t i = 0; i < hits.size(); ++i) {
+    for (std::size_t i = 0; i < hit_count; ++i) {
         if (i > 0 && hits[i].polygon == hits[i - 1].polygon) {
             continue;
         }
@@ -746,9 +1022,8 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
             }
         }
 
-        // Then the impulse, 0x0046BAE0, at the contact. 0x0046B8C0 puts
-        // it midway between the two bodies' closest points once they are
-        // apart, which for a hull point against a polygon is that point.
+        // Observe the current fan arm for audio; the response below owns
+        // the binary32 closing-velocity decision.
         const VehicleVec3 arm = hit.arm;
         const VehicleVec3 point_velocity = add(s.velocity, cross(s.angular_velocity, arm));
         const double approach = dot(point_velocity, hit.normal);
@@ -759,115 +1034,38 @@ void VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
             audio_contact = &t.audio_contacts[t.audio_contact_count++];
             audio_contact->polygon = static_cast<std::uint32_t>(hit.polygon);
             audio_contact->forward = forward; audio_contact->up = up;
+            audio_contact->normal = hit.normal;
             const auto audio_tangent = sub(point_velocity, scale(hit.normal, approach));
             audio_contact->slide_mps = vehicle_sqrt(dot(audio_tangent, audio_tangent));
         }
-        if (!(approach < 0.0)) {
-            continue;
-        }
+        ContactGeometry geometry;
+        // The fan currently supplies an admitted polygon and hull arm. The
+        // prepared response is shared with the original binary32 solver;
+        // convex witness preparation and world queue ordering remain separate.
+        const auto point=add(s.position,arm);
+        if(audio_contact)audio_contact->point=point;
+        narrow(scale(hit.normal,-1),geometry.normal.data());
+        narrow(point,geometry.point.data());
+        const auto flags=course_->world.collision.polygons[hit.polygon].unknown0[3];
+        const float friction=(flags&0xAU)?0.3F:0.6F; //46A910
+        ContactResponse response;
+        const auto momentum=s.rigid_body.momentum;
+        if(!apply_race_track_contact(s,model_->spec(),geometry,friction,response))return false;
+        if(!response.closing)continue;
         ++t.impulses;
-        // 0x0046BA50 over 0x0046A0C0's inverse inertia, which carries the
-        // angular factor.
-        const VehicleVec3 turn =
-            scale(inverse_inertia(cross(arm, hit.normal)), kVehicleTrackAngularFactor);
-        const double effective = solver_inverse_mass + dot(hit.normal, cross(turn, arm));
-        // 0x0046C620: against a wall polygon, whose normal's vertical part
-        // is below 0.1, a hit whose arm lies more than acos 0.9 off the
-        // car's forward axis - a side hit - takes half the restitution.
-        double restitution = kVehicleTrackRestitution;
-        if (absolute(hit.normal_f[2]) < kVehicleTrackSideHitWall) {
-            float arm_f[3];
-            narrow(arm, arm_f);
-            const float arm_length = static_cast<float>(det_sqrt(static_cast<double>(
-                arm_f[0] * arm_f[0] + arm_f[1] * arm_f[1] + arm_f[2] * arm_f[2])));
-            if (arm_length > 0.0F) {
-                const double along =
-                    (static_cast<double>(arm_f[0] / arm_length) * forward.x +
-                     static_cast<double>(arm_f[1] / arm_length) * forward.y) +
-                    static_cast<double>(arm_f[2] / arm_length) * forward.z;
-                if (absolute(along) < kVehicleTrackSideHitAlong) {
-                    restitution = restitution * kVehicleTrackSideHitScale;
-                }
-            }
-        }
-        double j = -(restitution + 1.0) * approach / effective;
-        const double smallest = kVehicleTrackSeparationSpeed / solver_inverse_mass;
-        if (!(j >= smallest)) {
-            j = smallest;
-        }
-        const VehicleVec3 tangential = sub(point_velocity, scale(hit.normal, approach));
-        const double slide = vehicle_sqrt(dot(tangential, tangential));
-        double jt = friction * j;
-        if (slide < kVehicleTrackSlideSpeed) {
-            jt = jt / kVehicleTrackSlideSpeed * slide;
-        }
-        VehicleVec3 impulse = scale(hit.normal, j);
-        if (slide > kVehicleTrackSlideEpsilon) {
-            impulse = add(impulse, scale(tangential, -1.0 / slide * jt));
-        }
-        // The impulse turns the car about its full arm. Retail's four-wheel
-        // lever blocks (0x0046C3FE..0x0046C52C), which would drop the arm's
-        // part along the up axis of a car with all four wheels down, run
-        // only when the collision record's +0x10 is set
-        // (0x0046C3F3..0x0046C3F8), and only 0x00465EB4 sets it: for a
-        // car-vs-car or car-vs-kind-4 hit of 30 t m/s or more. A track
-        // polygon is kind 3, so they never run against the track.
-        VehicleVec3 lever = arm;
-        // 0x0046C223..0x0046C3D9: an upright car faster than 30 m/s loses a
-        // horizontal impulse of 0.4 t m/s against its velocity, and its arm
-        // is shortened by |J| / (|J| + v / 1.75), impulse in t m/s, so a wall
-        // at speed turns it less.
-        if (upright && car_speed > kVehicleTrackFastSpeed) {
-            const double size_t_m_s = vehicle_sqrt(dot(impulse, impulse)) / unit;
-            const double drag = -kVehicleTrackFastDrag * unit / car_speed;
-            impulse.x = impulse.x + drag * s.velocity.x;
-            impulse.y = impulse.y + drag * s.velocity.y;
-            if (size_t_m_s + car_speed > 1.0) {
-                const double shorten =
-                    size_t_m_s / (car_speed / kVehicleTrackFastArm + size_t_m_s);
-                lever = scale(lever, shorten);
-            }
-        }
-        // 0x0046A260, then 0x00584F60's two clamps and the angular factor.
-        event.contact_impulse = impulse;
-        if (audio_contact) audio_contact->impulse = scale(impulse, 1.0 / unit);
-        VehicleVec3 applied = scale(impulse, mass_scale);
-        const double linear_limit = kVehicleTrackImpulseLimit * unit;
-        const double size = vehicle_sqrt(dot(applied, applied));
-        if (size > linear_limit) {
-            applied = scale(applied, linear_limit / size);
-        }
-        VehicleVec3 angular = cross(lever, applied);
-        const double angular_limit = kVehicleTrackAngularLimit * unit;
-        const double angular_size = vehicle_sqrt(dot(angular, angular));
-        if (angular_size > angular_limit) {
-            angular = scale(angular, angular_limit / angular_size);
-        }
-        angular = scale(angular, kVehicleTrackAngularFactor);
-        s.velocity = add(s.velocity, scale(applied, inverse_mass));
-        s.angular_velocity = add(s.angular_velocity, inverse_inertia(angular));
-        if(s.rigid_body_ready) {
-            // Keep the body's authoritative momenta through the port's existing
-            // double contact adapter. Do not reconstruct L from cached omega
-            // at the next solver slice. Collision tensor/geometry remain the
-            // separately qualified track adapter, with the latched yaw choice.
-            const double linear[3]={applied.x,applied.y,applied.z};
-            const double rotational[3]={angular.x,angular.y,angular.z};
-            const double velocity[3]={s.velocity.x,s.velocity.y,s.velocity.z};
-            const double omega[3]={s.angular_velocity.x,s.angular_velocity.y,s.angular_velocity.z};
-            for(int k=0;k<3;++k) {
-                s.rigid_body.momentum[k]+=static_cast<float>(linear[k]/unit);
-                s.rigid_body.angular_momentum[k]+=static_cast<float>(rotational[k]/unit);
-                s.rigid_body.velocity[k]=static_cast<float>(velocity[k]);
-                s.rigid_body.angular_velocity[k]=static_cast<float>(omega[k]);
-            }
-        }
+        event.contact_impulse=scale(widen(response.current_impulse.data()),unit);
+        if(audio_contact)audio_contact->impulse=widen(response.current_impulse.data());
+        const VehicleVec3 applied={
+            double(s.rigid_body.momentum[0]-momentum[0])*unit,
+            double(s.rigid_body.momentum[1]-momentum[1])*unit,
+            double(s.rigid_body.momentum[2]-momentum[2])*unit};
         applied_total = add(applied_total, applied);
         event.applied_impulse = applied; event.accumulated_impulse = applied_total;
         event.velocity_after = s.velocity; event.angular_after = s.angular_velocity;
     }
     t.separation = moved;
     t.impulse = applied_total;
+    return true;
 }
 
 // 0x00427CD2..0x00427D10: after a reset the velocity is the car's forward
@@ -910,7 +1108,7 @@ bool VehicleTrackSession::reset_to_node(VehicleState& s, VehicleTrackReset reaso
             continue;
         }
         double z = 0.0;
-        if (!ground_under(static_cast<double>(nodes[n].x), static_cast<double>(nodes[n].y), z)) {
+        if (!ground_under_road(static_cast<double>(nodes[n].x), static_cast<double>(nodes[n].y), z)) {
             continue;
         }
         best = static_cast<int>(n);
@@ -962,7 +1160,7 @@ bool VehicleTrackSession::reset_to_point(VehicleState& s, int zone_index) {
     // 8.0, through 0x00427E60 and 0x00427C50.
     const std::uint16_t units = track_angle(zone.direction[0], zone.direction[1]);
     double z = 0.0;
-    if (!ground_under(static_cast<double>(zone.point[0]), static_cast<double>(zone.point[1]), z)) {
+    if (!ground_under_road(static_cast<double>(zone.point[0]), static_cast<double>(zone.point[1]), z)) {
         return false;
     }
     VehiclePose pose;
@@ -994,6 +1192,7 @@ bool VehicleTrackSession::reset_to_point(VehicleState& s, int zone_index) {
 void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
                                    VehicleTrackTelemetry& t) {
     events_.clear();
+    const auto world_tick=input.world_clock_valid?input.world_clock:static_cast<std::int32_t>((ticks_*4000)/60);
     const auto request = [&](VehicleTrackReset reason) {
         if (pending_ == VehicleTrackReset::none) {
             pending_ = reason;
@@ -1009,7 +1208,8 @@ void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
     }
     if (reason != VehicleTrackReset::none) {
         pending_ = VehicleTrackReset::none;
-        reset_to_node(s, reason);
+        //4264D0/4314A0 arm the owner timer after a successful reset.
+        if(reset_to_node(s,reason))owner_recovery_start_=world_tick;
         t.reset = reason;
         return;
     }
@@ -1032,7 +1232,8 @@ void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
                                static_cast<float>(s.position.z) < zone.height;
             if (below) {
                 if (zone.type == kZoneResetToPoint) {
-                    reset_to_point(s, progress_.zone);
+                    //427ED0 invokes427E60 with its recovery flag set.
+                    if(reset_to_point(s,progress_.zone))owner_recovery_start_=world_tick;
                     t.reset = VehicleTrackReset::zone_to_point;
                     return;
                 }
@@ -1085,33 +1286,207 @@ void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
     }
 }
 
+bool VehicleTrackSession::prepare_grid(unsigned frames) {
+    if(!valid_ || !started_ || steps_!=0) return false;
+    if(state_.velocity.x!=0 || state_.velocity.y!=0 || state_.velocity.z!=0) return true;
+    // Countdown currently omits the original pre-race world simulation. Run
+    // the existing body/strut solver during loading instead of presenting an
+    // unqueried, flat-ground reset pose until GO. No force constants change.
+    auto prepared=*this;prepared.preparing_grid_=true;
+    VehicleInput hold;hold.brake=1;hold.handbrake=true;
+    hold.road_steering=true;hold.road_angle_word_valid=true;
+    VehicleTrackTelemetry telemetry;
+    for(unsigned frame=0;frame<frames;++frame) {
+        if(ai_configured_) {
+            if(!prepared.step_ai(hold,telemetry)) return false;
+        } else for(unsigned slice=0;slice<4;++slice) {
+            // Let the body find its terrain attitude before ordinary rest
+            // detection can freeze the unqueried reset pose on a slope.
+            if(!model_->step(prepared.state_,hold,ground_,telemetry.model,
+                slice==3?1.0/60.0:0.0,1.0/240.0,slice==0,false)) return false;
+            if(approx_.body_contact && !prepared.resolve_body(prepared.state_,telemetry))return false;
+        }
+        if(prepared.resets_!=0) return false;
+    }
+    // Only the physical placement and contact history leave preparation.
+    // Route/lap/reset counters and AI driver history still begin at zero.
+    state_=prepared.state_;state_.step=0;state_.simulation_seconds=0;
+    ai_=prepared.ai_;ai_.slices=0;ai_.ground_queries=0;ai_started_=prepared.ai_started_;
+    return true;
+}
+
+bool VehicleTrackSession::step_grid_engine(double throttle, VehicleTrackTelemetry& telemetry,
+                                           double publication_dt, double solver_dt,bool drag,std::int32_t clock) {
+    if (!valid_ || !started_ || ai_configured_ || steps_ != 0 ||
+        !finite(throttle) || throttle < 0 || throttle > 1 ||
+        !finite(publication_dt) || publication_dt < 0 ||
+        !finite(solver_dt) || solver_dt <= 0) return false;
+    auto next=state_;
+    const auto& h=model_->spec().handling;
+    // Original stage setter434B50 calls human vfunc1C/20;4616BE requests
+    // neutral with handbrake while held. This port enters countdown directly,
+    // after the omitted flyby/prerace, so begin with settled neutral here.
+    next.gear=kVehicleGearNeutral;next.published_gear=next.gear;
+    next.transmission.requested_gear=next.gear;
+    next.transmission.mode=3;next.transmission.clutch=1;
+    next.transmission.previous_slip_rpm=0;next.transmission.wheel_engine_speed=0;
+    next.transmission.shift_pending=false;
+    next.engine.throttle_multiplier=1;next.engine.feedback_torque=0;
+    const float crank=player_engine_torque(h,next.engine,next.gear,float(throttle));
+    player_engine_integrate(h,next.engine,crank,float(solver_dt));
+    next.simulation_seconds+=solver_dt;
+    if(drag)player_drag_heat_update(h,next.engine,next.transmission,next.gear,clock,true);
+    //46CC5E/46CC8C read the world clock, held constant across solver slices.
+    player_engine_cutoff_update(h,next.gear,next.engine,
+        float(clock)*.00025F);
+    if(publication_dt>0) next.engine_rpm=player_engine_publish_rpm(h,next.engine,
+        float(next.engine_rpm),float(publication_dt));
+    if(!finite_state(next)) return false;
+    VehicleTrackTelemetry t;
+    t.position=next.position;t.orientation=next.orientation;
+    t.velocity=next.velocity;t.angular_velocity=next.angular_velocity;
+    t.model.position=next.position;t.model.velocity=next.velocity;
+    t.model.engine_rpm=next.engine_rpm;t.model.engine=next.engine;
+    t.model.transmission=next.transmission;t.model.gear=next.gear;
+    t.model.published_gear=next.published_gear;
+    t.model.throttle=throttle;t.model.handbrake=true;
+    t.model.engine_torque=double(crank)*1000.0;
+    t.model.simulation_seconds=next.simulation_seconds;t.model.solver_dt=solver_dt;
+    state_=next;telemetry=t;return true;
+}
+
+void VehicleTrackSession::release_grid_engine(bool drag,unsigned category,float window_scale) noexcept {
+    // Original461510 clears the hold and4615B0 restores the request policy.
+    // Keep physical RPM and clutch phase; normal gearbox update engages first.
+    if(!ai_configured_ && state_.gear==kVehicleGearNeutral) {
+        //46E8FB..46E925 evaluates the first request with PHYSICAL engine RPM.
+        // The held-grid adapter bypasses that request consumer, so publish its
+        // quality here exactly once. The existing clutch/46DEC3 tail consumes it.
+        if(drag)state_.transmission.shift_quality=player_drag_shift_quality(
+            state_.engine.angular_speed*kPlayerRadSToRpm,
+            model_->request_upshift_rpm()[kVehicleGearNeutral],category,kVehicleGearNeutral,window_scale);
+        state_.transmission.requested_gear=kVehicleGearFirst;
+    }
+}
+
+void VehicleTrackSession::publish_world_acceleration(const VehicleVec3& before,float dt) noexcept {
+    player_publish_owner_acceleration(state_.owner_motion,before,state_.velocity,dt);
+}
+
+void VehicleTrackSession::publish_contact_count(unsigned count,std::uint32_t tick) noexcept {
+    // The fixed race pool has at most9 other cars; this signed field is the
+    // original body+1C record count, not a severity or a permanent crash flag.
+    state_.collision_body_flag=static_cast<std::int8_t>(count);
+    update_car_collision_state(state_.collision_state,state_.collision_support_since,
+        state_.published_support,state_.collision_body_flag,
+        double(static_cast<std::int32_t>(tick))*double(.00025F));
+}
+
+bool VehicleTrackSession::refresh_contact(VehicleState& sampled,const VehicleState* published_actor,float interval) {
+    if(ai_configured_) {
+        VehicleTrackTelemetry telemetry;
+        const auto previous=state_;state_=sampled;
+        const bool ok=step_ai(last_input_,telemetry,last_ai_gear_request_,0,published_actor,true,false,interval);
+        if(ok)sampled=state_;
+        state_=previous;return ok;
+    }
+    VehicleTelemetry telemetry;
+    if(published_actor) {
+        sampled.owner_motion=published_actor->owner_motion;
+        sampled.owner_traction=published_actor->owner_traction;
+    }
+    return model_->step(sampled,last_input_,ground_,telemetry,0,0,false,true,true,true,interval);
+}
+
+bool VehicleTrackSession::continue_contact(double seconds,const VehicleState* published_actor,bool refreshed) {
+    if(!std::isfinite(seconds)||seconds<0)return false;
+    VehicleTrackTelemetry t;
+    if(ai_configured_)return step_ai(last_input_,t,last_ai_gear_request_,float(seconds),published_actor,false,refreshed);
+    auto next=state_;const auto saved_step=next.step;const auto saved_time=next.simulation_seconds;
+    if(published_actor) {
+        next.owner_motion=published_actor->owner_motion;
+        next.owner_traction=published_actor->owner_traction;
+    }
+    const RecordingGround recording(ground_);
+    //469460 refreshes component forces before the outer4774A0 policy latch.
+    //The first resumed derivative consumes those forces even when state1
+    //then disables aero. Do not replace them with a new-policy force sample.
+    if(!refreshed&&!model_->step(next,last_input_,recording,t.model,0,0,false,true,true,true))return false;
+    update_car_collision_state(next.collision_state,next.collision_support_since,
+        next.published_support,next.collision_body_flag,
+        double(last_input_.world_clock_valid?last_input_.world_clock:static_cast<std::int32_t>((ticks_*4000)/60))*double(.00025F));
+    next.simulation_seconds-=seconds;
+    next.rigid_body.linear_damping=next.collision_state!=1;
+    next.rigid_body.angular_damping=next.collision_state!=1;
+    const auto& damping_actor=published_actor?*published_actor:next;
+    player_race_body_policy(next.rigid_body,last_input_.race_active,float(last_input_.throttle),
+        damping_actor.published_support,damping_actor.rigid_body.axes[0][2]);
+    next.alternate_yaw_active=next.collision_state!=1&&next.published_support!=0;
+    //46B5E0 invokes the outer physics even at zero remaining time.
+    next.aero_ready=false;
+    //477D56 uses the original human interval, truncation and an added slice.
+    //A caller's last ordinary solver step does not select this schedule.
+    const float ratio=float(seconds)/.004399999976158142F;
+    if(!std::isfinite(ratio)||ratio>=float(std::numeric_limits<int>::max()))return false;
+    const unsigned count=static_cast<unsigned>(ratio)+1;
+    const double dt=float(seconds)/float(count);
+    for(unsigned i=0;i<count;++i) {
+        if(!model_->step(next,last_input_,recording,t.model,0,dt,false,true,true,false,0,seconds))return false;
+        if(approx_.body_contact && !deferred_body_contacts_ && !resolve_body(next,t))return false;
+        if(!finite_state(next))return false;
+    }
+    //478251 calls4789D0 once after the resumed slices, including zero time.
+    //Publish fresh wheel support before the next queued collision:46C425
+    //must not project its arm using support from before the previous hit.
+    next.published_support=0;
+    for(const auto& wheel:next.wheels)next.published_support+=wheel.contact?1U:0U;
+    next.published_gear=next.gear;
+    const auto& forward=next.rigid_body.axes[0];
+    player_publish_owner_motion(next.owner_motion,next.rigid_body.velocity,
+        next.rigid_body.angular_velocity,next.rigid_body.axes);
+    next.owner_speeds=player_publish_owner_speeds(next.velocity,{forward[0],forward[1],forward[2]});
+    next.owner_slip_angle=player_owner_slip_angle(next.velocity,next.owner_motion.heading);
+    next.engine_rpm=player_engine_publish_rpm(model_->spec().handling,next.engine,
+        float(next.engine_rpm),float(seconds));
+    // Continuation belongs to this already-counted world frame. It does not
+    // sample controls, publish another lap event or advance the world clock.
+    next.step=saved_step;next.simulation_seconds=saved_time;state_=next;return true;
+}
+
 bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry& telemetry,
                                double publication_dt,double solver_dt,bool select_request,
-                               std::uint32_t steps_per_tick) {
+                               std::uint32_t steps_per_tick,bool explicit_frame_end) {
     if (!valid_ || !started_ || steps_per_tick==0) {
         return false;
     }
     VehicleState s = state_;
     VehicleTrackTelemetry t;
     const RecordingGround recording(ground_);
-    if (!model_->step(s, input, recording, t.model, publication_dt,solver_dt,select_request)) {
+    if(select_request)update_car_collision_state(s.collision_state,s.collision_support_since,
+        s.published_support,s.collision_body_flag,double(input.world_clock_valid?input.world_clock:static_cast<std::int32_t>((ticks_*4000)/60))*double(.00025F));
+    auto applied=input;
+    const auto world_tick=input.world_clock_valid?input.world_clock:static_cast<std::int32_t>((ticks_*4000)/60);
+    if(select_request)extend_owner_recovery(world_tick);
+    applied.owner_traction_suppressed|=owner_recovery_active(world_tick);
+    if (!model_->step(s, applied, recording, t.model, publication_dt,solver_dt,select_request,true,false,false,0,solver_dt*steps_per_tick)) {
         return false;
     }
     t.wheel_surface = recording.surfaces();
-    if (approx_.body_contact) {
-        resolve_body(s, t);
+    if (approx_.body_contact && !deferred_body_contacts_) {
+        if(!resolve_body(s, t))return false;
     }
     if (!finite_state(s)) {
         return false;
     }
     ++steps_;
     t.step = steps_;
-    if (steps_ % steps_per_tick == 0) {
+    if (explicit_frame_end ? publication_dt>0 : steps_ % steps_per_tick == 0) {
         t.tick = true;
         ++ticks_;
         run_tick(s, input, t);
     }
     state_ = s;
+    last_input_=applied;last_solver_dt_=solver_dt;
     t.pending = pending_;
     t.resets = resets_;
     t.position = s.position;

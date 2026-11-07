@@ -1,9 +1,12 @@
 #include "nfsu/audio_playback.h"
+#include "audio_position_native.inc"
+#include "stereo_pan_native.inc"
 
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -125,6 +128,34 @@ void test_race_peak_limiter() {
     unity.render(out.data(),1,quiet.data(),32768);
     check(out == quiet && unity.limited_frames() == 0,
           "quiet output is bit exact at unity gain");
+}
+
+void test_native_stereo_pan() {
+    const auto bits=[](float value){std::uint32_t word;std::memcpy(&word,&value,4);return word;};
+    for(const auto& row:kNativeStereoPan) {
+        const auto gains=audio::stereo_pan_gains(std::uint16_t(row[0]),row[1]);
+        check(bits(gains[0])==row[2]&&bits(gains[1])==row[3],
+              "actual original quantized stereo table and software gain publication");
+    }
+    audio::PcmClip mono{{10000},48000,1},stereo{{10000,-10000},48000,2};
+    audio::Mixer mixer;std::array<std::int16_t,2> out{};
+    for(const auto angle:{0U,1U,16383U,16384U,32768U,49152U,65535U}) {
+        mixer.play(0,&mono,true,32767);mixer.pan(0,std::uint16_t(angle));mixer.render(out.data(),1);
+        const auto gains=audio::stereo_pan_gains(std::uint16_t(angle),32767);
+        check(out[0]==std::int16_t(10000.F*gains[0])&&out[1]==std::int16_t(10000.F*gains[1]),
+              "mono Player angular pan reaches both PCM channels");
+    }
+    mixer.pan(0,16384);mixer.control(0,0,65536);
+    std::array<std::int16_t,480> fade{};mixer.render(fade.data(),240);
+    for(unsigned frame=0;frame<240;++frame)check(fade[frame*2+1]==0,
+        "gain ramp preserves the requested cardinal position");
+    check(fade[478]==0&&fade[479]==0,"angular voice gain ramp reaches silence");
+    mixer.play(0,&stereo,true);mixer.pan(0,16384);mixer.render(out.data(),1);
+    check(out[0]==10000&&out[1]==-10000,"native mono guard leaves stereo sources untouched");
+    mixer.play(0,&mono,true);mixer.render(out.data(),1);
+    check(out[0]==10000&&out[1]==10000,"new generic playback does not inherit old angular controls");
+    mixer.stop(0);mixer.pan(0,49152);mixer.pan(audio::kMixVoices,0);mixer.render(out.data(),1);
+    check(out[0]==0&&out[1]==0,"inactive and invalid pan controls do not create voices");
 }
 
 void test_mixer() {
@@ -397,11 +428,57 @@ void test_decoder_thread_setup_failure() {
           "decoder thread setup failure is reported");
 }
 
+void test_speech_music_duck() {
+    const auto native_pcm=[](unsigned level) {
+        for(const auto& row:kNativeMusicDeviceGain)if(row[0]==level)
+            return std::int16_t(std::int64_t(26500)*row[1]/32768);
+        throw std::runtime_error("native music envelope endpoint absent");
+    };
+    audio::SpeechMusicDuck envelope;
+    std::vector<std::int16_t> pcm(24000,26500);
+    envelope.apply(pcm.data(),12000,false);
+    check(std::all_of(pcm.begin(),pcm.end(),[&](auto v){return v==native_pcm(26500);}),"normal FE applies original absolute music gain");
+    std::fill(pcm.begin(),pcm.end(),26500);
+    envelope.apply(pcm.data(),12000,true);
+    check(pcm.front()==native_pcm(26499)&&pcm[11998]==native_pcm(16400)&&pcm.back()==native_pcm(6300),
+          "native FE speech profile attacks from26500 to6300 over250ms");
+    std::fill(pcm.begin(),pcm.end(),26500);envelope.apply(pcm.data(),12000,true);
+    check(std::all_of(pcm.begin(),pcm.end(),[&](auto v){return v==native_pcm(6300);}),"speech holds music attenuation");
+    std::vector<std::int16_t> release(192000,26500);envelope.apply(release.data(),96000,false);
+    check(release.front()==native_pcm(6300)&&release[95998]==native_pcm(16400)&&release.back()==native_pcm(26500),
+          "native speech release restores gain over2s");
+    audio::SpeechMusicDuck blocks;
+    std::vector<std::int16_t> segmented(24000,26500);
+    blocks.apply(segmented.data(),1000,true);blocks.apply(segmented.data()+2000,11000,true);
+    audio::SpeechMusicDuck single;std::vector<std::int16_t> contiguous(24000,26500);
+    single.apply(contiguous.data(),12000,true);
+    check(segmented==contiguous,"audio callback boundaries do not restart speech fade");
+    std::array<std::int16_t,2> one{{26500,26500}};blocks.apply(one.data(),1,false);
+    one={{26500,26500}};blocks.apply(one.data(),1,true);
+    check(one[0]<=native_pcm(6300)+1,"replacement speech does not jump to full music gain");
+}
+
+void test_loop_release() {
+    audio::PcmClip clip;
+    clip.rate=48000;clip.channels=1;clip.loop_start=1;clip.loop_end=3;
+    clip.pcm={1000,2000,3000,4000,5000};
+    audio::Mixer mixer;check(mixer.play(12,&clip,true),"exhaust voice available");
+    std::array<std::int16_t,4> first{};mixer.render(first.data(),2);
+    mixer.release(12);
+    std::array<std::int16_t,8> tail{};mixer.render(tail.data(),4);
+    check(tail[0]==3000&&tail[2]==4000&&tail[4]==5000&&tail[6]==0,
+          "release continues current phase through authored tail without looping");
+    check(!mixer.active(12),"released voice retires at sample end");
+}
+
 } // namespace
 
 int main() {
     try {
+        test_native_stereo_pan();
         test_mixer();
+        test_loop_release();
+        test_speech_music_duck();
         test_race_peak_limiter();
         test_output_fade();
         test_alias_rejection();

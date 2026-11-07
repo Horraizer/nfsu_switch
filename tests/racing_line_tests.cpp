@@ -115,6 +115,13 @@ std::string first_issue(const nfsu::RacingLineTrack& track) {
 
 void test_fields() {
     std::vector<unsigned char> route = make_route(21, 0, 3);
+    route[0x15] = 1;
+    put_f32(route, 0x18, 512.0F);
+    put_f32(route, 0x1C, 768.0F);
+    put_f32(route, 0x20, -100.0F);
+    put_f32(route, 0x24, -200.0F);
+    put_f32(route, 0x28, 300.0F);
+    put_f32(route, 0x2C, 400.0F);
     // Two lanes enabled, in the two groups of six, and offsets in 1/256.
     route[lane_enable_at(0)] = 1;
     route[lane_enable_at(6)] = 1;
@@ -124,6 +131,8 @@ void test_fields() {
             static_cast<std::uint16_t>(static_cast<std::int16_t>(-1280)));
     put_u16(route, point1 + lane_offset_at(6),
             static_cast<std::uint16_t>(static_cast<std::int16_t>(896)));
+    put_u16(route, point1 + 0x3C, 0xFE80);
+    put_u16(route, point1 + 0x44, 0x0380);
     put_f32(route, point1 + 0x2C, 1.25F);
     put_f32(route, point1 + 0x30, -2.5F);
     put_f32(route, point1 + 0x34, 2.5F);
@@ -131,17 +140,24 @@ void test_fields() {
     route[point1 + 0x85] = 0x34;
     route[point1 + 0x86] = 0x56;
     route[point1 + 0x87] = 0x78;
+    for (unsigned k=0;k<23;++k) route[point1+0x6A+k]=static_cast<unsigned char>(31+k);
     route[point1 + 0x81] = 4;
     route[point1 + 0x82] = 9;
 
+    route[0x34]=2;route[2*0x34+1]=7;route[10*0x34+1]=1;
     const nfsu::RacingLineTrack track = parse(route);
     check(track.ok(), "a well formed route parses: " + first_issue(track));
     check(track.routes.size() == 1 && track.point_count() == 3,
           "one route of three points");
     const nfsu::Route& r = track.routes.front();
     check(r.index == 21, "index at +0x0A");
+    check(r.reverse && r.progress_begin == 512.0F && r.progress_end == 768.0F &&
+              r.bounds == std::array<float, 4>{-100.0F, -200.0F, 300.0F, 400.0F},
+          "spatial admission header fields and reverse byte");
     check(r.kind == nfsu::RouteKind::racing, "kind 0 is the racing route");
     check(r.point_count == 3, "count at +0x10");
+    check(r.category_enabled[0]&&r.category_enabled[1]&&r.category_enabled[9]&&!r.category_enabled[2],
+          "ordinary forward/reverse admission accepts either nonzero record byte");
     check(r.lane_enabled[0] && r.lane_enabled[6], "the two enabled slots");
     check(!r.lane_enabled[1] && !r.lane_enabled[5] && !r.lane_enabled[11],
           "the other ten slots stay off");
@@ -152,6 +168,9 @@ void test_fields() {
     const nfsu::RoutePoint& p = r.points[1];
     // -1280 / 256 and 896 / 256, derived from the stored unit rather than
     // read back from the implementation.
+    check(p.driving_offset[0] == -1.5F && p.driving_offset[4] == 3.5F &&
+              p.driving_offset[2] == 0.0F,
+          "ordinary driving categories decode signed fixed-point without lane enables");
     check(p.lane_offset[0] == -5.0F, "lane offset scale on a negative value");
     check(p.lane_offset[6] == 3.5F, "lane offset scale on a positive value");
     check(p.lane_offset[1] == 0.0F, "an unwritten slot decodes to zero");
@@ -166,6 +185,7 @@ void test_fields() {
               r.points[2].distance_to_next == 4.0F,
           "the 4.0 a route end carries");
     check(p.path_distance == 10.0F, "path distance at +0x38");
+    for (unsigned k=0;k<23;++k) check(p.speed[k]==31+k,"authored category/direction speed byte");
     check(p.unknown_2c == 1.25F, "unknown float at +0x2C");
     check(p.unknown_30 == -2.5F, "unknown float at +0x30");
     check(p.unknown_34 == 2.5F, "unknown float at +0x34");
@@ -180,6 +200,13 @@ void test_fields() {
           "route counts by kind");
     check(track.find(21) == &r && track.find(22) == nullptr,
           "lookup by index");
+    for (std::size_t at = 0x18; at <= 0x2C; at += 4) {
+        auto malformed = route;
+        put_u32(malformed, at, 0x7F800000U);
+        const auto refused = parse(malformed);
+        check(!refused.ok() && first_issue(refused) == "nonfinite route spatial header",
+              "nonfinite spatial admission header refused");
+    }
 }
 
 void test_two_records_tile_the_payload() {

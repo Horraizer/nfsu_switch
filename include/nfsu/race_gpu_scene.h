@@ -1,20 +1,26 @@
 #pragma once
+
+#include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/race_run.h"
 #include "nfsu/stock_frame.h"
 #include "nfsu/platform.h"
 #include "nfsu/race_particles.h"
+#include "nfsu/race_skid.h"
 #include "nfsu/car_shadow.h"
+#include "nfsu/car_neon.h"
 #include "nfsu/light_glows.h"
 #include "nfsu/track_reflections.h"
 #include "nfsu/headlights.h"
 #include "nfsu/track_zones.h"
+#include "nfsu/start_crowd.h"
 
 namespace nfsu {
 // One combined command stream: track then car, one camera and one depth
 // buffer. Requires owning reference recordings; a borrowed race frame is
 // already combined. Scene payloads stay stable until the renderer closes.
 bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
-                           RecordedCommands& out, std::string& error);
+                           RecordedCommands& out, std::string& error,
+                           std::size_t resource_limit=kTrackSliceResourceLimit);
 struct RaceGpuFrame {
     RecordedCommands commands;
     std::size_t track_draws = 0, car_draws = 0, glow_draws = 0, visible = 0;
@@ -56,6 +62,7 @@ public:
         texture_filter_ = mode; return true;
     }
     void set_particles_enabled(bool enabled) { particles_enabled_ = enabled; }
+    void set_start_scenes_enabled(bool enabled) { start_scenes_enabled_ = enabled; }
     void advance_particles(const RaceSession& session) noexcept {
         if (particles_enabled_) particles_.advance(session);
     }
@@ -66,8 +73,13 @@ public:
         if (ready_) return false;
         original_draw_distance_ = enabled; return true;
     }
-    std::size_t draw_capacity() const { return original_draw_distance_ ? 4096 : kTrackSliceDrawLimit; }
+    bool set_complete_zone_backing(bool enabled) {
+        if(ready_)return false;
+        complete_zone_backing_=enabled;return true;
+    }
+    std::size_t draw_capacity() const { return original_draw_distance_ ? kDekoPreparedDrawCapacity : kTrackSliceDrawLimit; }
     void set_race_visuals(bool enabled) { if(!ready_)race_visuals_=enabled; }
+    void set_silhouette_shadows(bool enabled) { if (!ready_) silhouette_shadows_ = enabled; }
     void set_wet_road_reflections(bool enabled) noexcept { wet_road_reflections_ = enabled; }
     // `car` selects the racer every path draws and drives (issue #315); null
     // resolves the default 240SX through the retail car type table. The
@@ -79,15 +91,39 @@ public:
               TrackSliceLoadObserver* loading = nullptr, bool tuned = false,
               bool glows = false, bool car_shading = false,
               const CarAssets* car = nullptr, const RaceCarDress* dress = nullptr,
-              std::uint32_t event_number = 1, bool world_mips = false);
+              std::uint32_t event_number = 1, bool world_mips = false,unsigned race_index=0);
+    bool set_start_scene(unsigned scene,const std::string& region) {
+        if(ready_)return false;
+        start_scene_=scene;start_region_=region;return true;
+    }
+    bool load_start_camera(FileSystemService& fs,const std::filesystem::path& root,unsigned scene,
+                           const std::string& region,RaceStartClock& clock,std::string& error) {
+        if(!ready_){error="race scene must load before start camera";return false;}
+        if(start_scene_==scene && crowd_.actor_count()){clock=crowd_.clock();return true;}
+        return crowd_.load_camera(fs,root,scene,region,clock,error);
+    }
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);
+    // Append before the first frame/upload. Payloads move into this stable owner.
+    bool add_rival(PreparedCarScene scene,std::vector<PreparedInstance> base,
+                   std::size_t skin_source,CarShadowAsset shadow,std::string& error,bool traffic=false,
+                   CarGlowAnchors anchors={},const VehicleHull* hull=nullptr,
+                   std::unique_ptr<CarNeonAsset> neon={});
     std::uint64_t car_bytes() const { return car_bytes_; }
     // Conservative metadata/capacity estimate; payloads are borrowed once.
     std::uint64_t cache_bytes() const;
 private:
     TrackSlice track_;
+    struct AnimatedTexture {std::size_t animation=0,first=0;std::vector<std::size_t> frames;};
+    std::vector<AnimatedTexture> animated_textures_;
+    std::vector<DrawTextureAlias> texture_aliases_;
+    std::size_t texture_alias_count() const override {return texture_aliases_.size();}
+    DrawTextureAlias texture_alias(std::size_t i) const override {return texture_aliases_.at(i);}
+
+    StartCrowd crowd_;
+    unsigned start_scene_=0;
+    bool start_scenes_enabled_=true;std::string start_region_;
     bool race_visuals_=false;
     bool original_draw_distance_ = false;
     TrackZoneReport visibility_zones_;
@@ -100,7 +136,10 @@ private:
     std::filesystem::path root_;
     bool lamps_loaded_ = false;
     RecordedCommands track_templates_;
+    std::vector<RecordedDraw> world_draws_;
+    std::vector<unsigned> world_draw_sources_;
     bool sky_ = true;
+    bool complete_zone_backing_=false;
     std::size_t sky_draws_ = 0;
     std::size_t sky_position_ = 0;
     std::vector<std::size_t> template_of_group_;
@@ -110,6 +149,10 @@ private:
     TextureFilterMode texture_filter_ = TextureFilterMode::legacy;
     bool car_shading_ = false;
     bool wet_road_reflections_ = false;
+    std::size_t resource_limit()const {
+        return complete_zone_backing_?kTrackZoneBackingResourceLimit:kTrackSliceResourceLimit;
+    }
+    std::uint64_t cache_limit()const {return (complete_zone_backing_?32ULL:16ULL)*1024*1024;}
     bool prepare_templates(std::string& error);
     bool prepare_frame_cache(std::string& error);
     bool prepare_glows(std::string& error);
@@ -117,8 +160,8 @@ private:
                       std::size_t& entries, std::string& error, bool capture = false);
     const UploadTable& resource_table() const override { return wet_road_reflections_ ? wet_uploads_ : combined_uploads_; }
     std::size_t selected_draw_count() const override {
-        return sky_draws_ + selection_.size() + 1 +
-               car_templates_.owning_draws().size() + glow_count_;
+        return sky_draws_ + selection_.size() + shadow_templates_.owning_draws().size() +
+               car_templates_.owning_draws().size() + rival_draws_ + glow_count_ + crowd_.draw_count() + world_draws_.size();
     }
     RecordedDrawView selected_draw(std::size_t i) const override;
     std::uint64_t command_generation() const override { return generation_; }
@@ -130,39 +173,74 @@ private:
     std::size_t reflection_draw_count() const override { return reflection_selection_.size() + lamp_draws_.size(); }
     const RecordedDraw& reflection_draw(std::size_t i) const override { return i < reflection_selection_.size() ? reflection_templates_.at(reflection_selection_[i]) : lamp_draws_.at(i-reflection_selection_.size()); }
     std::vector<RecordedDraw> reflection_templates_, lamp_draws_;
-    std::vector<std::size_t> reflection_first_, reflection_selection_;
-    std::vector<TrackDrawListEntry> reflection_entries_;
-    TrackReflectionCache reflection_cache_;
+    struct ReflectionInstance { std::size_t instance, first, end; };
+    struct ReflectionSection { std::uint32_t number; std::size_t first, end; };
+    std::vector<std::size_t> reflection_selection_;
+    std::vector<ReflectionInstance> reflection_instances_;
+    std::vector<ReflectionSection> reflection_sections_;
+    std::vector<std::array<float, 6>> reflection_bounds_;
+    std::vector<TrackReflectionCorners> reflection_corners_;
     bool prepare_reflections(std::string& error);
+    bool select_reflections(const CameraFrame& camera, const TrackResidency* residency, std::string& error);
+    void update_reflection_instance(std::size_t handle);
     PreparedTrackCull culler_;
     UploadTable combined_uploads_, wet_uploads_;
     RecordedCommands car_templates_;
+    struct RivalVisual {
+        bool traffic=false,active=false;
+        float service_brake=0;
+        CarGlowAnchors anchors{};
+        PreparedCarScene scene;
+        std::vector<PreparedInstance> base;
+        CarShadowAsset shadow;
+        std::unique_ptr<CarNeonAsset> neon;
+        std::unique_ptr<CarShadowSilhouette> silhouette;
+        RecordedCommands commands,shadow_commands;
+    };
+    std::vector<RivalVisual> rivals_;
+    std::size_t rival_draws_=0;
     RecordedCommands shadow_templates_;
     CarShadowAsset shadow_asset_;
+    bool silhouette_shadows_ = false;
+    RenderTexture shadow_ramp_;
+    VehicleVec3 shadow_light_{};
+    std::size_t shadow_ramp_resource_ = kNoHandle;
+    std::unique_ptr<CarShadowSilhouette> shadow_silhouette_;
+    CarNeonAsset neon_asset_;
     std::vector<std::size_t> mesh_first_, section_first_;
     std::vector<std::uint32_t> mesh_groups_;
-    struct SelectedTrackDraw { std::uint32_t instance, draw; std::size_t ordinal; };
+    struct SelectedTrackDraw {
+        std::uint32_t instance, draw;
+        std::size_t ordinal, bucket_rank;
+        unsigned char layer;
+    };
     struct RetailGroup { std::size_t bucket = 0; unsigned char layer = 0; };
-    std::vector<SelectedTrackDraw> selection_, cube_selection_;
+    std::vector<SelectedTrackDraw> selection_, cube_selection_, selection_scratch_, cube_scratch_;
     std::vector<RetailGroup> retail_groups_;
-    std::vector<std::size_t> bucket_first_;
+    std::vector<std::size_t> bucket_first_, bucket_cursor_;
+    std::vector<unsigned char> bucket_layers_;
     std::vector<DrawInstanceUniform> track_placements_;
+    std::vector<std::size_t> prop_handles_;
+    std::vector<unsigned char> movable_instances_;
+    bool movable_track_instance(std::size_t i) const override {return i<movable_instances_.size() && movable_instances_[i];}
+    std::vector<std::pair<std::size_t,std::size_t>> moved_props_;
     std::uint64_t generation_ = 0;
     PreparedCarScene car_;
     std::vector<PreparedInstance> base_;
     std::size_t skin_source_ = kNoHandle;
     std::uint64_t car_bytes_ = 0;
     RaceParticles particles_;
+    std::unique_ptr<RaceSkidMarks> skids_;
     bool particles_enabled_ = false;
     std::size_t car_draw_count_ = 0;
     bool glows_enabled_ = false;
     CarGlowAnchors glow_anchors_{};
     CarExhaustAnchors exhaust_anchors_{};
-    RenderTexture nitrous_flame_;
+    RenderTexture nitrous_flame_,nitrous_purge_;
     std::array<MeshVertex,16> nitrous_vertices_{};
     std::array<std::uint16_t,24> nitrous_indices_{};
-    RecordedDraw nitrous_template_;
-    std::array<RecordedDraw,3> nitrous_selected_{};
+    RecordedDraw nitrous_template_,purge_template_;
+    std::array<RecordedDraw,5> nitrous_selected_{};
     std::size_t nitrous_count_=0;
     RenderTexture glow_head_, glow_tail_;
     std::array<RenderTexture,3> original_glow_textures_;
@@ -171,6 +249,8 @@ private:
     std::array<RecordedDraw, 3> glow_templates_{};
     std::array<RecordedDraw, 7> glow_selected_{};
     std::vector<RecordedDraw> road_glows_;
+    std::vector<RecordedDraw> actor_glows_;
+    std::size_t actor_glow_count_=0;
     std::size_t glow_count_ = 0;
     std::size_t glow_first_resource_ = 0;
 };

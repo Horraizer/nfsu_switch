@@ -493,5 +493,12 @@ bool query_track_collision_cells(
     float max_slot1,
     std::vector<std::size_t>& out,
     const TrackCollisionQueryLimits& limits = TrackCollisionQueryLimits{});
+// Allocation-free bounded output. Order is identical to the vector form;
+// failure leaves count zero, including insufficient output capacity.
+bool query_track_collision_cells(
+    const TrackCollisionReport&,float min0,float min1,float max0,float max1,
+    std::size_t* out,std::size_t capacity,std::size_t& count,
+    const TrackCollisionQueryLimits& limits = TrackCollisionQueryLimits{});
+
 
 } // namespace nfsu

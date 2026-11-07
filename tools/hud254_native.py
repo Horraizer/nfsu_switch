@@ -52,7 +52,7 @@ def format_native(image, ticks, locale=1):
 
 
 def lap_native(image, *, now, start, lap=0, laps=2, best=0x7FFFFFFF, locale=5,
-               pulse=False, completed=0, held_since=0, held_ticks=0, enabled=True):
+               pulse=False, completed=0, held_since=0, held_ticks=0, enabled=True, time_limit=0):
     from unicorn import UC_HOOK_CODE
     from unicorn.x86_const import UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_EIP, UC_X86_REG_ESP, UC_X86_REG_ESI
     machine = Machine(image)
@@ -61,7 +61,8 @@ def lap_native(image, *, now, start, lap=0, laps=2, best=0x7FFFFFFF, locale=5,
     machine.write(view + 0x1C, record)
     machine.write(0x73619C, status)
     machine.write(0x6FBF14, 1)  # Use supplied view record; bypass fallback car lookup.
-    machine.write(0x78A30C, 1)
+    machine.write(0x78A30C, 2 if time_limit else 1)
+    machine.write(0x78A310, time_limit)
     machine.write(0x78A31C, laps)
     machine.write(0x6EE6F0, locale)
     machine.write(0x73AD34, now)

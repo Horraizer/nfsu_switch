@@ -542,6 +542,9 @@ std::uint32_t UploadLedger::take_slot() noexcept {
 
 bool UploadLedger::place(const UploadResource& resource, std::uint64_t fence, Slot& slot,
                          std::string& error) {
+    if(resource.streamed_vertices && resource.kind!=UploadResourceKind::vertex_buffer) {
+        error="only vertex buffers may opt into frame streaming";return false;
+    }
     const bool texture = resource.kind == UploadResourceKind::texture;
     if (texture != (resource.memory == UploadMemory::image)) {
         error = "cannot upload " + resource.name + ": a " +

@@ -133,9 +133,10 @@ std::vector<GamepadFrame> drive_demo_recording();
 
 // The SHA-256 of the demonstration's frame records through
 // default_drive_session_setup(), as the desktop Debug and Release builds
-// give it: docs/CONTROLS_CAMERA.md pins it and nfsu_drive_tests requires it.
+// give it. nfsu_drive_tests owns the portable regression pin; it is not
+// an original-game recording or an inferred acceleration benchmark.
 constexpr const char* kDrivePinnedDemoSha256 =
-    "C90225CC4B54694EBA81681A485B66BD6AF663A815EA12DD5EE9EAB10D4D44FE";
+    "6FC2FCBBC8D3E794C1D60FBBBAF8DD8EB32FF8C32D172B7E43700AC692BF6959";
 
 // ---------------------------------------------------------------------------
 // Showing it with the CPU reference renderer

@@ -3,6 +3,7 @@
 #include "nfsu/chunk.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <exception>
@@ -844,6 +845,8 @@ struct CellWalk {
     float max1 = 0.0F;
     std::size_t budget = 0;
     std::vector<std::size_t>* out = nullptr;
+    std::size_t* fixed = nullptr;
+    std::size_t capacity = 0, count = 0;
 
     bool run() {
         struct Frame {
@@ -852,17 +855,18 @@ struct CellWalk {
             float center[2];
             float half;
         };
-        std::vector<Frame> stack;
+        // Depth-first traversal retains at most three siblings per level.
+        std::array<Frame,1+(kCollisionTreeNodeEntries-1)*kCollisionTreeDepth> stack{};
+        std::size_t stack_size=0;
         Frame root;
         root.node = 0;
         root.depth = 0;
         root.center[0] = 0.0F;
         root.center[1] = 0.0F;
         root.half = kCollisionRootHalfExtent;
-        stack.push_back(root);
-        while (!stack.empty()) {
-            const Frame frame = stack.back();
-            stack.pop_back();
+        stack[stack_size++]=root;
+        while (stack_size) {
+            const Frame frame = stack[--stack_size];
             const TrackCollisionTreeNode& node = report->nodes[frame.node];
             const float quarter = frame.half * 0.5F;
             for (std::size_t slot = 0; slot < kCollisionTreeNodeEntries; ++slot) {
@@ -893,16 +897,18 @@ struct CellWalk {
                     next.center[0] = c0;
                     next.center[1] = c1;
                     next.half = quarter;
-                    stack.push_back(next);
+                    if(stack_size==stack.size())return false;
+                    stack[stack_size++]=next;
                     continue;
                 }
                 if (entry >= report->cells.size()) {
                     return false;
                 }
-                if (out->size() >= budget) {
+                if (count >= budget || (!out && count>=capacity)) {
                     return false;
                 }
-                out->push_back(entry);
+                if(out)out->push_back(entry);else fixed[count]=entry;
+                ++count;
             }
         }
         return true;
@@ -1120,6 +1126,22 @@ bool query_track_collision_cells(
         return false;
     }
     return true;
+}
+
+// The fixed-output form has exactly the same traversal and failure policy.
+bool query_track_collision_cells(
+    const TrackCollisionReport& report,float min0,float min1,float max0,float max1,
+    std::size_t* out,std::size_t capacity,std::size_t& count,
+    const TrackCollisionQueryLimits& limits) {
+    count=0;
+    if(!report.valid||report.nodes.empty()||!out||!capacity||!limits.max_cells||
+       !std::isfinite(min0)||!std::isfinite(min1)||!std::isfinite(max0)||!std::isfinite(max1)||
+       min0>max0||min1>max1)return false;
+    CellWalk walk;walk.report=&report;walk.min0=min0;walk.min1=min1;
+    walk.max0=max0;walk.max1=max1;walk.budget=limits.max_cells;
+    walk.fixed=out;walk.capacity=capacity;
+    if(!walk.run())return false;
+    count=walk.count;return true;
 }
 
 bool query_track_collision_box(

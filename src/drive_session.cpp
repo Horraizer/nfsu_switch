@@ -25,6 +25,24 @@ namespace nfsu {
 namespace {
 
 constexpr double kPi = 3.14159265358979311600e+00;
+// 564B10 scalar sine, also used by the recovered frontend projection.
+// 40DD00 truncates each scaled half-angle before invoking this polynomial.
+double retail_cotangent(double phase) noexcept {
+    const auto sine=[](std::uint16_t angle) {
+        double x=double(angle)*double(9.58738019107841e-5F),sign=1;
+        if(x>=double(4.71238899230957F))x-=double(6.2831854820251465F);
+        else if(x>=double(1.5707963705062866F)){x-=double(3.1415927410125732F);sign=-1;}
+        const double x2=x*x,x5=x2*x*x2,x7=x5*x2;
+        return float((x7*x2*double(2.7557318844628753e-6F)+
+            ((x5*double(.008333333767950535F)+(x-x2*x*double(.1666666716337204F)))-
+            x7*double(.00019841270113829523F)))*sign);
+    };
+    const auto half=static_cast<std::uint16_t>(static_cast<unsigned>(phase));
+    // 40DE9D stores sin as binary32, divides by the extended cos result,
+    // then stores the reciprocal focal scale as binary32.
+    return double(float(double(sine(std::uint16_t(half+0x4000U)))/sine(half)));
+}
+
 
 VehicleVec3 add(const VehicleVec3& a, const VehicleVec3& b) noexcept {
     return {a.x + b.x, a.y + b.y, a.z + b.z};
@@ -293,6 +311,11 @@ double drive_vertical_fov_degrees(std::uint16_t units,
                                   ChaseFovMode fov_mode,
                                   std::uint32_t width,
                                   std::uint32_t height) noexcept {
+    if(fov_mode==ChaseFovMode::retail && width && height && units) {
+        const double focal=retail_cotangent(double(units)*double(height)/double(width)*
+            double(1.100000023841858F)/double(.9090908765792847F)*.5);
+        return 2*chase_atan(1/focal)*(180/kPi);
+    }
     const double half = chase_angle_radians(units) * 0.5;
     const double tangent = vehicle_sin(half) / vehicle_cos(half);
     double ratio = 0.75;
@@ -316,6 +339,26 @@ bool drive_render_camera(const ChaseCameraView& view,
     camera.yaw_deg = 180.0 - chase_angle_degrees(view.heading);
     camera.pitch_deg =
         static_cast<double>(static_cast<std::int16_t>(view.pitch)) * (360.0 / 65536.0);
+    if (view.pov == 2) {
+        // Preserve body pitch and roll for the native fixed view. Chase
+        // headings remain integer angles; only this full-basis adapter needs
+        // the non-quantized atan2 to avoid rolling a hill back to world-up.
+        const auto atan2=[](double y,double x) {
+            if(x>0)return chase_atan(y/x);
+            if(x<0)return chase_atan(y/x)+(y<0?-kPi:kPi);
+            return y>0?kPi*.5:y<0?-kPi*.5:0.;
+        };
+        const auto& f=view.forward;
+        const double horizontal=vehicle_sqrt(f.x*f.x+f.y*f.y);
+        camera.yaw_deg=atan2(f.y,-f.x)*(180/kPi);
+        camera.pitch_deg=atan2(-f.z,horizontal)*(180/kPi);
+        const double yaw=camera.yaw_deg*(kPi/180),pitch=camera.pitch_deg*(kPi/180);
+        const VehicleVec3 right{det_sin_deg(camera.yaw_deg),0,-det_cos_deg(camera.yaw_deg)};
+        const VehicleVec3 up{-vehicle_sin(pitch)*vehicle_cos(yaw),vehicle_cos(pitch),
+                            -vehicle_sin(pitch)*vehicle_sin(yaw)};
+        const VehicleVec3 authored{view.up.x,view.up.z,-view.up.y};
+        camera.roll_deg=atan2(dot(authored,right),dot(authored,up))*(180/kPi);
+    }
     // Any distance in front of the eye gives the same view; ten metres keeps
     // the target inside the renderer's bounds wherever the eye is.
     camera.distance = 10.0;
@@ -327,6 +370,13 @@ bool drive_render_camera(const ChaseCameraView& view,
     camera.target = {eye.x - camera.distance * cp * cy, eye.y - camera.distance * sp,
                      eye.z - camera.distance * cp * sy};
     camera.fov_y_deg = drive_vertical_fov_degrees(view.fov, fov_mode, width, height);
+    if(fov_mode==ChaseFovMode::retail) {
+        camera.focal_x_override=retail_cotangent(double(view.fov)*double(1.100000023841858F)*.5);
+        camera.focal_y_override=retail_cotangent(double(view.fov)*double(height)/double(width)*
+            double(1.100000023841858F)/double(.9090908765792847F)*.5);
+        camera.fov_y_deg=2*chase_atan(1/camera.focal_y_override)*(180/kPi);
+    }
+
     camera.near_plane = view.near_plane;
     camera.far_plane = view.far_plane;
     if (!validate_camera(camera, error)) {

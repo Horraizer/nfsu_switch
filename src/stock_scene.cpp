@@ -105,6 +105,36 @@ std::size_t alias_stock_lamp_textures(
     return rewritten;
 }
 
+std::size_t alias_installed_lamp_textures(const std::set<std::uint32_t>& present,
+    const std::string& car,const CarPartDatabase& db,const StockParts& installed,GeometryReport& geometry) {
+    const auto suffix=[](std::uint32_t hash,const char* text) {
+        for(;*text;++text)hash=hash*33+static_cast<unsigned char>(*text);
+        return hash;
+    };
+    std::map<std::uint32_t,std::uint32_t> rewrite;
+    for(unsigned slot:{13U,14U}) {
+        const auto record=installed.slots[slot].record;
+        if(record==kNoCarPart || record>=db.records.size())continue;
+        const auto& part=db.records[record];
+        auto target=bin_hash(car+(slot==13?"_KIT00_HEADLIGHT":"_KIT00_BRAKELIGHT"));
+        for(int i=0;i<part.attribute_count;++i) {
+            const auto& attr=db.attributes[part.attribute_index+static_cast<unsigned>(i)];
+            if(attr.key==0x10C98090U && attr.value) {target=attr.value;break;}
+        }
+        for(const char* position:{"_LEFT","_RIGHT","_CENTRE","_GLASS_LEFT","_GLASS_RIGHT","_GLASS_CENTRE"}) {
+            const auto source=suffix(part.part_name_hash,position);
+            const auto state=suffix(target,std::string(position).find("_GLASS")==0?"_GLASS_OFF":"_OFF");
+            if(!present.count(source) && present.count(state))rewrite.emplace(source,state);
+        }
+    }
+    std::size_t count=0;
+    for(auto& mesh:geometry.meshes)for(auto& hash:mesh.texture_hashes) {
+        const auto found=rewrite.find(hash);
+        if(found!=rewrite.end()) {hash=found->second;++count;}
+    }
+    return count;
+}
+
 namespace {
 
 // Slot ids the draw code treats specially. car_slot_name is the authority

@@ -1,8 +1,26 @@
+#include "nfsu/deko_overlay_upload.h"
 #include "nfsu/deko_scene_target.h"
 #include <iostream>
+#include <utility>
 
 int main() {
     using namespace nfsu;
+    // Reproduce the post-finish image/staging pressure observed on Switch.
+    // Every source row must be copied exactly once with bounded live staging.
+    for(const auto size : {std::pair<unsigned,unsigned>{2048,2368},{4096,4096},{73,131},{1,1}}) {
+        unsigned rows=0;std::uint64_t bytes=0;
+        while(rows<size.second) {
+            const auto stripe=deko_overlay_stripe(size.first,size.second,rows);
+            if(stripe.first_row!=rows||!stripe.rows||stripe.rows>64||
+               stripe.row_pitch!=size.first*4||stripe.bytes!=stripe.rows*stripe.row_pitch||
+               stripe.bytes>1024*1024||UINT64_C(272994304)+stripe.bytes>UINT64_C(289869824))return 1;
+            rows+=stripe.rows;bytes+=stripe.bytes;
+        }
+        if(rows!=size.second||bytes!=std::uint64_t(size.first)*size.second*4||
+           deko_overlay_stripe(size.first,size.second,rows).rows)return 1;
+    }
+    for(const auto size : {std::pair<unsigned,unsigned>{0,1},{1,0},{4097,1},{1,4097}})
+        if(deko_overlay_stripe(size.first,size.second,0).rows)return 1;
     DekoSceneTarget target;
     const auto check = [](bool ok, const char* message) {
         if (!ok) std::cerr << "FAIL: " << message << '\n';

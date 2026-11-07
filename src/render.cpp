@@ -1113,6 +1113,16 @@ bool Rasterizer::fill(
                     double surface[7]{};
                     if (material.car_shading || material.headlight) for (int k=0;k<7;++k)
                         surface[k]=(l[0]*a->surface[k]+l[1]*b->surface[k]+l[2]*c->surface[k])*iq;
+                    if (material.frontend_lighting) {
+                        // car.efx uses ps_1_1 COLOR0/COLOR1 inputs, saturated
+                        // before the pixel program. Diffuse/alpha here already
+                        // include its final factor2; specular does not.
+                        for (unsigned k=0;k<3;++k) {
+                            surface[k]=2*std::clamp(surface[k]*.5,0.0,1.0);
+                            surface[k+3]=std::clamp(surface[k+3],0.0,1.0);
+                        }
+                        surface[6]=2*std::clamp(surface[6]*.5,0.0,1.0);
+                    }
                     std::uint32_t color[4];
                     double continuous_rgba[4]{};
                     double wet_base[3]{};
@@ -1227,7 +1237,8 @@ bool Rasterizer::fill(
                                         (l[0]*a->rq+l[1]*b->rq+l[2]*c->rq)*iq,
                                         (l[0]*a->gq+l[1]*b->gq+l[2]*c->gq)*iq,
                                         (l[0]*a->bq+l[1]*b->bq+l[2]*c->bq)*iq};
-                                    const double ev=(l[0]*a->aq+l[1]*b->aq+l[2]*c->aq)*iq;
+                                    const double interpolated_ev=(l[0]*a->aq+l[1]*b->aq+l[2]*c->aq)*iq;
+                                    const double ev=material.frontend_lighting?std::clamp(interpolated_ev,0.0,1.0):interpolated_ev;
                                     unsigned face=0;double u=0,v=0;
                                     const bool sampleable=frontend_cube_coordinates(direction,face,u,v);
                                     const auto& image=material.frontend_cube[face];
@@ -1620,7 +1631,7 @@ bool render_scene(
                     raster.texture ? (override_texture != kNoHandle
                         ? override_texture : draw.texture) : kNoHandle,
                     draw.first_index, draw.index_count, true, true, true,
-                    options.cull, raster.blend, raster.alpha_test, raster.alpha_ref, raster.car_shading});
+                    options.cull, raster.blend, raster.alpha_test, raster.alpha_ref, raster.car_shading, false, raster.linear_filter, options.texture_filter==TextureFilterMode::linear});
             }
             for (std::uint64_t t = first / 3; t < (first + count) / 3; ++t) {
                 const std::uint32_t id = next_id++;

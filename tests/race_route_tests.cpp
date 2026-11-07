@@ -580,15 +580,31 @@ void test_spline() {
     nfsu::evaluate_track_path(spline, 15.999F, 0, seam);
     check(seam[2] > spline.spline_length * 0.99F, "the running length is carried over the seam");
 
-    // An open path is refused rather than approximated.
+    // An open path builds with the retail type-2 end treatment: the
+    // mirrored points carry the basis past each end and the parameter is
+    // never wrapped.59CEA0 extrapolates beyond the endpoint slots.
     TrackSpec open = circle_spec();
     open.closed = 0;
     open.length = 600.0F;
     const nfsu::RaceRouteTrack open_track = parse(track_image(open));
     check(open_track.ok(), "an open path parses");
-    check(!nfsu::build_track_path_spline(open_track, false, spline, error) &&
-              error.find("open") != std::string::npos,
-          "an open path's spline is refused");
+    nfsu::TrackPathSpline open_spline;
+    check(nfsu::build_track_path_spline(open_track, false, open_spline, error),
+          "an open path's spline builds");
+    check(open_spline.open, "an open path's spline is open");
+    float end[3];
+    float past[3];
+    nfsu::evaluate_track_path(open_spline, 16.5F, 0, end);
+    nfsu::evaluate_track_path(open_spline, 16.4F, 0, past);
+    for(unsigned k=0;k<2;++k) {
+        const float expected=(kCircle[15][k]-kCircle[14][k])*1.5F+kCircle[15][k];
+        check(std::fabs(end[k]-expected)<.0001F,"open endpoint extends its authored tangent");
+    }
+    check(std::fabs(end[0]-past[0])+std::fabs(end[1]-past[1])>1.F,
+          "distinct parameters past the open end are not clamped");
+    nfsu::evaluate_track_path(open_spline, -0.5F, 0, end);
+    check(std::isfinite(end[0]) && std::isfinite(end[1]),
+          "an extrapolated parameter before the open start stays finite");
 }
 
 void test_coordinate() {

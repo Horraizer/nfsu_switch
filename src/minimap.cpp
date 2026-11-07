@@ -1,4 +1,5 @@
 #include "nfsu/minimap.h"
+#include "nfsu/assets.h"
 #include "nfsu/race_events.h"
 #include "nfsu/sha256.h"
 #include "nfsu/texture.h"
@@ -8,9 +9,19 @@
 #include <cstring>
 #include <fstream>
 #include <vector>
+#include <string_view>
 
 namespace nfsu {
 namespace {
+std::uint32_t map_hash(unsigned track)noexcept {
+    std::uint32_t hash=0xffffffffU;
+    for(char c:std::string_view("TRACK"))hash=hash*33+unsigned(c);
+    char digits[10];unsigned count=0;
+    do{digits[count++]=char('0'+track%10);track/=10;}while(track);
+    while(count)hash=hash*33+unsigned(digits[--count]);
+    for(char c:std::string_view("_MAP"))hash=hash*33+unsigned(c);
+    return hash;
+}
 bool finite(MapPoint p) noexcept { return std::isfinite(p[0]) && std::isfinite(p[1]); }
 bool finite_polygon(const std::array<MapPoint,4>& points) noexcept {
     return std::all_of(points.begin(),points.end(),[](MapPoint p) { return finite(p); });
@@ -141,26 +152,34 @@ float minimap_scalar_sine(std::uint16_t angle) noexcept {
     return float(sign*(x-x3*float(0.1666666716337204)+x5*float(0.008333333767950535)-
                        x7*float(0.00019841270113829523)+x9*float(2.7557318844628753e-06)));
 }
-bool load_minimap_resource(const std::filesystem::path& root,MinimapResource& out,std::string& error) {
+bool load_minimap_resource(const std::filesystem::path& root,MinimapResource& out,std::string& error,unsigned track) {
     out={}; error.clear();
+    std::string set;AssetManifest manifest;
+    if(!first_lap_asset_set_name(track,set)||!retail_asset_manifest(set,manifest)){error="unsupported map track";return false;}
+    const auto name="TRACK"+std::to_string(track)+"_MAP";
+    std::uint32_t hash=0xFFFFFFFFU;for(unsigned char c:name)hash=hash*33+c;
+    const auto file="Tracks/TEX"+std::to_string(track)+"TRACK.BIN";
+    const auto expected=std::find_if(manifest.files.begin(),manifest.files.end(),[&](const auto& input){return asset_names_match(input.path,file);});
+    if(expected==manifest.files.end()){error="track map identity absent from authenticated manifest";return false;}
+    const auto& identity=expected->sha256;
     std::vector<unsigned char> bytes;
-    const auto packs=load_texture_pack_set(root/"Tracks/TEX1003TRACK.BIN",bytes);
+    const auto packs=load_texture_pack_set(root/file,bytes);
     if(!packs.complete || !packs.ok() || sha256_hex(sha256(bytes.data(),bytes.size()))!=
-        "081B4D966C154D7B9823E70DD5031269A8D3293F8CD13ED515EF644F09573ED5") {
-        error="unsupported TRACK1003 texture pack"; return false;
+        identity) {
+        error="unsupported map texture pack"; return false;
     }
-    MinimapResource r; unsigned matches=0;
-    for(const auto& pack:packs.packs) for(const auto& t:pack.textures) if(t.hash==0xA4F2F595) {
-        if(!t.valid || t.name!="TRACK1003_MAP" || t.width!=256 || t.height!=256 ||
+    MinimapResource r;r.track=track; unsigned matches=0;
+    for(const auto& pack:packs.packs) for(const auto& t:pack.textures) if(t.hash==hash) {
+        if(!t.valid || t.name!=name || t.width!=256 || t.height!=256 ||
            t.format!=PixelFormat::a8r8g8b8 || t.storage!=TextureStorage::raw || t.mip_count!=1 ||
            t.blob_offset>bytes.size() || t.blob_size>bytes.size()-t.blob_offset) {
-            error="unsupported TRACK1003_MAP metadata"; return false;
+            error="unsupported track map metadata"; return false;
         }
         ++matches; r.hash=t.hash; r.width=t.width; r.height=t.height;
         r.info_offset=t.info_offset; r.payload_offset=t.blob_offset; r.payload_bytes=t.blob_size;
         r.alpha_test=t.alpha_test_mode; r.alpha_blend=t.alpha_blend_mode;
     }
-    if(matches!=1) { error="ambiguous or absent TRACK1003_MAP"; return false; }
+    if(matches!=1) { error="ambiguous or absent track map"; return false; }
     std::ifstream stream(root/"Global/GLOBALB.BUN",std::ios::binary|std::ios::ate);
     if(!stream || stream.tellg()<0 || stream.tellg()>64*1024*1024) { error="GLOBALB read refused"; return false; }
     bytes.resize(static_cast<std::size_t>(stream.tellg())); stream.seekg(0);
@@ -171,14 +190,14 @@ bool load_minimap_resource(const std::filesystem::path& root,MinimapResource& ou
     const auto table=parse_track_info_table(bytes.data(),bytes.size());
     if(!table.valid) { error="invalid track table"; return false; }
     matches=0;
-    for(const auto& t:table.records) if(t.number==1003) {
+    for(const auto& t:table.records) if(t.number==int(track)) {
         if(t.offset>bytes.size() || kTrackInfoRecordSize>bytes.size()-t.offset) { error="track record outside input"; return false; }
         const auto* at=bytes.data()+t.offset; ++matches;
         r.offset_x=f32(at+0x8c); r.offset_y=f32(at+0x90); r.world_span=f32(at+0x94);
         r.rotation=u16(at+0x98); r.start_angle=u16(at+0x9a); r.finish_angle=u16(at+0x9c);
     }
     if(matches!=1 || !finite({{r.offset_x,r.offset_y}}) || !(r.world_span>0) || !std::isfinite(r.world_span)) {
-        error="invalid track1003 map transform"; return false;
+        error="invalid track map transform"; return false;
     }
     r.valid=true; out=r; return true;
 }
@@ -192,7 +211,9 @@ MinimapResult build_minimap_geometry(const MinimapResource& r,const MinimapStyle
     const MinimapPresentation& p,MapPoint view,const MinimapActor* actors,std::size_t count,
     MinimapGeometry& out,std::size_t capacity) noexcept {
     out={};
-    if(!r.valid || r.hash!=0xA4F2F595 || r.width!=256 || r.height!=256) return MinimapResult::invalid_resource;
+    const auto expected_hash=r.track?map_hash(r.track):(r.hash==0xA4F2F595||r.hash==0x8BBD7AD6||r.hash==0xF1DB19D5?r.hash:0);
+    if(!r.valid || !expected_hash || r.hash!=expected_hash ||
+       r.width!=256 || r.height!=256) return MinimapResult::invalid_resource;
     if(!p.valid || !p.camera_angle_valid || (s.index!=1 && s.index!=3 && s.index!=5 && s.index!=6)) return MinimapResult::unknown_input;
     if(count>kMinimapMaxActors || capacity>kMinimapMaxPieces) return MinimapResult::capacity_exceeded;
     if((count && !actors) || !finite(view) || !finite(p.native_center) || !finite(p.native_half_extent) ||

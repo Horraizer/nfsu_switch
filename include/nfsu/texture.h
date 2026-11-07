@@ -154,6 +154,20 @@ const char* texture_alpha_blend_name(TextureAlphaBlend blend) noexcept;
 // table +0 for JDLZ storage) equals hash, valid or not.
 bool record_claims_hash(const TextureRecord& texture, std::uint32_t hash) noexcept;
 
+struct TextureAnimation {
+    std::uint32_t hash=0, fps=0, clock=0;
+    std::vector<std::uint32_t> frames;
+};
+// Original B0300100, version1: 52-byte definitions and16-byte frame refs.
+bool append_texture_animations(const unsigned char*,std::size_t,
+    std::vector<TextureAnimation>&,std::string& error);
+// Scan an uncompressed chunk file for animation metadata only. Texture/mesh
+// payloads are skipped on disk, so common INGAMEB definitions do not add a
+// whole-source buffer to the bounded scene loader's allocation peak.
+bool load_texture_animations(const std::filesystem::path&,std::vector<TextureAnimation>&,
+                             std::string& error);
+std::size_t texture_animation_phase(const TextureAnimation&,std::uint32_t ticks_60hz) noexcept;
+
 struct TextureIssue {
     std::uint64_t offset = 0;
     std::string message;

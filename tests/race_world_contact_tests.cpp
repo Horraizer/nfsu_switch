@@ -1,0 +1,245 @@
+#include "nfsu/race_session.h"
+#include "nfsu/intro_grid.h"
+#include "nfsu/player_powertrain.h"
+#include <iostream>
+#include <iomanip>
+#include <algorithm>
+namespace nfsu {
+struct RaceWorldContactProbe {
+static int run(const char* root) {
+ int failures=0;
+ //The last actor in a full traffic roster must retain the same original
+ //583DA0 magnitude/stop behavior as the first actor, including shared records.
+ for(unsigned other:{0U,1+kRaceRivalCapacity+kRaceTrafficCapacity-1}){
+  RaceTrafficActor actor;ContactRecord record;record.magnitude_sum=30;
+  RaceTraffic::contact(actor,other,{1,0,0},1,&record);
+  if(actor.crash_stop||!actor.pair_history[other].valid){std::cerr<<"traffic full-roster contact boundary";return 20;}
+  record.magnitude_sum=31;RaceTraffic::contact(actor,other,{1,0,0},2,&record);
+  if(!actor.crash_stop||actor.pair_history[other].magnitude!=31){std::cerr<<"traffic full-roster shared magnitude lost";return 21;}
+ }
+
+ struct Job {unsigned a,b;float remaining;ContactVector point;};
+ struct Pin {float wall;unsigned actor;std::array<ContactVector,2> inertia;unsigned count;
+  std::array<Job,4> jobs;std::array<std::array<float,10>,2> states;bool reverse=false;bool floor=false;};
+ static const Pin pins[]={
+ #include "race_world_contact_pins.inc"
+ #include "race_ground_contact_pins.inc"
+ };
+ struct CacheCase {ContactVector position,velocity;std::array<float,4> bounds;std::vector<std::size_t> polygons;};
+ static const CacheCase cache_cases[]={
+ #include "race_polygon_cache_pins.inc"
+ };
+ std::vector<unsigned char> track_image;
+ const auto cache_world=build_track_contact_world(load_track_collision(std::filesystem::path(root)/"Tracks/TRACKB1003.lzc",track_image));
+ RaceTrackPolygonCache polygon_cache;
+ for(const auto& expected:cache_cases) {
+  RaceContactPose pose;pose.position={expected.position[0],expected.position[1],expected.position[2]};
+  pose.velocity={expected.velocity[0],expected.velocity[1],expected.velocity[2]};
+  if(!update_race_track_polygon_cache(cache_world,pose,polygon_cache)||polygon_cache.bounds!=expected.bounds||polygon_cache.polygons!=expected.polygons){
+   std::cerr<<"original polygon cache mismatch\n";++failures;
+  }
+ }
+ IntroGrid grid;std::string error;if(!load_intro_grid(root,grid,error)){std::cerr<<error;return 3;}
+ // Native queue fixtures use full57F2B0 with explicit upgrades.
+ // They do not override it with the raw575960 table result.
+ // Rebuild through the same retail setup producer, never from expected inertia.
+ for(auto& actor:grid.actors) {
+  VehicleUpgradeLevels levels;
+  if(actor.config.role==Event0Role::human)levels={1,1,1,1,1,1,1,1,1,1,1};
+  if(!load_race_vehicle_spec(std::filesystem::path(root)/"Global/GLOBALB.BUN",
+       actor.assets.car_type_name,levels,actor.placement_spec,error)){std::cerr<<error;return 14;}
+ }
+
+ // Original469810 fixture:53 coincident walls, reversed cache order.
+ //The first48 admissions are sorted afterwards; sorting first is different.
+ auto crowded=cache_world;crowded.collision.polygons.resize(53);
+ RaceTrackPolygonCache dense;dense.valid=true;
+ for(unsigned i=0;i<53;++i) {
+  auto& poly=crowded.collision.polygons[i];poly.index=i;
+  const float points[4][3]={{0,-8,-8},{0,-8,8},{0,8,8},{0,8,-8}};
+  for(unsigned j=0;j<4;++j)for(unsigned k=0;k<3;++k)poly.corner[j][k]=points[j][k];
+  dense.polygons.push_back(52-i);
+ }
+ std::vector<std::size_t> admitted;
+ VehicleState centered;RaceTrackBodyBounds bounds;bounds.radius=3;bounds.above=bounds.below=1;
+ if(!race_track_candidates(crowded,centered,bounds,dense,{},admitted)||admitted.size()!=48)++failures;
+ else for(unsigned i=0;i<48;++i)if(admitted[i]!=i+5){++failures;break;}
+ auto& player=grid.actors[1];
+ std::vector<IntroGridActor*> selected{&grid.actors[0],&grid.actors[2],&grid.actors[3]};
+ // Native fixtures name their input models in race_world_contact_native.py.
+ // Live weighted selection order is not the fixture's actor identity.
+ for(const auto* name:{"4DR_SEDAN02","TAXI02","PANELVAN","PICKUP","SUV","PARCELVAN"}) {
+  const auto found=std::find_if(grid.traffic.begin(),grid.traffic.end(),
+   [name](const auto& actor){return actor.assets.car_type_name==name;});
+  if(found==grid.traffic.end()){std::cerr<<"native contact fixture model absent: "<<name;return 19;}
+  selected.push_back(&*found);
+ }
+ for(const auto& expected:pins){
+ const float wall=expected.wall;const unsigned index=expected.actor-1;
+ auto& rival=*selected[index];
+ // Verify the actual loaded runtime producer before response/continuation.
+ // Never replace a port input with the native answer to hide a setup mismatch.
+ if(player.placement_spec.handling.inertia!=expected.inertia[0] ||
+    rival.placement_spec.handling.inertia!=expected.inertia[1]) {
+  std::cerr<<"runtime inertia producer "<<expected.actor<<"\n";++failures;
+ }
+ VehicleTrackCourse course;if(!build_vehicle_proving_ground(course,error))return 4;
+ // Traffic owns actual road metadata; the collision world below stays synthetic.
+ course.name="TRACKB1003.lzc";
+ VehicleTrackQuad quad;
+ float corners[4][3]={{wall,-8,-8},{wall,-8,8},{wall,8,8},{wall,8,-8}};
+ for(unsigned i=0;i<4;++i)for(unsigned k=0;k<3;++k)quad.corner[i][k]=corners[i][k];
+ // Build the actual wall's quadtree, including negative-X cells. Reusing
+ // the proving ground's positive-X cells silently omitted reversed actors.
+ VehicleTrackQuad floor;const float fc[4][3]={{-16,-16,-.375F},{16,-16,-.375F},{16,16,-.375F},{-16,16,-.375F}};
+ for(unsigned i=0;i<4;++i)for(unsigned k=0;k<3;++k)floor.corner[i][k]=fc[i][k];
+ const auto image=build_vehicle_track_collision_image(expected.floor?std::vector<VehicleTrackQuad>{quad,floor}:std::vector<VehicleTrackQuad>{quad},error);
+ if(image.empty()){std::cerr<<error;return 10;}
+ auto report=parse_track_collision(image.data(),image.size(),0);
+ course.world=build_track_contact_world(report);
+ RaceSession world(course,player.placement_spec,RaceSteering::baseline,player.hull);
+ world.rivals_.push_back(std::make_unique<RaceSession>(course,rival.placement_spec,RaceSteering::baseline,rival.hull,RacePresentation::none));
+ auto& other=*world.rivals_[0];float rating=0,low_slip=1;
+ if(expected.floor&&!ai_setup_performance(rival.placement_spec.handling,rating,low_slip))return 13;
+ if(!other.configure_ai(low_slip,error))return 5;
+ const bool traffic=index>=3;
+ VehicleState a,b;
+ if(!world.model_.reset(a,course.start)||!other.model_.reset(b,course.start))return 6;
+ const double sign=expected.reverse?-1:1;
+ a.position={};b.position={4*sign,.7,.2};a.orientation={};b.orientation={};
+ a.rigid_body_ready=b.rigid_body_ready=false;a.aero={};a.aero_ready=true;
+ a.alternate_yaw_active=b.alternate_yaw_active=false;a.velocity={30*sign,0,0};b.velocity={-10*sign,0,0};
+ if(expected.floor) {
+  // Same initialized neutral/native ordinary-grip inputs as the native
+  // grounded fixture. This does not assert original reset or race policy.
+  struct ClearGround final:VehicleGround {
+   VehicleGroundHit cast(const VehicleVec3&,const VehicleVec3&,double)const override{return {};}
+  } clear;
+  VehicleInput initial;initial.road_steering=true;initial.road_angle_word_valid=true;
+  VehicleTelemetry initialized;a.aero_ready=false;a.alternate_yaw_active=true;
+  a.gear=a.published_gear=a.transmission.requested_gear=kVehicleGearNeutral;
+  if(!world.model_.step(a,initial,clear,initialized,0,0,false,true,true))return 12;
+  a.published_support=0;for(const auto& w:a.wheels)a.published_support+=w.contact?1U:0U;
+  a.owner_speeds=player_publish_owner_speeds(a.velocity,{1,0,0});
+  a.owner_slip_angle=player_owner_slip_angle(a.velocity,{1,0,0});
+  world.vehicle_.last_input_=initial;
+ }
+ a.simulation_seconds=b.simulation_seconds=double(1.F/60.F);
+ std::array<RaceContactPose,4> history{};history[0]=race_contact_pose(a);history[1]=race_contact_pose(b);
+ history[0].time=history[1].time=0;history[0].position.x=-.5*sign;history[1].position.x=double(float((4.+1./6)*sign));
+ if(!world.vehicle_.start(a)||!other.vehicle_.start(b))return 7;
+ world.vehicle_.defer_body_contacts(true);other.vehicle_.defer_body_contacts(true);
+ const VehicleState* opposite=nullptr;
+ if(traffic) {
+  world.traffic_=std::make_unique<RaceTraffic>();
+  if(!world.traffic_->load(root,course,{{rival.placement_spec,rival.hull,rival.request.car_type_name}},error)) {
+   std::cerr<<error;return 9;
+  }
+  // This synthetic fixture bypasses set_traffic; prepare its owner caches too.
+  world.contact_traffic_epochs_.resize(1);world.near_pass_cache_.resize(4);
+  world.traffic_->defer_body_contacts(true);
+  auto& t=world.traffic_->contact_actors()[0];t.car=b;t.active=true;
+  t.previous_pose=history[1];t.previous_valid=true;opposite=&t.car;
+ } else opposite=&other.car();
+ other.vehicle_.last_input_.road_steering=true;other.vehicle_.last_input_.road_angle_word_valid=true;
+ world.timing_.now_ticks=1084227584;world.started_=other.started_=true;
+ if(traffic)world.rivals_.clear();
+ std::array<std::uint64_t,4> resets{};std::vector<RaceQueuedContact> trace;
+ if(!world.resolve_world_contacts(history,resets,error,nullptr,nullptr,&trace)){std::cerr<<error;return 8;}
+ if(trace.size()!=expected.count){std::cerr<<"queue size "<<expected.actor<<" "<<wall<<"\n";++failures;
+ for(const auto& q:trace)std::cerr<<"actual job "<<q.a<<" "<<q.b<<" "<<std::setprecision(17)<<q.remaining<<" point "<<q.point.x<<","<<q.point.y<<","<<q.point.z<<" position "<<q.position[0].x<<","<<q.position[0].y<<","<<q.position[0].z<<" velocity "<<q.velocity[0].x<<","<<q.velocity[0].y<<","<<q.velocity[0].z<<"\n";
+ continue;}
+ for(unsigned j=0;j<trace.size();++j){
+  const auto& actual=trace[j];const auto& want=expected.jobs[j];
+  const auto actor_id=[&](unsigned id){return traffic&&id==1?4U:id;};
+  if(actual.a!=actor_id(want.a)||actual.b!=actor_id(want.b)||actual.remaining!=want.remaining||
+     float(actual.point.x)!=want.point[0]||float(actual.point.y)!=want.point[1]||float(actual.point.z)!=want.point[2]){
+   std::cerr<<"queue geometry "<<expected.actor<<" "<<wall<<" "<<j<<"\n";++failures;
+  }
+ }
+ unsigned body=0;
+ for(const auto* state:{&world.car(),static_cast<const VehicleState*>(opposite)}){
+  const std::array<float,10> actual{{float(state->position.x),float(state->position.y),float(state->position.z),
+   float(state->velocity.x),float(state->velocity.y),float(state->velocity.z),float(state->angular_velocity.x),
+   float(state->angular_velocity.y),float(state->angular_velocity.z),float(state->collision_state)}};
+  for(unsigned k=0;k<actual.size();++k)if(actual[k]!=expected.states[body][k]){
+   std::cerr<<"state "<<expected.actor<<" "<<wall<<" "<<body<<" "<<k<<" got "<<std::setprecision(17)<<actual[k]<<" expected "<<expected.states[body][k]<<"\n";++failures;
+  }++body;
+ }
+ if(traffic&&!expected.floor&&expected.actor==4&&!expected.reverse) {
+  auto& actor=world.traffic_->contact_actors()[0];actor.crash_stop=true;
+  const auto published=actor.car;auto want=actor.driver;auto legacy=actor.driver;
+  AiDriverForwardInput in;in.category=2;in.desired_speed=0;
+  in.position={float(published.position.x),float(published.position.y),float(published.position.z)};
+  in.velocity={float(published.velocity.x),float(published.velocity.y),float(published.velocity.z)};
+  in.forward_speed=published.owner_speeds.forward;in.absolute_speed=published.owner_speeds.magnitude;
+  const auto& axis=published.rigid_body.axes[0];in.heading=track_angle(axis[0],axis[1]);
+  in.rear_drive_fraction=actor.setup.spec.handling.rear_drive_fraction;
+  for(unsigned k=0;k<4;++k){in.contact[k]=published.wheels[k].contact;in.wheel_slip[k]=published.wheels[k].prepared_slip;}
+  if(!ai_driver_traffic_impact_step(in,1.F/60,want,actor.steering_scale))return 15;
+  auto old=in;old.contact.fill(true);
+  if(!ai_driver_traffic_step(old,1.F/60,legacy,actor.steering_scale))return 16;
+  if(want.pedals.brake==legacy.pedals.brake&&want.steering.word==legacy.steering.word){
+   std::cerr<<"traffic binding fixture did not distinguish the old driver\n";++failures;
+  }
+  std::array<const VehicleState*,4> racers{{&world.car(),nullptr,nullptr,nullptr}};
+  const std::array<const RaceContactBox*,4> shapes{{&world.contact_box_}};
+  if(!world.traffic_->advance(racers,1,error,-1,1.F/60.F,{},shapes)){std::cerr<<error;return 17;}
+  const auto& actual=world.traffic_->actors()[0].driver;
+  if(actual.steering.word!=want.steering.word||actual.pedals.throttle!=want.pedals.throttle||
+     actual.pedals.brake!=want.pedals.brake||actual.gear_request!=want.gear_request){
+   std::cerr<<"live traffic driver lost selector/support/gear binding\n";++failures;
+  }
+  // A recycled traffic actor's local component clock starts at zero, while
+  //42A530 reads the shared world timer. Mixing those clocks suppresses or
+  //prematurely ends the recovery interval after the record has expired.
+  auto& recovered=world.traffic_->contact_actors()[0].car;
+  recovered.collision_state=1;recovered.collision_body_flag=0;
+  recovered.published_support=4;recovered.collision_support_since=119.8F;
+  if(!world.traffic_->advance(racers,2,error,480000,1.F/60.F,{},shapes)){std::cerr<<error;return 18;}
+  if(world.traffic_->actors()[0].car.collision_state!=0){
+   std::cerr<<"traffic recovery used component age instead of world clock\n";++failures;
+  }
+ }
+ }
+ //420310 snapshots the X-sorted world, not rivals->human->traffic.
+ //No nearby body pair: the refresh interval must come from its last rigid car.
+ for(bool ai_last:{false,true}) {
+  VehicleTrackCourse flat;if(!build_vehicle_proving_ground(flat,error))return 30;
+  auto human_pose=flat.start,ai_pose=flat.start;
+  human_pose.ground.x=ai_last?64:128;human_pose.ground.y=16;
+  ai_pose.ground.x=ai_last?128:64;ai_pose.ground.y=16;
+  RaceSession frame(flat,player.placement_spec,RaceSteering::baseline,player.hull);
+  RaceRivalSetup setup;setup.spec=selected[0]->placement_spec;setup.pose=ai_pose;
+  setup.hull=selected[0]->hull;setup.name="phase-native-rival";
+  if(!frame.set_planned_rivals({setup},{1,1,1},error)||!frame.start(error,&human_pose)) {
+   std::cerr<<"FAIL world phase setup "<<error<<'\n';return 31;
+  }
+  auto& ai=*frame.rivals_[0];
+  // Isolate the initial physical dispatch from later floor-contact rewinds.
+  human_pose.ground.z=ai_pose.ground.z=50;
+  VehicleState human_air,ai_air;
+  if(!frame.model_.reset(human_air,human_pose)||!ai.model_.reset(ai_air,ai_pose)||
+     !frame.vehicle_.start(human_air)||!ai.vehicle_.start(ai_air))return 33;
+  for(auto* racer:{&frame,&ai}) {
+   racer->timing_.stage=RaceStage::racing;racer->timing_.race_start_valid=true;
+   racer->timing_.race_start_ticks=racer->timing_.now_ticks;racer->timing_.go_valid=true;
+  }
+  RaceRivalPlans plans;plans.count=1;plans.step=frame.timing_.step;
+  auto& plan=plans.cars[0];plan.enabled=true;plan.desired_speed=20;plan.route_distance=100;
+  plan.path.count=2;plan.path.points[0]={float(ai_pose.ground.x+100),16,0};
+  plan.path.points[1]={float(ai_pose.ground.x+200),16,0};
+  GamepadFrame pad;pad.pads[0].connected=true;
+  if(!frame.advance_planned(pad,plans,error)) {
+   std::cerr<<"FAIL physical phase execution "<<error<<'\n';return 32;
+  }
+  const float expected=ai_last?float(kDriveFrameSeconds)/2:float(kDriveFrameSeconds/4);
+  if(frame.contact_component_interval_!=expected) {
+   std::cerr<<"FAIL last original component interval ai_last="<<ai_last<<" interval="<<frame.contact_component_interval_<<" expected="<<expected<<'\n';++failures;
+  }
+ }
+ std::cout<<"world collision tests: "<<failures<<" failures\n";return failures?1:0;
+}
+};
+}
+int main(int argc,char** argv){return argc==2?nfsu::RaceWorldContactProbe::run(argv[1]):2;}

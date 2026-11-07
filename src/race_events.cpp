@@ -12,32 +12,32 @@
 #include <utility>
 
 namespace nfsu {
+int race_traffic_pool_size(const TrackInfoRecord& track,unsigned density,unsigned direction) noexcept {
+    if(density>3||direction>1)return -1;
+    return density?track.traffic_pool[2*density+direction]:0;
+}
 bool load_supported_race(const std::filesystem::path& front,
                          const std::filesystem::path& global,
-                         std::uint32_t number, SupportedRace& race,
-                         std::string& error) {
-    race = {}; error.clear();
-    if (number != 1 && number != 8) {
-        error = "supported events are 1 (1003) and 8 (1005)"; return false;
-    }
+                         std::uint32_t number,SupportedRace& race,std::string& error,unsigned race_index) {
+    race={};error.clear();SupportedRaceSelection selected;
+    if(!supported_race_selection(number,race_index,selected)){error="unsupported event or tournament round";return false;}
     std::vector<unsigned char> bytes;
-    const auto events = load_race_event_table(front, bytes);
-    const auto tracks = load_track_info_table(global, bytes);
-    const auto* event = find_race_event(events, number);
-    if (!events.ok() || !tracks.ok() || !event || event->races.size() != 1 ||
-        event->type != static_cast<std::uint32_t>(RaceType::circuit)) {
-        error = number == 1 ? "event 1 missing or not one race" :
-                              "supported event must be one valid circuit race";
-        return false;
+    const auto events=load_race_event_table(front,bytes);
+    const auto tracks=load_track_info_table(global,bytes);
+    const auto* event=find_race_event(events,number);
+    if(!events.ok()||!tracks.ok()||!event||event->races.size()!=selected.count||event->type!=unsigned(selected.type)||
+       (selected.count>1&&event->kind!=kRaceEventKindTournament)) {error="supported event differs from its retail mode or round count";return false;}
+    for(unsigned i=0;i<selected.count;++i) {
+        SupportedRaceSelection expected;
+        if(!supported_race_selection(number,i,expected)){error="supported round metadata absent";return false;}
+        const auto& slot=event->races[i];
+        if(slot.track!=expected.slot.track||slot.laps!=expected.slot.laps||slot.direction!=expected.slot.direction) {
+            error="supported event differs from its retail race slots";return false;
+        }
     }
-    const auto& slot = event->races.front();
-    const auto* info = find_track_info(tracks, slot.track);
-    if (!info || slot.track != (number == 1 ? 1003 : 1005) ||
-        slot.laps != (number == 1 ? 2 : 3) || slot.direction != 0 ||
-        info->region != "L1RA" || info->lap_skip != 0) {
-        error = "supported circuit differs from its retail selection"; return false;
-    }
-    race.event = number; race.slot = slot; race.track = *info;
+    const auto& slot=event->races[race_index];const auto* info=find_track_info(tracks,slot.track);
+    if(!info||info->region!=selected.region||info->lap_skip!=selected.lap_skip){error="supported event differs from its retail track";return false;}
+    race.event=number;race.type=event->type;race.race_index=race_index;race.race_count=selected.count;race.slot=slot;race.track=*info;
     return true;
 }
 namespace {
@@ -393,6 +393,8 @@ TrackInfoTable parse_track_info_table(
         decoded.number = read_s16(record + kTrackInfoNumberOffset);
         decoded.number_copy = read_s16(record + kTrackInfoNumberCopyOffset);
         decoded.mode_mask = read_u32(record + kTrackInfoModeMaskOffset);
+        for(unsigned j=0;j<decoded.traffic_pool.size();++j)
+            decoded.traffic_pool[j]=static_cast<std::int8_t>(record[0xC0+j]);
 
         if (decoded.number <= 0) {
             table.issues.push_back(RaceTableIssue{

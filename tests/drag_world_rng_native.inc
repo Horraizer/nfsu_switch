@@ -1,0 +1,10 @@
+// Authentic original46D760, shared world RNG; supplied initial12345. No hooks.
+const std::uint32_t drag_world_bounds[][4]={
+{3294691328u,1133903872u,0u,1008981770u},
+{3287941120u,1124859904u,0u,1008981770u}
+};
+const std::uint32_t drag_world_draws[][5]={
+{0u,12345u,3294691215u,989803897u,808147100u},
+{1u,808147100u,3280049059u,989999122u,3358020166u},
+{0u,3358020166u,3277819740u,1008870692u,1796821316u}
+};

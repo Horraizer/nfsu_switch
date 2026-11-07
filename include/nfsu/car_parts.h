@@ -209,6 +209,9 @@ struct InstalledPartSelection {
     // remain the independent viewer override interface.
     std::array<std::optional<std::size_t>, kCarSlotCount> records{};
     std::array<std::optional<std::string>, kCarSlotCount> names{};
+    // Temporary frontend highlighted part (native RideInfo +0x71C).
+    // Never persisted in the owned career ride.
+    std::optional<std::size_t> preview;
 };
 
 // CarRenderInfo (0x56a130) builds models only for slots 0..29, so a part

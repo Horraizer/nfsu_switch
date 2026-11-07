@@ -10,6 +10,41 @@ Issue #327 also adds `--event 8`, the original `DT3 - Atlantic` circuit on
 track 1005. See [Atlantic](ATLANTIC.md) for its selection, retail provenance,
 desktop/Switch commands and remaining hardware acceptance.
 
+The 2026-10-10 all-circuits task widens `--event` to every career event that
+is exactly one circuit race on the eight circuit tracks 1001-1008
+(`nfsu::kSupportedCircuitRows` is the list; `nfsu_race --event 122` is one
+way to spell track 1006). Events other than 1 have no bundled input
+recording, so they run `--live` with the derived lane of
+`nfsu::race_event_driving_line`, whose stuck recovery is described in
+`include/nfsu/race_session.h`; event 1's pinned replay is untouched.
+
+The 2026-10-18 time-trial task adds the seven kind-2 and kind-3 single-race time-trial events (7, 15, 26, 47, 68, 77, 97) - the unlockable races - as one point-to-point pass each on the sprint tracks; their backward grids can hang over the world edge (TRACKB1102's sits over the void), so a grid with no road below starts at the nearest path node instead. All seven load and start, pinned load-only with the sprint lanes.
+
+The 2026-10-18 lap-knockout task adds the twelve single-race lap-knockout events (5, 10, 24, 31, 39, 49, 58, 60, 72, 84, 91, 103) on the circuit tracks, riding their existing manifests and lanes plus track 1003's newly derived reverse lane. The elimination rule needs opponents the solo port does not simulate, so each knockout runs as its three laps; like the sprint and drag rows they are pinned load-only until the lane work lands.
+
+The 2026-10-17 sprint task adds the twenty single-race sprint events of kinds 0 and 6 on the eight open tracks 1102-1109 (`nfsu_race --event 2` is the forward sprint on track 1102; the tournaments 66 and 102 and the kind-5 event 112 stay refused). The sprint loads are the family's heaviest - up to 19.2 MB of decoded textures and 49 MB of whole-track streaming - and moved the streaming region budget to 24 MiB (a 72 MiB arena) and the race command cache to 16 MiB. All twenty load and start; like the drag events they are pinned load-only until the lane work lands (`nfsu_sprint_tracks_retail`).
+
+The 2026-10-15 drag task adds the twenty single-race drag events
+(`nfsu_race --event 4` is the reverse drag on track 1210): the six drag
+tracks 1201, 1202, 1206, 1207, 1210 and 1214 race point-to-point on open
+splines the port now builds the retail way, in stream regions L1RB, L1RC
+and the new L1RE. All twenty load and start; the auto-driver lanes are
+follow-up work (the drag splines run beside the highway, and the reverse
+derivation still needs fixing), so every drag event is pinned load-only
+(`nfsu_drag_tracks_retail`) and runs `--live` on the progress spline or
+the forward lanes.
+
+The 2026-10-12 first-drift task and its 2026-10-14 follow-up add every
+single-race drift event the same way: `nfsu_race --event 3` is the four-lap
+forward drift race on track 1301, and events 13, 18, 25, 28, 33, 40, 44,
+50, 56, 64, 65, 73, 86, 90, 93, 105 and 109 cover tracks 1302-1308
+(`nfsu::kSupportedDriftRows` is the list; the three-race drift tournament
+event 38 stays refused). Tracks 1301-1304 race in stream region `L1RB`,
+1305-1308 in `L1RC`, each with its own region file and a non-empty shared
+per-track pack; the derived lanes (`RaceDrivingLine::drift1301_forward`
+through `drift1308_forward`) drive every one of the eighteen races to
+completion without a reset (`nfsu_drift_tracks_drive_retail` pins it).
+
 Issue #315 adds `--car NAME`: any of the 20 playable racers the retail car
 type table holds, each with its own geometry, textures, stock parts, wheel
 table, body skin and the handling record decoded from its own car type

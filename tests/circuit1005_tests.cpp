@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
     try {
         std::string error;
         RaceRun refused;
-        require(!refused.set_event(6,error), "tournament selection must be refused");
+        require(!refused.set_event(85,error), "missing original event must be refused");
         if (argc==1) { std::cout << "PASS: supported circuit selection guards\n"; return 0; }
         require(check_arguments(argc,argv,1,error),error);
         require(argc <= 3 && (argc != 3 || std::string(argv[2]) == "--measure" ||

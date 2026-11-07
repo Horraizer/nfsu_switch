@@ -98,6 +98,17 @@ int main() {
         // Static payloads never encode frame-dependent shade, vertex-color,
         // reflection-pass or cutoff flags. Dynamic alpha is copied afresh.
         draw=saved;draw.material.fallback[3]=0;
+        for(float mode:{5.F,6.F}) {
+            draw.material.alpha[3]=mode;
+            check(race_effect_no_output(view()),"original zero-alpha glow/flame emits no pixels");
+            draw.material.alpha[0]=.1F;
+            check(!race_effect_no_output(view()),"visible original glow retained");
+            draw.material.alpha[0]=0;
+            draw.pipeline.depth_write=true;
+            check(!race_effect_no_output(view()),"depth-writing zero glow retained");
+            draw.pipeline.depth_write=false;
+        }
+        draw.material.alpha[3]=0;
         const auto initial=race_effect_gpu_material(draw,draw.material);
         check(draw.material.fallback[3]==0 && initial.fallback[3]==5,"private static material copy");
         draw.material.alpha[0]=.25F;

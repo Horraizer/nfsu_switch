@@ -227,6 +227,7 @@ StockFrameSkin tuned_240sx_skin();
 
 // What the frame is made of, kept so that a caller can report on it. It is
 // not copyable: it holds several megabytes, and nothing needs a second one.
+struct StockFrameGeometryCache;
 struct StockFrame {
     StockFrame() = default;
     StockFrame(const StockFrame&) = delete;
@@ -235,6 +236,10 @@ struct StockFrame {
     // Geometry source 0 is the car's own file, then BRAKES, then PLATES.
     GeometryReport car_geometry;
     std::vector<GeometryReport> stock_geometry;
+    //Opt-in frontend preparation borrows immutable shared geometry while
+    //the caller holds its input/cache lease. Prepared scene payloads own data.
+    const StockFrameGeometryCache* cached_geometry = nullptr;
+    const std::vector<GeometryReport>& geometry_sources()const noexcept;
     CarPartDatabase parts;
     CarTypeTable car_types;
     TexturePack car_pack;
@@ -290,6 +295,28 @@ bool prepare_stock_frame(
     StockFrame& frame,
     std::string& error);
 
+// Immutable parsed geometry for repeated frontend part previews. The source
+//lease must keep the exact inputs alive; race preparation never uses this cache.
+struct StockFrameGeometryCache {
+    const StockFrameInputs* source = nullptr;
+    GeometryReport car;
+    std::vector<GeometryReport> shared;
+    std::vector<std::string> issues;
+};
+bool build_stock_frame_geometry_cache(const StockFrameInputs&,StockFrameGeometryCache&,std::string& error);
+
+// Frontend palettes share the model and decoded sources of the first swatch.
+struct StockFramePaintCache {
+    unsigned slot=0;
+    AssembledSkinInputs body;
+    SkinMarkerCache markers;
+    std::vector<std::uint32_t> target;
+    std::uint32_t texture_hash=0;
+    std::vector<unsigned char> wheel_source,wheel_mask;
+};
+bool prepare_stock_paint_variant(const StockFrameInputs&,StockFrame&,const StockFramePaintCache&,
+    const InstalledPartSelection&,const StockFrameSkin&,std::vector<unsigned char>& rgba,std::string& error);
+
 // The same, with the runtime body skin when skin.enabled: after the decode
 // and before the bound stock scene is prepared, exactly where the viewer
 // runs its --skin-car block, the skin input sources are the car's pack and
@@ -308,7 +335,9 @@ bool prepare_stock_frame(
     const StockFrameSkin& skin,
     StockFrame& frame,
     std::string& error,
-    bool car_shading = false);
+    bool car_shading = false,
+    const StockFrameGeometryCache* geometry_cache = nullptr,
+    StockFramePaintCache* paint_cache = nullptr);
 
 // Same preparation/resolution with shorter input lifetimes for the tuned race.
 // Geometry bytes are consumed after parsing; VINYLS is re-read only once the

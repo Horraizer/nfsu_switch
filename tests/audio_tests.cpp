@@ -83,6 +83,12 @@ Bytes ast(std::uint8_t version, std::uint8_t channels,
     Bytes out;
     Bytes header = {'P','T',0,0, 0x80,1,version, 0x82,1,channels,
                     0x84,2,0x5D,0xC0, 0x85,1,static_cast<std::uint8_t>(frames), 0xFF};
+    if (frames > 255) {
+        header.resize(16);header[15]=4;
+        for (unsigned shift : {24U,16U,8U,0U})
+            header.push_back(static_cast<std::uint8_t>(frames >> shift));
+        header.push_back(0xFF);
+    }
     if (codec != 10) header.insert(header.end() - 1, {0xA0,1,codec});
     chunk(out, "SCHl", header);
     Bytes count; append32(count, 1); chunk(out, "SCCl", count);
@@ -218,6 +224,17 @@ void test_stream() {
     check(pcm == Bytes({0x34,0x12,0x34,0x12,0xCD,0xAB,0xCD,0xAB}),
           "PCM16LE stereo AST channel interleave");
 
+    {
+        Bytes source(8193*2);for(std::size_t i=0;i<source.size();++i)source[i]=std::uint8_t(i*37);
+        auto input=stream(ast(2,2,source,8193,8));const auto segments=audio::scan_ast(input);
+        Bytes actual;std::size_t largest=0;
+        audio::decode_ast_segment(input,segments[0],[&](const std::uint8_t* bytes,std::size_t n){
+            largest=std::max(largest,n);actual.insert(actual.end(),bytes,bytes+n);
+        });
+        Bytes expected;for(unsigned frame=0;frame<8193;++frame)for(unsigned ch=0;ch<2;++ch)
+            expected.insert(expected.end(),source.begin()+frame*2,source.begin()+frame*2+2);
+        check(actual==expected && largest<=16384,"large stereo PCM preserves every sample with bounded sink chunks");
+    }
     b = ast(2, 1, encoded, 28);
     auto input = stream(b);
     const auto segments = audio::scan_ast(input);

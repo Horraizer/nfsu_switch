@@ -27,9 +27,24 @@ constexpr float native_floor_sprite1280[4][3]={
     {-7.512975692749023F,.11215132474899292F,-.5657939910888672F},
     {-6.229179382324219F,-1.1630796194076538F,-2.666780471801758F}};
 void check(bool value,const char* message) { if(!value) throw std::runtime_error(message); }
+#include "frontend_browser_camera_samples.inc"
+#include "frontend_garage_camera_samples.inc"
+#include "post_race_selector_native.inc"
+#include "post_race_speech_native.inc"
 int main(int argc,char** argv) {
     using namespace nfsu;
     try {
+        {
+            FrontendMenu menu(true);FrontendInput down;down.down=true;FrontendInput accept;accept.accept=true;
+            menu.update(down);check(menu.update(accept)==FrontendAction::free_drive,"LAN menu preserves Quick Race");
+            menu.update(down);check(menu.update(accept)==FrontendAction::multiplayer,"Multiplayer row opens LAN");
+            menu.update(down);check(menu.update(accept)==FrontendAction::underground,"LAN menu wraps back to Underground");
+        }
+        check(audio::original_music_next(3,{100,200,300},0)==3,"unplayed music does not advance");
+        check(audio::original_music_next(0,{100,200,300},99)==1&&
+              audio::original_music_next(0,{100,200,300},100)==2&&
+              audio::original_music_next(0,{100,200,300},301)==0,
+              "playlist continues after actual unequal song boundaries");
         {
             FrontendChyron banner;banner.show(100);
             check(banner.update(20899)==FrontendChyron::Action::none && banner.visible(),"native Chyron20799 hold boundary");
@@ -46,6 +61,75 @@ int main(int argc,char** argv) {
             metadata.song(metadata.artist().c_str(),metadata.title().c_str(),metadata.album().c_str());
             check(metadata.song_revision()==revision,"same per-frame metadata does not restart announcement");
             metadata.announce_song();check(metadata.song_revision()!=revision,"same song restarted after reentry announces again");
+        }
+        {
+            for(const auto& c:kNativeStatsSelector) {
+                PostRaceMenu native(false,false,0,c.count);native.update({true});native.update({false,false,true});
+                FrontendInput input;input.right=true;for(unsigned i=1;i<c.before;++i)native.update(input);
+                const auto before=native.racer();input.right=c.direction>0;input.left=c.direction<0;native.update(input);
+                check(native.racer()+1==c.after&&unsigned(native.racer()!=before)==c.cues&&unsigned(native.cue())==c.notification,
+                      "original49CBD0 selected racer, sound admission and LEFT/RIGHT notification identity");
+            }
+            {
+                FrontendInput accept;accept.accept=true;FrontendInput back;back.back=true;FrontendInput left;left.left=true;
+                PostRaceMenu loss(true,true,0,4,2);loss.animate();
+                loss.update(back);check(loss.page()==PostRacePage::results&&loss.cue()==PostRaceCue::none,"first results page rejects Back silently");
+                loss.update(accept);check(loss.fading()&&loss.page()==PostRacePage::results,"native results waits for authored FadeOut");
+                loss.advance(.1);loss.update(accept);check(loss.fading()&&loss.cue()==PostRaceCue::none,"input during fade cannot skip another page or repeat sound");
+                loss.advance(.07);check(loss.page()==PostRacePage::style,"loss still presents earned style after results");
+                loss.update(back);check(loss.page()==PostRacePage::results&&loss.cue()==PostRaceCue::back,"native49FBC0 returns to previous package");
+                loss.update(accept);loss.advance(.17);loss.update(accept);
+                check(loss.page()==PostRacePage::menu,"loss without unlocks has no victory reward page");
+                loss.update(accept);check(loss.confirming()&&!loss.confirmed()&&loss.dialog_sound(),"native continue dialog defaults to Cancel");
+                check(loss.update(accept)==PostRaceAction::none&&loss.page()==PostRacePage::menu,"default cancel cannot leave results");
+                loss.update(accept);loss.update(left);
+                check(loss.update(accept)==PostRaceAction::leave,"continue requires explicit OK");
+                PostRaceMenu rewards(true,true,2);rewards.update(accept);rewards.update(accept);rewards.update(accept);
+                check(rewards.reward_index()==1,"second reward is a separate queue entry");rewards.update(back);
+                check(rewards.page()==PostRacePage::reward&&rewards.reward_index()==0,"Back preserves reward queue order");rewards.update(back);
+                check(rewards.page()==PostRacePage::style,"Back from first reward returns to style");
+                PostRaceMenu ongoing(false,false,0);ongoing.tournament(true);
+                check(ongoing.count()==5,"native ongoing tournament has five context actions");
+                for(unsigned i=0;i<4;++i)ongoing.update({true});ongoing.update(accept);
+                check(ongoing.confirmation()==PostRaceAction::next_race&&!ongoing.confirmed(),"Next Race has its own native confirmation");
+                ongoing.update(left);check(ongoing.update(accept)==PostRaceAction::next_race,"next race is not quit or restart");
+                PostRaceMenu final(false,false,0);final.tournament(false);
+                check(final.count()==4,"completed tournament has no next race action");
+                final.update({true});final.update({true});final.update(accept);final.update(left);
+                check(final.update(accept)==PostRaceAction::restart_tournament,"Restart Tournament is distinct from Restart Race");
+            }
+            for(const auto& native:kNativePostSpeech) {
+                check(audio::post_race_speech(native.event,true)==native.request,"original4CD3E0 event/speech request table");
+                check(audio::post_race_speech(native.event,false)==-1,"native49BA10 never requests victory speech after a loss");
+            }
+            {
+                audio::SpeechMusicDuck relative;std::vector<std::int16_t> pcm(96000*2,10000);
+                relative.apply(pcm.data(),1,false,true);check(pcm[0]==10000,"relative speech duck preserves existing race music master");
+                relative.apply(pcm.data(),12000,true,true);check(pcm[23998]>0&&pcm[23998]<10000,"speech attacks with original envelope while music stays audible");
+                std::fill(pcm.begin(),pcm.end(),10000);relative.apply(pcm.data(),96000,false,true);
+                check(pcm.back()==10000,"speech release restores the unchanged race music master");
+            }
+            RacePauseMenu tournament(false,true);check(tournament.tournament()&&!tournament.practice(),"tournament confirmation context is distinct from practice");
+            RacePauseMenu pause;
+            check(pause.update({false,false,false,false,false,true})==RacePauseAction::resume,"pause back resumes, never exits race");
+            pause.open();pause.update({false,true});pause.update({false,false,false,false,true});
+            check(pause.page()==RacePausePage::restart&&!pause.confirmed(),"restart requires explicit confirmation");
+            check(pause.update({false,false,false,false,true})==RacePauseAction::none&&pause.page()==RacePausePage::menu,"default cancel preserves active race");
+            pause.update({false,false,false,false,true});pause.update({false,false,true});
+            check(pause.update({false,false,false,false,true})==RacePauseAction::restart,"restart only after OK");
+            pause.open();for(unsigned i=0;i<3;++i)pause.update({false,true});
+            pause.update({false,false,false,false,true});check(pause.page()==RacePausePage::leave,"leave has separate dialog");
+            pause.update({false,false,false,false,false,true});check(pause.page()==RacePausePage::menu,"cancel leave restores pause menu");
+            PostRaceMenu placed(false,false,0,4,2);check(placed.racer()==2,"native49BEE0 initializes the player's result-order row");
+            placed.update({true});placed.update({false,false,true});FrontendInput choose;choose.right=true;placed.update(choose);
+            placed.update({false,false,false,true});placed.update({false,false,true});
+            check(placed.statistics()&&placed.racer()==2,"fresh statistics controller returns to the human row");
+            PostRaceMenu post(false,false,0,4);post.update({true});post.update({false,false,true});
+            check(post.statistics()&&post.racer()==0,"statistics opens at human row");
+            FrontendInput right;right.right=true;for(unsigned i=0;i<8;++i)post.update(right);
+            check(post.racer()==3,"native49CBD0 racer upper clamp");
+            FrontendInput left;left.left=true;for(unsigned i=0;i<8;++i)post.update(left);
+            check(post.racer()==0,"native49CBD0 racer lower clamp");
         }
         {
             Frame reflected,output;RenderLimits limits;std::string error;
@@ -71,6 +155,41 @@ int main(int argc,char** argv) {
                 for(unsigned channel=0;channel<4;++channel)
                     check(output.rgba()[i*4+channel]==native_pixel[channel],
                         "native float floor modulation and independent reflection-alpha mask");
+        }
+        {
+            // Independent ps_1_1 register limits followed by the literal
+            // car.efx pixel product. A negative lighting color cannot
+            // subtract from a positive highlight after COLOR saturation.
+            Frame output;RenderLimits limits;std::string error;
+            const unsigned char black[4]={0,0,0,255};
+            check(output.reset(8,8,black,limits,error),"FE color register target");
+            RenderTexture texture;texture.width=texture.height=1;texture.valid=true;
+            texture.rgba={128,128,128,128};RasterMaterial state;state.texture=&texture;
+            state.car_shading=state.frontend_lighting=true;
+            RenderOptions options;RenderStats stats;Rasterizer raster(output,options,limits,stats);
+            ClipVertex triangle[3];triangle[0].x=-1;triangle[0].y=-1;
+            triangle[1].x=1;triangle[1].y=-1;triangle[2].x=-1;triangle[2].y=1;
+            const double inputs[7]={-1,.25,3,.5,-.5,1.5,3};
+            for(auto& vertex:triangle){vertex.z=.5;std::copy_n(inputs,7,vertex.surface);}
+            check(raster.draw_triangle(triangle,state,0,error),"FE saturated COLOR pixel product");
+            check(stats.fragments_written!=0,"FE register test draws real fragments");
+            const unsigned char expected[3]={128,32,255};
+            for(std::size_t i=0;i<output.ids().size();++i)if(output.ids()[i]!=kNoTriangle)
+                for(unsigned channel=0;channel<3;++channel)
+                    check(output.rgba()[i*4+channel]==expected[channel],"ps_1_1 COLOR limits precede texture/specular product");
+        }
+        {
+            #include "frontend_magazine_camera_native.inc"
+            for(const auto& sample:kNativeMagazineCameras){
+                FrontendBrowserCamera camera;camera.magazine(sample.values);const auto frame=camera.frame(0,1280,720);const auto& v=sample.matrix;
+                const Vec3 actual[3]={frame.right,frame.up,frame.forward};
+                const Vec3 wanted[3]={{v[0],v[8],-v[4]},{-v[1],-v[9],v[5]},{v[2],v[10],-v[6]}};
+                for(unsigned j=0;j<3;++j)check(std::abs(actual[j].x-wanted[j].x)<.00005&&std::abs(actual[j].y-wanted[j].y)<.00005&&std::abs(actual[j].z-wanted[j].z)<.00005,"native magazine camera basis including roll");
+                const double translation[3]={-(frame.right.x*frame.eye.x+frame.right.y*frame.eye.y+frame.right.z*frame.eye.z),
+                    frame.up.x*frame.eye.x+frame.up.y*frame.eye.y+frame.up.z*frame.eye.z,
+                    -(frame.forward.x*frame.eye.x+frame.forward.y*frame.eye.y+frame.forward.z*frame.eye.z)};
+                for(unsigned j=0;j<3;++j)check(std::abs(translation[j]-v[12+j])<.0005,"native magazine camera translation");
+            }
         }
         // Independent original 542C20/544390 witness: actual mode-0 CView
         // and whole-car root. Shader expectations below follow authenticated
@@ -166,6 +285,21 @@ int main(int argc,char** argv) {
             }
         }
         check(old_basis_differs,"shared unrotated FE harmonic is a negative control for rolling wheel highlights");
+        {
+            #include "frontend_camera_lighting_native.inc"
+            const float origin[3]={0,0,.20027998089790344F};
+            bool changes=false;
+            for(const auto& sample:kNativeCameraLights) {
+                const auto* v=sample.view;CameraFrame camera;
+                camera.right={v[0],v[8],-v[4]};camera.up={-v[1],-v[9],v[5]};camera.forward={v[2],v[10],-v[6]};
+                const auto actual=frontend_point_lighting(nullptr,0,origin,&camera);
+                for(unsigned t=0;t<10;++t)for(unsigned c=0;c<4;++c) {
+                    check(std::abs(actual.harmonic[t][c]-sample.harmonic[t*4+c])<2e-6,"active CView FE lighting matches native542E40/544390");
+                    changes|=std::abs(actual.harmonic[t][c]-lighting.harmonic[t][c])>.001;
+                }
+            }
+            check(changes,"fixed startup lights are a negative control for changed garage cameras");
+        }
         const double cube_directions[6][3]={{1,.25,.5},{-1,.25,.5},{.2,1,.6},{.2,-1,.6},{.2,.4,1},{.2,.4,-1}};
         // Asymmetric projected markers from original40AD60 native face bases,
         // not the appearance of a symmetric tunnel. Native Y faces differ.
@@ -250,6 +384,64 @@ int main(int argc,char** argv) {
                         "native car sprite all four corners");
                 }
             }
+        }
+        {
+            FrontendBrowserCamera camera;unsigned sample=0;
+            for(unsigned stage=0;stage<5;++stage) {
+                if(stage==1)camera.prepare();else if(stage==2)camera.depart();else if(stage==3)camera.arrive();
+                else if(stage==4)camera.tracking=false;
+                for(unsigned i=0;i<(stage?91U:1U);++i) {
+                    if(camera.tracking)camera.update(i?1.F/60:0);
+                    const float t=float(i)/60;
+                    const float x=stage==2?25*(t/1.5F)*(t/1.5F):stage==3?-15*(1-t/1.5F):0;
+                    if(sample>=sizeof(browser_camera_samples)/sizeof(browser_camera_samples[0]))break;
+                    const auto& expected=browser_camera_samples[sample];
+                    if(expected.stage!=stage || expected.frame!=i)continue;
+                    const auto frame=camera.frame(x,1280,720);
+                    for(unsigned j=0;j<5;++j)check(std::abs(camera.pose[j]-expected.pose[j])<.0002F,"native browser camera interpolation");
+                    const auto& v=expected.view;
+                    // Native view columns use down-positive raw Z; port maps
+                    // raw(x,y,z) to world(x,z,-y), with up-positive screen Y.
+                    const Vec3 basis[3]={frame.right,frame.up,frame.forward};
+                    const Vec3 wanted[3]={{v[0],v[8],-v[4]},{-v[1],-v[9],v[5]},{v[2],v[10],-v[6]}};
+                    for(unsigned j=0;j<3;++j)check(std::abs(basis[j].x-wanted[j].x)<.00002 &&
+                        std::abs(basis[j].y-wanted[j].y)<.00002 && std::abs(basis[j].z-wanted[j].z)<.00002,"native browser view basis");
+                    const double translation[3]={-(frame.right.x*frame.eye.x+frame.right.y*frame.eye.y+frame.right.z*frame.eye.z),
+                        frame.up.x*frame.eye.x+frame.up.y*frame.eye.y+frame.up.z*frame.eye.z,
+                        -(frame.forward.x*frame.eye.x+frame.forward.y*frame.eye.y+frame.forward.z*frame.eye.z)};
+                    for(unsigned j=0;j<3;++j)check(std::abs(translation[j]-v[12+j])<.0002,"native browser view translation");
+                    ++sample;
+                }
+            }
+            check(sample==sizeof(browser_camera_samples)/sizeof(browser_camera_samples[0]),"all native browser camera checkpoints");
+        }
+        {
+            unsigned sample=0;
+            for(unsigned entry=0;entry<std::size(garage_camera_samples);entry+=4) {
+                const auto slot=garage_camera_samples[entry].slot;
+                FrontendBrowserCamera camera;check(camera.focus(slot),"native garage slot focus exists");
+                for(unsigned i=0;i<=180;++i) {
+                    camera.update(i?1.F/60:0);
+                    const auto& expected=garage_camera_samples[sample];
+                    if(expected.slot!=slot||expected.frame!=i)continue;
+                    const auto frame=camera.frame(0,1280,720);
+                    for(unsigned j=0;j<5;++j)if(std::abs(camera.pose[j]-expected.pose[j])>=.001F)
+                        throw std::runtime_error("garage camera pose slot="+std::to_string(slot)+" frame="+std::to_string(i)+" field="+std::to_string(j));
+                    const auto& v=expected.view;
+                    const Vec3 basis[3]={frame.right,frame.up,frame.forward};
+                    const Vec3 wanted[3]={{v[0],v[8],-v[4]},{-v[1],-v[9],v[5]},{v[2],v[10],-v[6]}};
+                    for(unsigned j=0;j<3;++j)if(std::abs(basis[j].x-wanted[j].x)>=.00003||
+                        std::abs(basis[j].y-wanted[j].y)>=.00003||std::abs(basis[j].z-wanted[j].z)>=.00003)
+                        throw std::runtime_error("garage camera basis slot="+std::to_string(slot)+" frame="+std::to_string(i));
+                    const double translation[3]={-(frame.right.x*frame.eye.x+frame.right.y*frame.eye.y+frame.right.z*frame.eye.z),
+                        frame.up.x*frame.eye.x+frame.up.y*frame.eye.y+frame.up.z*frame.eye.z,
+                        -(frame.forward.x*frame.eye.x+frame.forward.y*frame.eye.y+frame.forward.z*frame.eye.z)};
+                    for(unsigned j=0;j<3;++j)if(std::abs(translation[j]-v[12+j])>=.0003)
+                        throw std::runtime_error("garage camera translation slot="+std::to_string(slot)+" frame="+std::to_string(i));
+                    ++sample;if(sample==std::size(garage_camera_samples))break;
+                }
+            }
+            check(sample==std::size(garage_camera_samples),"all original garage camera checkpoints");
         }
         check(frontend_wheel_phase(0,.231441572F,.31F)==7787 &&
               frontend_wheel_phase(0,.229F,.31F)==7705 &&
@@ -457,8 +649,8 @@ int main(int argc,char** argv) {
                 const auto& texture=cube_commands.resource_table().resources.at(draw.texture_resource);
                 check(texture.bytes!=0 && texture.texture_hash==native_car_flare_hashes[draw.frontend_sprite_kind-1],
                     "original inner outer and tail flare textures bound to actual car markers");
-                check(!draw.pipeline.depth_write && draw.material.environment_range[3]==2,
-                    "native car flare additive no-write and per-draw original color opt-in");
+                check(!draw.pipeline.depth_write && draw.material.environment_range[3]==2 && draw.material.alpha[3]==8,
+                    "native car flare additive no-write, original color and RGBA2x opt-in");
             }
             check(car_sprite_count==6 && car_descriptor_mask==7,
                 "all original installed preset head pairs and tail markers retained");
@@ -705,6 +897,21 @@ int main(int argc,char** argv) {
             check(std::all_of(restart.begin(),restart.end(),[](auto v){return v==0;}),
                 "effect reset retires queued voices before menu reentry");
 
+            {
+                audio::FrontendSpeech speech;check(speech.play(root,audio::post_race_speech(19,true),error),error.c_str());
+                std::vector<std::int16_t> pcm(48000*2);speech.mix(pcm.data(),48000);
+                check(std::any_of(pcm.begin(),pcm.end(),[](auto v){return v!=0;}),"authored post-victory speech group decodes audible genuine PCM");
+                speech.stop();check(!speech.active(),"post voice can stop when leaving the post-race context");
+            }
+            std::array<std::vector<std::int16_t>,3> extra_cues;
+            const audio::FrontendSound extra_names[]={audio::FrontendSound::left,audio::FrontendSound::right,audio::FrontendSound::dialog};
+            for(unsigned i=0;i<3;++i) {
+                sfx.reset();sfx.play(extra_names[i]);check(sfx.active(),"original post cue voice becomes active");
+                extra_cues[i].resize(48000*2);sfx.mix(extra_cues[i].data(),48000);
+                check(!sfx.active()&&std::any_of(extra_cues[i].begin(),extra_cues[i].end(),[](auto v){return v!=0;}),"post cue produces audible bounded PCM and drains its tail");
+            }
+            check(extra_cues[0]!=extra_cues[1]&&extra_cues[0]!=extra_cues[2]&&extra_cues[1]!=extra_cues[2],"left/right/dialog use distinct native common-bank samples");
+
             // Exercise retail bank indexing and decoder-thread failure cleanup
             // repeatedly without depending on an attached audio device.
             audio::FrontendMusic music;
@@ -720,7 +927,99 @@ int main(int argc,char** argv) {
             // GPU-only loading must retain authored textures/font coordinates
             // and update selection without a CPU background or texture reload.
             FrontendArt gpu_art;
-            check(gpu_art.load(root,error,false),error.c_str());
+            check(gpu_art.load_startup(root,error),error.c_str());
+            check(gpu_art.load_post_race(root,error),error.c_str());
+            {
+                FrontendUiFrame pause_ui,profile_ui,welcome_ui;RacePauseMenu pause;
+                gpu_art.record_underground_welcome(1280,720,false,welcome_ui);
+                check(!welcome_ui.vertices.empty(),"shared startup load retains the welcome page");
+                gpu_art.record_pause(1280,720,pause,pause_ui);
+                check(!pause_ui.vertices.empty(),"retail MU_Pause_PC renders actual objects");
+                FrontendArt pause_animation;check(gpu_art.prepare_post_race(pause_animation,error),error.c_str());
+                FrontendUiFrame begin,later;pause.open();pause_animation.advance(0);pause_animation.record_pause(1280,720,pause,begin);
+                pause_animation.advance(.1F);pause_animation.record_pause(1280,720,pause,later);
+                check(begin.vertices.size()!=later.vertices.size()||std::memcmp(begin.vertices.data(),later.vertices.data(),begin.vertices.size()*sizeof(TrackVertex)),"authored pause Init advances with UI time");
+                gpu_art.record_profiles(1280,720,{{0,"PLAYER",{}},{1,"NEW CAREER",{}}},1,"",profile_ui);
+                check(!profile_ui.vertices.empty(),"retail PC_LoadSave renders named profiles");
+            }
+            FrontendArt result_art,empty_art;
+            check(!empty_art.prepare_post_race(result_art,error),"empty post source refused");
+            check(!gpu_art.prepare_post_race(gpu_art,error),"self post replacement refused");
+            const auto source_pixels=gpu_art.atlas().rgba;
+            check(gpu_art.prepare_post_race(result_art,error),error.c_str());
+            check(gpu_art.atlas().rgba==source_pixels,"preparing results preserves career atlas");
+            check(result_art.atlas().rgba.size()<=8*1024*1024,"result overlay fits remaining race GPU budget");
+            PostRaceMenu results(true,true,1);
+            const PostRaceValues result_values={{"CareerStyleDisplayed","1500"},{"StyleStage","2"},{"Tournament","1"}};
+            for(unsigned page=0;page<5;++page) {
+                if(page==1)results.update({false,false,true,false});
+                if(page==2)results.update({false,false,true,false});
+                if(page==3)results.update({false,false,true,false});
+                if(page==4){results.update({true,false,false,false});results.update({false,false,true,false});}
+                std::vector<unsigned char> original(1280*720*4,0),compact(original.size(),0);
+                gpu_art.draw_post_race({original.data(),1280,720,1280*4},results,result_values);
+                result_art.draw_post_race({compact.data(),1280,720,1280*4},results,result_values);
+                check(original==compact,"compact post atlas preserves all five original pages");
+                FrontendUiFrame full_ui,small_ui;
+                gpu_art.record_post_race(1280,720,results,result_values,full_ui);
+                result_art.record_post_race(1280,720,results,result_values,small_ui);
+                check(!small_ui.vertices.empty() && full_ui.additive==small_ui.additive && full_ui.vertices.size()==small_ui.vertices.size(),"compact results keep GPU submissions");
+                for(std::size_t i=0;i<full_ui.vertices.size();++i) {
+                    const auto& a=full_ui.vertices[i];const auto& b=small_ui.vertices[i];
+                    check(a.px==b.px && a.py==b.py && a.pz==b.pz && std::memcmp(a.color,b.color,sizeof a.color)==0,"compact result vertex placement and color");
+                    if(i%4==0) {
+                        const auto sample=[&](const auto& atlas,const auto& vertices) {
+                            // The resident HUD sampler is linear. A nearest-texel
+                            // floor at an integer edge changes by a full pixel
+                            // when normalized UVs are rounded for a shorter atlas.
+                            double u=0,v=0;for(unsigned k=0;k<4;++k){u+=double(vertices[i+k].u)*.25;v+=double(vertices[i+k].v)*.25;}
+                            const double x=u*atlas.width-.5,y=v*atlas.height-.5;
+                            const int ix=int(std::floor(x)),iy=int(std::floor(y));
+                            const double fx=x-ix,fy=y-iy;std::array<double,4> result{};
+                            for(unsigned row=0;row<2;++row)for(unsigned col=0;col<2;++col) {
+                                const unsigned sx=unsigned(std::clamp(ix+int(col),0,int(atlas.width)-1));
+                                const unsigned sy=unsigned(std::clamp(iy+int(row),0,int(atlas.height)-1));
+                                const auto* pixel=atlas.rgba.data()+4*(std::size_t(sy)*atlas.width+sx);
+                                const double weight=(col?fx:1-fx)*(row?fy:1-fy);
+                                for(unsigned c=0;c<4;++c)result[c]+=pixel[c]*weight;
+                            }
+                            return result;
+                        };
+                        const auto full_sample=sample(gpu_art.atlas(),full_ui.vertices);
+                        const auto compact_sample=sample(result_art.atlas(),small_ui.vertices);
+                        for(unsigned c=0;c<4;++c)check(std::abs(full_sample[c]-compact_sample[c])<.5,
+                            "compact results preserve original linear-filtered sprite/font samples");
+                    }
+                }
+            }
+            {
+                FrontendArt animated;check(gpu_art.prepare_post_race(animated,error),error.c_str());
+                PostRaceMenu entry(true,true,1);entry.update({false,false,true,false});FrontendUiFrame first,later,held;
+                animated.advance(0);animated.record_post_race(1280,720,entry,result_values,first);
+                animated.advance(.4F);animated.record_post_race(1280,720,entry,result_values,later);
+                animated.record_post_race(1280,720,entry,result_values,held);
+                const auto equal=[](const auto& a,const auto& b){return a.vertices.size()==b.vertices.size() &&
+                    !std::memcmp(a.vertices.data(),b.vertices.data(),a.vertices.size()*sizeof(TrackVertex));};
+                check(!equal(first,later),"original style Init animation advances rather than jumping to endpoint");
+                check(equal(later,held),"repeated result draw does not advance time");
+            }
+            {
+                FrontendArt animation;check(gpu_art.prepare_post_race(animation,error),error.c_str());
+                PostRaceMenu pages(true,false,0);pages.animate();FrontendUiFrame opened,closing,reopened,confirmation;
+                animation.advance(.4F);animation.record_post_race(1280,720,pages,result_values,opened);
+                pages.update({false,false,true});pages.advance(.1);animation.advance(.1F);
+                animation.record_post_race(1280,720,pages,result_values,closing);
+                check(opened.vertices.size()==closing.vertices.size()&&std::memcmp(opened.vertices.data(),closing.vertices.data(),opened.vertices.size()*sizeof(TrackVertex)),"native results FadeOut changes actual submitted UI vertex colors");
+                pages.advance(.07);pages.update({false,false,true});
+                check(pages.confirming(),"continue opens native post-race confirmation package");
+                animation.record_post_race(1280,720,pages,result_values,confirmation);
+                check(!confirmation.vertices.empty(),"original MU_PostRaceConfirm renders from compact resident atlas");
+                pages.update({false,false,false,true});pages.update({true});pages.update({false,false,true});
+                check(pages.statistics(),"cancel confirmation then open statistics");
+                animation.advance(.3F);animation.record_post_race(1280,720,pages,result_values,reopened);
+                check(!reopened.vertices.empty(),"statistics returns with original entry animation");
+            }
+            std::cout<<"PASS: compact post-race atlas bytes="<<result_art.atlas().rgba.size()<<" all five result pages preserved\n";
             const auto& atlas=gpu_art.atlas();
             check(atlas.width && atlas.height && atlas.rgba.size()==atlas.width*atlas.height*4ULL,
                 "resident original frontend atlas contains complete pixel storage");
@@ -729,6 +1028,11 @@ int main(int argc,char** argv) {
             gpu_art.record_ui(1280,720,gpu_menu,ui);
             check(!ui.additive.empty() && ui.vertices.size()==ui.additive.size()*4 &&
                 ui.additive.size()<=kFrontendUiMaxQuads,"authored UI fits resident overlay capacity");
+            check(std::any_of(ui.vertices.begin(),ui.vertices.end(),[](const TrackVertex& vertex) {
+                return vertex.pz<kFrontendFontVertexZ;
+            }) && std::any_of(ui.vertices.begin(),ui.vertices.end(),[](const TrackVertex& vertex) {
+                return vertex.pz==-1.F;
+            }),"menu glyphs carry a pixel footprint and sprites retain nearest sampling");
             // Independent MainMenu.fng resource5 circle submissions: authored
             // positions and alpha, before any temporal-state approximation.
             // Missing CIRCLE atlas binding used to silently omit all four.

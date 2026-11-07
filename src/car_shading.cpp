@@ -1,6 +1,7 @@
 #include "nfsu/car_shading.h"
 #include "nfsu/car_parts.h"
 #include "nfsu/scene.h"
+#include "nfsu/render.h"
 #include <algorithm>
 #include <cmath>
 #include <algorithm>
@@ -122,7 +123,9 @@ bool parse_car_materials(const unsigned char* bytes, std::size_t size,
 }
 bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
                          std::size_t size, std::uint32_t paint_hash,
-                         std::uint32_t window_tint_hash, std::string& error) {
+                         std::uint32_t window_tint_hash, std::string& error,
+                         const std::array<std::uint32_t,4>& special_paints,
+                         unsigned preview_slot) {
     std::vector<CarMaterialRecord> records;
     if (!parse_car_materials(bytes,size,records,error)) return false;
     const auto wanted=paint_hash;
@@ -135,8 +138,28 @@ bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
     const auto tint=tint_found ? window_tint_hash : 0;
     for (auto& draw:scene.draws) {
         auto hash=draw.material_key_hash;
+        unsigned paint_slot=0;
         // 0x56F520/0x56F5A0 bind CARSKIN to the selected BASE_PAINT material.
-        if (hash==hash_name("CARSKIN")) hash=selected;
+        if (hash==hash_name("CARSKIN")) {
+            const bool spoiler=std::any_of(scene.instances.begin(),scene.instances.end(),[&](const auto& i){return i.mesh==draw.mesh&&i.part_slot==11;});
+            const bool spoiler_paint=spoiler&&special_paints[3];
+            hash=spoiler_paint?special_paints[3]:selected;
+            paint_slot=spoiler_paint?38:30;
+        }
+        //56FDDA..56FE9B,56F700,570322: replace only the native material
+        //keys of the installed rim, exhaust-tip and calliper models.
+        if(special_paints[0]&&(hash==0x22719FA9U||hash==0xFD102A92U||hash==0x12049251U)) {
+            hash=special_paints[0];paint_slot=41;
+        }
+        if(special_paints[1]&&hash==0x3B3A1F8DU) {
+            hash=special_paints[1];paint_slot=40;
+        }
+        if(special_paints[2]&&(hash==0xA3186E2BU||hash==0xD6640DFFU)) {
+            hash=special_paints[2];paint_slot=39;
+        }
+        // Keep unrelated FE materials as they were bound before aliases and
+        // sponsor substitutions changed the scene's texture bindings.
+        if(preview_slot&&paint_slot!=preview_slot)continue;
         // 0x56F5B1..0x56F5E1 replace the production WINDSHIELD material with
         // the installed tint's selected material, when one is installed.
         if (tint!=0 && hash==hash_name("WINDSHIELD")) hash=tint;
@@ -155,16 +178,32 @@ bool apply_car_materials(PreparedCarScene& scene, const unsigned char* bytes,
 
 namespace nfsu {
 FrontendLighting frontend_point_lighting(const FrontendPointLight* lights,std::size_t count,
-    const float (&car)[3]) noexcept {
+    const float (&car)[3],const CameraFrame* primary) noexcept {
     struct Input {float direction[3],color[4];};Input input[14]{};unsigned used=3;
-    // Genuine542E40 normalized FE table directions under the recovered,
-    // fixed main-menu reflection basis. Remaining table intensities are zero.
+    // Genuine542E40 replaces its fallback basis with scene+0x40, the
+    // active primary CView. These default directions retain the bounded
+    // startup witness when no CView is supplied. Production supplies one.
     const float directions[3][4]={
         {.12326809763908386F,.829439640045166F,.5448254942893982F,221.82000732421875F},
         {.9293131232261658F,-.3390888571739197F,.1462731659412384F,144.58999633789062F},
         {-.37582290172576904F,-.5062289834022522F,.7762018442153931F,67.66000366210938F}};
+    // Native542360/542E40 output before inverse CView, independently
+    // captured with an identity view. Intensities are the same FE table.
+    const float camera_directions[3][3]={
+        {.5566003918647766F,-.5000553131103516F,-.6634309887886047F},
+        {-.875423014163971F,-.2588496804237366F,-.4082050323486328F},
+        {0.F,-.7660923600196838F,.6427304744720459F}};
     for(unsigned i=0;i<3;++i) {
         for(unsigned c=0;c<3;++c){input[i].direction[c]=directions[i][c];input[i].color[c]=directions[i][3];}
+        if(primary) {
+            const auto* d=camera_directions[i];
+            // Raw CView columns are right, down and forward. Convert its
+            // inverse direction to the car's raw(x,y,z) coordinate frame.
+            const auto world=Vec3{d[0]*primary->right.x-d[1]*primary->up.x+d[2]*primary->forward.x,
+                d[0]*primary->right.y-d[1]*primary->up.y+d[2]*primary->forward.y,
+                d[0]*primary->right.z-d[1]*primary->up.z+d[2]*primary->forward.z};
+            input[i].direction[0]=float(world.x);input[i].direction[1]=float(-world.z);input[i].direction[2]=float(world.y);
+        }
     }
     // Genuine5411B0 range/inner-radius selector, in stable road pool order.
     for(std::size_t i=0;lights && i<std::min<std::size_t>(count,32) && used<14;++i) {

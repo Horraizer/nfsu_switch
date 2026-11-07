@@ -258,7 +258,7 @@ int run(int argc,char** argv) {
     RenderOptions options;
     options.sky=true; options.material_state=MaterialStateMode::retail;
     options.car_shading=shaded; options.texture_filter=filter;
-    require(drive_render_camera(race.session().camera(),ChaseFovMode::vertical_4_3,1280,720,options.camera,error),error);
+    require(drive_render_camera(race.session().camera(),ChaseFovMode::retail,1280,720,options.camera,error),error);
     options.camera.far_plane=frame.far_plane;
     // Re-run the original selector, then assert every selected identity/order
     // against the GPU frame before drawing. No comparison-specific culling.
@@ -268,13 +268,14 @@ int run(int argc,char** argv) {
     camera.eye[0]=float(basis.eye.x); camera.eye[1]=float(basis.eye.y); camera.eye[2]=float(basis.eye.z);
     camera.target[0]=float(options.camera.target.x); camera.target[1]=float(options.camera.target.y);
     camera.target[2]=float(options.camera.target.z);
-    camera.up[0]=0; camera.up[1]=1; camera.up[2]=0;
-    camera.aspect=1280.0F/720;
+    camera.up[0]=float(basis.up.x); camera.up[1]=float(basis.up.y); camera.up[2]=float(basis.up.z);
+    camera.aspect=float(basis.focal_y/basis.focal_x);
     camera.vertical_fov=float(options.camera.fov_y_deg*(3.14159265358979323846/180));
     camera.near_plane=float(options.camera.near_plane); camera.far_plane=float(frame.far_plane);
     TrackFrustum frustum;
     require(track_frustum_look_at(camera,frustum),"comparison frustum failed");
-    const auto visible=cull_track_region(scene.track().objects,frustum);
+    TrackCullOptions visibility; visibility.instance_mask=kTrackMainViewInstanceMask;
+    const auto visible=cull_track_region(scene.track().objects,frustum,visibility);
     require(visible.ok() && visible.policy_held,"comparison culling degraded");
     TrackDrawList list; TrackDrawListOptions order; order.order=TrackDrawOrder::retail_bucket;
     require(build_track_draw_list(scene.track().scene,visible,order,list,error),error);

@@ -49,10 +49,10 @@ endif()
 # The pins. demo_stream moved with the handbrake fix: the demonstration's
 # handbrake second is max(service, 0.5 x handbrake) (0x00474B4B), not an
 # added rear lock torque (docs/CONTROLS_CAMERA.md).
-set(demo_stream "C90225CC4B54694EBA81681A485B66BD6AF663A815EA12DD5EE9EAB10D4D44FE")
-set(fixture_frame_690 "BDC6077DA3E3815FF1B78905C3F1F7144522501072CC2BFEAF67EBD9B1B6CF5D")
+set(demo_stream "6FC2FCBBC8D3E794C1D60FBBBAF8DD8EB32FF8C32D172B7E43700AC692BF6959")
+set(fixture_frame_690 "1896A88A494364C5459EA1F20A82782A123D0BD5ED5DFC56B6D149DBD33516DD")
 # Both synthetic poses changed with the corrected full-domain arctangent.
-set(fixture_frame_1380 "C84E0860160AEC9FF48BAB32482E49D3071A64E5152A0C35A2D858331B524A06")
+set(fixture_frame_1380 "40227856ECF68D73090FE85E1EC3A4F7E1B707565B7248084AA10ED008D980D4")
 
 file(REMOVE_RECURSE "${WORK}")
 if(EXISTS "${WORK}")
@@ -155,12 +155,12 @@ nfsu_case("frames described without a root" 1
 # ---------------------------------------------------------------------------
 
 nfsu_case("the demonstration" 0
-          "drive-replay: recording the built-in demonstration frames 1380 replayed 1380 of 1/60 s, 2 vehicle steps each;controls: the default Switch layout, 10 bindings;camera: chase POV 0 fov 13020 units, 71.521 degrees across a 4:3 view, its height kept;final frame 1380 t 23.000;stream: frames 1380 bytes 1689120 sha256 ${demo_stream}"
+          "drive-replay: recording the built-in demonstration frames 1380 replayed 1380 of 1/60 s, 4 vehicle steps each;controls: the default Switch layout, 10 bindings;camera: chase POV 0 fov 13020 units, 71.521 degrees across a 4:3 view, its height kept;final frame 1380 t 23.000;stream: frames 1380 bytes 7650720 sha256 ${demo_stream}"
           "frame 120:" --demo --every 0)
 nfsu_case("a line every 690 frames" 0
-          "at frame 690 t 11.500;final frame 1380 t 23.000;stream: frames 1380 bytes 1689120 sha256 ${demo_stream}"
+          "at frame 690 t 11.500;final frame 1380 t 23.000;stream: frames 1380 bytes 7650720 sha256 ${demo_stream}"
           "at frame 1380" --demo --every 690)
-nfsu_case("the first 600 frames" 0 "stream: frames 600 bytes 734400 sha256" "stream: frames 1380"
+nfsu_case("the first 600 frames" 0 "stream: frames 600 bytes 3326400 sha256" "stream: frames 1380"
           --demo --frames 600 --every 0)
 if(last_stream STREQUAL demo_stream OR last_stream STREQUAL "")
     nfsu_fail("the first 600 frames must hash differently from all 1380")
@@ -173,10 +173,10 @@ if(NOT written EQUAL 0 OR NOT controls_written EQUAL 0)
     nfsu_fail("nfsu_drive_tests did not write the demonstration and the controls")
 endif()
 nfsu_case("the demonstration's recorded file" 0
-          "drive-replay: recording demo.txt frames 1380;stream: frames 1380 bytes 1689120 sha256 ${demo_stream}"
+          "drive-replay: recording demo.txt frames 1380;stream: frames 1380 bytes 7650720 sha256 ${demo_stream}"
           "" --input "${WORK}/demo.txt" --every 0)
 nfsu_case("the recorded file with the default controls as a file" 0
-          "controls: controls.txt, 10 bindings;stream: frames 1380 bytes 1689120 sha256 ${demo_stream}"
+          "controls: controls.txt, 10 bindings;stream: frames 1380 bytes 7650720 sha256 ${demo_stream}"
           "" --input "${WORK}/demo.txt" --controls "${WORK}/controls.txt" --every 0)
 
 file(WRITE "${WORK}/remapped.txt"
@@ -224,7 +224,7 @@ endif()
 set(prefix "${WORK}/shots/drive")
 file(MAKE_DIRECTORY "${WORK}/shots")
 nfsu_case("two synthetic frames" 0
-          "stock car: 240SX painted;camera anchors: 240SX record +0xB50 differs from the built-in 240SX table;frames: rendered 2 written 2;stream: frames 1380 bytes 1689120 sha256 ${demo_stream}"
+          "stock car: 240SX painted;camera anchors: 240SX record +0xB50 differs from the built-in 240SX table;frames: rendered 2 written 2;stream: frames 1380 bytes 7650720 sha256 ${demo_stream}"
           "" --demo --every 0 --root "${WORK}/root" --render-every 690 --width 160 --height 90
           --out "${prefix}")
 set(frames_output "${last_output}")

@@ -222,7 +222,15 @@ const nfsu::AssetFile* find_file(const nfsu::AssetManifest& manifest, const std:
 
 void test_retail_sets() {
     const std::vector<std::string> names = nfsu::retail_asset_manifest_names();
-    check(names == std::vector<std::string>{"first-lap", "first-lap-1005", "stock-car", "event-1"},
+    check(names == std::vector<std::string>{"first-lap", "first-lap-1005",
+          "first-lap-1001", "first-lap-1002", "first-lap-1004", "first-lap-1006",
+          "first-lap-1007", "first-lap-1008", "first-lap-1301", "first-lap-1302",
+          "first-lap-1303", "first-lap-1304", "first-lap-1305", "first-lap-1306",
+          "first-lap-1307", "first-lap-1308", "first-lap-1201", "first-lap-1202",
+          "first-lap-1206", "first-lap-1207", "first-lap-1210", "first-lap-1214",
+          "first-lap-1102", "first-lap-1103", "first-lap-1104", "first-lap-1105",
+          "first-lap-1106", "first-lap-1107", "first-lap-1108", "first-lap-1109",
+          "stock-car", "event-1"},
           "the supported retail sets, first-lap first");
 
     nfsu::AssetManifest first;

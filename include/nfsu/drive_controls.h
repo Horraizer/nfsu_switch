@@ -168,6 +168,8 @@ constexpr std::uint32_t kMaxDriveReverseHoldSteps = 1200;
 // face_south, X face_north (docs/INPUT.md). + is left for the application
 // (pause or exit).
 DriveControlsConfig default_drive_controls_config();
+// Drag retains L for nitrous, R shifts up and face-east (Switch A) down.
+DriveControlsConfig default_drag_controls_config();
 
 // Refuses, naming what it refuses: no binding; more than kMaxDriveBindings;
 // an action or a control that is not one; an axis on a digital action; an
@@ -296,7 +298,7 @@ public:
     // raw_steering bypasses only the approximate input slew for #251's
     // recovered road-wheel path; binding, calibration and edges still run.
     VehicleInput step(double forward_speed, int gear, VehicleGearbox gearbox,
-                      bool raw_steering = false);
+                      bool raw_steering = false, bool owner_pedals = false);
 
     // The steering filter's value, player's sign (+1 right).
     double steer() const noexcept { return steer_; }
@@ -315,10 +317,17 @@ private:
     bool pending_down_ = false;
     double steer_ = 0.0;
     std::uint32_t reverse_count_ = 0;
+    bool reverse_brake_latched_ = false;
 };
 
 // The value of one axis after its calibration, -1..1. Exposed for tests.
 double drive_axis_value(const DriveAxisCalibration& calibration, std::int32_t raw) noexcept;
+
+// Human neutral throttle461C57..461D25, once per world update. Inputs are
+// finite: target/previous in[0,1], positive dt, and current/idle RPM.
+// Includes the original low-RPM tip-in floor; no tachometer filtering.
+float drive_neutral_throttle(float target,float previous,float rpm,
+                             float idle_rpm,float dt) noexcept;
 
 // The retail throttle curve, 0..1 onto 0..1: speed.exe's pair-table
 // evaluation (0x00454F30) of the six points at 0x00700374, in double.

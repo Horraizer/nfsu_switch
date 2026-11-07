@@ -242,20 +242,17 @@ bigger, by however much the block-linear layout pads them.
 
 ### Placeholders
 
-| Constant | Value | Replaced by |
-| --- | ---: | --- |
-| `kPersistentBudgetPlaceholder` | 64 MiB | the peak of every persistent allocation of a race, measured on hardware: the car scenes once uploaded, and whatever else a session loads once |
-| `kStreamingRegionBudgetPlaceholder` | 16 MiB | the peak streaming allocation of one retail region measured on hardware, over every region a route loads |
-| `kResidentRegionsPlaceholder` | 3 | the most regions the retail streaming tables keep resident at once; those tables are not decoded ([`TRACK_OBJECTS.md`](TRACK_OBJECTS.md)), so nothing in this project can say |
-| `kTransientBudgetPlaceholder` | 1 MiB | the peak per-frame allocation measured on hardware |
-| `kGpuBudgetPlaceholder` | 256 MiB | the peak GPU residency measured on hardware, with every image sized by `dkImageLayoutGetSize` rather than by its texels, inside the memory mode the application runs in |
-| `kArenaAllocationsPlaceholder` | 4096 per arena | the peak live allocation count per arena measured on hardware; it bounds the bookkeeping each arena reserves, 52 bytes per allocation |
+The executable values live in `include/nfsu/memory_budget.h`.
+`switch_memory_budget()` assembles those constants; `nfsu_gpu_upload_tests`
+checks arena layout and the complete race-payload guard, including overflow.
+All are placeholders pending comprehensive hardware peak measurements.
 
-`switch_memory_budget()` assembles them: persistent 64 MiB, streaming 3 x 16
-MiB = 48 MiB, transient 1 MiB and GPU 256 MiB, which lays out as a CPU block
-of 113 MiB (118489088 bytes) and a 256 MiB GPU range. A test checks that the
-budget is assembled from exactly these constants and builds a plan; the values
-themselves are free to change, which is what makes them placeholders.
+The persistent payload includes the authored baked start-crowd animation,
+cars, course collision, immutable command metadata, sound and HUD. Console
+startup prints each component before checking the limit. `nfsu_career_full_retail`
+checks the same composition for every campaign stage and repeats event8 with
+its large scene2318 and the owner's installed performance levels. A successful
+scene-only load does not establish that a complete race fits.
 
 ## Repeated load and unload cycles
 

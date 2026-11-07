@@ -920,6 +920,16 @@ bool track_section_letter(std::uint32_t number, char& letter) noexcept {
     return true;
 }
 
+void apply_reverse_track_scenery(TrackObjectReport& objects) noexcept {
+    for(auto& section:objects.sections)if(section.valid)for(auto& instance:section.instances)
+        if(instance.flags&0x400U)for(unsigned i=0;i<3;++i) {
+            //Native packs the negated float back into a16-bit word, including
+            //INT16_MIN wrap. Use a byte copy instead of signed overflow.
+            const std::uint16_t bits=std::uint16_t(0U-std::uint16_t(instance.matrix[i]));
+            std::memcpy(&instance.matrix[i],&bits,sizeof bits);
+        }
+}
+
 TrackTransform track_instance_transform(const TrackInstance& instance) noexcept {
     TrackTransform transform;
     for (std::size_t word = 0; word < kSceneryInstanceMatrixWords; ++word) {
@@ -1069,13 +1079,39 @@ std::vector<std::uint32_t> track_object_mesh_hashes(
     return std::vector<std::uint32_t>(hashes.begin(), hashes.end());
 }
 
+bool track_world_motion_models(const std::vector<unsigned char>& track,
+                               std::vector<std::uint32_t>& models,std::string& error) {
+    models.clear();
+    for(std::size_t at=0;at<track.size();) {
+        if(track.size()-at<8){error="world model chunk header";return false;}
+        const auto tag=read_u32_le(track.data()+at),size=read_u32_le(track.data()+at+4);
+        const auto begin=at+8;
+        if(size>track.size()-begin){error="world model chunk bounds";return false;}
+        const auto end=begin+size;
+        if(tag==0x3b300U) {
+            const auto first=(begin+15)&~std::size_t(15);
+            if(first>end||(end-first)%160){error="world model record bounds";return false;}
+            for(auto record=first;record<end;record+=160) {
+                const auto* b=track.data()+record;const auto type=read_u32_le(b);
+                if(read_u32_le(b+12)||(type!=0x24cebc53U&&type!=0x427a6453U&&type!=0x67dbe3eaU))continue;
+                const auto hash=read_u32_le(b+80);
+                if(!hash){error="world model hash absent";return false;}
+                if(std::find(models.begin(),models.end(),hash)==models.end())models.push_back(hash);
+            }
+        }
+        at=end;
+    }
+    error.clear();return true;
+}
+
 bool retain_instanced_track_meshes(TrackRegionReport& geometry,
                                   const TrackObjectReport& objects,
-                                  std::string& error) {
+                                  std::string& error,
+                                  const std::vector<std::uint32_t>& extra_models) {
     if (!geometry.ok() || !objects.ok()) {
         error = "cannot reduce invalid track geometry or objects"; return false;
     }
-    std::set<std::uint32_t> wanted;
+    std::set<std::uint32_t> wanted(extra_models.begin(),extra_models.end());
     for (const auto& section : objects.sections) {
         if (!section.valid) continue;
         for (const auto& instance : section.instances) {

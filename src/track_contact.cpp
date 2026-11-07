@@ -3,6 +3,7 @@
 #include "nfsu/det_sqrt.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -25,6 +26,122 @@ float contact_sqrtf(float x) noexcept {
 // uses: triangle 0 is corners (0,1,2) and triangle 1 is (0,2,3).
 constexpr std::size_t kTriangleCorners[2][3] = {{0, 1, 2}, {0, 2, 3}};
 constexpr std::size_t kTrianglesPerPolygon = 2;
+
+// Wheel/body rays normally visit a few cells. Keep their short work lists
+// local instead of allocating several heap buffers for every hull point.
+// Longer queries retain the original unbounded (query-limit checked) path.
+template <class T, std::size_t InlineCount>
+class QueryList {
+public:
+    void clear() { count_=0; overflow_.clear(); }
+    void push_back(T value) {
+        if(count_<InlineCount) local_[count_]=value;
+        else {
+            if(count_==InlineCount) overflow_.assign(local_.begin(),local_.end());
+            overflow_.push_back(value);
+        }
+        ++count_;
+    }
+    std::size_t size() const { return count_; }
+    bool empty() const { return count_==0; }
+    const T* begin() const { return count_<=InlineCount?local_.data():overflow_.data(); }
+    const T* end() const { return begin()+count_; }
+private:
+    std::array<T,InlineCount> local_;
+    std::vector<T> overflow_;
+    std::size_t count_=0;
+};
+using QueryCells = QueryList<std::size_t,4>;
+using QueryPolygons = QueryList<std::uint32_t,128>;
+
+struct FanLists {
+    QueryPolygons named;
+    QueryPolygons conservative_named;
+    QueryPolygons moller_named;
+    QueryCells named_cells;
+    bool has_named=false,moller_filtered=false;
+};
+
+struct FanCells {
+    // A hull straddling a leaf boundary alternates between the same small
+    // cell sets. Keep their complete validated lists within this call only.
+    // Replacement affects work, never query coverage or the public limits.
+    std::array<FanLists,4> cached_lists;
+    std::size_t current_list=0,replace_list=0;
+    FanLists& lists() {return cached_lists[current_list];}
+    float common_from[3]{},direction_bound[3]{},length_bound=0;
+    bool moller_bounded=false;
+    void bound_moller(const float from[3],const std::array<float,3>* ends,std::size_t count) {
+        if(!from || !ends || !count)return;
+        for(unsigned k=0;k<3;++k) {
+            if(!std::isfinite(from[k]))return;
+            common_from[k]=from[k];
+        }
+        for(std::size_t i=0;i<count;++i) {
+            const float delta[3]={ends[i][0]-from[0],ends[i][1]-from[1],ends[i][2]-from[2]};
+            // Identical operations to query_segment, including float length.
+            const float length=contact_sqrtf(delta[0]*delta[0]+delta[1]*delta[1]+delta[2]*delta[2]);
+            if(!(length>0)||!std::isfinite(length))return;
+            length_bound=std::max(length_bound,length);
+            for(unsigned k=0;k<3;++k) {
+                const float d=std::fabs(delta[k]/length);
+                if(!std::isfinite(d))return;
+                direction_bound[k]=std::max(direction_bound[k],d);
+            }
+        }
+        moller_bounded=true;
+    }
+    bool moller_possible(const TrackCollisionPolygon& polygon,const TrackContactTriangle& triangle) const {
+        if(triangle.degenerate)return false;
+        const auto* e1=triangle.edge1;const auto* e2=triangle.edge2;
+        const float t[3]={common_from[0]-polygon.corner[0][0],common_from[1]-polygon.corner[0][1],common_from[2]-polygon.corner[0][2]};
+        const float q[3]={t[1]*e1[2]-t[2]*e1[1],t[2]*e1[0]-t[0]*e1[2],t[0]*e1[1]-t[1]*e1[0]};
+        const float numerator=std::fabs((e2[0]*q[0]+e2[1]*q[1])+e2[2]*q[2]);
+        // Monotonic round-to-nearest: replacing every signed product/sum by
+        // its positive magnitude bound also bounds the FLOAT determinant.
+        // This is not a geometric AABB rejection, which can lose float hits.
+        const float p[3]={direction_bound[1]*std::fabs(e2[2])+direction_bound[2]*std::fabs(e2[1]),
+            direction_bound[2]*std::fabs(e2[0])+direction_bound[0]*std::fabs(e2[2]),
+            direction_bound[0]*std::fabs(e2[1])+direction_bound[1]*std::fabs(e2[0])};
+        const float det=(std::fabs(e1[0])*p[0]+std::fabs(e1[1])*p[1])+std::fabs(e1[2])*p[2];
+        if(!std::isfinite(det)||!std::isfinite(numerator))return true;
+        if(det==0)return false;
+        // For either determinant sign, |t| cannot be smaller than this exact
+        // float multiply/reciprocal. If greater than every ray length, t is
+        // either negative, too far, or nonfinite: segment_triangle rejects it.
+        const float minimum_distance=numerator*(1.0F/det);
+        return !(minimum_distance>length_bound);
+    }
+    float bounds_low[3], bounds_high[3];
+    bool bounded=true, has_bounds=false;
+    void include(const float* point) {
+        if(!bounded)return;
+        if(!point || !std::isfinite(point[0]) || !std::isfinite(point[1]) || !std::isfinite(point[2])) {
+            bounded=false;return;
+        }
+        for(unsigned axis=0;axis<3;++axis) {
+            if(!has_bounds)bounds_low[axis]=bounds_high[axis]=point[axis];
+            else {
+                bounds_low[axis]=std::min(bounds_low[axis],point[axis]);
+                bounds_high[axis]=std::max(bounds_high[axis],point[axis]);
+            }
+        }
+        has_bounds=true;
+    }
+    bool meets(const TrackContactTriangle& triangle) const {
+        if(triangle.degenerate)return false;
+        for(unsigned axis=0;axis<3;++axis)
+            if(triangle.high[axis]<bounds_low[axis] || triangle.low[axis]>bounds_high[axis])return false;
+        return true;
+    }
+    float low[2], high[2];
+    bool ready=false;
+    bool contains(const float from[3],const float to[3]) const {
+        return ready && from[0]>low[0] && from[0]<high[0] &&
+            from[1]>low[1] && from[1]<high[1] &&
+            to[0]>low[0] && to[0]<high[0] && to[1]>low[1] && to[1]<high[1];
+    }
+};
 
 std::uint64_t saturating_add(std::uint64_t a, std::uint64_t b) noexcept {
     const std::uint64_t max = std::numeric_limits<std::uint64_t>::max();
@@ -65,6 +182,9 @@ TrackContactTriangle derive_triangle(
     }
     for (std::size_t axis = 0; axis < 3; ++axis) {
         out.normal[axis] = cross[axis] / length;
+        out.edge1[axis]=edge1[axis];out.edge2[axis]=edge2[axis];
+        out.low[axis]=std::min(a[axis],std::min(b[axis],c[axis]));
+        out.high[axis]=std::max(a[axis],std::max(b[axis],c[axis]));
     }
     out.up = std::fabs(out.normal[2]);
     out.kind = out.up >= kTrackContactRoadMinUp ? TrackContactKind::road
@@ -118,13 +238,11 @@ bool segment_triangle(
     const float origin[3],
     const float direction[3],
     const float a[3],
-    const float b[3],
-    const float c[3],
+    const float edge1[3],
+    const float edge2[3],
     float max_distance,
     float& distance,
     float& determinant) {
-    const float edge1[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-    const float edge2[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
     const float pvec[3] = {
         direction[1] * edge2[2] - direction[2] * edge2[1],
         direction[2] * edge2[0] - direction[0] * edge2[2],
@@ -194,31 +312,21 @@ constexpr double kNearerMargin = 1.0 / 8388608.0;
 struct Sweep {
     double start[3] = {0.0, 0.0, 0.0};
     double delta[3] = {0.0, 0.0, 0.0};
-    double length = 0.0;
     float low[3] = {0.0F, 0.0F, 0.0F};
     float high[3] = {0.0F, 0.0F, 0.0F};
 };
 
 Sweep sweep_of(const float from[3], const float to[3]) {
     Sweep sweep;
-    double squared = 0.0;
     for (std::size_t axis = 0; axis < 3; ++axis) {
         sweep.start[axis] = static_cast<double>(from[axis]);
         sweep.delta[axis] =
             static_cast<double>(to[axis]) - static_cast<double>(from[axis]);
-        squared += sweep.delta[axis] * sweep.delta[axis];
         sweep.low[axis] = std::min(from[axis], to[axis]);
         sweep.high[axis] = std::max(from[axis], to[axis]);
     }
-    // det_sqrt, not std::sqrt: MinGW's out-of-line libm sqrt is not
-    // correctly rounded at -O0 (issue #165, the same defect issue #125
-    // found in the renderer). squared is a sum of squared doubles, so this
-    // is the one double-precision library sqrt on this file's replayed
-    // path. The two float ones (derive_triangle's face normal and
-    // query_track_contact_segment's own direction length) go through
-    // contact_sqrtf, which takes det_sqrt too, so that no library root is
-    // referenced on the vehicle's step (issue #60).
-    sweep.length = det_sqrt(squared);
+    // Length is needed only if a conservative triangle is actually met.
+    // nearest_conservative computes it lazily, using the same ordered sum.
     return sweep;
 }
 
@@ -364,13 +472,8 @@ constexpr double kClipMargin = 1.0 / 1073741824.0;
 // clipped to the triangle's box axis by axis, in double, and rejected only
 // when the parts of it within each axis's slab are apart by more than
 // kClipMargin. A triangle this rejects cannot meet the segment.
-bool box_meets_segment(const Sweep& sweep, const float a[3], const float b[3],
-                       const float c[3]) {
-    float low[3];
-    float high[3];
+bool box_meets_segment(const Sweep& sweep, const float low[3], const float high[3]) {
     for (std::size_t axis = 0; axis < 3; ++axis) {
-        low[axis] = std::min(a[axis], std::min(b[axis], c[axis]));
-        high[axis] = std::max(a[axis], std::max(b[axis], c[axis]));
         if (high[axis] < sweep.low[axis] || low[axis] > sweep.high[axis]) {
             return false;
         }
@@ -496,7 +599,7 @@ bool square_meets(const Footprint& footprint, float center0, float center1,
 bool segment_cells(const TrackCollisionReport& report,
                    const Footprint& footprint,
                    std::size_t max_cells,
-                   std::vector<std::size_t>& out) {
+                   QueryCells& out, FanCells* fan) {
     out.clear();
     struct Frame {
         std::size_t node;
@@ -504,11 +607,13 @@ bool segment_cells(const TrackCollisionReport& report,
         float center[2];
         float half;
     };
-    std::vector<Frame> stack;
-    stack.push_back(Frame{0, 0, {0.0F, 0.0F}, kCollisionRootHalfExtent});
-    while (!stack.empty()) {
-        const Frame frame = stack.back();
-        stack.pop_back();
+    // Depth-first traversal adds at most four children after popping one
+    // parent. Depth is bounded even for a hand-built cyclic node table.
+    std::array<Frame,1+(kCollisionTreeNodeEntries-1)*kCollisionTreeDepth> stack;
+    std::size_t stack_size=1;
+    stack[0]=Frame{0, 0, {0.0F, 0.0F}, kCollisionRootHalfExtent};
+    while (stack_size) {
+        const Frame frame = stack[--stack_size];
         if (frame.node >= report.nodes.size()) {
             return false;
         }
@@ -527,13 +632,17 @@ bool segment_cells(const TrackCollisionReport& report,
                 continue;
             }
             if (frame.depth + 1 < kCollisionTreeDepth) {
-                stack.push_back(Frame{entry, frame.depth + 1, {c0, c1}, quarter});
+                stack[stack_size++]=Frame{entry, frame.depth + 1, {c0, c1}, quarter};
                 continue;
             }
             if (entry >= report.cells.size() || out.size() >= max_cells) {
                 return false;
             }
             out.push_back(entry);
+            if(fan) {
+                fan->low[0]=c0-quarter;fan->high[0]=c0+quarter;
+                fan->low[1]=c1-quarter;fan->high[1]=c1+quarter;
+            }
         }
     }
     return true;
@@ -545,7 +654,7 @@ bool segment_cells(const TrackCollisionReport& report,
 // segment's length, so a crossing exactly at the segment's end is still
 // found.
 bool nearest_moller_trumbore(const TrackContactWorld& world,
-                             const std::vector<std::uint32_t>& named,
+                             const QueryPolygons& named,
                              const float from[3],
                              const float direction[3],
                              float length,
@@ -557,15 +666,14 @@ bool nearest_moller_trumbore(const TrackContactWorld& world,
     for (const std::uint32_t polygon_index : named) {
         const TrackCollisionPolygon& polygon = world.collision.polygons[polygon_index];
         for (std::size_t t = 0; t < kTrianglesPerPolygon; ++t) {
-            if (world.triangles[polygon_index * kTrianglesPerPolygon + t].degenerate) {
+            const auto& triangle=world.triangles[polygon_index*kTrianglesPerPolygon+t];
+            if (triangle.degenerate) {
                 continue;
             }
             const float* a = polygon.corner[kTriangleCorners[t][0]];
-            const float* b = polygon.corner[kTriangleCorners[t][1]];
-            const float* c = polygon.corner[kTriangleCorners[t][2]];
             float distance = 0.0F;
             float det = 0.0F;
-            if (!segment_triangle(from, direction, a, b, c, best.distance, distance,
+            if (!segment_triangle(from, direction, a, triangle.edge1, triangle.edge2, best.distance, distance,
                                   det)) {
                 continue;
             }
@@ -599,33 +707,44 @@ Crossing crossing_of(const TrackContactWorld& world, const Sweep& sweep,
 // triangles that share the crossing point tie as they do under better().
 // `crossing` receives the winner's own crossing.
 bool nearest_conservative(const TrackContactWorld& world,
-                          const std::vector<std::uint32_t>& named,
+                          const QueryPolygons& named,
                           const Sweep& sweep,
                           float length,
                           TrackContact& best,
                           Crossing& crossing) {
     bool found = false;
+    double sweep_length=0.0;
+    bool length_ready=false;
     best = TrackContact{};
     best.distance = length;
     for (const std::uint32_t polygon_index : named) {
         const TrackCollisionPolygon& polygon = world.collision.polygons[polygon_index];
         for (std::size_t t = 0; t < kTrianglesPerPolygon; ++t) {
-            if (world.triangles[polygon_index * kTrianglesPerPolygon + t].degenerate) {
+            const auto& triangle=world.triangles[polygon_index*kTrianglesPerPolygon+t];
+            if (triangle.degenerate) {
                 continue;
             }
             const float* a = polygon.corner[kTriangleCorners[t][0]];
             const float* b = polygon.corner[kTriangleCorners[t][1]];
             const float* c = polygon.corner[kTriangleCorners[t][2]];
-            if (!box_meets_segment(sweep, a, b, c)) {
+            if (!box_meets_segment(sweep, triangle.low, triangle.high)) {
                 continue;
             }
             const Crossing here = conservative_triangle(sweep, a, b, c);
             if (!here.met) {
                 continue;
             }
+            if(!length_ready) {
+                double squared=0.0;
+                for(std::size_t axis=0;axis<3;++axis)squared+=sweep.delta[axis]*sweep.delta[axis];
+                // Keep correctly rounded det_sqrt, not MinGW libm sqrt
+                // (issues #125/#165), and the original axis summation order.
+                sweep_length=det_sqrt(squared);
+                length_ready=true;
+            }
             const double fraction = std::min(1.0, std::max(0.0, here.along));
             const float distance =
-                std::min(static_cast<float>(fraction * sweep.length), length);
+                std::min(static_cast<float>(fraction * sweep_length), length);
             if (found && !better(distance, polygon_index, t, best)) {
                 continue;
             }
@@ -672,6 +791,22 @@ TrackContactWorld build_track_contact_world(TrackCollisionReport collision) {
         const std::size_t polygons = world.collision.polygons.size();
         world.triangles.resize(polygons * kTrianglesPerPolygon);
         for (std::size_t p = 0; p < polygons; ++p) {
+            //43FF30 prepares the physical polygon after43FD20 decodes its
+            //packed corners. Flag4 extends boundary walls vertically; keep
+            //the parser's raw report unchanged and convert this owned copy.
+            auto& polygon = world.collision.polygons[p];
+            if (polygon.unknown0[3] & 4U) {
+                for (auto& corner : polygon.corner) corner[2] *= 4.0F;
+            }
+            for (const auto& corner : polygon.corner) {
+                if(p==0 && &corner==&polygon.corner[0]) {
+                    world.collision.cost.corner_min[2]=corner[2];
+                    world.collision.cost.corner_max[2]=corner[2];
+                } else {
+                    world.collision.cost.corner_min[2]=std::min(world.collision.cost.corner_min[2],corner[2]);
+                    world.collision.cost.corner_max[2]=std::max(world.collision.cost.corner_max[2],corner[2]);
+                }
+            }
             for (std::size_t t = 0; t < kTrianglesPerPolygon; ++t) {
                 TrackContactTriangle& triangle =
                     world.triangles[p * kTrianglesPerPolygon + t];
@@ -811,12 +946,12 @@ bool place_track_contact_memory(
     return true;
 }
 
-TrackContactStatus query_track_contact_segment(
+static TrackContactStatus query_segment(
     const TrackContactWorld& world,
     const float from[3],
     const float to[3],
     TrackContact& contact,
-    const TrackContactQueryLimits& limits) {
+    const TrackContactQueryLimits& limits, FanCells* fan) {
     if (!world.valid || from == nullptr || to == nullptr) {
         return TrackContactStatus::refused;
     }
@@ -847,29 +982,88 @@ TrackContactStatus query_track_contact_segment(
     // The cells the segment's horizontal projection meets, and nothing its
     // bounding box reaches beyond them: outside means no cell lies under
     // any part of the segment.
-    std::vector<std::size_t> cells;
-    if (!segment_cells(report, footprint_of(from, to), limits.max_cells, cells)) {
-        return TrackContactStatus::refused;
-    }
-    if (cells.empty()) {
-        return TrackContactStatus::outside;
-    }
-    std::vector<std::uint32_t> named;
-    for (std::size_t cell_index : cells) {
-        const TrackCollisionCell& cell = report.cells[cell_index];
-        if (static_cast<std::uint64_t>(cell.first_index) + cell.index_count >
-            report.indices.size()) {
+    QueryPolygons local_named;
+    const QueryPolygons* selected=&local_named;
+    if(fan && fan->contains(from,to)) {
+        selected=&fan->lists().named;
+    } else {
+        QueryCells cells;
+        if(fan)fan->ready=false;
+        if (!segment_cells(report, footprint_of(from, to), limits.max_cells, cells,fan)) {
             return TrackContactStatus::refused;
         }
-        for (std::uint32_t k = 0; k < cell.index_count; ++k) {
-            const std::uint32_t polygon_index =
-                report.indices[static_cast<std::size_t>(cell.first_index) + k];
-            if (polygon_index >= report.polygons.size()) {
-                return TrackContactStatus::refused;
-            }
-            named.push_back(polygon_index);
+        if (cells.empty())return TrackContactStatus::outside;
+        // Only one strictly containing leaf is reusable. Rays touching an
+        // edge, crossing cells or refused by limits keep the original walk.
+        if(fan && cells.size()==1) {
+            fan->ready=true;
+            fan->ready=fan->contains(from,to);
         }
+        // A fan straddling a leaf edge often repeats the same ordered cell
+        // list. Reuse its validated polygon lists too; the strict leaf shortcut
+        // above still applies only to wholly interior segments.
+        const auto same_cells=[&](const FanLists& lists) {
+            return lists.has_named && cells.size()==lists.named_cells.size() &&
+                std::equal(cells.begin(),cells.end(),lists.named_cells.begin());
+        };
+        bool reuse=fan && same_cells(fan->lists());
+        if(fan && !reuse) {
+            for(std::size_t i=0;i<fan->cached_lists.size();++i)if(same_cells(fan->cached_lists[i])) {
+                fan->current_list=i;reuse=true;break;
+            }
+            if(!reuse) {
+                fan->current_list=fan->replace_list;
+                fan->replace_list=(fan->replace_list+1)%fan->cached_lists.size();
+            }
+        }
+        QueryPolygons& named=fan?fan->lists().named:local_named;
+        if(!reuse) {
+            if(fan)fan->lists().has_named=false;
+            named.clear();
+            for (std::size_t cell_index : cells) {
+                const TrackCollisionCell& cell = report.cells[cell_index];
+                if (static_cast<std::uint64_t>(cell.first_index) + cell.index_count >
+                    report.indices.size()) {
+                    if(fan)fan->ready=false;
+                    return TrackContactStatus::refused;
+                }
+                for (std::uint32_t k = 0; k < cell.index_count; ++k) {
+                    const std::uint32_t polygon_index =
+                        report.indices[static_cast<std::size_t>(cell.first_index) + k];
+                    if (polygon_index >= report.polygons.size()) {
+                        if(fan)fan->ready=false;
+                        return TrackContactStatus::refused;
+                    }
+                    named.push_back(polygon_index);
+                }
+            }
+            if(fan){fan->lists().named_cells=cells;fan->lists().has_named=true;}
+            // The direction/length bound covers the entire fan, including
+            // cell crossings. Lists are retained across alternating cell sets
+            // so each set's plane filter is built once while it is cached.
+            if(fan)fan->lists().moller_filtered=fan->moller_bounded;
+            if(fan && fan->lists().moller_filtered) {
+                fan->lists().moller_named.clear();
+                for(const auto p:named)
+                    if(fan->moller_possible(report.polygons[p],world.triangles[p*kTrianglesPerPolygon]) ||
+                       fan->moller_possible(report.polygons[p],world.triangles[p*kTrianglesPerPolygon+1]))
+                        fan->lists().moller_named.push_back(p);
+            }
+            if(fan && fan->bounded && fan->has_bounds) {
+                // This enclosing box contains every segment in this batch.
+                // Reject only polygons whose triangles the conservative search's
+                // existing exact box test would reject for EVERY batch segment.
+                // Float Moller rejection uses its separate rounded bound.
+                fan->lists().conservative_named.clear();
+                for(const auto p : named)
+                    if(fan->meets(world.triangles[p*kTrianglesPerPolygon]) ||
+                       fan->meets(world.triangles[p*kTrianglesPerPolygon+1]))
+                        fan->lists().conservative_named.push_back(p);
+            }
+        }
+        selected=&named;
     }
+    const auto& named=*selected;
 
     // The nearest surface the segment meets, whichever test finds it (issue
     // #167). Both tests run over the triangles that are not degenerate. The
@@ -889,16 +1083,23 @@ TrackContactStatus query_track_contact_segment(
     TrackContact nearest;
     Crossing nearest_crossing;
     const bool ray_met =
-        nearest_moller_trumbore(world, named, from, direction, length, best, best_det);
+        nearest_moller_trumbore(world,fan && fan->lists().moller_filtered?fan->lists().moller_named:named,
+                               from,direction,length,best,best_det);
     const bool conservative_met =
-        nearest_conservative(world, named, sweep, length, nearest, nearest_crossing);
+        nearest_conservative(world,
+            fan && fan->lists().has_named && fan->bounded && fan->has_bounds ? fan->lists().conservative_named : named,
+            sweep, length, nearest, nearest_crossing);
     if (!ray_met && !conservative_met) {
         return TrackContactStatus::clear;
     }
     bool replace = !ray_met;
     if (ray_met && conservative_met) {
+        // Reuse the exact crossing already evaluated by the conservative
+        // search when both searches selected the same triangle.
         const Crossing named_by_ray =
-            crossing_of(world, sweep, best.polygon, best.triangle);
+            best.polygon == nearest.polygon && best.triangle == nearest.triangle
+                ? nearest_crossing
+                : crossing_of(world, sweep, best.polygon, best.triangle);
         replace = named_by_ray.plane &&
                   nearest_crossing.along + nearest_crossing.error + kNearerMargin <
                       named_by_ray.along - named_by_ray.error;
@@ -923,6 +1124,55 @@ TrackContactStatus query_track_contact_segment(
     best.up = triangle.up;
     contact = best;
     return TrackContactStatus::hit;
+}
+
+TrackContactStatus query_track_contact_segment(
+    const TrackContactWorld& world, const float from[3], const float to[3],
+    TrackContact& contact, const TrackContactQueryLimits& limits) {
+    return query_segment(world,from,to,contact,limits,nullptr);
+}
+
+void query_track_contact_fan(
+    const TrackContactWorld& world, const float from[3],
+    const std::array<float,3>* endpoints, std::size_t count,
+    TrackContact* contacts, TrackContactStatus* statuses,
+    const TrackContactQueryLimits& limits) {
+    FanCells fan;
+    fan.include(from);
+    for(std::size_t i=0;i<count;++i)fan.include(endpoints[i].data());
+    if(fan.bounded && count>1)fan.bound_moller(from,endpoints,count);
+    for(std::size_t i=0;i<count;++i)
+        statuses[i]=query_segment(world,from,endpoints[i].data(),contacts[i],limits,&fan);
+}
+
+void query_track_contact_segments(
+    const TrackContactWorld& world, const std::array<float,3>* origins,
+    const std::array<float,3>* endpoints, std::size_t count,
+    TrackContact* contacts, TrackContactStatus* statuses,
+    const TrackContactQueryLimits& limits) {
+    FanCells fan;
+    for(std::size_t i=0;i<count;++i) {fan.include(origins[i].data());fan.include(endpoints[i].data());}
+    for(std::size_t i=0;i<count;++i)
+        statuses[i]=query_segment(world,origins[i].data(),endpoints[i].data(),contacts[i],limits,&fan);
+}
+
+void query_track_contact_pairs(
+    const TrackContactWorld& world, const TrackContactSegmentPair* pairs,
+    std::size_t count, TrackContact* contacts, TrackContactStatus* statuses,
+    const TrackContactQueryLimits& limits) {
+    FanCells fan;
+    for(std::size_t i=0;i<count;++i) {
+        const auto& p=pairs[i];
+        fan.include(p.from.data());fan.include(p.to.data());
+        fan.include(p.fallback_from.data());fan.include(p.fallback_to.data());
+    }
+    for(std::size_t i=0;i<count;++i) {
+        const auto& p=pairs[i];
+        auto status=query_segment(world,p.from.data(),p.to.data(),contacts[i],limits,&fan);
+        if(status!=TrackContactStatus::hit)
+            status=query_segment(world,p.fallback_from.data(),p.fallback_to.data(),contacts[i],limits,&fan);
+        statuses[i]=status;
+    }
 }
 
 TrackContactStatus query_track_contact_point(

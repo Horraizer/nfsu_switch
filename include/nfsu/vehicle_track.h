@@ -3,7 +3,9 @@
 #include "nfsu/race_route.h"
 #include "nfsu/sha256.h"
 #include "nfsu/track_contact.h"
+#include "nfsu/track_ground.h"
 #include "nfsu/vehicle.h"
+#include "nfsu/ai_powertrain.h"
 
 #include <array>
 #include <cstddef>
@@ -13,6 +15,12 @@
 #include <vector>
 
 namespace nfsu {
+struct RaceContactBox;
+struct RacePairContact;
+struct RaceContactPose;
+struct RaceContactContext;
+struct RaceContactJob;
+struct RaceTrackContactJob;
 
 // The vehicle of issue #58 on the track collision of issue #158: the ground
 // its wheels stand on, the collision of its body with the track, and the
@@ -166,6 +174,9 @@ constexpr const char* kVehicle240sxHullBytesSha256 =
 // body frame: +x forward, +y left, +z up), as the file stores it.
 struct VehicleHull {
     std::vector<std::array<float, 3>> points;
+    // Original39201 neighbor ranges joined to39202. Order controls the
+    // support walk's choice between equally extreme vertices (472F30).
+    std::vector<std::vector<unsigned>> neighbors;
 };
 
 VehicleHull stock_240sx_hull();
@@ -198,6 +209,8 @@ enum class VehicleTrackSurface : std::uint8_t {
 
 const char* vehicle_track_surface_name(VehicleTrackSurface surface) noexcept;
 
+std::array<float,4> vehicle_track_ground_plane(const TrackContactWorld&,std::size_t polygon);
+
 struct VehicleTrackCast {
     VehicleTrackSurface surface = VehicleTrackSurface::none;
     TrackContactStatus status = TrackContactStatus::refused;
@@ -212,15 +225,40 @@ struct VehicleTrackCast {
 // unrounded start and held to [0, length], and its normal is the contact's,
 // which faces the start. A wall, nothing, no cell or a refusal is no ground;
 // a wall is refused because the model takes any upward-facing hit as
-// ground, and docs/VEHICLE_TRACK.md says why. The surface id is 0: retail
-// surface types are not decoded. The world must outlive this.
+// ground, and docs/VEHICLE_TRACK.md says why. With materials enabled the
+// hit carries the retail polygon material ID; otherwise it is0 for legacy
+// diagnostics. Production race ground enables materials. World must outlive this.
+enum class TrackStrutQuery {segment,cached_height};
+struct VehicleSupportFace {
+    std::array<std::array<float,3>,4> corners;
+    std::array<float,4> plane;
+    std::array<float,2> low,high;
+};
 class TrackVehicleGround final : public VehicleGround {
 public:
-    explicit TrackVehicleGround(const TrackContactWorld& world) noexcept : world_(&world) {}
+    explicit TrackVehicleGround(const TrackContactWorld& world,bool materials=false,
+        TrackStrutQuery struts=TrackStrutQuery::segment,
+        const std::vector<VehicleSupportFace>* support_faces=nullptr) noexcept
+        :world_(&world),materials_(materials),struts_(struts),support_faces_(support_faces) {}
+    bool uses_cached_struts() const noexcept {return struts_==TrackStrutQuery::cached_height;}
 
     VehicleGroundHit cast(const VehicleVec3& from,
                           const VehicleVec3& direction,
                           double length) const override;
+
+    void probe_wheels(const std::array<VehicleVec3,kVehicleWheelCount>& from,
+        const VehicleVec3& direction,const std::array<double,kVehicleWheelCount>& length,
+        std::array<VehicleTrackCast,kVehicleWheelCount>& out) const;
+
+    // Original440A40 road selection at attachment XY, without a finite ray.
+    // One cache belongs to this car and is shared in wheel order, as587070
+    // reaches the owner cache through each strut. 577060 then considers
+    // support faces published by eligible WorldObjects.
+    bool strut_heights(const std::array<VehicleVec3,kVehicleWheelCount>&,
+        std::array<VehicleGroundHit,kVehicleWheelCount>&) const override;
+    void probe_strut_heights(const std::array<VehicleVec3,kVehicleWheelCount>&,
+        std::array<VehicleTrackCast,kVehicleWheelCount>&) const;
+    void reset_strut_cache() const noexcept {strut_cache_={};}
 
     // The same query, with everything it met.
     VehicleTrackCast probe(const VehicleVec3& from,
@@ -229,15 +267,41 @@ public:
 
 private:
     const TrackContactWorld* world_ = nullptr;
+    bool materials_ = false;
+    TrackStrutQuery struts_=TrackStrutQuery::segment;
+    const std::vector<VehicleSupportFace>* support_faces_ = nullptr;
+    mutable TrackGroundCache strut_cache_;
 };
 
 // ---------------------------------------------------------------------------
 // The course: collision, route and a start
 // ---------------------------------------------------------------------------
 
+//578880 group-zero WorldObject constructor input. The full list preserves
+//collision-body ID reservation even for class controllers not yet integrated.
+constexpr unsigned kRaceWorldObjectCapacity=32; // Bounded port storage, not a native pool limit.
+struct VehicleWorldObject {
+    std::uint32_t type=0,name=0,shape=0,model=0;
+    std::size_t source_offset=0;
+    std::array<float,16> transform{};
+    VehicleHull hull;
+    bool fixed_collision=false,default_shape=false;
+    bool motion_collision=false,path_cache=false;
+    std::array<std::uint32_t,3> animation{};
+    std::uint32_t animation_flags=0;
+    float animation_rate=1,animation_hold=0;
+};
+struct VehicleWorldTrigger {
+    std::array<float,3> centre{};
+    float radius=0;
+    std::uint32_t player_mask=0;
+};
 struct VehicleTrackCourse {
     std::string name;
     TrackContactWorld world;
+    std::vector<VehicleSupportFace> support_faces;
+    std::vector<VehicleWorldObject> world_objects;
+    std::vector<VehicleWorldTrigger> train_triggers;
     // The route of the race, whose path nodes the reset puts the car on,
     // whose zones reset it, and whose progress says how far it is round.
     // Without one (has_route false) a reset is requested and reported but
@@ -410,19 +474,26 @@ struct VehicleTrackContactEvent {
     VehicleVec3 contact_impulse, applied_impulse, accumulated_impulse;
 };
 
-// One record per step: the model's record for the step, which describes the
-// car before its body met the track, then the state the next step starts
-// from - after the body's collision and after a reset performed on this
-// step - and what this layer did.
+// One record per step. The model's kinematic/force prefix precedes body
+// contacts; its retained rigid-body suffix is synchronized to the completed
+// state for canonical replay futures. Position/velocity below are also the
+// completed state after contacts and any reset. Do not use model.rigid_body
+// as a precontact momentum snapshot.
 // Output-only contact observation. Never encoded in replay telemetry.
 // Current solver J before mass scaling/clamps, in t m/s, and current basis.
 // Polygon IDs are port contact IDs, not recovered retail body-pair IDs.
 struct VehicleContactObservation {
     std::uint32_t polygon = 0;
-    VehicleVec3 impulse, forward, up;
+    VehicleVec3 impulse, forward, up, normal, point;
     double slide_mps = 0;
+    std::uint32_t audio_order = 0;
 };
 
+struct VehiclePropContactFrame {
+    struct Hit { std::uint32_t id=0; VehicleVec3 impulse; float inverse_mass=1; unsigned material=0; std::uint32_t audio_order=0; float magnitude_sum=-1; };
+    std::array<Hit,40> hits{};
+    std::size_t count=0;
+};
 struct VehicleTrackTelemetry {
     std::uint64_t step = 0;  // steps of this run, 1 for the first
     VehicleTelemetry model;
@@ -492,7 +563,8 @@ public:
     VehicleTrackSession(const VehicleModel& model,
                         const VehicleTrackCourse& course,
                         const VehicleTrackApproximations& approx = VehicleTrackApproximations{},
-                        const VehicleHull& hull = stock_240sx_hull());
+                        const VehicleHull& hull = stock_240sx_hull(),
+                        TrackStrutQuery struts=TrackStrutQuery::segment);
 
     bool valid() const noexcept { return valid_; }
     const std::string& error() const noexcept { return error_; }
@@ -515,22 +587,93 @@ public:
               double publication_dt = kVehicleStepSeconds,
               double solver_dt = kVehicleStepSeconds,
               bool select_request = true,
-              std::uint32_t steps_per_tick = kVehicleTrackStepsPerTick);
+              std::uint32_t steps_per_tick = kVehicleTrackStepsPerTick,
+              bool explicit_frame_end = false);
+
+    // Human pre-race adapter: settled neutral, engine-only solver slices.
+    // Grid body, wheels, contact/route counters and nitrous remain untouched.
+    // simulation_seconds is the engine clock and continues across GO.
+    bool step_grid_engine(double throttle, VehicleTrackTelemetry& telemetry,
+                          double publication_dt, double solver_dt,
+                          bool drag=false, std::int32_t clock=0);
+    void release_grid_engine(bool drag=false,unsigned category=3,float window_scale=1.F) noexcept;
+    // Port pre-race adapter: settle a stationary grid on its actual terrain
+    // before the first visible countdown frame. No race/route clock advances.
+    bool prepare_grid(unsigned frames);
+
+    // Explicit WIP selector3 integration using the existing port's track
+    // collision/reset adapters. Caller supplies original processed controls
+    // and selected low-slip scale. This is not complete retail world behavior.
+    bool configure_ai(float low_slip);
+    bool set_ai_scale(float scale) noexcept;
+    // Ordinary processed driver1D4: -1 automatic,0 reverse. This is a held
+    // AI command, not a player's one-shot shift edge.
+    bool step_ai(const VehicleInput&,VehicleTrackTelemetry&,int gear_request=-1,float continuation_dt=-1,
+                 const VehicleState* published_actor=nullptr,bool refresh_only=false,bool contact_refreshed=false,float refresh_interval=0);
+    // Traffic collision activation (583E80 -> selector3). Import external
+    // pair impulses, retain component history, and omit racer route resets.
+    bool step_ai_body(VehicleState&,const VehicleInput&,VehicleTrackTelemetry&,float continuation_dt=-1,
+                      const VehicleState* published_actor=nullptr,bool refresh_only=false,bool contact_refreshed=false,float refresh_interval=0,int gear_request=-1);
+    const AiPhysicsState& ai_physics() const noexcept { return ai_; }
 
     // Asks for a reset on the next tick, as the game's reset button would.
     void request_reset() noexcept;
+    bool owner_recovery_active(std::int32_t now) const noexcept;
+    void note_ghost_overlap(std::uint32_t tick) noexcept { last_ghost_overlap_=tick; }
+    // Port multi-car adapter; preserves the existing route/lap state.
+    bool meet(VehicleTrackSession& other,const RaceContactBox& self_box,
+              const RaceContactBox& other_box,RacePairContact& result,
+              const RaceContactPose* previous=nullptr,const RaceContactPose* other_previous=nullptr,RaceContactContext* context=nullptr,
+              const RaceContactJob* prepared=nullptr);
 
+    bool meet_external(VehicleState&,const VehicleSpec&,const RaceContactBox&,
+                       const RaceContactBox&,RacePairContact&,
+                       const RaceContactPose* previous=nullptr,const RaceContactPose* other_previous=nullptr,RaceContactContext* context=nullptr,
+              const RaceContactJob* prepared=nullptr,bool self_is_b=false,bool other_fixed_world=false);
+    void publish_contact_count(unsigned count,std::uint32_t tick) noexcept;
+    void publish_world_acceleration(const VehicleVec3& before,float world_dt) noexcept;
+    // RaceSession owns one shared end-of-frame queue for cars and polygons.
+    // Grid placement and standalone diagnostics retain their local solver.
+    void defer_body_contacts(bool value) noexcept { deferred_body_contacts_=value; }
+    bool refresh_contact(VehicleState&,const VehicleState* published_actor=nullptr,float interval=0);
+    bool meet_track(const RaceContactPose&,const RaceTrackContactJob&,float friction,
+                    RaceContactContext&,RacePairContact&);
+    bool meet_prop(struct RaceProp&,const RaceContactBox&,const RaceContactPose&,
+                   const RaceContactJob&,RaceContactContext&,RacePairContact&);
     const VehicleState& state() const noexcept { return state_; }
     const RaceProgress& progress() const noexcept { return progress_; }
+    // 434C33..434C42: publish the race-stage transition into this car.
+    void begin_race() noexcept {
+        progress_.max_checkpoint=0;
+        if(course_->route.point_to_point) {progress_.lap=0;progress_.checkpoint=0;}
+    }
     // The race events of the last tick.
     const std::vector<RaceProgressEvent>& events() const noexcept { return events_; }
     const VehicleTrackResetInfo& last_reset() const noexcept { return last_reset_; }
     std::uint64_t steps() const noexcept { return steps_; }
 
 private:
-    void resolve_body(VehicleState& s, VehicleTrackTelemetry& t) const;
+    friend struct RaceWorldContactProbe;
+    friend class LanRaceView;
+    bool deferred_body_contacts_=false;
+    bool continue_contact(double seconds,const VehicleState* published_actor=nullptr,bool refreshed=false);
+    VehicleInput last_input_;
+    std::int32_t owner_recovery_start_=0;
+    std::uint32_t last_ghost_overlap_=0;
+    void extend_owner_recovery(std::int32_t now) noexcept;
+    double last_solver_dt_=kVehicleStepSeconds;
+    int last_ai_gear_request_=-1;
+    class AiWorld;
+    AiPhysicsState ai_;
+    AiPowertrainTables ai_tables_;
+    bool ai_configured_ = false, ai_started_ = false, ai_route_tracking_ = true;
+    bool preparing_grid_ = false; // placement must settle before rest admission
+    float ai_low_slip_ = 1, ai_scale_ = 1;
+    bool resolve_body(VehicleState& s, VehicleTrackTelemetry& t) const;
     void run_tick(VehicleState& s, const VehicleInput& input, VehicleTrackTelemetry& t);
     bool ground_under(double x, double y, double& z) const;
+    // The road-preferring column reset placements use; see its definition.
+    bool ground_under_road(double x, double y, double& z) const;
     bool sunk(const VehicleState& s) const;
     bool reset_to_node(VehicleState& s, VehicleTrackReset reason);
     bool reset_to_point(VehicleState& s, int zone);

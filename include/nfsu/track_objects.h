@@ -277,6 +277,11 @@ struct TrackTransform {
     float translation[3] = {0.0F, 0.0F, 0.0F};
 };
 
+//445AC2 calls4462A0 once after loading a reverse race's fresh section.
+//Flag400 mirrors the local X row, retaining bounds, position and other flags.
+//Apply exactly once to the decoded owner before deriving prepared placements.
+void apply_reverse_track_scenery(TrackObjectReport& objects) noexcept;
+
 TrackTransform track_instance_transform(const TrackInstance& instance) noexcept;
 
 // Applies a transform to one point, in the raw slot order of TrackVertex.
@@ -311,12 +316,18 @@ TrackObjectReport load_track_objects(
 std::vector<std::uint32_t> track_object_mesh_hashes(
     const TrackObjectReport& report);
 
+// Model hashes requested by group-zero TrainEngine/TrainCar/Trolley records.
+// Authored actors are separate from scenery instances and must not be pruned.
+bool track_world_motion_models(const std::vector<unsigned char>& track,
+                               std::vector<std::uint32_t>& models,std::string& error);
+
 // Keep every LOD/fallback hash of every placed object, including the sky.
 // Drops only library meshes no valid scenery instance can select.
 // Used by the Atlantic loader before texture decoding to bound its peak.
 bool retain_instanced_track_meshes(TrackRegionReport& geometry,
                                   const TrackObjectReport& objects,
-                                  std::string& error);
+                                  std::string& error,
+                                  const std::vector<std::uint32_t>& extra_models = {});
 
 // One used mesh slot of one object, bound against a decoded region.
 struct TrackObjectBinding {

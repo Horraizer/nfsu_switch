@@ -2,6 +2,13 @@
 #include "nfsu/car_parts.h"
 #include "nfsu/skin_inputs.h"
 namespace nfsu {
+// Generic ordered authored preset. Validate row identity before looking up parts.
+bool resolve_frontend_preset_parts(const std::vector<unsigned char>& front,
+    std::size_t offset,const std::string& car,const std::string& preset,
+    const CarPartDatabase& database,InstalledPartSelection& selection,std::string& error);
+bool resolve_frontend_preset_skin(const std::vector<unsigned char>& globals,
+    const std::string& car,const CarPartDatabase& database,const InstalledPartSelection& parts,
+    BodySkinSelection& skin,std::string& error);
 // Applies the original FrontB FE_SKYLINE ordered preset through the native
 // 0x4B26F0 lookup rules. Records refer to the supplied GLOBALB database.
 bool resolve_frontend_skyline_parts(const std::vector<unsigned char>& front,

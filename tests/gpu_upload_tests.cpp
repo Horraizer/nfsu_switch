@@ -2016,6 +2016,20 @@ void test_derived_ceilings() {
 // alignment, or CPU arenas aligned below what the allocator guarantees. The
 // placeholder values themselves are free to change; that is what a
 // placeholder is.
+void test_race_persistent_payload() {
+    nfsu::RacePersistentPayload usage{1,2,3,4,5,6};
+    std::string error;
+    check_eq(usage.total(), std::uint64_t{21}, "all race payload components charged");
+    usage.hud=nfsu::kPersistentBudgetPlaceholder-15;
+    check(nfsu::check_race_persistent_payload(usage,error), "exact payload boundary accepted");
+    ++usage.hud;
+    check(!nfsu::check_race_persistent_payload(usage,error) && error.find("cars=1 course=2 contacts=3 commands=4 audio=5 hud=")!=std::string::npos,
+          "full payload including audio/HUD refuses with component evidence");
+    usage={UINT64_MAX,1,0,0,0,0};
+    check_eq(usage.total(),UINT64_MAX,"payload addition saturates");
+    check(!nfsu::check_race_persistent_payload(usage,error),"overflow cannot pass payload guard");
+}
+
 void test_switch_budget() {
     const nfsu::MemoryBudget budget = nfsu::switch_memory_budget();
     const auto at = [](nfsu::MemoryCategory category) {
@@ -2572,6 +2586,7 @@ void test_car_instances_and_uniform_layout() {
         {"Material.surface_specular_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, specular_range)},
         {"Material.surface_environment_min", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, environment_min)},
         {"Material.surface_environment_range", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, environment_range)},
+        {"Material.uv_animation", offsetof(nfsu::DrawMaterialUniform,uv_animation)},
         {"Material.surface_gates", offsetof(nfsu::DrawMaterialUniform, surface)+offsetof(nfsu::CarShadingMaterial, gates)},
         {"FrontendLight.harmonic", offsetof(nfsu::FrontendLighting, harmonic)}};
     for (const auto& program : nfsu::shader_manifest::kPrograms) {
@@ -2584,14 +2599,14 @@ void test_car_instances_and_uniform_layout() {
         for (std::size_t i = 0; i < program.block_count; ++i) {
             const auto& b = program.blocks[i];
             const std::string name = b.name;
-            const auto size = (name == "Frame" || name == "Headlight") ? sizeof(nfsu::DrawFrameUniform) :
+            const auto size = name == "Headlight" ? sizeof(nfsu::DrawHeadlightUniform) : name == "Frame" ? sizeof(nfsu::DrawFrameUniform) :
                 name == "Instance" ? sizeof(nfsu::DrawInstanceUniform) :
                 name == "FrontendLight" ? sizeof(nfsu::FrontendLighting) :
-                shaded ? sizeof(nfsu::DrawMaterialUniform) : offsetof(nfsu::DrawMaterialUniform,surface);
+                headlight ? sizeof(nfsu::DrawMaterialUniform) : shaded ? offsetof(nfsu::DrawMaterialUniform,uv_animation) : offsetof(nfsu::DrawMaterialUniform,surface);
             check_eq(b.size, size, name + ": std140 size");
             check_eq(b.binding, name == "Frame" ? 0 : name == "Instance" ? 1 : name=="FrontendLight"?3:name=="Headlight"?4:2, name + ": uniform binding");
         }
-        check_eq(program.member_count, headlight?offsets.size()-1:frontend_car?offsets.size():frontend_ui?8:shaded?offsets.size()-1:offsets.size()-8, "all uniform members checked");
+        check_eq(program.member_count, headlight?offsets.size()+6:frontend_car?offsets.size()-1:frontend_ui?8:shaded?offsets.size()-2:offsets.size()-9, "all uniform members checked");
         for (std::size_t i = 0; i < program.member_count; ++i) {
             const auto& m = program.members[i];
             const auto key = (std::string(m.block)=="Headlight" ? std::string("Frame") : std::string(m.block)) + "." + m.name;
@@ -2804,6 +2819,7 @@ const TestCase kTests[] = {
     {"image_layout_query_is_honoured", test_image_layout_query_is_honoured},
     {"derived_ceilings", test_derived_ceilings},
     {"switch_budget", test_switch_budget},
+    {"race_persistent_payload", test_race_persistent_payload},
     {"scene_requirement_places_the_table", test_scene_requirement_places_the_table},
     {"scene_requirement_reads_the_whole_table", test_scene_requirement_reads_the_whole_table},
     {"frame_ceiling_is_the_full_draw_list", test_frame_ceiling_is_the_full_draw_list},

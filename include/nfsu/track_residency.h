@@ -296,7 +296,8 @@ struct TrackResidencyRun {
 };
 
 // Incremental equivalent of simulate_track_residency, for a live car.
-// Borrowed table/zones/costs/options must outlive this non-copyable session.
+// Borrowed table/zones must outlive this non-copyable session. Costs/options
+// are snapshotted by start; callers may release those small input buffers.
 // start returns the startup transitions; advance returns one path transition.
 class TrackResidencySession {
 public:

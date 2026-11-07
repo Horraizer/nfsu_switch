@@ -79,8 +79,21 @@ class ActorController:
     constructors produce those. pose() accepts exogenous retail-route samples;
     step() retains controller, action, driver and RNG state between calls.
     """
-    def __init__(self, image, retail, point_index=30, speed=20.0, event_seed=None, event_rides=False):
+    def __init__(self, image, retail, point_index=30, speed=20.0, event_seed=None, event_rides=False, traffic=False):
+        if traffic and (event_seed is not None or event_rides):
+            raise ValueError('traffic fixture excludes career actor construction')
+        self.traffic = traffic
         self.m = m = PlannerMachine(image)
+        if traffic:
+            import capstone
+            md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+            # Actual traffic constructor and its base/strategy paths. The
+            # caller adds the entry points it measures; no result is hooked.
+            for start, end in [(0x582F90,0x5830B0),(0x44A330,0x44A6F0),
+                (0x45DBB0,0x45DD30),(0x44E260,0x44E2A1),(0x44E2B0,0x44E335),
+                (0x44AA10,0x44AB31),(0x44A200,0x44A230),(0x583230,0x583240),
+                (0x452800,0x452870)]:
+                m.instructions.update({i.address:i.size for i in md.disasm(image.read(start,end-start),start)})
         m.run(0x689FD0)
         m.run(0x689FF0)
         m.uc.mem_map(0, 4096)
@@ -146,7 +159,7 @@ class ActorController:
         m.run(0x464860, (ride + 0x60,), eax=ACTOR + 0x40,
               ecx=ACTOR + 0x540, edx=ACTOR + 0x828)
         m.put(ACTOR + 0x14, 0x1152000)
-        m.put(0x1152004, 2)
+        m.put(0x1152004, 3 if traffic else 2)
         if self.event is not None:
             from controller293_scene import configurations
             if not event_rides:
@@ -155,8 +168,10 @@ class ActorController:
         if event_rides:
             m.run(0x425598, end=0x4255A1, eax=m.get(ACTOR+0x14), ebx=ACTOR)
             m.run(0x4255AB, end=0x4255CB, ebx=ACTOR, esi=ride)
-        m.put(ACTOR + 0x1C, RACE)
-        m.put(ACTOR + 0x24, 3)
+        m.put(ACTOR + 0x1C, 0 if traffic else RACE)
+        m.put(ACTOR + 0x24, 4 if traffic else 3)
+        if traffic:
+            m.put(ACTOR + 0xA, 50, 'h')
         m.put(ACTOR + 0x28, 3)
         if self.event is not None:
             m.put(ACTOR + 0x24, self.event['configs'][1]['controller_selector'])
@@ -210,14 +225,18 @@ class ActorController:
         self.pool(0x73609C, 0x1168000, 0x1164000)
         self.pool(0x736098, 0x1169000, ACTION)
         # Complete original controller and driver/history constructors.
-        m.run(0x4620C0, (CONTROLLER,), edi=ACTOR, budget=3000000)
+        if traffic:
+            m.run(0x582F90, (CONTROLLER,), ecx=ACTOR, budget=3000000)
+        else:
+            m.run(0x4620C0, (CONTROLLER,), edi=ACTOR, budget=3000000)
         self.driver = m.get(CONTROLLER + 8)
         m.put(ACTOR + 0x30, self.driver)
         m.run(0x44B831, end=0x44B85D, ebx=CONTROLLER)
         self.initial = dict(action_count=m.get(ACTION + 0x20, 'B'),
                             driver_count=m.get(self.driver + 0x10, 'B'),
                             marker=m.get(CONTROLLER + 0x478, 'i'))
-        m.run(0x44C250, (1,), ecx=CONTROLLER, budget=3000000)
+        if not traffic:
+            m.run(0x44C250, (1,), ecx=CONTROLLER, budget=3000000)
         self.tick = m.get(0x73AD34)
 
     def allocate(self, m):
@@ -241,10 +260,12 @@ class ActorController:
         for i in range(count):
             m.put(block + i * 0x100, block + (i + 1) * 0x100 if i + 1 < count else 0)
 
-    def pose(self, point_index, speed, update_world=True, actor=ACTOR):
+    def pose(self, point_index, speed, update_world=True, actor=ACTOR, route_id=1):
         m = self.m
-        route = m.get(0x77AF34)
-        if not 0 <= point_index < m.get(route + 0x10, 'h') or not math.isfinite(speed):
+        if not 0 <= route_id < 128:
+            raise ValueError('unsupported exogenous route')
+        route = m.get(0x77AF30 + 4 * route_id)
+        if not route or not 0 <= point_index < m.get(route + 0x10, 'h') or not math.isfinite(speed):
             raise ValueError('unsupported exogenous pose')
         point = route + 0x27C + point_index * 0x88
         for j in range(3):
@@ -266,9 +287,11 @@ class ActorController:
         if update_world:
             m.run(0x57A380, esi=m.get(m.get(actor + 0x82C) + 0x20))
         if actor == ACTOR:
-            self.pose_input = dict(route_id=1, point_index=point_index, speed=speed)
+            self.pose_input = dict(route_id=route_id, point_index=point_index, speed=speed)
 
     def step(self, dt=0.02):
+        if self.traffic:
+            raise ValueError('traffic caller scheduling must be measured explicitly')
         if dt != 0.02:
             raise ValueError('this witnessed adapter supports dt0.02 only')
         m = self.m

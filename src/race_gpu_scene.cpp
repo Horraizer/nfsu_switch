@@ -1,3 +1,5 @@
+#include "nfsu/stable_draw_order.h"
+#include "nfsu/car_collision_hull.h"
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/draw_execution.h"
 #include <algorithm>
@@ -16,6 +18,29 @@ RenderOptions race_render_options(bool sky) {
     options.width = 1280; options.height = 720;
     options.material_state = MaterialStateMode::retail;
     return options;
+}
+
+VehicleVec3 race_shadow_light(const std::vector<unsigned char>& globals, std::int16_t track_number) {
+    constexpr VehicleVec3 fallback{-16384, 0, 7000};
+    const auto tracks = parse_track_info_table(globals.data(),globals.size());
+    const auto* track = tracks.ok() ? find_track_info(tracks,track_number) : nullptr;
+    if (!track) return fallback;
+    // 546598 selects by TrackInfo+70. 5462D0 aligns the 34202 payload,
+    // 546310 takes the last matching key and admits type 2 only.
+    const auto key = hull_u32(globals.data()+track->offset+0x70);
+    RaceChunkPayload lights;
+    std::vector<RaceTableIssue> issues;
+    if (!key || !find_race_chunk(globals.data(),globals.size(),0x34202,lights,issues)) return fallback;
+    const unsigned char* record = nullptr;
+    for (auto at = (lights.begin+15)&~UINT64_C(15); at+0x110 <= lights.end; at+=0x110) {
+        const auto* candidate = globals.data()+at;
+        if (hull_u32(candidate+4) == key) record = candidate;
+    }
+    if (!record || hull_u32(record) != 2) return fallback;
+    float position[3];
+    std::memcpy(position,record+0x2c,sizeof position);
+    for (const auto axis : position) if (!std::isfinite(axis)) return fallback;
+    return {position[0],position[1],position[2]};
 }
 void append_car_resources(UploadTable& track, const UploadTable& car,
                           const char* prefix = "race-car/") {
@@ -222,7 +247,7 @@ void append_glow_resources(UploadTable& into, const UploadTable& prepared,
 }
 }
 bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
-                           RecordedCommands& out, std::string& error) {
+                           RecordedCommands& out, std::string& error,std::size_t resource_limit) {
     out = {}; error.clear();
     if (track.borrowed() || car.borrowed()) {
         error = "cannot append to an already combined borrowed frame"; return false;
@@ -233,7 +258,8 @@ bool combine_race_commands(RecordedCommands track, const RecordedCommands& car,
         error = "track/car frame camera differs"; return false;
     }
     if (track.owning_draws().size() + car.owning_draws().size() > 4096 ||
-        track.owning_uploads().resources.size() + car.owning_uploads().resources.size() > kTrackSliceResourceLimit) {
+        !resource_limit || resource_limit>kTrackZoneBackingResourceLimit ||
+        track.owning_uploads().resources.size() + car.owning_uploads().resources.size() > resource_limit) {
         error = "combined race exceeds draw/resource capacity"; return false;
     }
     append_car_commands(track,car);
@@ -245,7 +271,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
                         std::string& error, AssetCheckObserver* observer,
                         TrackSliceLoadObserver* loading, bool tuned, bool glows,
                         bool car_shading, const CarAssets* car, const RaceCarDress* dress,
-                        std::uint32_t event_number, bool world_mips) {
+                        std::uint32_t event_number, bool world_mips,unsigned race_index) {
     if (ready_) { error = "race scene is already loaded"; return false; }
     // The misuse refusals run before any file is read, so a caller that
     // cannot reach retail data still sees the sentence.
@@ -307,6 +333,14 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
                     (missing.error.empty() ? std::string("not read") : missing.error);
             return false;
         }
+        VehicleHull shadow_hull;
+        // Dressed car preparation releases the source geometry once decoded.
+        if (silhouette_shadows_ && !decode_car_collision_hull(
+                inputs.file(StockFrameFile::car_geometry).bytes,
+                bin_hash(selection.car_type_name+"_CV"), shadow_hull)) {
+            error = "player collision hull unavailable for shadow silhouette";
+            return false;
+        }
         if (loading) loading->checkpoint("car preparation");
         StockFrame stock;
         if (dress != nullptr) {
@@ -321,6 +355,18 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         if (!prepare_car_shadow(selection.car_type_name, inputs, stock.car_pack,
                                 shadow_asset_, error)) return false;
         if (!prepare_car_shadow_bounds(inputs,stock,shadow_asset_,error)) return false;
+        if (silhouette_shadows_) {
+            shadow_silhouette_ = std::make_unique<CarShadowSilhouette>();
+            if (!shadow_silhouette_->initialize(shadow_hull,error) ||
+                !prepare_car_shadow_ramp(inputs,stock,shadow_ramp_,error)) return false;
+            SupportedRaceSelection race;
+            if (!supported_race_selection(event_number,race_index,race)) {
+                error = "shadow light track selection unavailable";
+                return false;
+            }
+            shadow_light_ = race_shadow_light(inputs.file(StockFrameFile::global_bun).bytes,race.slot.track);
+        }
+        if(dress&&!prepare_car_neon(inputs,stock,shadow_asset_,neon_asset_,error))return false;
         if (glows_enabled_) {
             glow_anchors_ = collect_car_glow_anchors(stock);
             exhaust_anchors_ = collect_car_exhaust_anchors(stock);
@@ -331,12 +377,16 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         UploadTable table;
         if (!build_car_upload_table(car_, skin_source_, table, error)) return false;
         car_bytes_ = table.totals.vertex_bytes + table.totals.index_bytes + table.totals.texture_bytes +
-            2 * base_.size() * sizeof(PreparedInstance);
+            2 * base_.size() * sizeof(PreparedInstance) + neon_asset_.ground.texture.rgba.capacity();
     }
     if (loading) loading->checkpoint("car source released");
-    if (!load_track_slice(files, root, track_, error, observer, loading, event_number, world_mips)) return false;
+    if (!load_track_slice(files, root, track_, error, observer, loading, event_number, world_mips,race_index,
+                         complete_zone_backing_?TrackStreamSet::zones:TrackStreamSet::permanent)) return false;
     if (car_bytes_ + track_.contacts.memory.resident_bytes > kPersistentBudgetPlaceholder) {
         error = "race car and collision exceed the persistent payload plan"; return false;
+    }
+    if(complete_zone_backing_&&car_bytes_+track_.streaming_bytes+track_.contacts.memory.resident_bytes>kPersistentBudgetPlaceholder) {
+        error="complete race backing and car exceed the persistent payload plan";return false;
     }
     // RaceRun loads the route and collision course itself; discard the
     // diagnostic path and contact copy before allocating that course.
@@ -362,6 +412,11 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     }
     // Validate command templates once while this privately owned scene is
     // immutable. GPU upload pointers stay valid for this owner's lifetime.
+    if(race_visuals_) {
+        skids_=std::make_unique<RaceSkidMarks>();
+        if(!skids_->load(root,selection,error))return false;
+        car_bytes_+=skids_->resident_bytes();
+    }
     if (loading) loading->checkpoint("render preparation");
     if (!prepare_templates(error)) return false;
     if (loading) loading->checkpoint("render templates prepared");
@@ -374,7 +429,7 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         if(!load_headlight_texture(root,headlight_texture_,error))return false;
         TextureUploadShape shape;
         if(!check_texture_upload_format(TextureUploadFormat::rgba8,headlight_texture_.width,
-            headlight_texture_.height,headlight_texture_.rgba.size(),shape,error))return false;
+            headlight_texture_.height,headlight_texture_.rgba.size(),shape,error,headlight_texture_.mip_count))return false;
         UploadResource r;r.kind=UploadResourceKind::texture;r.memory=UploadMemory::image;
         r.name="race-car/headlights";r.data=headlight_texture_.rgba.data();r.bytes=shape.bytes;
         r.alignment=kTextureStagingAlignment;r.element_bytes=shape.texel_bytes;r.elements=shape.bytes/shape.texel_bytes;
@@ -384,13 +439,24 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         combined_uploads_.totals.texture_bytes+=shape.bytes;
         combined_uploads_.totals.largest_texture_bytes=std::max(combined_uploads_.totals.largest_texture_bytes,shape.bytes);
     }
+    SupportedRaceSelection start_selection;
+    const bool drift_start=supported_race_selection(event_number,race_index,start_selection)&&start_selection.type==RaceType::drift;
+    if(start_scenes_enabled_ && (start_scene_ || event_number==0 || drift_start)) {
+        if(loading)loading->checkpoint("start crowd");
+        if(!crowd_.load(files,root,error,start_scene_?start_scene_:drift_start?kFirstDriftStartScene:2338,track_.track_number,
+            start_region_.empty()?drift_start?start_selection.region:"L1RA":start_region_))return false;
+        const auto offset=combined_uploads_.resources.size();
+        append_car_resources(combined_uploads_,crowd_.commands().owning_uploads(),"start-crowd/");
+        crowd_.rebase(offset);car_bytes_+=crowd_.bytes();
+        combined_uploads_.resources.shrink_to_fit();
+    }
     if (loading) loading->checkpoint("render prepared");
-    if (cache_bytes() > 8*kMiB) { error = "race command cache exceeds 8 MiB"; return false; }
+    if (cache_bytes() > cache_limit()) { error = "race command cache exceeds backing plan"; return false; }
     if (lamps_loaded_ && wet_road_reflections_) {
         wet_uploads_ = combined_uploads_;
         if (!append_wet_lamp_uploads(lamps_, wet_uploads_, error) || !prepare_reflections(error)) return false;
     }
-    if (cache_bytes() > 8*kMiB) { error = "wet race command cache exceeds 8 MiB"; return false; }
+    if (cache_bytes() > cache_limit()) { error = "wet race command cache exceeds backing plan"; return false; }
     ready_ = true;
     // Track parsing temporaries die here; car source copies died before it.
     return true;
@@ -399,16 +465,18 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
     std::uint64_t bytes = sizeof(track_templates_) + template_of_group_.capacity()*sizeof(std::size_t) +
         track_templates_.owning_draws().capacity()*sizeof(RecordedDraw) +
         track_templates_.owning_uploads().resources.capacity()*sizeof(UploadResource);
+    bytes+=world_draws_.capacity()*sizeof(RecordedDraw)+world_draw_sources_.capacity()*sizeof(unsigned);
+    for(const auto& draw:world_draws_)bytes+=draw.name.capacity()+1;
     for (const auto& draw : track_templates_.owning_draws()) bytes += draw.name.capacity()+1;
     for (const auto& resource : track_templates_.owning_uploads().resources) bytes += resource.name.capacity()+1;
     bytes += culler_.memory_bytes() + sizeof(combined_uploads_) + sizeof(car_templates_) +
         combined_uploads_.resources.capacity()*sizeof(UploadResource) +
         car_templates_.owning_draws().capacity()*sizeof(RecordedDraw) +
         shadow_templates_.owning_draws().capacity()*sizeof(RecordedDraw) +
-        sizeof(shadow_asset_) + shadow_asset_.texture.rgba.capacity() +
+        sizeof(shadow_asset_) + shadow_asset_.texture.rgba.capacity() + sizeof(neon_asset_)+neon_asset_.ground.texture.rgba.capacity() +
         (mesh_first_.capacity()+section_first_.capacity())*sizeof(std::size_t) +
-        mesh_groups_.capacity()*sizeof(std::uint32_t) + (selection_.capacity()+cube_selection_.capacity())*sizeof(SelectedTrackDraw) +
-        retail_groups_.capacity()*sizeof(RetailGroup) + bucket_first_.capacity()*sizeof(std::size_t) +
+        mesh_groups_.capacity()*sizeof(std::uint32_t) + (selection_.capacity()+cube_selection_.capacity()+selection_scratch_.capacity()+cube_scratch_.capacity())*sizeof(SelectedTrackDraw) +
+        retail_groups_.capacity()*sizeof(RetailGroup) + (bucket_first_.capacity()+bucket_cursor_.capacity())*sizeof(std::size_t) + bucket_layers_.capacity() +
         track_placements_.capacity()*sizeof(DrawInstanceUniform);
     bytes += wet_uploads_.resources.capacity()*sizeof(UploadResource);
     for (const auto& r : wet_uploads_.resources) bytes += r.name.capacity()+1;
@@ -416,20 +484,28 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
     bytes += road_glows_.capacity()*(sizeof(RecordedDraw)+16);
     bytes += lamps_.lights.capacity()*sizeof(WetRoadLamp) + lamps_.texture.rgba.capacity();
     bytes += (reflection_templates_.capacity()+lamp_draws_.capacity())*sizeof(RecordedDraw);
-    bytes += (reflection_first_.capacity()+reflection_selection_.capacity())*sizeof(std::size_t);
-    bytes += reflection_entries_.capacity()*sizeof(TrackDrawListEntry);
-    bytes += reflection_cache_.bounds.capacity()*sizeof(std::array<float,6>);
-    bytes += reflection_cache_.groups.capacity()*sizeof(std::vector<std::uint32_t>);
-    for (const auto& g : reflection_cache_.groups) bytes += g.capacity()*sizeof(std::uint32_t);
+    bytes += reflection_selection_.capacity()*sizeof(std::size_t);
+    bytes += reflection_instances_.capacity()*sizeof(ReflectionInstance);
+    bytes += reflection_sections_.capacity()*sizeof(ReflectionSection);
+    bytes += reflection_bounds_.capacity()*sizeof(std::array<float,6>);
+    bytes += reflection_corners_.capacity()*sizeof(TrackReflectionCorners);
     for (const auto& d : reflection_templates_) bytes += d.name.capacity()+1;
     for (const auto& d : lamp_draws_) bytes += d.name.capacity()+1;
     for (const auto& r : combined_uploads_.resources) bytes += r.name.capacity()+1;
     for (const auto& d : car_templates_.owning_draws()) bytes += d.name.capacity()+1;
     for (const auto& d : shadow_templates_.owning_draws()) bytes += d.name.capacity()+1;
+    if (shadow_silhouette_) bytes += shadow_silhouette_->resident_bytes() + shadow_ramp_.rgba.capacity();
+    for(const auto& r:rivals_) {
+        if (r.silhouette) bytes += r.silhouette->resident_bytes();
+        bytes+=sizeof(RivalVisual)+(r.commands.owning_draws().capacity()+r.shadow_commands.owning_draws().capacity())*sizeof(RecordedDraw);
+        if(r.neon)bytes+=sizeof(CarNeonAsset)+r.neon->ground.texture.rgba.capacity();
+        for(const auto& d:r.commands.owning_draws())bytes+=d.name.capacity()+1;
+    }
+    bytes+=actor_glows_.capacity()*sizeof(RecordedDraw);
     if (glows_enabled_) bytes += sizeof(glow_templates_) + sizeof(glow_selected_) +
         sizeof(glow_vertices_) + sizeof(glow_indices_) +
         glow_head_.rgba.capacity() + glow_tail_.rgba.capacity() +
-        sizeof(exhaust_anchors_)+sizeof(nitrous_template_)+sizeof(nitrous_selected_);
+        sizeof(exhaust_anchors_)+sizeof(nitrous_template_)+sizeof(purge_template_)+sizeof(nitrous_selected_);
     bytes += visibility_zones_.polygons.capacity()*sizeof(TrackZonePolygon) +
         visibility_zones_.zones.capacity()*sizeof(TrackZone) +
         visibility_zones_.section_lists.capacity()*sizeof(TrackZoneSectionList) +
@@ -438,17 +514,141 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
     for (const auto& zone : zone_residency_) bytes += zone.zone_sections.capacity()*sizeof(std::uint32_t);
     return bytes;
 }
+bool RaceGpuScene::add_rival(PreparedCarScene scene,std::vector<PreparedInstance> base,
+                            std::size_t skin_source,CarShadowAsset shadow,std::string& error,bool traffic,
+                            CarGlowAnchors anchors,const VehicleHull* hull,std::unique_ptr<CarNeonAsset> neon) {
+    if(!ready_ || generation_ || rivals_.size()>=(traffic?3U+kRaceTrafficCapacity:3U)) {
+        error="rival payloads must be added before first frame";return false;
+    }
+    if(rivals_.empty())rivals_.reserve(3+kRaceTrafficCapacity);
+    rivals_.emplace_back();
+    actor_glows_.reserve((3+kRaceTrafficCapacity)*std::tuple_size<OriginalCarGlows>::value);
+    actor_glows_.resize(rivals_.size()*std::tuple_size<OriginalCarGlows>::value);
+    auto& r=rivals_.back();r.traffic=traffic;r.anchors=anchors;
+    r.scene=std::move(scene);r.base=std::move(base);r.shadow=std::move(shadow);
+    auto options=race_render_options(sky_);options.texture_filter=texture_filter_;
+    options.car_shading=car_shading_;options.material_state=MaterialStateMode::retail;
+    if(!record_car_commands(r.scene,options,{},skin_source,r.commands,error) ||
+       (r.shadow.texture.usable() && !record_car_shadow_commands(r.shadow,{},options,r.shadow_commands,error)))return false;
+    if(neon&&neon->enabled){
+        if(!r.shadow.texture.usable()){error="rival neon needs ground placement";return false;}
+        r.neon=std::move(neon);
+        RecordedCommands glow,combined;
+        if(!record_car_neon_commands(*r.neon,0,{},options,glow,error)||
+           !combine_race_commands(std::move(r.shadow_commands),glow,combined,error))return false;
+        r.shadow_commands=std::move(combined);
+        car_bytes_+=r.neon->ground.texture.rgba.size();
+    }
+    const auto bytes=r.commands.owning_uploads().totals;
+    car_bytes_+=bytes.vertex_bytes+bytes.index_bytes+bytes.texture_bytes+r.shadow.texture.rgba.size()+
+        2*r.base.size()*sizeof(PreparedInstance);
+    const auto prefix="rival"+std::to_string(rivals_.size())+"/";
+    for(auto* commands:{&r.shadow_commands,&r.commands}) {
+        const auto offset=combined_uploads_.resources.size();
+        if(offset+commands->owning_uploads().resources.size()>resource_limit()) {
+            error="rival resource capacity exceeded";return false;
+        }
+        append_car_resources(combined_uploads_,commands->owning_uploads(),prefix.c_str());
+        for(auto& draw:commands->owning_draws())rebase_car_draw(draw,offset,prefix.c_str());
+        rival_draws_+=commands->owning_draws().size();commands->owning_uploads()={};
+    }
+    if (shadow_silhouette_) {
+        if (!hull || combined_uploads_.resources.size() + 2 > resource_limit()) {
+            error = "rival shadow hull absent or resource capacity exceeded";
+            return false;
+        }
+        r.silhouette = std::make_unique<CarShadowSilhouette>();
+        RecordedDraw draw;
+        if (!r.silhouette->initialize(*hull,error) ||
+            !r.silhouette->append(combined_uploads_,shadow_ramp_,shadow_ramp_resource_,draw,error)) return false;
+        draw.name = prefix + draw.name;
+        r.shadow_commands.owning_draws().insert(r.shadow_commands.owning_draws().begin(),std::move(draw));
+        ++rival_draws_;
+    }
+    if(lamps_loaded_ && wet_road_reflections_) {
+        wet_uploads_=combined_uploads_;
+        if(!append_wet_lamp_uploads(lamps_,wet_uploads_,error))return false;
+    }
+    // Vehicle metadata has priority over the optional reflection corner cache.
+    if (cache_bytes() > cache_limit() && !reflection_corners_.empty())
+        std::vector<TrackReflectionCorners>{}.swap(reflection_corners_);
+    if(cache_bytes()>cache_limit()){error="combined race command cache exceeds backing plan";return false;}
+    return true;
+}
 bool RaceGpuScene::prepare_reflections(std::string& error) {
     auto options = race_render_options(sky_); options.material_state = MaterialStateMode::retail;
-    prepare_track_reflection_cache(track_.scene, reflection_cache_);
-    if (!record_track_reflections(track_.scene, options, combined_uploads_, reflection_templates_, error, false)) return false;
-    reflection_first_.assign(track_.scene.instances.size(), kNoHandle);
-    for (std::size_t i=0;i<reflection_templates_.size();++i) {
-        const auto n=reflection_templates_[i].instance;
-        if (reflection_first_[n]==kNoHandle) reflection_first_[n]=i;
+    TrackReflectionCache cache;
+    prepare_track_reflection_cache(track_.scene, cache);
+    if (!record_track_reflections(track_.scene, options, combined_uploads_, reflection_templates_,
+                                  error, false, nullptr, &cache)) return false;
+    reflection_bounds_ = std::move(cache.bounds);
+    reflection_instances_.clear();
+    reflection_sections_.clear();
+    std::size_t instances = 0, previous = kNoHandle;
+    for (const auto& draw : reflection_templates_) {
+        if (draw.instance != previous) ++instances;
+        previous = draw.instance;
     }
-    reflection_selection_.reserve(4096); reflection_entries_.reserve(4096); lamp_draws_.reserve(lamps_.lights.size());
+    reflection_instances_.reserve(instances);
+    for (std::size_t first = 0; first < reflection_templates_.size();) {
+        const auto instance = reflection_templates_[first].instance;
+        auto end = first + 1;
+        while (end < reflection_templates_.size() && reflection_templates_[end].instance == instance) ++end;
+        const auto section = track_.scene.instances[instance].section_number;
+        const auto next = reflection_instances_.size();
+        if (reflection_sections_.empty() || reflection_sections_.back().number != section)
+            reflection_sections_.push_back({section, next, next});
+        reflection_instances_.push_back({instance, first, end});
+        ++reflection_sections_.back().end;
+        first = end;
+    }
+    reflection_selection_.reserve(4096); lamp_draws_.reserve(lamps_.lights.size());
+    if (cache_bytes() + reflection_instances_.size()*sizeof(TrackReflectionCorners) <= cache_limit()) {
+        reflection_corners_.resize(reflection_instances_.size());
+        for (std::size_t i = 0; i < reflection_instances_.size(); ++i) {
+            const auto& instance = track_.scene.instances[reflection_instances_[i].instance];
+            reflection_corners_[i] = track_reflection_corners(instance, reflection_bounds_[instance.reflection_mesh]);
+        }
+    }
     return true;
+}
+
+bool RaceGpuScene::select_reflections(const CameraFrame& camera, const TrackResidency* residency,
+                                      std::string& error) {
+    for (const auto& section : reflection_sections_) {
+        if (residency && !track_section_is_resident(section.number, *residency)) continue;
+        for (auto i = section.first; i < section.end; ++i) {
+            const auto& span = reflection_instances_[i];
+            const auto& instance = track_.scene.instances[span.instance];
+            const bool visible = reflection_corners_.empty() ?
+                track_reflection_visible(instance, reflection_bounds_[instance.reflection_mesh], camera) :
+                track_reflection_visible(reflection_corners_[i], camera);
+            if (!visible) continue;
+            if (reflection_selection_.size() + span.end - span.first > 4096) {
+                error = "reflection draw capacity exceeded"; return false;
+            }
+            for (auto draw = span.first; draw < span.end; ++draw) reflection_selection_.push_back(draw);
+        }
+    }
+    return true;
+}
+
+void RaceGpuScene::update_reflection_instance(std::size_t handle) {
+    const auto span = std::lower_bound(reflection_instances_.begin(), reflection_instances_.end(), handle,
+        [](const ReflectionInstance& entry, std::size_t index) { return entry.instance < index; });
+    if (span == reflection_instances_.end() || span->instance != handle) return;
+    const auto& instance = track_.scene.instances[handle];
+    const auto reflected = track_reflection_transform(instance);
+    for (auto i = span->first; i < span->end; ++i) {
+        auto& dst = reflection_templates_[i].placement;
+        for (unsigned r = 0; r < 3; ++r) for (unsigned c = 0; c < 3; ++c)
+            dst.rows[4*r+c] = reflected.linear[3*r+c];
+        for (unsigned c = 0; c < 3; ++c) dst.rows[12+c] = reflected.translation[c];
+    }
+    if (!reflection_corners_.empty()) {
+        const auto index = static_cast<std::size_t>(span - reflection_instances_.begin());
+        reflection_corners_[index] = track_reflection_corners(instance, reflection_bounds_[instance.reflection_mesh]);
+    }
 }
 bool RaceGpuScene::prepare_templates(std::string& error) {
     std::vector<TrackVisibleInstance> witnesses;
@@ -465,8 +665,13 @@ bool RaceGpuScene::prepare_templates(std::string& error) {
     options.material_state = MaterialStateMode::retail;
     TrackDrawListOptions list_options;
     list_options.order = TrackDrawOrder::retail_bucket;
+    std::vector<std::size_t> world_models;
+    for(std::size_t m=0;m<track_.scene.region.meshes.size();++m) {
+        const auto hash=track_.scene.region.meshes[m].mesh_hash;
+        if(std::find(track_.world_models.begin(),track_.world_models.end(),hash)!=track_.world_models.end())world_models.push_back(m);
+    }
     if (!build_track_draw_list(track_.scene,witnesses,list_options,list,error) ||
-        !record_track_commands(track_.scene,list,options,{},track_templates_,error) ||
+        !record_track_commands(track_.scene,list,options,{},track_templates_,error,world_models) ||
         !validate_recorded_commands(track_templates_,error)) return false;
     sky_draws_ = 0;
     std::stable_partition(track_templates_.owning_draws().begin(), track_templates_.owning_draws().end(),
@@ -506,6 +711,7 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
         group.bucket = buckets.emplace(key, buckets.size()).first->second;
     }
     bucket_first_.resize(buckets.size(), kNoHandle);
+    bucket_cursor_.resize(buckets.size());bucket_layers_.resize(buckets.size());
     section_first_.assign(track_.objects.sections.size(), kNoHandle);
     for (const auto& section : scene.sections) section_first_.at(section.section_index) = section.first_handle;
     // The sky's placement follows the scenery instances; see record_track_commands.
@@ -526,8 +732,21 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     if (!record_car_commands(car_, car_options, {}, skin_source_, car_templates_, error)) return false;
     car_draw_count_=car_templates_.owning_draws().size();
     if (particles_enabled_ && !append_particle_commands(car_templates_,error)) return false;
+    if(skids_&&!skids_->append(car_templates_,error))return false;
     if (!validate_recorded_commands(car_templates_,error)) return false;
     if (!record_car_shadow_commands(shadow_asset_, {}, race_render_options(sky_), shadow_templates_, error)) return false;
+    if(neon_asset_.enabled) {
+        RecordedCommands neon,combined;
+        if(!record_car_neon_commands(neon_asset_,0,{},race_render_options(sky_),neon,error)||
+           !combine_race_commands(std::move(shadow_templates_),neon,combined,error))return false;
+        shadow_templates_=std::move(combined);
+    }
+    if (shadow_silhouette_) {
+        RecordedDraw draw;
+        if (!shadow_silhouette_->append(shadow_templates_.owning_uploads(),shadow_ramp_,kNoHandle,draw,error)) return false;
+        shadow_ramp_resource_ = draw.texture_resource;
+        shadow_templates_.owning_draws().insert(shadow_templates_.owning_draws().begin(),std::move(draw));
+    }
     if (tuned_ || dressed_) for (const auto& draw : car_templates_.owning_draws()) {
         if (draw.index_count && draw.texture_resource == kNoHandle) {
             error = tuned_ ? "tuned race car has fallback triangles: " + draw.name
@@ -536,8 +755,9 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
         }
     }
     const auto offset = track_templates_.owning_uploads().resources.size();
+    if (shadow_silhouette_) shadow_ramp_resource_ += offset;
     if (offset + shadow_templates_.owning_uploads().resources.size() +
-        car_templates_.owning_uploads().resources.size() > kTrackSliceResourceLimit) {
+        car_templates_.owning_uploads().resources.size() > resource_limit()) {
         error = "prepared resource namespace exceeds capacity"; return false;
     }
     // Move the track table and rebase the car definitions in place. Copying
@@ -549,8 +769,19 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     append_car_resources(combined_uploads_, car_templates_.owning_uploads());
     for (auto& draw : car_templates_.owning_draws()) rebase_car_draw(draw, car_offset);
     track_templates_.owning_uploads() = {}; shadow_templates_.owning_uploads() = {}; car_templates_.owning_uploads() = {};
-    selection_.reserve(draw_capacity());
-    if (race_visuals_) cube_selection_.reserve(kRaceCubeFaceDrawLimit);
+    for(std::size_t a=0;a<track_.animations.size();++a) {
+        AnimatedTexture bound;bound.animation=a;bound.first=texture_aliases_.size();
+        for(auto hash:track_.animations[a].frames) {
+            const auto& resources=combined_uploads_.resources;
+            auto it=std::find_if(resources.begin(),resources.end(),[&](const auto& r){return r.kind==UploadResourceKind::texture&&r.texture_hash==hash;});
+            if(it==resources.end()){error="authored texture animation frame missing: "+std::to_string(hash);return false;}
+            bound.frames.push_back(std::size_t(it-resources.begin()));
+        }
+        for(auto r:bound.frames)texture_aliases_.push_back({r,r});
+        animated_textures_.push_back(std::move(bound));
+    }
+    selection_.reserve(draw_capacity());selection_scratch_.reserve(draw_capacity());
+    if (race_visuals_) {cube_selection_.reserve(kRaceCubeFaceDrawLimit);cube_scratch_.reserve(kRaceCubeFaceDrawLimit);}
     return true;
 }
 
@@ -562,7 +793,8 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
         // The command cache counts only the descriptors borrowing it.
         for(const auto& texture:original_glow_textures_)car_bytes_+=texture.rgba.capacity();
         if(!load_nitrous_flame_texture(root_,nitrous_flame_,error))return false;
-        car_bytes_+=nitrous_flame_.rgba.capacity();
+        if(!load_nitrous_purge_texture(root_,nitrous_purge_,error))return false;
+        car_bytes_+=nitrous_flame_.rgba.capacity()+nitrous_purge_.rgba.capacity();
         road_glows_.resize(lamps_.lights.size());
         if(car_bytes_>kPersistentBudgetPlaceholder){error="car glow residency exceeds payload budget";return false;}
     } else {
@@ -579,7 +811,7 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
     }
     auto& table = combined_uploads_;
     glow_first_resource_ = table.resources.size();
-    if (glow_first_resource_ + (race_visuals_?8:4) > kTrackSliceResourceLimit) {
+    if (glow_first_resource_ + (race_visuals_?8:4) > resource_limit()) {
         error = "glow resources exceed race resource capacity"; return false;
     }
     const auto buffer = [&](UploadResourceKind kind, const char* name,
@@ -607,7 +839,7 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
     const auto texture = [&](const RenderTexture& source, const char* name) -> bool {
         TextureUploadShape shape;
         if (!check_texture_upload_format(TextureUploadFormat::rgba8, source.width,
-                                         source.height, source.rgba.size(), shape, error)) return false;
+                                         source.height, source.rgba.size(), shape, error, source.mip_count)) return false;
         UploadResource resource;
         resource.kind = UploadResourceKind::texture; resource.memory = UploadMemory::image;
         resource.name = name; resource.data = source.rgba.data();
@@ -641,7 +873,8 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
             reinterpret_cast<const unsigned char*>(nitrous_indices_.data()),
             sizeof(nitrous_indices_),sizeof(std::uint16_t),nitrous_indices_.size());
         car_bytes_+=sizeof(nitrous_vertices_)+sizeof(nitrous_indices_);
-        if(!texture(nitrous_flame_,"race-nitrous/SFX_FIREB"))return false;
+        if(!texture(nitrous_flame_,"race-nitrous/SFX_FIREB")||
+           !texture(nitrous_purge_,"race-nitrous/SMOKEB_CS"))return false;
     } else if (!texture(glow_head_, "race-glow/head") ||
         !texture(glow_tail_, "race-glow/tail")) return false;
     const sm::Program* program = nullptr;
@@ -676,11 +909,24 @@ bool RaceGpuScene::prepare_glows(std::string& error) {
         nitrous_template_.index_resource=glow_first_resource_+6;
         nitrous_template_.texture_resource=glow_first_resource_+7;
         nitrous_template_.vertex_count=16;
+        purge_template_=glow_templates_[0];
+        purge_template_.name="race-nitrous/purge";
+        purge_template_.material.alpha[3]=6;
+        purge_template_.texture_resource=glow_first_resource_+8;
     }
     return true;
 }
 
 RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
+    // The backend freezes the dynamic definition order at upload. Only the
+    // start crowd may retire, so its draws follow all persistent world draws.
+    const auto ordinary=selected_draw_count()-world_draws_.size()-crowd_.draw_count();
+    if(i>=ordinary) {
+        const auto at=i-ordinary;
+        const auto& d=at<world_draws_.size()?world_draws_[at]:
+            crowd_.commands().owning_draws().at(at-world_draws_.size());
+        return {d,d.instance,d.placement,d.material,false};
+    }
     if (i >= sky_position_ && i < sky_position_ + sky_draws_) {
         const auto& d = track_templates_.owning_draws().at(i - sky_position_);
         return {d, d.instance, track_placements_.at(d.instance), d.material, true};
@@ -691,17 +937,29 @@ RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
         const auto& draw = track_templates_.owning_draws().at(template_of_group_.at(selected.draw));
         return {draw, selected.instance, track_placements_.at(selected.instance), draw.material, true};
     }
-    if (i == selection_.size()) {
-        const auto& draw = shadow_templates_.owning_draws().at(0);
+    if (i >= selection_.size()&&i < selection_.size()+shadow_templates_.owning_draws().size()) {
+        const auto& draw = shadow_templates_.owning_draws().at(i-selection_.size());
         return {draw, draw.instance, draw.placement, draw.material, false};
     }
-    i -= selection_.size() + 1;
+    i -= selection_.size() + shadow_templates_.owning_draws().size();
     if (i >= car_templates_.owning_draws().size()) {
         i -= car_templates_.owning_draws().size();
+        for(const auto& r:rivals_) {
+            for(const auto* commands:{&r.shadow_commands,&r.commands}) {
+                if(i<commands->owning_draws().size()) {
+                    const auto& d=commands->owning_draws()[i];
+                    const bool submit=r.active||commands!=&r.commands||d.instance==kNoHandle;
+                    return {d,d.instance,d.placement,d.material,false,submit};
+                }
+                i-=commands->owning_draws().size();
+            }
+        }
         if (i >= glow_count_) throw std::out_of_range("selected glow draw is out of range");
         const auto& glow = i<glow_selected_.size()?glow_selected_[i]:
             i<glow_selected_.size()+road_glows_.size()?road_glows_.at(i-glow_selected_.size()):
-            nitrous_selected_.at(i-glow_selected_.size()-road_glows_.size());
+            i<glow_selected_.size()+road_glows_.size()+nitrous_count_?
+            nitrous_selected_.at(i-glow_selected_.size()-road_glows_.size()):
+            actor_glows_.at(i-glow_selected_.size()-road_glows_.size()-nitrous_count_);
         return {glow, kNoHandle, glow.placement, glow.material, false};
     }
     const auto& draw = car_templates_.owning_draws().at(i);
@@ -712,12 +970,19 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
                                std::size_t& entries, std::string& error, bool capture) {
     auto& selected = capture ? cube_selection_ : selection_;
     const auto limit = capture ? kRaceCubeFaceDrawLimit : draw_capacity();
-    const auto extra = sky_draws_ + (capture ? 0 : 1 + car_templates_.owning_draws().size() + glow_count_);
+    const auto extra = sky_draws_ + (capture ? 0 : shadow_templates_.owning_draws().size() + car_templates_.owning_draws().size() + rival_draws_ + glow_count_ + crowd_.draw_count() + world_draws_.size());
     selected.clear(); entries = 0; out.unplaced = 0; out.triangles = 0;
     std::fill(bucket_first_.begin(), bucket_first_.end(), kNoHandle);
     std::size_t next_bucket = 0;
     const auto& scene = track_.scene;
-    for (const auto& item : visible.visible) {
+    for (std::size_t item_index=0;item_index<visible.visible.size()+moved_props_.size();++item_index) {
+        TrackVisibleInstance item;
+        if(item_index<visible.visible.size())item=visible.visible[item_index];
+        else {
+            const auto& moved=moved_props_[item_index-visible.visible.size()];
+            if(std::any_of(visible.visible.begin(),visible.visible.end(),[&](const auto& v){return v.section_index==moved.first&&v.instance_index==moved.second;}))continue;
+            item.section_index=moved.first;item.instance_index=moved.second;
+        }
         if (item.section_index >= section_first_.size() ||
             section_first_[item.section_index] == kNoHandle ||
             item.instance_index >= track_.objects.sections[item.section_index].instances.size()) {
@@ -731,10 +996,6 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
         const auto mesh = scene.instances[handle].mesh;
         if (mesh >= scene.region.meshes.size()) { error = "prepared mesh is out of range"; return false; }
         const auto first = mesh_first_[mesh], last = mesh_first_[mesh+1];
-        entries += last-first;
-        // Keep the reference path's far-plane retry, including empty groups
-        // in the list capacity test even though they emit no hardware draw.
-        if (!capture && extra + entries > limit) return true;
         for (auto k = first; k < last; ++k) {
             const auto group = mesh_groups_[k];
             if (group >= template_of_group_.size()) { error = "prepared group is out of range"; return false; }
@@ -748,27 +1009,29 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
                 error = "prepared group has no validated template"; return false;
             }
             if (index >= track_templates_.owning_draws().size() ||
-                selected.size() + (capture ? sky_draws_ : 0) >= limit) {
+                (capture && selected.size() + sky_draws_ >= limit)) {
                 error = "prepared draw capacity exceeded"; return false;
             }
-            selected.push_back({static_cast<std::uint32_t>(handle), group, selected.size()});
+            if (!capture && extra + selected.size() >= limit) {
+                // Signal an incomplete selection to the far-plane loop.
+                // Original distance has one pass and fails cleanly; the
+                // bounded diagnostic path must retain its legacy retries.
+                entries = limit + 1; return true;
+            }
+            selected.push_back({static_cast<std::uint32_t>(handle), group, selected.size(),
+                                first_use, retail_groups_[group].layer});
             out.triangles += track_templates_.owning_draws()[index].index_count/3;
         }
     }
-    // The ordinal makes equal bucket keys stable without stable_sort's
-    // temporary allocation. Selection capacity is reserved once at load.
-    std::sort(selected.begin(), selected.end(), [this](const SelectedTrackDraw& a, const SelectedTrackDraw& b) {
-        const auto& ga = retail_groups_.at(a.draw);
-        const auto& gb = retail_groups_.at(b.draw);
-        if (ga.layer != gb.layer) return ga.layer < gb.layer;
-        const auto fa = bucket_first_.at(ga.bucket), fb = bucket_first_.at(gb.bucket);
-        if (fa != fb) return fa < fb;
-        return a.ordinal < b.ordinal;
-    });
+    // Count/scatter into the same layer, first-use bucket and encounter order.
+    // This avoids sorting every draw again for the main view and six cube faces.
+    stable_draw_order(selected,capture?cube_scratch_:selection_scratch_,
+                      bucket_cursor_,bucket_layers_,next_bucket);
+    entries = selected.size();
     return true;
 }
 bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const CameraFrame& basis,
-    RecordedCommands& commands,std::string& error) {
+                                      RecordedCommands& commands,std::string& error) {
     const auto q=session.car().orientation;
     const auto rotate=[&](Vec3 v){const Vec3 a{q.y*v.z-q.z*v.y,q.z*v.x-q.x*v.z,q.x*v.y-q.y*v.x};
         const Vec3 b{q.y*a.z-q.z*a.y,q.z*a.x-q.x*a.z,q.x*a.y-q.y*a.x};
@@ -785,6 +1048,7 @@ bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const CameraF
     float* destinations[4]={hf.eye,hf.right,hf.up,hf.forward};
     for(unsigned i=0;i<4;++i){destinations[i][0]=float(vectors[i].x);destinations[i][1]=float(vectors[i].y);destinations[i][2]=float(vectors[i].z);}
     hf.projection[0]=float(light.focal_x);hf.projection[1]=float(light.focal_y);
+    hf.options[0]=0;
     commands.headlight_texture=headlight_resource_;commands.frame.options[2]|=16U;
     commands.race_environment=car_shading_;
     if(!car_shading_)return true;
@@ -792,10 +1056,11 @@ bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const CameraF
     // Native quality3 descriptor schedule: all six logical faces every frame.
     commands.cube_face_mask=63;
     const auto cameras=car_environment_cameras(basis,origin);
-    auto& draws=commands.frontend_cube_draws;draws.clear();draws.reserve(kRaceCubeDrawLimit);
+    auto& draws=commands.frontend_cube_draws;draws.reserve(kRaceCubeDrawLimit);
+    std::size_t draw_count=0;
     for (unsigned face=0;face<6;++face) {
         const auto& c=cameras[face];
-        auto options=race_render_options(sky_);options.width=options.height=128;options.explicit_camera=&c;
+        auto options=race_render_options(sky_);options.world_ticks=session.timing().step_ticks;options.width=options.height=128;options.explicit_camera=&c;
         RecordedCommands face_state;
         if(!record_frame_state(options,{},face_state,error))return false;
         commands.frontend_cube_frames[face]=face_state.frame;
@@ -809,32 +1074,51 @@ bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const CameraF
         if(!culler_.cull(frustum,error))return false;
         RaceGpuFrame capture;std::size_t entries=0;
         if(!select_track(culler_.result(),capture,entries,error,true))return false;
-        const auto append=[&](RecordedDraw draw) {
-            // Existing capture view tag keeps each face's exact draw order.
-            draw.frontend_sprite_view=face+10;draws.push_back(std::move(draw));
+        const auto append=[&](const RecordedDraw& source)->RecordedDraw& {
+            // Reassign live slots so their diagnostic strings retain storage.
+            // No intermediate RecordedDraw/string allocation per selection.
+            if(draw_count==draws.size())draws.push_back(source);
+            else draws[draw_count]=source;
+            auto& draw=draws[draw_count++];draw.frontend_sprite_view=face+10;
+            return draw;
         };
         for(std::size_t i=0;i<sky_draws_;++i)append(track_templates_.owning_draws()[i]);
         for(const auto& entry:cube_selection_) {
-            auto draw=track_templates_.owning_draws().at(template_of_group_.at(entry.draw));
+            auto& draw=append(track_templates_.owning_draws().at(template_of_group_.at(entry.draw)));
             draw.instance=entry.instance;draw.placement=track_placements_.at(entry.instance);
-            append(std::move(draw));
         }
     }
+    draws.resize(draw_count);
     if(draws.size()>kRaceCubeDrawLimit){error="race cube draw capacity exceeded";return false;}
     return true;
 }
 
 bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::string& error, RaceFrameProfile* profile, bool reference, TimingService* timer) {
+    if(reference && (!rivals_.empty() || crowd_.actor_count())) {
+        error="multi-car reference recording is not implemented; use prepared four-car commands";return false;
+    }
+    // The caller may reuse its frame. Preserve the cube work buffer across
+    // reset; all active draw fields and face constants are rewritten below.
+    auto cube_draws=std::move(out.commands.frontend_cube_draws);
     out = {}; error.clear();
+    if(!reference && race_visuals_ && car_shading_)
+        out.commands.frontend_cube_draws=std::move(cube_draws);
     if (!ready_) { error = "race scene is not loaded"; return false; }
+    crowd_.frame(session);
+    for(const auto& a:animated_textures_) {
+        const auto phase=texture_animation_phase(track_.animations[a.animation],std::uint32_t(session.world_visual_frame()));
+        for(std::size_t i=0;i<a.frames.size();++i)texture_aliases_[a.first+i].frame=a.frames[(i+phase)%a.frames.size()];
+    }
+
     if (wet_road_reflections_ && !lamps_loaded_) {
         if (!load_wet_road_lamps(root_, session.course().world, lamps_, error, static_cast<std::int16_t>(track_.track_number))) return false;
         wet_uploads_ = combined_uploads_;
         if (!append_wet_lamp_uploads(lamps_, wet_uploads_, error)) return false;
         if (!prepare_reflections(error)) return false;
-        if (cache_bytes() > 8*kMiB) { error = "wet race command cache exceeds 8 MiB"; return false; }
+        if (cache_bytes() > cache_limit()) { error = "wet race command cache exceeds backing plan"; return false; }
         lamps_loaded_ = true;
     }
+    if(skids_)skids_->advance(session);
     if (profile) *profile = {};
     if (profile && !timer) { error = "race profiling requires a timing service"; return false; }
     if (!reference && generation_ == std::numeric_limits<std::uint64_t>::max()) {
@@ -848,32 +1132,145 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         profile->*field += (end-start)/1000.0;
         start = end;
     };
-    if (!drive_place_instances(base_, session.car(), session.spec(), car_.instances,
-                               &session.animation())) {
+    VehicleState presented=session.car();auto presented_animation=session.animation();
+    const bool start_car=crowd_.car(session,presented,&presented_animation);
+    if (!drive_place_instances(base_, presented, session.spec(), car_.instances,
+                               &presented_animation)) {
         error = "race car placement failed"; return false;
     }
-    const auto shadow = place_car_shadow(shadow_asset_,session);
+    if(world_draws_.empty())for(unsigned w=0;w<session.course().world_objects.size();++w) {
+        const auto& source=session.course().world_objects[w];
+        if(!source.motion_collision||!session.world_object_state(w))continue;
+        bool found=false;
+        for(const auto& model:track_templates_.owning_draws()) {
+            if(model.instance!=kNoHandle||track_.scene.region.meshes[model.mesh].mesh_hash!=source.model)continue;
+            found=true;world_draws_.push_back(model);world_draw_sources_.push_back(w);
+        }
+        if(!found){error="animated world model absent from track backing";return false;}
+    }
+    for(std::size_t d=0;d<world_draws_.size();++d) {
+        const auto* state=session.world_object_state(world_draw_sources_[d]);
+        if(!state){error="world model controller disappeared";return false;}
+        auto& draw=world_draws_[d];
+        for(unsigned r=0;r<3;++r)for(unsigned c=0;c<3;++c)draw.placement.rows[4*r+c]=state->rigid_body.axes[r][c];
+        for(unsigned c=0;c<3;++c)draw.placement.rows[12+c]=state->rigid_body.position[c];
+    }
+    if(session.props()) {
+        const auto& props=session.props()->objects();
+        if(prop_handles_.empty()) {
+            movable_instances_.assign(track_placements_.size(),0);
+            prop_handles_.assign(props.size(),kNoHandle);moved_props_.reserve(props.size());
+            for(std::size_t p=0;p<props.size();++p)for(std::size_t section=0;section<track_.objects.sections.size();++section)
+                if(track_.objects.sections[section].number==props[p].section && section_first_[section]!=kNoHandle &&
+                   props[p].instance<track_.objects.sections[section].instances.size()) {
+                    const auto at=section_first_[section]+props[p].instance;
+                    if(at<track_.scene.instance_handles.size()) {
+                        prop_handles_[p]=track_.scene.instance_handles[at];
+                        if(prop_handles_[p]!=kNoHandle)movable_instances_[prop_handles_[p]]=1;
+                    }
+                }
+        }
+        for(std::size_t p=0;p<props.size();++p) {
+            const auto& prop=props[p];const auto handle=prop_handles_[p];
+            if(!prop.moved||handle==kNoHandle)continue;
+            for(std::size_t section=0;section<track_.objects.sections.size();++section)
+                if(track_.objects.sections[section].number==prop.section) {
+                    const auto key=std::make_pair(section,std::size_t(prop.instance));
+                    if(std::find(moved_props_.begin(),moved_props_.end(),key)==moved_props_.end())moved_props_.push_back(key);
+                }
+            const auto& b=prop.state.rigid_body;auto& placement=track_placements_.at(handle);
+            for(unsigned row=0;row<3;++row)for(unsigned col=0;col<3;++col)placement.rows[4*row+col]=b.axes[row][col];
+            const auto origin=race_prop_visual_position(prop);
+            for(unsigned col=0;col<3;++col)placement.rows[12+col]=origin[col];
+            if(prop.expired)std::fill(std::begin(placement.rows),std::end(placement.rows),0.F);
+            auto& instance=track_.scene.instances[handle];
+            for(unsigned r=0;r<3;++r)for(unsigned c=0;c<3;++c)instance.transform.linear[3*r+c]=placement.rows[4*r+c];
+            for(unsigned c=0;c<3;++c)instance.transform.translation[c]=placement.rows[12+c];
+            if (!reflection_instances_.empty()) update_reflection_instance(handle);
+
+        }
+    }
+    const auto shadow = place_car_shadow(shadow_asset_,presented,session.spec(),session.course().world);
+    const auto traffic_count=session.traffic()?session.traffic()->actors().size():0;
+    if(session.rival_count()+traffic_count!=rivals_.size()){error="actor render/simulation roster differs";return false;}
+    for(std::size_t i=0;i<rivals_.size();++i) {
+        auto& r=rivals_[i];bool active=true;
+        CarShadowPlacement shadow_placement;
+        if(!r.traffic) {
+            const auto& actor=session.rival(i);active=session.actor_visible(unsigned(i)+1);
+            if(!drive_place_instances(r.base,actor.car(),actor.spec(),r.scene.instances,&actor.animation())) {
+                error="rival body placement failed";return false;
+            }
+            if (active && r.shadow.texture.usable()) shadow_placement=place_car_shadow(r.shadow,actor);
+            r.service_brake=actor.light_service_brake();
+        } else {
+            const auto& actor=session.traffic()->actors().at(i-session.rival_count());active=actor.active;r.service_brake=actor.animation.braking?1.F:0.F;
+            if(active) {
+                if(!drive_place_instances(r.base,actor.car,actor.setup.spec,r.scene.instances,&actor.animation)) {
+                    error="traffic body placement failed";return false;
+                }
+                if(r.shadow.texture.usable())
+                    shadow_placement=place_car_shadow(r.shadow,actor.car,actor.setup.spec,session.course().world);
+            }
+        }
+        r.active=active;
+        if(r.shadow.texture.usable()) {
+            if(!active)shadow_placement.alpha=0;
+            auto& draws=r.shadow_commands.owning_draws();
+            update_car_shadow_draw(shadow_placement,draws[r.silhouette?1:0]);
+            if(r.neon)update_car_neon_draw(r.neon->color,float(session.world_visual_frame())*float(kDriveFrameSeconds),
+                shadow_placement,draws.back());
+        }
+        for(auto& draw:r.commands.owning_draws())if(draw.instance!=kNoHandle) {
+            const auto& instance=r.scene.instances.at(draw.instance);
+            std::copy(std::begin(instance.transform),std::end(instance.transform),draw.placement.rows);
+            // Keep immutable upload/prefix identity. Inactive pool entries are
+            // degenerate triangles, never a visible car at a placeholder pose.
+            if(!active)std::fill(std::begin(draw.placement.rows),std::end(draw.placement.rows),0.F);
+            draw.material.alpha[3]=float(instance.lamp_mode);
+        }
+    }
     for (double far = original_draw_distance_ ? 10000.0 : 250.0;
          far >= 31.25; far = original_draw_distance_ ? 0.0 : far*0.5) {
         RenderOptions options = race_render_options(sky_);
+        options.world_ticks=session.timing().step_ticks;
         options.texture_filter = texture_filter_;
         options.car_shading=car_shading_;
         if (car_shading_) options.material_state=MaterialStateMode::retail;
         options.wet_road_reflections = wet_road_reflections_;
         options.wet_lamps = wet_road_reflections_ ? &lamps_ : nullptr;
-        if (!drive_render_camera(session.camera(), ChaseFovMode::vertical_4_3,
+        if (!drive_render_camera(session.camera(), ChaseFovMode::retail,
                                  options.width, options.height, options.camera, error)) return false;
+        crowd_.camera(session,options.camera,options.width,options.height);
         options.camera.far_plane = far;
         CameraFrame basis;
         if (!make_camera_frame(options.camera, options.width, options.height, basis, error)) return false;
-        glow_count_ = 0;nitrous_count_=0;
+        if (shadow_silhouette_) {
+            const VehicleVec3 eye{basis.eye.x,-basis.eye.z,basis.eye.y};
+            const bool player_visible = session.camera().pov != 2 || session.crash_camera_event() ||
+                                        session.start_cinematic() || start_car;
+            shadow_silhouette_->update(presented,session.spec(),session.course().world,eye,shadow_light_,player_visible,
+                                       shadow_templates_.owning_draws().front());
+            for (std::size_t i = 0; i < rivals_.size(); ++i) {
+                auto& visual = rivals_[i];
+                auto& draw = visual.shadow_commands.owning_draws().front();
+                if (visual.traffic) {
+                    const auto& actor = session.traffic()->actors().at(i-session.rival_count());
+                    visual.silhouette->update(actor.car,actor.setup.spec,session.course().world,eye,shadow_light_,visual.active,draw);
+                } else {
+                    const auto& actor = session.rival(i);
+                    visual.silhouette->update(actor.car(),actor.spec(),session.course().world,eye,shadow_light_,visual.active,draw);
+                }
+            }
+        }
+        glow_count_ = 0;nitrous_count_=0;actor_glow_count_=0;
         if (glows_enabled_ && race_visuals_) {
             const auto sprites=place_original_car_glows(glow_anchors_,car_,basis,options.width,session.light_service_brake());
             for(const auto& sprite:sprites) {
                 auto& draw=glow_selected_[glow_count_++];draw=glow_templates_[sprite.texture];
                 std::copy(std::begin(sprite.transform),std::end(sprite.transform),draw.placement.rows);
                 for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=sprite.rgba[c];
-                draw.material.alpha[0]=float(sprite.rgba[3])/255;
+                draw.material.alpha[0]=session.camera().pov==2&&!session.crash_camera_event()&&!session.start_cinematic()&&!start_car?0.F:float(sprite.rgba[3])/255;
             }
             for(std::size_t i=0;i<lamps_.lights.size();++i) {
                 const auto& lamp=lamps_.lights[i];
@@ -885,7 +1282,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             }
             glow_count_+=road_glows_.size();
             const auto flames=place_nitrous_flames(exhaust_anchors_,car_,basis,
-                session.nitrous().active&&session.timing().outcome!=RaceOutcome::finished,session.timing().step);
+                session.nitrous_boosting(),session.world_visual_frame());
             // Renderer open freezes the dynamic count and definition addresses.
             // Keep one slot for each authored pipe, even with nitrous off.
             for(std::size_t i=0;i<flames.size();++i)if(exhaust_anchors_[i].marker.present) {
@@ -896,7 +1293,28 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=flame.rgba[c];
                 draw.material.alpha[0]=float(flame.rgba[3])/255;
             }
+            const auto purge=place_nitrous_purge(glow_anchors_,car_,basis,
+                session.nitrous_purging(),session.world_visual_frame());
+            for(std::size_t i=0;i<purge.size();++i)if(glow_anchors_[i].present) {
+                const auto& puff=purge[i];
+                auto& draw=nitrous_selected_[nitrous_count_++];draw=purge_template_;
+                std::copy(std::begin(puff.transform),std::end(puff.transform),draw.placement.rows);
+                for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=puff.rgba[c];
+                draw.material.alpha[0]=float(puff.rgba[3])/255;
+            }
             glow_count_+=nitrous_count_;
+            for(const auto& actor:rivals_) {
+                const auto lights=place_original_car_glows(actor.anchors,actor.scene,basis,options.width,actor.service_brake,actor.traffic);
+                for(const auto& light:lights) {
+                    if(actor_glow_count_>=actor_glows_.size()){error="actor glow capacity differs from live roster";return false;}
+                    auto& draw=actor_glows_[actor_glow_count_++];draw=glow_templates_[light.texture];
+                    std::copy(std::begin(light.transform),std::end(light.transform),draw.placement.rows);
+                    for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=light.rgba[c];
+                    draw.material.alpha[0]=actor.active?float(light.rgba[3])/255:0;
+                    if(!actor.active)std::fill(std::begin(draw.placement.rows),std::end(draw.placement.rows),0.F);
+                }
+            }
+            glow_count_+=actor_glow_count_;
         } else if (glows_enabled_) {
             const auto sprites = place_car_glows(glow_anchors_, car_, basis,
                                                  session.animation().braking);
@@ -915,8 +1333,8 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         camera.eye[0] = float(basis.eye.x); camera.eye[1] = float(basis.eye.y); camera.eye[2] = float(basis.eye.z);
         camera.target[0] = float(options.camera.target.x); camera.target[1] = float(options.camera.target.y);
         camera.target[2] = float(options.camera.target.z);
-        camera.up[0] = 0; camera.up[1] = 1; camera.up[2] = 0;
-        camera.aspect = float(options.width)/options.height;
+        camera.up[0] = float(basis.up.x); camera.up[1] = float(basis.up.y); camera.up[2] = float(basis.up.z);
+        camera.aspect = float(basis.focal_y/basis.focal_x);
         camera.vertical_fov = float(options.camera.fov_y_deg * (3.14159265358979323846/180));
         camera.near_plane = float(options.camera.near_plane); camera.far_plane = float(far);
         TrackFrustum frustum;
@@ -928,7 +1346,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             residency = zone == kTrackZoneNone ? &no_zone_ : &zone_residency_.at(zone);
         }
         if (!reference) {
-            if (!culler_.cull(frustum,error,residency)) return false;
+            if (!culler_.cull(frustum,error,residency,kTrackMainViewInstanceMask)) return false;
             stage(&RaceFrameProfile::cull_ms);
             std::size_t entries = 0;
             if (!select_track(culler_.result(),out,entries,error)) return false;
@@ -938,22 +1356,28 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 if (d.pipeline.blend) { sky_position_ = i; break; }
             }
             stage(&RaceFrameProfile::list_ms);
-            if (sky_draws_ + entries + 1 + car_templates_.owning_draws().size() + glow_count_ > draw_capacity()) continue;
-            auto& shadow_draw = shadow_templates_.owning_draws()[0];
+            if (sky_draws_ + entries + crowd_.draw_count() + shadow_templates_.owning_draws().size() + car_templates_.owning_draws().size() + rival_draws_ + glow_count_ + world_draws_.size() > draw_capacity()) continue;
+            const auto ground_index = shadow_silhouette_ ? 1U : 0U;
+            auto& shadow_draw = shadow_templates_.owning_draws()[ground_index];
             update_car_shadow_draw(shadow,shadow_draw);
+            if(neon_asset_.enabled)update_car_neon_draw(neon_asset_.color,float(session.world_visual_frame())*float(kDriveFrameSeconds),shadow,
+                shadow_templates_.owning_draws()[ground_index+1]);
             for (auto& draw : car_templates_.owning_draws()) {
                 if (draw.instance != kNoHandle) {
                     if (draw.instance >= car_.instances.size()) { error = "prepared car instance is out of range"; return false; }
                     const auto& instance = car_.instances[draw.instance];
                     std::copy(std::begin(instance.transform),std::end(instance.transform),draw.placement.rows);
                     draw.material.alpha[3] = static_cast<float>(instance.lamp_mode);
+                    if(session.camera().pov==2 && !session.crash_camera_event() && !session.start_cinematic() && !start_car)
+                        std::fill(std::begin(draw.placement.rows),std::end(draw.placement.rows),0.F);
                 }
             }
             if (particles_enabled_)
                 place_particle_commands(car_templates_,car_draw_count_,particles_,basis);
+            if(skids_)skids_->place(car_templates_,car_draw_count_+(particles_enabled_?kRaceParticleLimit:0));
             if (!record_frame_state(options,{},out.commands,error)) return false;
             stage(&RaceFrameProfile::car_ms);
-            out.track_draws = sky_draws_ + selection_.size(); out.car_draws = car_draw_count_;
+            out.track_draws = sky_draws_ + selection_.size(); out.car_draws = car_draw_count_+rival_draws_;
             out.particle_draws = particles_enabled_ ? kRaceParticleLimit : 0;
             out.glow_draws = glow_count_;
             out.visible = culler_.result().visible.size(); out.far_plane = far;
@@ -964,25 +1388,22 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 error = "prepared submitted triangle capacity exceeded"; return false;
             }
             for (const auto& draw : car_templates_.owning_draws()) out.triangles += draw.index_count/3;
-            out.triangles += shadow_asset_.triangles.size();
+            for (const auto& d : shadow_templates_.owning_draws()) out.triangles += d.index_count/3;
+            for(const auto& r:rivals_) {
+                for(const auto& d:r.commands.owning_draws())out.triangles+=d.index_count/3;
+                for (const auto& d : r.shadow_commands.owning_draws()) out.triangles += d.index_count/3;
+            }
             out.triangles += 2*glow_count_;
+            for(const auto& draw:world_draws_)out.triangles+=draw.index_count/3;
+            if(out.triangles>RenderLimits{}.max_submitted_triangles) {
+                error="four-car triangle capacity exceeded";return false;
+            }
             const auto reflection_start = profile ? timer->now_us() : 0;
             reflection_selection_.clear(); lamp_draws_.clear();
             if (wet_road_reflections_) {
                 options.material_state = MaterialStateMode::retail;
-                if (!track_reflection_entries(track_.scene, options, reflection_entries_, error, &reflection_cache_, true, residency)) return false;
-                for (const auto& entry : reflection_entries_) {
-                    const auto first = reflection_first_.at(entry.instance);
-                    if (first == kNoHandle) { error = "reflection template missing"; return false; }
-                    auto index = first;
-                    while (index < reflection_templates_.size() && reflection_templates_[index].instance == entry.instance &&
-                           reflection_templates_[index].group != entry.draw) ++index;
-                    if (index == reflection_templates_.size() || reflection_templates_[index].instance != entry.instance) {
-                        error = "reflection group missing"; return false;
-                    }
-                    reflection_selection_.push_back(index);
-                }
-                if (!record_lamp_reflections(options, wet_uploads_, lamp_draws_, error)) return false;
+                if (!select_reflections(basis, residency, error) ||
+                    !record_lamp_reflections(options, wet_uploads_, lamp_draws_, error, &basis)) return false;
                 if (reflection_selection_.size()+lamp_draws_.size() > 4096) { error = "reflection capacity exceeded"; return false; }
             }
             const auto visual_start = profile ? timer->now_us() : 0;
@@ -994,6 +1415,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             return true;
         }
         TrackCullOptions cull_options;
+        cull_options.instance_mask = kTrackMainViewInstanceMask;
         if (residency) cull_options.residency = *residency;
         const auto visible = cull_track_region(track_.objects, frustum, cull_options);
         if (!visible.ok() || !visible.policy_held) { error = "race visibility policy degraded"; return false; }
@@ -1005,14 +1427,31 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         stage(&RaceFrameProfile::list_ms);
         RecordedCommands car_commands;
         if (!record_car_commands(car_, options, {}, skin_source_, car_commands, error)) return false;
+        if(session.camera().pov==2 && !session.crash_camera_event() && !session.start_cinematic() && !start_car)
+            for(auto& draw:car_commands.owning_draws())
+                std::fill(std::begin(draw.placement.rows),std::end(draw.placement.rows),0.F);
         if (particles_enabled_) {
             if (!append_particle_commands(car_commands,error)) return false;
             place_particle_commands(car_commands,car_draw_count_,particles_,basis);
         }
+        if(skids_) {if(!skids_->append(car_commands,error))return false;
+            skids_->place(car_commands,car_draw_count_+(particles_enabled_?kRaceParticleLimit:0));}
         RecordedCommands shadow_commands;
         if (!record_car_shadow_commands(shadow_asset_, shadow, options, shadow_commands, error)) return false;
+        if(neon_asset_.enabled) {
+            RecordedCommands neon,combined;
+            if(!record_car_neon_commands(neon_asset_,float(session.world_visual_frame())*float(kDriveFrameSeconds),shadow,options,neon,error)||
+               !combine_race_commands(std::move(shadow_commands),neon,combined,error))return false;
+            shadow_commands=std::move(combined);
+        }
+        if (shadow_silhouette_) {
+            auto draw = shadow_templates_.owning_draws().front();
+            if (!shadow_silhouette_->append(shadow_commands.owning_uploads(),shadow_ramp_,kNoHandle,draw,error)) return false;
+            draw.material.alpha[0] = shadow_templates_.owning_draws().front().material.alpha[0];
+            shadow_commands.owning_draws().insert(shadow_commands.owning_draws().begin(),std::move(draw));
+        }
         stage(&RaceFrameProfile::car_ms);
-        if (sky_draws_ + list.entries.size() + 1 + car_commands.owning_draws().size() + glow_count_ > draw_capacity()) continue;
+        if (sky_draws_ + list.entries.size() + shadow_commands.owning_draws().size() + car_commands.owning_draws().size() + glow_count_ > draw_capacity()) continue;
         RecordedCommands track_commands;
         options.material_state = MaterialStateMode::retail;
         // Keep the reference resource namespace in the same order as the
@@ -1031,9 +1470,9 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         result.far_plane = far; result.triangles = 0;
         for (const auto& draw : track_commands.owning_draws()) result.triangles += draw.index_count/3;
         for (const auto& draw : car_commands.owning_draws()) result.triangles += draw.index_count/3;
-        result.triangles += shadow_asset_.triangles.size();
+        for (const auto& draw : shadow_commands.owning_draws()) result.triangles += draw.index_count/3;
         append_shadow_commands(track_commands, shadow_commands);
-        if (!combine_race_commands(std::move(track_commands), car_commands, result.commands, error)) return false;
+        if (!combine_race_commands(std::move(track_commands), car_commands, result.commands, error,resource_limit())) return false;
         if (glows_enabled_) {
             auto& uploads = result.commands.owning_uploads();
             if (uploads.resources.size() != glow_first_resource_) {
@@ -1080,7 +1519,13 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                                           result.commands.owning_uploads(),
                                           result.commands.reflections, error, true, residency)) return false;
         }
+        for(auto& draw:result.commands.owning_draws()) {
+            const auto original=draw.texture_resource;
+            for(const auto& alias:texture_aliases_)if(alias.resource==original){draw.texture_resource=alias.frame;break;}
+        }
         stage(&RaceFrameProfile::combine_ms);
+        for(const auto& draw:world_draws_){result.commands.owning_draws().push_back(draw);result.triangles+=draw.index_count/3;}
+        if(result.triangles>RenderLimits{}.max_submitted_triangles){error="world model triangle capacity exceeded";return false;}
         out = std::move(result); return true;
     }
     error = original_draw_distance_ ? "original-distance frame exceeds reserved draws; no distance fallback" :

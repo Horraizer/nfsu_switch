@@ -1,3 +1,8 @@
+add_library(nfsu_drift STATIC src/drift.cpp)
+target_include_directories(nfsu_drift PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(nfsu_drift PUBLIC cxx_std_17)
+nfsu_enable_warnings(nfsu_drift)
+
 # All floating-point flags below are inherited from the project-wide rule
 # in cmake/floating_point.cmake (issue #175); no target owns a separate pin.
 
@@ -25,6 +30,7 @@
 add_library(nfsu_vehicle
     src/vehicle.cpp
     src/player_powertrain.cpp
+    src/ai_powertrain.cpp
     src/steering.cpp
     src/nitrous.cpp
     src/vehicle_script.cpp
@@ -35,7 +41,7 @@ target_include_directories(nfsu_vehicle
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_compile_features(nfsu_vehicle PUBLIC cxx_std_17)
-target_link_libraries(nfsu_vehicle PUBLIC nfsu_sha256)
+target_link_libraries(nfsu_vehicle PUBLIC nfsu_sha256 nfsu_drift)
 nfsu_enable_warnings(nfsu_vehicle)
 
 add_library(nfsu_vehicle_tuning src/vehicle_tuning.cpp)

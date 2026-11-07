@@ -19,12 +19,19 @@ TRACK_SIZE=433352
 TRACK_SHA='ADA8206B5D66E3286BF582E2C7117FE0CC2BA9F6CADB756D922F7D32E7C696BA'
 
 
-def episode(image,n,retail_data,decoded,offset,velocity_a,velocity_b):
+def episode(image,n,retail_data,decoded,offset,velocity_a,velocity_b,history=None,
+            configure=None,selectors=(3,3),world_setup=None,world_queue=False,warm_ground=False):
  from unicorn.x86_const import UC_X86_REG_EIP
  from world_body_trace import chunks
  result={}
  m=n.fixture(image,offset,velocity_a,velocity_b)
+ # Keep the original ordinary-owner grip constant. Older port fixtures
+ # replaced6FFDD8 with1; the runtime now restores the native0.85 branch.
  result['prerequisite']=prepare(m,n,retail_data)
+ if configure is not None:result['selected_prerequisites']=configure(m)
+ if len(selectors)!=2 or any(s not in (1,2,3) for s in selectors):
+  raise ValueError('unsupported explicit physics selectors')
+ result['selectors']=selectors
  for head in (0x779C70,0x73D818,0x779BE0,0x73B14C):m.run(0x445720,esi=head)
  def critical_init(x):
   # Authenticated IAT697224 is InitializeCriticalSection. Single-thread service only.
@@ -33,8 +40,8 @@ def episode(image,n,retail_data,decoded,offset,velocity_a,velocity_b):
  for site,next_ip,label in ((0x63F198,0x63F19E,'EnterCriticalSection'),(0x63F1A8,0x63F1AE,'LeaveCriticalSection')):
   def service(x,target=next_ip):x.reg('esp',x.reg('esp')+4);x.uc.reg_write(UC_X86_REG_EIP,target)
   m.hook(site,'external_'+label+'_single_thread_fixture',callback=service)
- for site in (0x540696,0x5406E7,0x540754,0x474AA3,0x474C1E,0x474C44):
-  def qpc_service(x,target=site+(6 if site in (0x474AA3,0x474C1E,0x474C44) else 2)):
+ for site in (0x540696,0x5406E7,0x540754,0x474AA3,0x474C1E,0x474C44,0x47750B,0x477DDE,0x42050F):
+  def qpc_service(x,target=site+(6 if site in (0x474AA3,0x474C1E,0x474C44,0x47750B,0x42050F) else 2)):
    buffer=x.get(x.reg('esp'));x.put(buffer,0,'Q');x.reg('esp',x.reg('esp')+4);x.reg('eax',1);x.uc.reg_write(UC_X86_REG_EIP,target)
   m.hook(site,'external_zero_QPC_driver_marker_fixture',callback=qpc_service)
  result['phase']='original_pool_initializer466970'
@@ -57,36 +64,57 @@ def episode(image,n,retail_data,decoded,offset,velocity_a,velocity_b):
   m.put(actor+0x3c,body)
   result['phase']='full_body_constructor469B00'
   m.run(0x469B00,(body,actor),budget=3000000)
- for body,actor,velocity in ((n.BODY_A,n.ACTOR_A,velocity_a),(n.BODY_B,n.ACTOR_B,velocity_b)):
+ for body,actor,velocity,selector in ((n.BODY_A,n.ACTOR_A,velocity_a,selectors[0]),(n.BODY_B,n.ACTOR_B,velocity_b,selectors[1])):
   result['phase']='driver_constructor45DBB0'
   driver=0x1124000 if actor==n.ACTOR_A else 0x1125000
   # Original driver constructor ABI (driver,actor), no AI tick or policy claim.
   m.run(0x45DBB0,(driver,actor),budget=3000000);m.put(actor+0x30,driver)
-  result['phase']='physics_factory426110_selector3'
-  # Explicit no-module boundary and requested selector3; original factory owns stores.
+  result['phase']='physics_factory426110_selector'+str(selector)
+  # Explicit no-module boundary; original factory owns selector/module stores.
+  if warm_ground:m.put(actor+0x478,1.,'f')
   m.put(actor+0x28,0);m.put(actor+0x34,0);n.vector(m,actor+0x70,velocity)
-  m.run(0x426110,esi=actor,ecx=3,budget=3000000)
+  m.run(0x426110,esi=actor,ecx=selector,budget=3000000)
   m.run(0x469F30,edx=body,budget=3000000)
  result['bodies']=[dict(id=m.get(b+0x18,'H'),bounds=[m.get(b+i,'f') for i in (0x24,0x28,0x2c,0x30)],shape=m.get(b+0x10),next=m.get(b+4),prev=m.get(b+8)) for b in (n.BODY_A,n.BODY_B)]
+ if warm_ground:m.run(0x4774a0,(0,),ecx=m.get(n.ACTOR_A+0x34),budget=3000000)
+ if history is not None:
+  if len(history)!=2:raise ValueError('two explicit histories required')
+  for body,old in zip((n.BODY_A,n.BODY_B),history):
+   m.put(body+0x70,old['duration'],'f');n.vector(m,body+0xc0,old['position'])
+   n.vector(m,body+0xd0,old['velocity']);n.matrix(m,body+0x80)
+   for k,axis in enumerate(old['axes']):n.vector(m,body+0x80+16*k,axis)
+  result['explicit_history']=history
+ if world_setup is not None:result['world_setup']=world_setup(m)
  result['phase']='registered_pair_scanner469580'
- for body in (n.BODY_A,n.BODY_B):m.run(0x469580,(body,),budget=3000000)
+ #420380 owns its registered-body traversal. Pre-scanning here would impose
+ #fixture A/B order on pair insertion before the actual world queue runs.
+ if not world_queue:
+  for body in (n.BODY_A,n.BODY_B):m.run(0x469580,(body,),budget=3000000)
  node=m.get(0x779BE0);pairs=[]
  while node!=0x779BE0:
-  assert len(pairs)<3;pair=node-0x250;pairs.append(dict(pair=pair,a=m.get(pair+0x258),b=m.get(pair+0x25c),record=m.get(pair+0x264)));node=m.get(node)
+  assert len(pairs)<100;pair=node-0x250;pairs.append(dict(pair=pair,a=m.get(pair+0x258),b=m.get(pair+0x25c),record=m.get(pair+0x264)));node=m.get(node)
  result['pairs']=pairs;result['phase']='original_pair_processing468060'
  queue=0x1126000;m.run(0x445720,esi=queue)
- for entry in pairs:
+ for entry in ([] if world_queue else pairs):
   m.run(0x468060,(queue,),ecx=entry['pair'],budget=3000000)
   entry.update(record_after_processing=m.get(entry['pair']+0x264),flag14=m.get(entry['pair']+0x14,'B'),flag15=m.get(entry['pair']+0x15,'B'),scalar=m.get(entry['pair']+0x10,'f'))
  node=m.get(queue);jobs=[]
  while node!=queue:
-  assert len(jobs)<3;jobs.append(dict(job=node,words=[hex(m.get(node+i*4)) for i in range(16)]));node=m.get(node)
+  assert len(jobs)<100;jobs.append(dict(job=node,words=[hex(m.get(node+i*4)) for i in range(16)]));node=m.get(node)
  result['jobs']=jobs
  def actual_snapshot(x):
   states=[]
   for body,actor in ((n.BODY_A,n.ACTOR_A),(n.BODY_B,n.ACTOR_B)):
    rigid=x.get(body+0x6c)
    states.append(dict(body=hex(body),actor=hex(actor),rigid=hex(rigid),position=n.vector(x,rigid+0x20),velocity=n.vector(x,rigid+0xa0),angular_velocity=n.vector(x,rigid+0xc0),linear_momentum=n.vector(x,rigid+0x70),angular_momentum=n.vector(x,rigid+0x80),inverse_mass=x.get(rigid+0x148,'f'),inverse_inertia=[x.get(rigid+0x150+i*4,'f') for i in range(16)],state=x.get(actor+0x38),state_timer=x.get(actor+0x4cc,'f'),actor_velocity=n.vector(x,actor+0x70)))
+  for state,actor in zip(states,(n.ACTOR_A,n.ACTOR_B)):
+   rigid=int(state['rigid'],16)
+   state['axes']=[n.vector(x,rigid+0x30+16*k) for k in range(3)]
+   state['actor_axes']=[n.vector(x,actor+0x90+16*k) for k in range(3)]
+   state['actor_position']=n.vector(x,actor+0x60)
+   state['force']=n.vector(x,rigid+0x110);state['torque']=n.vector(x,rigid+0x120)
+   state['gravity']=x.get(rigid+0x140);state['damping']=[x.get(rigid+i) for i in (0x130,0x134,0x138)]
+   state['support']=x.get(actor+0x3cc);state['physics_selector']=x.get(actor+0x28)
   return states
  hits=[];applied=[];geometry=[];phases=[]
  def hit(x):
@@ -106,6 +134,7 @@ def episode(image,n,retail_data,decoded,offset,velocity_a,velocity_b):
   phases.append(event)
   x.observers[x.get(x.reg('esp'))]=lambda y:event.update(after=actual_snapshot(y))
  m.observers[0x585810]=phase;m.observers[0x474A90]=phase
+ m.observers[0x4774A0]=phase;m.observers[0x585410]=phase
  result['before_response']=actual_snapshot(m)
  m.hook(0x4658B5,'declared_existing_effect_tail_skip',callback=lambda x:x.uc.reg_write(UC_X86_REG_EIP,0x465CF2))
  # Authenticated world constructor list prefix only; full world constructor remains outside fixture.
@@ -118,8 +147,24 @@ def episode(image,n,retail_data,decoded,offset,velocity_a,velocity_b):
  m.run(0x520460,budget=3000000)
  result['optional_manager']={'pointer':hex(m.get(0x7356A8)),'flag':m.get(0x6F1DD8)}
  result['phase']='original_queued_response46B5E0'
- for job in jobs:m.run(0x46B5E0,esi=job['job'],budget=3000000)
- result['records_after_response']=[m.get(entry['pair']+0x264) for entry in pairs]
+ from unicorn import UC_HOOK_MEM_WRITE
+ writes=[]
+ rigid_a=m.get(n.BODY_A+0x6c)
+ def watch(uc,access,address,size,value,user):
+  writes.append(dict(ip=hex(uc.reg_read(UC_X86_REG_EIP)),offset=hex(address-rigid_a),size=size,value=value))
+ m.uc.hook_add(UC_HOOK_MEM_WRITE,watch,begin=rigid_a+0x70,end=rigid_a+0x7b)
+ result['momentum_writes']=writes
+ queued=[]
+ def queue_entry(x):
+  job=x.reg('esi');queued.append(dict(a=hex(x.get(job+0xc)),b=hex(x.get(job+0x10)),
+   remaining=x.get(job+8,'f'),correction=n.vector(x,job+0x20),before=actual_snapshot(x)))
+  event=queued[-1];x.observers[x.get(x.reg('esp'))]=lambda y:event.update(after=actual_snapshot(y))
+ m.observers[0x46B5E0]=queue_entry
+ if world_queue:m.run(0x420380,(world,),budget=20000000)
+ else:
+  for job in jobs:m.run(0x46B5E0,esi=job['job'],budget=3000000)
+ result['queued_order']=queued
+ result['records_after_response']=[m.get(entry['pair']+0x264) for entry in pairs if m.get(entry['pair']+0x264)]
  result['records']=[dict(address=hex(record),gate=m.get(record+0x10),
   point=n.vector(m,record+0x20),accumulated=n.vector(m,record+0x50),
   magnitude_sum=m.get(record+0x60,'f'),creation_tick=m.get(record+8),

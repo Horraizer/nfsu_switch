@@ -49,6 +49,15 @@ using IntroPoll = std::function<IntroControl()>;
 using IntroPresent = std::function<void(const MovieFrame&)>;
 IntroResult play_original_intro(const std::string& retail_root,
                                const IntroPoll& poll, const IntroPresent& present);
+// UG0 new-career movie selected by event0+0xAC and 4E82DF/4E8420.
+IntroResult play_underground_prologue(const std::string& retail_root,
+                                    const IntroPoll& poll, const IntroPresent& present);
+// New career, no previously owned starter car: original 4E880A selects _S.
+IntroResult play_underground_epilogue(const std::string& retail_root,
+                                    const IntroPoll& poll, const IntroPresent& present);
+// Career catalog supplies a basename; paths and traversal are refused.
+IntroResult play_career_movie(const std::string& retail_root,const std::string& name,
+                             const IntroPoll& poll,const IntroPresent& present);
 // Fit the frontend display aspect inside the destination, sample the encoded
 // image into that rectangle and paint unused pixels opaque black.
 void blit_movie(const MovieFrame& frame, std::uint8_t* destination,

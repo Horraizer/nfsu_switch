@@ -65,6 +65,10 @@ bool resolve_car_assets(const CarTypeTable& table,
                         CarAssets& car,
                         std::string& error);
 
+// Separate role3 loader. Does not make traffic selectable by the player.
+bool resolve_traffic_assets(const CarTypeTable&,const std::string&,
+                            CarAssets&,std::string&);
+
 // Reads GLOBALB.BUN read-only, parses its car type table and resolves one
 // car. The same failures as resolve_car_assets, plus the loader's own.
 bool load_car_assets(const std::filesystem::path& global_bun,

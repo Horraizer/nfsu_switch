@@ -34,7 +34,7 @@ def main():
         require(not re.search(r"(^|\n)(FAIL|ERROR|error|pinned: DIFFERENT)", text),
                 f"{name}: failed producer verdict: {text}")
         record = re.search(r"telemetry: records ([0-9]+) bytes ([0-9]+) sha256 ([A-F0-9]{64})\n", text)
-        require(record and int(record[1]) == count and int(record[2]) == count * 760,
+        require(record and int(record[1]) == count and int(record[2]) == count * 1564,
                 f"{name}: complete fresh telemetry records required")
         require(record[3] == pins[name] and "pinned: EQUAL" in text,
                 f"{name}: actual circuit hash differs from source fixture: {text}")
@@ -48,16 +48,19 @@ def main():
         if name == "drive":
             require(re.search(r"race step [0-9]+ crossed-forward index 0 lap 0", text),
                     "drive: start line crossing missing")
-        if name in ("wall", "wall-square", "drop"):
-            surface = "road" if name == "drop" else "wall"
-            polygon = "6772" if name == "drop" else "9374"
+        if name in ("wall", "wall-square"):
             require(contacts > 0 and impulses > 0 and float(summary[4]) > 0 and resets == 0,
                     f"{name}: real collision impulse required without concealed reset")
-            require(re.search(r"contact step [0-9]+ polygon " + polygon + " " + surface + " depth ", text),
-                    f"{name}: actual expected retail surface contact missing")
-            if name == "drop":
-                require(unsupported > 0 and "wheels road road road road" in text,
-                        "drop: airborne-to-supported landing missing")
+            require(re.search(r"contact step [0-9]+ polygon 9374 wall depth ", text),
+                    f"{name}: actual expected retail wall contact missing")
+        if name == "drop":
+            # Native588AB0 bump stops arrest the five-metre drop before the
+            # chassis reaches the road. Preserve the complete state pin and
+            # require airborne-to-supported landing without hull penetration.
+            require(contacts == impulses == resets == 0 and float(summary[4]) == 0,
+                    "drop: native bump-stop landing must avoid chassis penetration/reset")
+            require(unsupported > 0 and "wheels road road road road" in text,
+                    "drop: airborne-to-supported landing missing")
         if name == "leave":
             require(contacts == impulses == 0 and resets == 1 and unsupported > 0,
                     "leave: one bounds reset required, without hull collision")

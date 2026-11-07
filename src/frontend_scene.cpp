@@ -1,5 +1,7 @@
 #include "nfsu/frontend_scene.h"
+#include "nfsu/career_ride.h"
 #include "nfsu/car_shadow.h"
+#include "nfsu/car_neon.h"
 #include <cstring>
 #include <limits>
 #include <cmath>
@@ -15,12 +17,18 @@
 #include <algorithm>
 #include <stdexcept>
 namespace nfsu {
+struct FrontendSceneCarSource {
+    std::string car;
+    bool exhaust=false;
+    StockFrameInputs inputs;
+    StockFrameGeometryCache geometry;
+};
 namespace {
 bool prepare_frontend_shadow(const StockFrameInputs& inputs,const StockFrame& car,
     CarShadowAsset& shadow,std::string& error) {
     std::vector<std::uint32_t> loaded;
     for(const auto& mesh:car.car_geometry.meshes)if(mesh.has_directory_entry)loaded.push_back(mesh.directory_hash);
-    for(const auto& source:car.stock_geometry)for(const auto& mesh:source.meshes)
+    for(const auto& source:car.geometry_sources())for(const auto& mesh:source.meshes)
         if(mesh.has_directory_entry)loaded.push_back(mesh.directory_hash);
     std::sort(loaded.begin(),loaded.end());loaded.erase(std::unique(loaded.begin(),loaded.end()),loaded.end());
     float low[3]={std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()};
@@ -61,14 +69,14 @@ bool prepare_frontend_shadow(const StockFrameInputs& inputs,const StockFrame& ca
         for(unsigned c=0;c<3;++c){low[c]=std::min(low[c],a[c]);high[c]=std::max(high[c],b[c]);}
     }
     for(unsigned c=0;c<3;++c){low[c]-=.1F;high[c]+=.1F;}
-    const auto hash=bin_hash("SKYLINE_SHADOWFE");std::vector<std::uint32_t> wanted{hash};
+    const auto hash=bin_hash(car.report.car_type_name+"_SHADOWFE");std::vector<std::uint32_t> wanted{hash};
     RenderTextureSource source;source.bytes=&inputs.file(StockFrameFile::car_textures).bytes;
     source.packs.push_back(&car.car_pack);source.wanted=&wanted;RenderTextureSet decoded;
     if(!decode_render_texture_sources({source},{},decoded,error))return false;
     if(decoded.textures.size()!=1 || !decoded.textures[0].usable() || !decoded.textures[0].claims_hash(hash)) {
-        error="original SKYLINE_SHADOWFE missing or unusable";return false;
+        error="original car SHADOWFE missing or unusable";return false;
     }
-    shadow.texture=std::move(decoded.textures[0]);shadow.texture_name="SKYLINE_SHADOWFE";
+    shadow.texture=std::move(decoded.textures[0]);shadow.texture_name=car.report.car_type_name+"_SHADOWFE";
     // FE branch 0x56EB40 uses X=1.115 and Y=1; original grid height
     // 0x56EFA6..0x56EFD7 is fixed ground .02, with four lifted samples.
     low[0]*=1.115F;high[0]*=1.115F;
@@ -91,17 +99,17 @@ bool prepare_frontend_shadow(const StockFrameInputs& inputs,const StockFrame& ca
     return true;
 }
 }
-bool bind_frontend_skyline_runtime_skin(StockFrame& car,const StockSceneRequest& request,std::string& error) {
-    if(!car.skinned || request.car_type_name!="SKYLINE") {
+bool bind_frontend_runtime_skin(StockFrame& car,const StockSceneRequest& request,std::string& error) {
+    if(!car.skinned || request.car_type_name!=car.report.car_type_name) {
         error="original frontend runtime skin unavailable";return false;
     }
     // 0x580C37..0x580C73 gives body and global source slots the same
     // installed target. 0x56C375..0x56C389 binds GLOBAL_SKIN1 to that target.
     // Reuse the already-composed surface; never compose a second skin.
-    const std::vector<std::uint32_t> bound={car.skin.target_hash,bin_hash("SKYLINE_SKIN1"),bin_hash("GLOBAL_SKIN1")};
+    const std::vector<std::uint32_t> bound={car.skin.target_hash,bin_hash(request.car_type_name+"_SKIN1"),bin_hash("GLOBAL_SKIN1")};
     if(!bind_runtime_skin(car.skin,bound,car.skin_binding.source,car.textures,car.skin_binding,error))return false;
     std::vector<const GeometryReport*> sources={&car.car_geometry};
-    for(const auto& geometry:car.stock_geometry)sources.push_back(&geometry);
+    for(const auto& geometry:car.geometry_sources())sources.push_back(&geometry);
     const auto enriched=car.scene.draws;
     if(!prepare_stock_car_scene(sources,car.textures,car.parts,car.car_types,request,
         SceneLimits{},car.scene,car.report,error))return false;
@@ -119,11 +127,15 @@ bool bind_frontend_skyline_runtime_skin(StockFrame& car,const StockSceneRequest&
     }
     car.skin_bound_names.push_back("GLOBAL_SKIN1");return true;
 }
+bool bind_frontend_skyline_runtime_skin(StockFrame& car,const StockSceneRequest& request,std::string& error) {
+    if(request.car_type_name!="SKYLINE") {error="original frontend runtime skin unavailable";return false;}
+    return bind_frontend_runtime_skin(car,request,error);
+}
 bool bind_frontend_sponsors(const StockFrameInputs& inputs,const InstalledPartSelection& installed,
     StockFrame& car,std::string& error) {
     StockParts parts;
     FrontendSponsorHashes hashes;
-    if(!select_installed_parts(car.parts,"SKYLINE",installed,parts,error) ||
+    if(!select_installed_parts(car.parts,car.report.car_type_name,installed,parts,error) ||
        !resolve_frontend_sponsors(car.parts,parts,hashes,error))return false;
     // Genuine constructor 0x56AA9A..0x56AAC9 binds eight replacement entries
     // to slots19..29: panel=slot-19, subtract4 for the wide slots26..29.
@@ -195,8 +207,76 @@ bool bind_frontend_sponsors(const StockFrameInputs& inputs,const InstalledPartSe
     return validate_prepared_scene(car.scene,error);
 }
 namespace {
+bool load_scene_car(const std::filesystem::path& root,unsigned width,unsigned height,
+    StockFrame& car,RenderOptions& options,std::string& error,CarShadowAsset* shadow,
+    const std::string& stock_car,const CareerRideSetup* customized,CarNeonAsset* neon,
+    const std::vector<unsigned char>* front=nullptr,std::shared_ptr<const FrontendSceneCarSource>* cache=nullptr,
+    StockFramePaintCache* paint_cache=nullptr) {
+    const auto name=stock_car.empty()?std::string("SKYLINE"):stock_car;
+    std::shared_ptr<const FrontendSceneCarSource> source=cache?*cache:nullptr;
+    if(!source||source->car!=name||(customized&&!source->exhaust)) {
+        auto prepared=std::make_shared<FrontendSceneCarSource>();prepared->car=name;
+        CarAssets assets;
+        if(!load_car_assets(root/"Global/GLOBALB.BUN",name,assets,error))return false;
+        if(!read_car_frame_inputs(root,assets,prepared->inputs,true,error)) {
+            error=car_frame_inputs_error(prepared->inputs,error,root);return false;
+        }
+        if(customized) {
+            if(!read_exhaust_family_inputs(root,prepared->inputs)){error="garage exhaust family unavailable";return false;}
+            prepared->exhaust=true;
+        }
+        if(!build_stock_frame_geometry_cache(prepared->inputs,prepared->geometry,error))return false;
+        source=std::move(prepared);if(cache)*cache=source;
+    }
+    const auto& inputs=source->inputs;
+    const auto& globals=inputs.files[2].bytes;
+    const auto parts=parse_car_part_database(globals.data(),globals.size());
+    InstalledPartSelection installed;
+    auto request=stock_car_request(name);request.pass=CarDrawPass::front_end;
+    auto skin=stock_car_skin(name);
+    if(customized) {
+        if(customized->request.car_type_name!=name){error="garage variant car mismatch";return false;}
+        request=customized->request;request.pass=CarDrawPass::front_end;
+        installed=request.installed_parts;skin=customized->skin;
+    }else if(stock_car.empty()) {
+        if(!front){error="special menu car needs original frontend data";return false;}
+        if(!resolve_frontend_skyline_parts(*front,parts,installed,error))return false;
+        request.installed_parts=installed;
+        if(!resolve_frontend_skyline_skin(globals,parts,installed,skin.selection,error))return false;
+    }
+    if(!prepare_stock_frame(inputs,request,skin,car,error,true,&source->geometry,paint_cache) ||
+       !bind_frontend_runtime_skin(car,request,error))return false;
+    if((stock_car.empty()||customized) && !bind_frontend_sponsors(inputs,installed,car,error))return false;
+    if(shadow && !prepare_frontend_shadow(inputs,car,*shadow,error))return false;
+    if(customized&&shadow&&neon&&!prepare_car_neon(inputs,car,*shadow,*neon,error))return false;
+    options.width=width;options.height=height;
+    // Main entry 0x487BA0 mode0 -> 0x4870C0 selects saved table0 at
+    // 0x7788E0, not constructor camera fields. These pose values invert the
+    // genuine 0x487680 VIEW matrix, then map raw (x,y,z) -> world (x,z,-y).
+    // Preserve its roll, target and eye through the shared CPU/GPU camera.
+    options.camera.yaw_deg=-45.35166721096892;
+    options.camera.pitch_deg=-1.37691385807865;
+    options.camera.distance=3.905382401886139;
+    options.camera.target={0,0.859000027179718,0.9200000166893005};
+    options.camera.roll_deg=-6.62474634639572;
+    // Original 0x48753D publishes fixed FOV12463. Primary-view projection
+    // 0x40DD00 scales horizontal half-angle by 6B7C70 and vertical half-angle
+    // by viewport height/width * 6B7C74/6B7C6C, truncating before native sine.
+    const auto cotangent=[](double phase) {
+        const auto half=static_cast<std::uint16_t>(static_cast<unsigned>(phase));
+        return double(frontend_fixed_sine(static_cast<std::uint16_t>(half+0x4000U))) /
+            double(frontend_fixed_sine(half));
+    };
+    options.camera.focal_x_override=cotangent(12463.0*double(1.100000023841858F)*.5);
+    options.camera.focal_y_override=cotangent(12463.0*double(height)/double(width)*
+        double(1.100000023841858F)/double(0.9090908765792847F)*.5);
+    options.camera.far_plane=300;options.material_state=MaterialStateMode::retail;
+    options.texture_filter=TextureFilterMode::linear;
+    options.vertex_color=true;options.shading=ShadingMode::none;options.car_shading=true;
+    return true;
+}
 bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned height,
-    PreparedCarScene& tunnel,StockFrame& car,RenderOptions& options,std::string& error,CarShadowAsset* shadow=nullptr,PreparedCarScene* capture=nullptr,PreparedCarScene* floor=nullptr,PreparedCarScene* sprites=nullptr,std::vector<MeshMarker>* road_markers=nullptr) {
+    PreparedCarScene& tunnel,StockFrame& car,RenderOptions& options,std::string& error,CarShadowAsset* shadow=nullptr,PreparedCarScene* capture=nullptr,PreparedCarScene* floor=nullptr,PreparedCarScene* sprites=nullptr,std::vector<MeshMarker>* road_markers=nullptr,const std::string& stock_car="",const CareerRideSetup* customized=nullptr,CarNeonAsset* neon=nullptr,std::shared_ptr<const FrontendSceneCarSource>* cache=nullptr) {
     std::vector<unsigned char> front,road;
     std::vector<RaceTableIssue> issues;
     RaceTableLimits limits; limits.max_file_size=32*1024*1024;limits.max_image_size=64*1024*1024;
@@ -308,52 +388,35 @@ bool load_scene_assets(const std::filesystem::path& root,unsigned width,unsigned
         MeshSelection selected;selected.selectors.push_back({MeshSelectorKind::name,0,"TRFE_ROAD02_Z",0});
         if(!prepare_car_scene(geometry,textures,selected,SceneLimits{},*floor,error))return false;
     }
-    CarAssets assets;
-    if(!load_car_assets(root/"Global/GLOBALB.BUN","SKYLINE",assets,error)) return false;
-    StockFrameInputs inputs;
-    if(!read_car_frame_inputs(root,assets,inputs,true,error)) {
-        error=car_frame_inputs_error(inputs,error,root);return false;
-    }
-    const auto& globals=inputs.files[2].bytes;
-    const auto parts=parse_car_part_database(globals.data(),globals.size());
-    InstalledPartSelection installed;
-    if(!resolve_frontend_skyline_parts(front,parts,installed,error)) return false;
-    auto request=stock_car_request("SKYLINE");
-    request.installed_parts=installed;request.pass=CarDrawPass::front_end;
-    auto skin=stock_car_skin("SKYLINE");
-    if(!resolve_frontend_skyline_skin(globals,parts,installed,skin.selection,error)) return false;
-    if(!prepare_stock_frame(inputs,request,skin,car,error,true) ||
-       !bind_frontend_skyline_runtime_skin(car,request,error) ||
-       !bind_frontend_sponsors(inputs,installed,car,error)) return false;
-    if(shadow && !prepare_frontend_shadow(inputs,car,*shadow,error))return false;
-    options.width=width;options.height=height;
-    // Main entry 0x487BA0 mode0 -> 0x4870C0 selects saved table0 at
-    // 0x7788E0, not constructor camera fields. These pose values invert the
-    // genuine 0x487680 VIEW matrix, then map raw (x,y,z) -> world (x,z,-y).
-    // Preserve its roll, target and eye through the shared CPU/GPU camera.
-    options.camera.yaw_deg=-45.35166721096892;
-    options.camera.pitch_deg=-1.37691385807865;
-    options.camera.distance=3.905382401886139;
-    options.camera.target={0,0.859000027179718,0.9200000166893005};
-    options.camera.roll_deg=-6.62474634639572;
-    // Original 0x48753D publishes fixed FOV12463. Primary-view projection
-    // 0x40DD00 scales horizontal half-angle by 6B7C70 and vertical half-angle
-    // by viewport height/width * 6B7C74/6B7C6C, truncating before native sine.
-    const auto cotangent=[](double phase) {
-        const auto half=static_cast<std::uint16_t>(static_cast<unsigned>(phase));
-        return double(frontend_fixed_sine(static_cast<std::uint16_t>(half+0x4000U))) /
-            double(frontend_fixed_sine(half));
-    };
-    options.camera.focal_x_override=cotangent(12463.0*double(1.100000023841858F)*.5);
-    options.camera.focal_y_override=cotangent(12463.0*double(height)/double(width)*
-        double(1.100000023841858F)/double(0.9090908765792847F)*.5);
-    options.camera.far_plane=300;options.material_state=MaterialStateMode::retail;
-    options.texture_filter=TextureFilterMode::linear;
-    options.vertex_color=true;options.shading=ShadingMode::none;options.car_shading=true;
-    return true;
+    return load_scene_car(root,width,height,car,options,error,shadow,stock_car,customized,neon,&front,cache);
 }
 }
 namespace {
+bool draw_frontend_neon(Frame& target,const RenderOptions& options,const CarNeonAsset& asset,
+    const RecordedDraw& draw,std::string& error) {
+    if(!asset.enabled||draw.material.alpha[0]<=0)return true;
+    CameraFrame camera;
+    if(options.explicit_camera)camera=*options.explicit_camera;
+    else if(!make_camera_frame(options.camera,target.width(),target.height(),camera,error))return false;
+    RasterMaterial material;material.texture=&asset.ground.texture;material.depth_write=false;material.linear_filter=true;
+    material.ordinary_world=true; // Preserve native RGB2x without clamping vertex tint first.
+    material.blend=render_blend_mode_of(asset.ground.texture.alpha_blend_mode)==RenderBlendMode::additive?
+        RenderBlendMode::additive:RenderBlendMode::source_over;
+    material.alpha_scale=draw.material.alpha[0];
+    auto tinted=options;tinted.vertex_color=true;tinted.car_shading=false;RenderStats stats;Rasterizer raster(target,tinted,{},stats);
+    const auto rgb=static_cast<std::uint32_t>(draw.material.alpha[2]);
+    for(const auto& triangle:asset.ground.triangles) {
+        ClipVertex clip[3];const unsigned indices[]={triangle.a,triangle.b,triangle.c};
+        for(unsigned k=0;k<3;++k) {
+            const auto& v=asset.ground.vertices[indices[k]];
+            clip[k]=project_point(camera,placed_vertex(v,draw.placement.rows));clip[k].u=v.u;clip[k].v=v.v;
+            // The ordinary-world raster path expands stored BGR to logical RGB.
+            clip[k].r=float((rgb>>16)&255);clip[k].g=float((rgb>>8)&255);clip[k].b=float(rgb&255);
+        }
+        if(!raster.draw_triangle(clip,material,0x7ffd0000U,error))return false;
+    }
+    return true;
+}
 bool draw_frontend_road_sprites(Frame& target,const RenderOptions& options,
     const CameraFrame& camera,const std::vector<RecordedDraw>& draws,unsigned view,
     const PreparedCarScene& sprites,std::string& error) {
@@ -363,16 +426,19 @@ bool draw_frontend_road_sprites(Frame& target,const RenderOptions& options,
         const unsigned descriptor=draw.frontend_sprite_kind==1?1:draw.frontend_sprite_kind==2?2:0;
         const auto& source=sprites.draws.at(descriptor);
         RasterMaterial material;material.texture=&sprites.textures.at(source.texture);material.blend=RenderBlendMode::additive;
-        material.depth_write=false;material.linear_filter=true;material.alpha_scale=draw.material.alpha[0];
+        material.depth_write=false;material.linear_filter=true;
+        // Authenticated world.efx multiplies all RGBA lanes by two.
+        material.ordinary_world=draw.frontend_sprite_kind!=0;
+        material.alpha_scale=draw.material.alpha[0]*(material.ordinary_world?2:1);
         ClipVertex corners[4];const int signs[4][2]={{-1,1},{1,1},{1,-1},{-1,-1}};
         for(unsigned i=0;i<4;++i) {
             float raw[3];for(unsigned axis=0;axis<3;++axis)raw[axis]=draw.placement.rows[12+axis]+
                 signs[i][0]*draw.placement.rows[axis]+signs[i][1]*draw.placement.rows[8+axis];
             corners[i]=project_point(camera,{raw[0],raw[2],-raw[1]});
             corners[i].u=i==0 || i==3?0:1;corners[i].v=i<2?0:1;
-            corners[i].r=draw.material.environment_range[3]>1.5F?draw.material.environment_color[0]:110;
+            corners[i].r=draw.material.environment_range[3]>1.5F?draw.material.environment_color[material.ordinary_world?2:0]:110;
             corners[i].g=draw.material.environment_range[3]>1.5F?draw.material.environment_color[1]:100;
-            corners[i].b=draw.material.environment_range[3]>1.5F?draw.material.environment_color[2]:75;
+            corners[i].b=draw.material.environment_range[3]>1.5F?draw.material.environment_color[material.ordinary_world?0:2]:75;
         }
         const ClipVertex a[3]={corners[0],corners[1],corners[2]},b[3]={corners[0],corners[2],corners[3]};
         if(!raster.draw_triangle(a,material,0x7FFE0000U,error) ||
@@ -381,9 +447,13 @@ bool draw_frontend_road_sprites(Frame& target,const RenderOptions& options,
     return true;
 }
 }
-struct FrontendGpuScene::Impl {
+struct FrontendSceneEnvironment {
     PreparedCarScene tunnel,capture,floor,sprites;
     std::vector<MeshMarker> road_markers;
+};
+struct FrontendGpuScene::Impl {
+    std::shared_ptr<const FrontendSceneEnvironment> environment;
+    std::shared_ptr<const FrontendSceneCarSource> car_source;
     struct CarGlow {float point[3],normal[3];unsigned descriptor;float opacity;};
     std::vector<CarGlow> car_glows;
     std::size_t car_sprite_start=0;
@@ -400,56 +470,99 @@ struct FrontendGpuScene::Impl {
     // Preserve explicit zeros until an authenticated setter is established.
     float road_lateral=0,road_rgb[3]{},road_attenuation[3]{};
     CarShadowAsset shadow;
+    CarNeonAsset neon;
+    std::size_t ground_draw_count=1;
     std::size_t car_draw_count=0;
     RecordedCommands commands;
     std::size_t road_groups=0;
     std::vector<DrawInstanceUniform> base_car_placements;
     std::uint16_t wheel_phase=0;
+    std::uint32_t effect_ticks=0;
     float wheel_radius=0;
     float car_root_height=0;
+    std::vector<std::unique_ptr<Impl>> alternatives;
+    std::vector<std::vector<RecordedDraw>> car_templates;
+    std::vector<const Impl*> car_template_owners;
+    std::vector<std::vector<unsigned char>> paint_payloads;
+    std::vector<RecordedDraw> road_templates,road_sprite_templates;
+    std::size_t selected=0,requested=0,capacity=0;
+    std::vector<std::string> car_types;
+    unsigned transition=0;
+    float transition_time=0,travel=0,travel_delta=0;
+    FrontendBrowserCamera browser_camera;
+    unsigned focus_slot=~0U;
+    CameraFrame browser_frame;
     bool ready=false;
 };
 FrontendGpuScene::FrontendGpuScene():impl_(std::make_unique<Impl>()){}
 FrontendGpuScene::~FrontendGpuScene()=default;
-bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,unsigned height,std::string& error) {
-    if(impl_->ready) {error="frontend GPU scene already loaded";return false;}
-    auto next=std::make_unique<Impl>();auto& p=*next;
-    if(!load_scene_assets(root,width,height,p.tunnel,p.car,p.options,error,&p.shadow,&p.capture,&p.floor,&p.sprites,&p.road_markers))return false;
+bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,unsigned height,std::string& error,const std::string& stock_car,const CareerRideSetup* customized) {
+    const bool loaded=load_cached(root,width,height,error,stock_car,customized,{},false);
+    if(loaded){impl_->car.cached_geometry=nullptr;impl_->car_source.reset();}
+    return loaded;
+}
+std::shared_ptr<const FrontendSceneEnvironment> FrontendGpuScene::environment() const {
+    return impl_->environment;
+}
+std::shared_ptr<const FrontendSceneCarSource> FrontendGpuScene::car_source() const {return impl_->car_source;}
+void FrontendGpuScene::release_preparation_cache() {impl_->car_source.reset();}
+bool FrontendGpuScene::load_cached(const std::filesystem::path& root,unsigned width,unsigned height,
+    std::string& error,const std::string& stock_car,const CareerRideSetup* customized,
+    std::shared_ptr<const FrontendSceneEnvironment> environment,bool vehicle_only,
+    std::shared_ptr<const FrontendSceneCarSource> source,StockFramePaintCache* paint_cache) {
+    // The immutable room is shared across background jobs. Per-car geometry,
+    // shadows, neon, skin and draw constants keep their own lifetimes.
+    auto next=std::make_unique<Impl>();auto& p=*next;p.car_source=std::move(source);
+    p.car_types={stock_car.empty()?"SKYLINE":stock_car};
+    if(environment) {
+        p.environment=std::move(environment);
+        if(!load_scene_car(root,width,height,p.car,p.options,error,&p.shadow,stock_car,customized,&p.neon,nullptr,&p.car_source,paint_cache))return false;
+    }else {
+        auto room=std::make_shared<FrontendSceneEnvironment>();
+        if(!load_scene_assets(root,width,height,room->tunnel,p.car,p.options,error,&p.shadow,&room->capture,&room->floor,&room->sprites,&room->road_markers,stock_car,customized,&p.neon,&p.car_source))return false;
+        p.environment=std::move(room);
+    }
     // Original solid lookup 0x53F9B0 requests missing->DEFAULTALPHA through
     // 0x5461C0. The tunnel's zero replacement table bypasses 0x53F540;
     // 0x40C910 skips DEFAULTALPHA at 0x40CA0C, before reflection uniforms.
     // Only the authenticated absent wall-strip hash receives that policy.
     // Keep its authored geometry resident; other missing assets still fail.
     std::set<std::size_t> native_empty;
-    for(std::size_t group=0;group<p.tunnel.draws.size();++group) {
-        const auto& draw=p.tunnel.draws[group];
+    if(!vehicle_only)for(std::size_t group=0;group<p.environment->tunnel.draws.size();++group) {
+        const auto& draw=p.environment->tunnel.draws[group];
         if(draw.binding==BindingKind::unresolved && draw.texture_hash==0xC2456B43U) {
-            const auto& name=p.tunnel.meshes.at(draw.mesh).name;
+            const auto& name=p.environment->tunnel.meshes.at(draw.mesh).name;
             if(name!="TRFE_ROAD02_04_A" && name!="TRFE_ROAD02_07_A") {
                 error="native empty tunnel material outside authenticated meshes";return false;
             }
             native_empty.insert(group);
         }
     }
-    for(const auto* scene:{&p.tunnel,&p.car.scene})for(const auto& draw:scene->draws)
+    for(const auto* scene:std::array<const PreparedCarScene*,2>{&p.environment->tunnel,&p.car.scene})for(const auto& draw:scene->draws)
         if(draw.drawable && draw.binding!=BindingKind::resolved &&
-           !(scene==&p.tunnel && draw.binding==BindingKind::unresolved && draw.texture_hash==0xC2456B43U)) {
+           !(scene==&p.environment->tunnel && draw.binding==BindingKind::unresolved && draw.texture_hash==0xC2456B43U)) {
             std::ostringstream message;message<<"original frontend texture binding unresolved: 0x"<<std::hex<<draw.texture_hash;
             error=message.str();return false;
         }
     RecordedCommands road,car;
-    if(!record_car_commands(p.tunnel,p.options,RenderLimits{},kNoHandle,road,error) ||
-       !record_car_commands(p.car.scene,p.options,RenderLimits{},p.car.skinned?p.car.skin_binding.source:kNoHandle,car,error))return false;
-    auto& road_draws=road.owning_draws();
-    road_draws.erase(std::remove_if(road_draws.begin(),road_draws.end(),
-        [&](const auto& draw){return native_empty.count(draw.group)!=0;}),road_draws.end());
-    const auto originals=road_draws;p.road_groups=originals.size();
-    auto& repeated=road.owning_draws();repeated.clear();repeated.reserve(p.road_groups*5);
-    for(unsigned segment=0;segment<5;++segment)for(const auto& original:originals) {
-        repeated.push_back(original);auto& draw=repeated.back();
-        draw.name+="_FE_SEGMENT"+std::to_string(segment);draw.instance=segment;
+    if(!record_car_commands(p.car.scene,p.options,RenderLimits{},p.car.skinned?p.car.skin_binding.source:kNoHandle,car,error))return false;
+    if(vehicle_only) {
+        // Preserve the full room+car assembly's diagnostic draw identity.
+        for(auto& draw:car.owning_draws())draw.name="race-car/"+draw.name;
+        p.commands=std::move(car);
+    }else {
+        if(!record_car_commands(p.environment->tunnel,p.options,RenderLimits{},kNoHandle,road,error))return false;
+        auto& road_draws=road.owning_draws();
+        road_draws.erase(std::remove_if(road_draws.begin(),road_draws.end(),
+            [&](const auto& draw){return native_empty.count(draw.group)!=0;}),road_draws.end());
+        const auto originals=road_draws;p.road_groups=originals.size();
+        auto& repeated=road.owning_draws();repeated.clear();repeated.reserve(p.road_groups*5);
+        for(unsigned segment=0;segment<5;++segment)for(const auto& original:originals) {
+            repeated.push_back(original);auto& draw=repeated.back();
+            draw.name+="_FE_SEGMENT"+std::to_string(segment);draw.instance=segment;
+        }
+        if(!combine_race_commands(std::move(road),car,p.commands,error))return false;
     }
-    if(!combine_race_commands(std::move(road),car,p.commands,error))return false;
     const auto& type=p.car.car_types.records.at(p.car.report.car_type);
     p.wheel_radius=type.wheels[0].rolling_radius;
     // Original 0x4B17F5..0x4B1825 places the whole FE car above its
@@ -471,9 +584,17 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
     RecordedCommands with_shadow;
     if(!combine_race_commands(std::move(p.commands),shadow_commands,with_shadow,error))return false;
     p.commands=std::move(with_shadow);
+    if(p.neon.enabled) {
+        RecordedCommands neon,combined;shadow_placement.strength=1;
+        if(!record_car_neon_commands(p.neon,0,shadow_placement,p.options,neon,error)||
+           !combine_race_commands(std::move(p.commands),neon,combined,error))return false;
+        p.commands=std::move(combined);p.ground_draw_count=2;
+    }
+    auto sprite_options=p.options;sprite_options.car_shading=false;
+    if(!vehicle_only) {
     auto capture_options=p.options;capture_options.car_shading=false;
     RecordedCommands cube_commands;
-    if(!record_car_commands(p.capture,capture_options,RenderLimits{},kNoHandle,cube_commands,error))return false;
+    if(!record_car_commands(p.environment->capture,capture_options,RenderLimits{},kNoHandle,cube_commands,error))return false;
     const auto cube_templates=cube_commands.owning_draws();
     cube_commands.owning_draws().clear();
     for(unsigned segment=0;segment<3;++segment)for(const auto& original:cube_templates) {
@@ -488,7 +609,7 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
     p.commands.frontend_cube_draws.assign(all_draws.begin()+visible_count,all_draws.end());
     all_draws.resize(visible_count);
     RecordedCommands floor_commands;
-    if(!record_car_commands(p.floor,capture_options,RenderLimits{},kNoHandle,floor_commands,error))return false;
+    if(!record_car_commands(p.environment->floor,capture_options,RenderLimits{},kNoHandle,floor_commands,error))return false;
     const auto floor_templates=floor_commands.owning_draws();floor_commands.owning_draws().clear();
     for(unsigned segment=0;segment<3;++segment)for(const auto& draw:floor_templates) {
         floor_commands.owning_draws().push_back(draw);floor_commands.owning_draws().back().instance=segment;
@@ -499,19 +620,14 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
     p.commands=std::move(resident_floor);
     auto& complete=p.commands.owning_draws();
     p.commands.reflections.assign(complete.begin()+count,complete.end());complete.resize(count);
-    for(std::size_t mesh=0;mesh<p.tunnel.meshes.size();++mesh)
-        if(p.tunnel.meshes[mesh].name=="TRFE_ROAD02_A")p.floor_mesh=mesh;
+    for(std::size_t mesh=0;mesh<p.environment->tunnel.meshes.size();++mesh)
+        if(p.environment->tunnel.meshes[mesh].name=="TRFE_ROAD02_A")p.floor_mesh=mesh;
     if(p.floor_mesh==kNoHandle){error="native worldreflect floor absent";return false;}
     for(std::size_t i=0;i<p.road_groups*5;++i)if(complete[i].mesh==p.floor_mesh)
         complete[i].material.environment_min[3]=1;
-    for(auto& draw:p.commands.owning_draws())if(draw.material.surface.gates[0]!=0) {
-        for(const auto& program:shader_manifest::kPrograms)
-            if(std::string(program.name)=="frontend_car_textured")draw.program=&program;
-    }
     p.commands.frontend_light=p.lighting;p.commands.frontend_light_enabled=true;
     RecordedCommands sprite_commands;
-    auto sprite_options=p.options;sprite_options.car_shading=false;
-    if(!record_car_commands(p.sprites,sprite_options,RenderLimits{},kNoHandle,sprite_commands,error))return false;
+    if(!record_car_commands(p.environment->sprites,sprite_options,RenderLimits{},kNoHandle,sprite_commands,error))return false;
     auto sprite=sprite_commands.owning_draws().at(0);sprite.name="_FE_ROAD_GLOW";
     for(std::size_t i=0;i<sprite.program->variant_count;++i)
         if(std::string(sprite.program->variants[i].name)=="additive")sprite.pipeline=sprite.program->variants[i];
@@ -532,6 +648,12 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
         auto draw=sprites[p.sprite_start];draw.instance=i;draw.frontend_sprite_view=face+10;
         p.commands.frontend_cube_draws.push_back(draw);
     }
+    }
+    p.commands.frontend_light=p.lighting;p.commands.frontend_light_enabled=true;
+    for(auto& draw:p.commands.owning_draws())if(draw.material.surface.gates[0]!=0) {
+        for(const auto& program:shader_manifest::kPrograms)
+            if(std::string(program.name)=="frontend_car_textured")draw.program=&program;
+    }
     // FE RenderCar wrapper56A040 constructs56A130 with null owner.
     // Original56D8D0 therefore selects head1 and resting tail6B5DA0=.7.
     // Its type3 owner branch is a separate state, not an FE-name default.
@@ -539,7 +661,7 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
         const bool head=marker.name_hash==0x9DB90133U || marker.name_hash==0xD09091C6U;
         const bool tail=marker.name_hash==0x31A66786U || marker.name_hash==0xA2A2FC7CU || marker.name_hash==0xBF700A79U;
         if(!head && !tail)continue;
-        const auto& geometry=marker.geometry_source==0?p.car.car_geometry:p.car.stock_geometry.at(marker.geometry_source-1);
+        const auto& geometry=marker.geometry_source==0?p.car.car_geometry:p.car.geometry_sources().at(marker.geometry_source-1);
         const auto& record=geometry.meshes.at(marker.source_mesh).markers.at(marker.index);
         for(unsigned descriptor=head?0:2;descriptor<(head?2:3);++descriptor) {
             Impl::CarGlow glow;glow.descriptor=descriptor;glow.opacity=head?1:.699999988079071F;
@@ -551,7 +673,7 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
     }
     if(p.car_glows.empty()){error="original FE car flare markers absent";return false;}
     RecordedCommands car_sprites;
-    if(!record_car_commands(p.sprites,sprite_options,RenderLimits{},kNoHandle,car_sprites,error))return false;
+    if(!record_car_commands(p.environment->sprites,sprite_options,RenderLimits{},kNoHandle,car_sprites,error))return false;
     const auto templates=car_sprites.owning_draws();car_sprites.owning_draws().clear();
     for(unsigned i=0;i<p.car_glows.size();++i) {
         const unsigned descriptor=p.car_glows[i].descriptor;
@@ -559,7 +681,7 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
         draw.name="_FE_CAR_GLOW"+std::to_string(descriptor);draw.instance=i;draw.frontend_sprite_view=1;draw.frontend_sprite_kind=descriptor+1;
         for(std::size_t variant=0;variant<draw.program->variant_count;++variant)
             if(std::string(draw.program->variants[variant].name)=="additive")draw.pipeline=draw.program->variants[variant];
-        draw.pipeline.depth_write=false;draw.material.environment_range[3]=2;
+        draw.pipeline.depth_write=false;draw.material.environment_range[3]=2;draw.material.alpha[3]=8;
         car_sprites.owning_draws().push_back(draw);
     }
     p.car_sprite_start=p.commands.owning_draws().size();
@@ -567,18 +689,265 @@ bool FrontendGpuScene::load(const std::filesystem::path& root,unsigned width,uns
     if(!combine_race_commands(std::move(p.commands),car_sprites,combined_car_sprites,error))return false;
     p.commands=std::move(combined_car_sprites);
     p.commands.frontend_light=p.lighting;p.commands.frontend_light_enabled=true;
-    p.ready=true;impl_.swap(next);return frame(0,0,error);
+    p.ready=true;impl_.swap(next);return vehicle_only?true:frame(0,0,error);
 }
+bool FrontendGpuScene::load_browser(const std::filesystem::path& root,unsigned width,unsigned height,
+    const std::vector<std::string>& cars,std::string& error) {
+    return load_choices(root,width,height,cars,nullptr,error);
+}
+bool FrontendGpuScene::load_garage(const std::filesystem::path& root,unsigned width,unsigned height,
+    const std::vector<CareerRideSetup>& variants,std::string& error,FrontendGpuScene* previous,
+    std::shared_ptr<const FrontendSceneEnvironment> environment,
+    std::shared_ptr<const FrontendSceneCarSource> car_source) {
+    if(previous==this){error="garage previous owner aliases current scene";return false;}
+    std::vector<std::string> cars;
+    for(const auto& variant:variants)cars.push_back(variant.request.car_type_name);
+    return load_choices(root,width,height,cars,&variants,error,previous,std::move(environment),std::move(car_source));
+}
+bool FrontendGpuScene::load_choices(const std::filesystem::path& root,unsigned width,unsigned height,
+    const std::vector<std::string>& cars,const std::vector<CareerRideSetup>* variants,std::string& error,FrontendGpuScene* previous,
+    std::shared_ptr<const FrontendSceneEnvironment> environment,
+    std::shared_ptr<const FrontendSceneCarSource> car_source) {
+    if(cars.empty()){error="empty frontend car roster";return false;}
+    FrontendGpuScene prepared;
+    if(!prepared.load_cached(root,width,height,error,cars.front(),variants?&variants->front():nullptr,std::move(environment),false,std::move(car_source)))return false;
+    auto& p=*prepared.impl_;p.car_types=cars;
+    const auto initial=p.commands.owning_draws();
+    p.road_templates.assign(initial.begin(),initial.begin()+p.road_groups*5);
+    p.road_sprite_templates.assign(initial.begin()+p.sprite_start,initial.begin()+p.car_sprite_start);
+    const auto car_draws=[](const Impl& v) {
+        const auto& all=v.commands.owning_draws();
+        std::vector<RecordedDraw> draws(all.begin()+v.road_groups*5,
+            all.begin()+v.road_groups*5+v.car_draw_count+v.ground_draw_count);
+        draws.insert(draws.end(),all.begin()+v.car_sprite_start,all.end());
+        return draws;
+    };
+    const auto source=prepared.impl_->car_source;
+    const auto release_sources=[](Impl& v) {
+        // Upload pointers and frame updates borrow only the prepared scene,
+        // ground assets and flare quads. Drop whole-file/parser/skin copies.
+        v.car.cached_geometry=nullptr;
+        v.car.car_geometry={};std::vector<GeometryReport>().swap(v.car.stock_geometry);
+        v.car.parts={};v.car.car_types={};v.car.car_pack={};v.car.vinyl_pack={};
+        std::vector<TexturePackSet>().swap(v.car.shared_sets);std::vector<std::uint32_t>().swap(v.car.wanted);
+        v.car.textures={};v.car.skin={};v.car.skin_plan={};v.car.skin_binding={};v.car.report={};
+    };
+    p.car_templates.push_back(car_draws(p));p.car_template_owners.push_back(&p);release_sources(p);
+    const unsigned paint_slot=variants&&variants->size()>1?variants->at(1).garage_paint_slot:0;
+    StockFramePaintCache paint;paint.slot=paint_slot;
+    for(std::size_t i=1;i<cars.size();++i) {
+        if(paint_slot&&i>1) {
+            const auto& ride=variants->at(i);
+            const auto& first=variants->at(1);
+            // Only the active paint record can vary within this palette.
+            auto records=ride.request.installed_parts.records;
+            records[paint_slot]=first.request.installed_parts.records[paint_slot];
+            if(ride.garage_paint_slot!=paint_slot||cars[i]!=cars[1]||
+               records!=first.request.installed_parts.records) {
+                error="garage palette changes more than one installed color";
+                return false;
+            }
+            auto& model=*p.alternatives.front();
+            auto draws=p.car_templates[1];
+            std::vector<unsigned char> rgba;
+            if(!prepare_stock_paint_variant(source->inputs,model.car,paint,
+                ride.request.installed_parts,ride.skin,rgba,error))return false;
+            auto& uploads=p.commands.owning_uploads();
+            const bool recolored=!rgba.empty();
+            std::size_t replacement=kNoHandle;
+            for(std::size_t j=0;j<model.car_draw_count;++j) {
+                auto& draw=draws[j];
+                const auto& group=model.car.scene.draws.at(draw.group);
+                if(paint_slot!=37&&paint_slot<42&&draw.material.surface.gates[0]!=0)
+                    draw.material.surface=group.shading;
+                if(!recolored||draw.texture_resource==kNoHandle||
+                   uploads.resources[draw.texture_resource].texture_hash!=paint.texture_hash)continue;
+                if(replacement==kNoHandle) {
+                    auto resource=uploads.resources[draw.texture_resource];
+                    if(resource.bytes!=rgba.size()||resource.texture.format!=TextureUploadFormat::rgba8) {
+                        error="garage paint texture shape changed";
+                        return false;
+                    }
+                    if(!std::memcmp(resource.data,rgba.data(),rgba.size()))replacement=draw.texture_resource;
+                    else {
+                        p.paint_payloads.push_back(std::move(rgba));
+                        resource.data=p.paint_payloads.back().data();
+                        resource.name="paint/"+std::to_string(i)+"/"+resource.name;
+                        replacement=uploads.resources.size();
+                        uploads.resources.push_back(std::move(resource));
+                        auto& totals=uploads.totals;
+                        ++totals.resources;++totals.textures;totals.texture_bytes+=p.paint_payloads.back().size();
+                        if(uploads.resources.back().lifetime==UploadLifetime::generated) {
+                            ++totals.generated_textures;totals.generated_texture_bytes+=p.paint_payloads.back().size();
+                        }
+                    }
+                }
+                draw.texture_resource=replacement;
+            }
+            p.car_templates.push_back(std::move(draws));p.car_template_owners.push_back(&model);
+            continue;
+        }
+        FrontendGpuScene other;
+        if(!other.load_cached(root,width,height,error,cars[i],variants?&variants->at(i):nullptr,p.environment,true,source,
+            paint_slot?&paint:nullptr))return false;
+        auto& v=*other.impl_;
+        auto draws=car_draws(v);
+        // Retain only referenced car/shadow/flare resources. The garage,
+        // reflection captures and light sprites have one resident copy.
+        std::map<std::size_t,std::size_t> remap;
+        for(auto& d:draws)for(auto* slot:{&d.vertex_resource,&d.index_resource,&d.texture_resource}) {
+            if(*slot==kNoHandle)continue;
+            auto found=remap.find(*slot);
+            if(found==remap.end()) {
+                auto& resources=p.commands.owning_uploads().resources;
+                const auto& incoming=v.commands.resource_table().resources.at(*slot);
+                const auto same=std::find_if(resources.begin(),resources.end(),[&](const auto& r) {
+                    return r.kind==incoming.kind&&r.bytes==incoming.bytes&&r.element_bytes==incoming.element_bytes&&
+                        r.elements==incoming.elements&&r.texture_hash==incoming.texture_hash&&
+                        r.texture.width==incoming.texture.width&&r.texture.height==incoming.texture.height&&
+                        r.texture.format==incoming.texture.format&&r.texture.mip_count==incoming.texture.mip_count&&
+                        !std::memcmp(r.data,incoming.data,std::size_t(r.bytes));
+                });
+                if(same!=resources.end()) {
+                    found=remap.emplace(*slot,std::size_t(same-resources.begin())).first;
+                    *slot=found->second;continue;
+                }
+                const auto next=resources.size();
+                auto resource=incoming;
+                resource.name="browser/"+std::to_string(i)+"/"+resource.name;
+                auto& totals=p.commands.owning_uploads().totals;++totals.resources;
+                if(resource.kind==UploadResourceKind::vertex_buffer){++totals.vertex_buffers;totals.vertex_bytes+=resource.bytes;}
+                else if(resource.kind==UploadResourceKind::index_buffer){++totals.index_buffers;totals.index_bytes+=resource.bytes;}
+                else {++totals.textures;totals.texture_bytes+=resource.bytes;
+                    totals.largest_texture_bytes=std::max(totals.largest_texture_bytes,resource.bytes);
+                    if(resource.lifetime==UploadLifetime::generated){++totals.generated_textures;totals.generated_texture_bytes+=resource.bytes;}}
+                p.commands.owning_uploads().resources.push_back(std::move(resource));
+                found=remap.emplace(*slot,next).first;
+            }
+            *slot=found->second;
+        }
+        p.car_templates.push_back(std::move(draws));p.car_template_owners.push_back(&v);
+        v.commands={};
+        if(!paint_slot)release_sources(v);
+        v.car_source.reset();
+        p.alternatives.push_back(std::move(other.impl_));
+    }
+    if(paint_slot&&!p.alternatives.empty())release_sources(*p.alternatives.front());
+    for(const auto& list:p.car_templates)p.capacity=std::max(p.capacity,
+        p.road_templates.size()+p.road_sprite_templates.size()+list.size());
+    if(variants&&impl_->ready) {
+        p.road=impl_->road;p.wheel_phase=impl_->wheel_phase;p.browser_camera=impl_->browser_camera;p.focus_slot=impl_->focus_slot;
+    }
+    impl_.swap(prepared.impl_);
+    if(previous)previous->impl_.swap(prepared.impl_);
+    return frame(0,0,error);
+}
+bool FrontendGpuScene::adopt_garage(FrontendGpuScene& prepared,std::string& error,std::size_t selection) {
+    if(&prepared==this||!prepared.impl_->ready||selection>=prepared.impl_->car_templates.size()) {
+        error="garage publication needs a separate prepared component bank";return false;
+    }
+    auto& incoming=*prepared.impl_;
+    if(impl_->ready) {
+        incoming.road=impl_->road;incoming.wheel_phase=impl_->wheel_phase;
+        incoming.browser_camera=impl_->browser_camera;incoming.focus_slot=impl_->focus_slot;
+        incoming.effect_ticks=impl_->effect_ticks;
+    }
+    incoming.selected=incoming.requested=selection;
+    incoming.transition=0;incoming.travel=incoming.travel_delta=0;
+    impl_.swap(prepared.impl_);return frame(0,impl_->effect_ticks,error);
+}
+bool FrontendGpuScene::select_part(std::size_t index,std::string& error) {
+    auto& p=*impl_;
+    if(index>=p.car_templates.size()){error="garage part outside resident bank";return false;}
+    p.selected=p.requested=index;p.transition=0;p.travel=p.travel_delta=0;
+    error.clear();return true;
+}
+bool FrontendGpuScene::select_car(std::size_t index,std::string& error) {
+    auto& p=*impl_;
+    if(index>=p.car_templates.size()){error="frontend car selection outside resident roster";return false;}
+    p.requested=index;
+    if(!p.transition && index!=p.selected){p.transition=3;p.transition_time=0;p.browser_camera.prepare();}
+    error.clear();return true;
+}
+void FrontendGpuScene::road_target(float kmh) {
+    if(std::isfinite(kmh)&&kmh>=0)impl_->road.target_kmh=kmh;
+}
+void FrontendGpuScene::focus_part(unsigned slot) {
+    auto& p=*impl_;if(!p.ready||p.focus_slot==slot)return;
+    if(p.browser_camera.focus(slot))p.focus_slot=slot;
+}
+void FrontendGpuScene::magazine_camera(const std::array<float,11>& values) {
+    auto& p=*impl_;p.focus_slot=0;p.transition=0;p.travel=0;
+    //5136F0 ->4B0340 ->487B20 mode5, including roll and native axis order.
+    p.browser_camera.magazine(values);
+    p.commands.frontend_car_only=true;p.road.target_kmh=p.road.speed_kmh=0;p.road.velocity=0;
+}
+void FrontendGpuScene::orbit(float yaw,float pitch) {
+    auto& p=*impl_;if(!p.ready||(p.car_templates.empty()&&p.focus_slot==~0U)||p.transition||!std::isfinite(yaw)||!std::isfinite(pitch)||
+        (yaw==0.F&&pitch==0.F))return;
+    p.browser_camera.tracking=false;
+    auto& pose=p.browser_camera.pose;pose[1]=std::fmod(pose[1]+yaw+360.F,360.F);
+    pose[0]=std::clamp(pose[0]+pitch,75.F,130.F);
+}
+std::size_t FrontendGpuScene::draw_capacity() const {
+    return impl_->capacity?impl_->capacity:impl_->commands.draw_count();
+}
+bool FrontendGpuScene::car_transitioning() const {return impl_->transition!=0;}
+const std::string& FrontendGpuScene::selected_car_type() const {return impl_->car_types.at(impl_->selected);}
 bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& error) {
     auto& p=*impl_;if(!p.ready){error="frontend GPU scene not loaded";return false;}
+    p.effect_ticks=ticks;
+    const float old_travel=p.travel;
+    if(p.transition) {
+        p.transition_time+=seconds;
+        if(p.transition==3) {
+            if(p.browser_camera.settled()){p.transition=1;p.transition_time=0;p.browser_camera.depart();}
+        } else if(p.transition==1) {
+            // Original4B01C0/4B0459: 25m in1.5s from rest.
+            p.travel=float((2.0*25.0/(1.5*1.5))*.5*p.transition_time*p.transition_time);
+            if(p.transition_time>1.5F) {
+                p.selected=p.requested;p.transition=2;p.transition_time=0;p.travel=-15;p.browser_camera.arrive();
+            }
+        } else {
+            // Original4B0549:225..270 degrees, native fixed sine.
+            if(p.transition_time>1.5F) {
+                p.travel=0;p.transition=0;
+                p.browser_camera.tracking=false;
+                if(p.requested!=p.selected){p.transition=3;p.transition_time=0;p.browser_camera.prepare();}
+            } else {
+                const float degrees=225.F+(p.transition_time/1.5F)*45.F;
+                const auto phase=static_cast<std::uint16_t>(static_cast<int>(degrees*(65536.F/360.F)));
+                p.travel=-(frontend_fixed_sine(phase)+1.F)*3.4142136573791504F*15.F;
+            }
+        }
+    }
+    if(!p.car_templates.empty()||p.focus_slot!=~0U) {
+        if(p.browser_camera.tracking)p.browser_camera.update(seconds);
+        p.browser_frame=p.browser_camera.frame(p.travel,p.options.width,p.options.height);
+        p.options.explicit_camera=&p.browser_frame;
+    }
+    p.travel_delta=p.travel-old_travel;
+    const auto& vehicle=p.car_template_owners.empty()?p:*p.car_template_owners.at(p.selected);
+    if(!p.car_templates.empty()) {
+        auto& all=p.commands.owning_draws();all=p.road_templates;
+        const auto& car=p.car_templates.at(p.selected);
+        all.insert(all.end(),car.begin(),car.begin()+vehicle.car_draw_count+vehicle.ground_draw_count);
+        p.sprite_start=all.size();
+        all.insert(all.end(),p.road_sprite_templates.begin(),p.road_sprite_templates.end());
+        p.car_sprite_start=all.size();
+        all.insert(all.end(),car.begin()+vehicle.car_draw_count+vehicle.ground_draw_count,car.end());
+    }
     p.road.update(seconds,ticks);
+    CameraFrame primary;
+    if(p.options.explicit_camera)primary=*p.options.explicit_camera;
+    else if(!make_camera_frame(p.options.camera,p.options.width,p.options.height,primary,error))return false;
     float marker_positions[4][3];
     for(unsigned marker=0;marker<4;++marker)for(unsigned c=0;c<3;++c)
-        marker_positions[marker][c]=p.road_markers[marker].matrix[12+c];
+        marker_positions[marker][c]=p.environment->road_markers[marker].matrix[12+c];
     const auto light_count=frontend_road_lights(p.road,marker_positions,p.road_lateral,
         p.road_rgb,p.road_attenuation,p.road_lights);
-    const float car_position[3]={0,0,p.car_root_height};
-    p.lighting=frontend_point_lighting(p.road_lights.data(),light_count,car_position);
+    const float car_position[3]={p.travel,0,vehicle.car_root_height};
+    p.lighting=frontend_point_lighting(p.road_lights.data(),light_count,car_position,&primary);
     p.commands.frontend_light=p.lighting;
     std::array<FrontendRoadPlacement,5> placements;
     if(p.road.placements(1,placements)!=5){error="original frontend road view missing";return false;}
@@ -587,14 +956,18 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
         auto& rows=draws[segment*p.road_groups+group].placement.rows;
         rows[12]=placements[segment].longitudinal;rows[13]=0;rows[14]=placements[segment].vertical;
     }
-    p.wheel_phase=frontend_wheel_phase(p.wheel_phase,p.road.delta,p.wheel_radius);
+    p.wheel_phase=frontend_wheel_phase(p.wheel_phase,p.road.delta+p.travel_delta,vehicle.wheel_radius);
     const float sine=frontend_fixed_sine(p.wheel_phase);
     const float cosine=frontend_fixed_sine(static_cast<std::uint16_t>(p.wheel_phase+0x4000));
     const float spin[16]={cosine,0,-sine,0,0,1,0,0,sine,0,cosine,0,0,0,0,1};
-    for(std::size_t i=p.road_groups*5;i<p.road_groups*5+p.car_draw_count;++i) {
-        auto& draw=draws[i];const auto& instance=p.car.scene.instances.at(draw.instance);
-        if(instance.part_slot!=kSlotWheel) continue;
-        auto base=p.base_car_placements.at(i-p.road_groups*5);
+    for(std::size_t i=p.road_groups*5;i<p.road_groups*5+vehicle.car_draw_count;++i) {
+        auto& draw=draws[i];const auto& instance=vehicle.car.scene.instances.at(draw.instance);
+        if(instance.part_slot!=kSlotWheel) {
+            draw.placement=vehicle.base_car_placements.at(i-p.road_groups*5);
+            draw.placement.rows[12]+=p.travel;draw.placement.rows[14]+=vehicle.car_root_height;
+            continue;
+        }
+        auto base=vehicle.base_car_placements.at(i-p.road_groups*5);
         for(unsigned c=0;c<3;++c)base.rows[12+c]-=instance.animation_pivot[c];
         DrawInstanceUniform rotated;
         for(unsigned r=0;r<4;++r)for(unsigned c=0;c<4;++c) {
@@ -603,8 +976,14 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
             rotated.rows[r*4+c]=static_cast<float>(value);
         }
         for(unsigned c=0;c<3;++c)rotated.rows[12+c]+=instance.animation_pivot[c];
-        rotated.rows[14]+=p.car_root_height;
+        rotated.rows[12]+=p.travel;rotated.rows[14]+=vehicle.car_root_height;
         draw.placement=rotated;
+    }
+    draws[p.road_groups*5+vehicle.car_draw_count].placement.rows[12]=p.travel;
+    if(vehicle.neon.enabled) {
+        CarShadowPlacement placement;placement.transform.rows[12]=p.travel;placement.strength=1;
+        update_car_neon_draw(vehicle.neon.color,float(double(ticks)/4000),placement,
+            draws[p.road_groups*5+vehicle.car_draw_count+1]);
     }
     if(!record_frame_state(p.options,RenderLimits{},p.commands,error))return false;
     std::array<FrontendRoadPlacement,5> cube_placements;
@@ -617,8 +996,6 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
     // 40AD60 face orientations are derived from the primary CView. Genuine
     // CRT initializer689920 sets78BD40=4000. Original40DD00 cube views10..15
     // produce unit focal scales, with native702AA4/AA8 clipping planes.
-    CameraFrame primary;
-    if(!make_camera_frame(p.options.camera,p.options.width,p.options.height,primary,error))return false;
     const auto negate=[](Vec3 v){return Vec3{-v.x,-v.y,-v.z};};
     const Vec3 rights[6]={negate(primary.forward),primary.forward,primary.right,primary.right,primary.right,negate(primary.right)};
     const Vec3 ups[6]={negate(primary.up),negate(primary.up),negate(primary.forward),primary.forward,negate(primary.up),negate(primary.up)};
@@ -638,6 +1015,10 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
     // Original shared CView78D270 with floor descriptor71AA68,320x240;
     // genuine40DD00 view4 projection with native FOV12463.
     p.floor_camera.focal_x=1.2961782217025757;p.floor_camera.focal_y=1.660086750984192;
+    if(!p.car_templates.empty()) {
+        const auto projection=p.browser_camera.frame(p.travel,320,240);
+        p.floor_camera.focal_x=projection.focal_x;p.floor_camera.focal_y=projection.focal_y;
+    }
     auto floor_options=p.options;floor_options.width=320;floor_options.height=240;
     floor_options.explicit_camera=&p.floor_camera;floor_options.car_shading=false;
     RecordedCommands floor_frame;
@@ -654,11 +1035,11 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
         const auto view=draw.frontend_sprite_view;
         std::array<FrontendRoadPlacement,5> copies;p.road.placements(view,copies);
         const bool car_sprite=draw.frontend_sprite_kind!=0;
-        const auto& marker=p.road_markers.at(car_sprite?0:draw.instance%4);
+        const auto& marker=p.environment->road_markers.at(car_sprite?0:draw.instance%4);
         const auto& copy=copies.at(car_sprite?0:draw.instance/4);
         float point[3];
-        for(unsigned axis=0;axis<3;++axis)point[axis]=car_sprite?p.car_glows.at(draw.instance).point[axis]:marker.matrix[12+axis];
-        if(car_sprite)point[2]+=p.car_root_height;
+        for(unsigned axis=0;axis<3;++axis)point[axis]=car_sprite?vehicle.car_glows.at(draw.instance).point[axis]:marker.matrix[12+axis];
+        if(car_sprite){point[0]+=p.travel;point[2]+=vehicle.car_root_height;}
         else {point[0]+=copy.longitudinal;point[2]=view==4?-point[2]:point[2]+copy.vertical;}
         const double world[3]={point[0],point[2],-point[1]};
         const double delta[3]={world[0]-camera.eye.x,world[1]-camera.eye.y,world[2]-camera.eye.z};
@@ -690,15 +1071,15 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
         // mode0/1 facing vector remains zero at544CA3, not the marker normal.
         double dot=0;
         if(car_sprite)for(unsigned axis=0;axis<3;++axis)
-            dot+=toward_eye[axis]*double(p.car_glows.at(draw.instance).normal[axis]);
+            dot+=toward_eye[axis]*double(vehicle.car_glows.at(draw.instance).normal[axis]);
         else if(mode==2)for(unsigned axis=0;axis<3;++axis)
             dot+=toward_eye[axis]*double(marker.matrix[8+axis])*(axis==2?-1:1);
         // Original40DCB0 uses main display width701034/2, not cube/floor capture width.
         const auto fov=static_cast<std::uint16_t>((mode==1?0x4000U:12463U)/2);
         const double denominator=(p.options.width/2)*double(frontend_fixed_sine(fov+0x4000U))/frontend_fixed_sine(fov);
-        FrontendRoadGlow quad;
+        FrontendRoadGlow quad{};
         if(car_sprite) {
-            const auto& glow=p.car_glows.at(draw.instance);
+            const auto& glow=vehicle.car_glows.at(draw.instance);
             visible=visible && frontend_car_glow(point,toward_eye,right,up,float(std::max(0.,dot)),
                 float(depth/denominator),mode,glow.descriptor,glow.opacity,quad);
             for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=quad.rgba[c];
@@ -728,8 +1109,9 @@ const RecordedCommands& FrontendGpuScene::commands() const {
 bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::string& error) const {
     const auto& p=*impl_;
     if(!p.ready){error="frontend GPU scene not loaded";return false;}
-    auto tunnel=p.tunnel;
-    auto car=p.car.scene;
+    const auto& vehicle=p.car_template_owners.empty()?p:*p.car_template_owners.at(p.selected);
+    auto tunnel=p.environment->tunnel;
+    auto car=vehicle.car.scene;
     tunnel.profile=SelectionProfile::stock_car;
     tunnel.selectors.clear();tunnel.instances.clear();
     for(auto& mesh:tunnel.meshes)mesh.selector=kNoHandle;
@@ -753,11 +1135,21 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
     for(auto& mesh:tunnel.meshes)mesh.material_count=0;
     for(auto& draw:tunnel.draws)
         draw.material_index=tunnel.meshes[draw.mesh].material_count++;
-    for(std::size_t i=p.road_groups*5;i<p.road_groups*5+p.car_draw_count;++i) {
+    for(std::size_t i=p.road_groups*5;i<p.road_groups*5+vehicle.car_draw_count;++i) {
         const auto& draw=draws[i];
         std::copy_n(draw.placement.rows,16,car.instances.at(draw.instance).transform);
+        if(p.selected&&p.car_template_owners.size()>p.alternatives.size()+1) {
+            auto& group=car.draws.at(draw.group);
+            group.shading=draw.material.surface;
+            if(group.binding==BindingKind::resolved&&draw.texture_resource!=kNoHandle) {
+                const auto& resource=p.commands.resource_table().resources.at(draw.texture_resource);
+                auto& texture=car.textures.at(group.texture);
+                if(resource.texture_hash==texture.hash&&resource.bytes==texture.rgba.size())
+                    std::copy_n(resource.data,texture.rgba.size(),texture.rgba.begin());
+            }
+        }
     }
-    auto capture=p.capture;capture.profile=SelectionProfile::stock_car;
+    auto capture=p.environment->capture;capture.profile=SelectionProfile::stock_car;
     capture.selectors.clear();capture.instances.clear();
     for(auto& mesh:capture.meshes)mesh.selector=kNoHandle;
     for(unsigned segment=0;segment<3;++segment) {
@@ -775,9 +1167,9 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
         options.background[0]=options.background[1]=options.background[2]=0;options.background[3]=255;
         if(!render_scene(capture,options,RenderLimits{},cube[face],capture_stats,error) ||
             !draw_frontend_road_sprites(cube[face],options,p.cube_cameras[face],p.commands.frontend_cube_draws,
-                face+10,p.sprites,error))return false;
+                face+10,p.environment->sprites,error))return false;
     }
-    auto floor=p.floor;floor.profile=SelectionProfile::stock_car;
+    auto floor=p.environment->floor;floor.profile=SelectionProfile::stock_car;
     floor.selectors.clear();floor.instances.clear();for(auto& mesh:floor.meshes)mesh.selector=kNoHandle;
     for(unsigned segment=0;segment<3;++segment) {
         PreparedInstance instance;instance.mesh=0;
@@ -791,21 +1183,29 @@ bool FrontendGpuScene::render_reference(std::vector<unsigned char>& rgba,std::st
     floor_options.background[0]=floor_options.background[1]=floor_options.background[2]=0;floor_options.background[3]=255;
     if(!render_scene(floor,floor_options,RenderLimits{},floor_frame,capture_stats,error) ||
         !draw_frontend_road_sprites(floor_frame,floor_options,p.floor_camera,p.commands.reflections,
-            4,p.sprites,error))return false;
+            4,p.environment->sprites,error))return false;
     Frame output,car_frame;RenderStats stats;
     auto car_options=p.options;car_options.frontend_lighting=&p.lighting;car_options.frontend_cube=cube.data();
+    if(p.commands.frontend_car_only){
+        car_options.background[0]=car_options.background[1]=car_options.background[2]=car_options.background[3]=0;
+        if(!render_scene(car,car_options,RenderLimits{},car_frame,stats,error))return false;
+        rgba=car_frame.rgba();return true;
+    }
     auto room_options=p.options;room_options.car_shading=false;
     room_options.frontend_floor=&floor_frame;room_options.frontend_floor_mesh=p.floor_mesh;
     if(!render_scene(tunnel,room_options,RenderLimits{},output,stats,error) ||
        !render_scene(car,car_options,RenderLimits{},car_frame,stats,error))return false;
-    CarShadowPlacement shadow_placement;shadow_placement.alpha=184.0F/255;
-    if(!render_car_shadow(p.shadow,shadow_placement,p.options,output,stats,error))return false;
+    CarShadowPlacement shadow_placement;shadow_placement.transform.rows[12]=p.travel;shadow_placement.alpha=184.0F/255;
+    if(!render_car_shadow(vehicle.shadow,shadow_placement,p.options,output,stats,error))return false;
+    if(vehicle.neon.enabled&&!draw_frontend_neon(output,p.options,vehicle.neon,
+        draws[p.road_groups*5+vehicle.car_draw_count+1],error))return false;
     Frame combined;
     if(!compose_race_frame(output,car_frame,combined)){error="FE diagnostic scene compose failed";return false;}
     CameraFrame primary;
-    if(!make_camera_frame(p.options.camera,p.options.width,p.options.height,primary,error) ||
+    if(p.options.explicit_camera)primary=*p.options.explicit_camera;
+    if((!p.options.explicit_camera && !make_camera_frame(p.options.camera,p.options.width,p.options.height,primary,error)) ||
         !draw_frontend_road_sprites(combined,p.options,primary,p.commands.owning_draws(),
-            1,p.sprites,error))return false;
+            1,p.environment->sprites,error))return false;
     rgba=combined.rgba();
     return true;
 }

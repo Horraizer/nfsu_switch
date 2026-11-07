@@ -71,6 +71,12 @@ std::vector<std::string> retail_asset_manifest_names();
 // that is not one.
 bool retail_asset_manifest(const std::string& name, AssetManifest& manifest);
 
+// The name of the first-lap set a circuit track's race loads: the shared
+// files plus that track's bundle, textures and stream pack. Track 1003
+// keeps the historical name "first-lap" and 1005 "first-lap-1005"; every
+// other circuit track is "first-lap-<number>". False for any other track.
+bool first_lap_asset_set_name(std::uint32_t track, std::string& name);
+
 // The sum of the files' sizes.
 std::uint64_t asset_manifest_bytes(const AssetManifest& manifest) noexcept;
 
