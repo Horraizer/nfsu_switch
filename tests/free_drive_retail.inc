@@ -113,7 +113,7 @@ void verify_quick_race(const std::filesystem::path& root) {
         {QuickRaceMode::drift,1301,0,0,2},
         {QuickRaceMode::lap_knockout,1003,1,1,1},
     };
-    unsigned quick_case=0;
+    unsigned quick_case=0,checked_neons=0;
     for(const auto& test:cases) {
         const auto ordinal=quick_case++;
         const auto choices=catalog.quick_courses(test.mode);
@@ -163,6 +163,10 @@ void verify_quick_race(const std::filesystem::path& root) {
                 check(actor.request.installed_parts.records[30].has_value()&&actor.frame&&actor.frame->skinned&&
                     actor.skin.selection.base_color!=stock_car_skin(actor.config.visual.car).selection.base_color,
                     "generated rival paint reaches composed skin");
+                const auto neon_part=actor.frame->report.slots[116].record;
+                const bool neon_expected=neon_part!=kNoCarPart&&actor.frame->parts.records.at(neon_part).upgrade_level!=0;
+                checked_neons+=unsigned(neon_expected);
+                check(bool(actor.neon)==neon_expected&&(!actor.neon||actor.neon->enabled),"native-selected quick neon prepared");
                 rivals.push_back({actor.placement_spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode});
             }
             check(player&&run.set_intro_grid(player->pose,player->hull,rivals,contexts,error,player->config.final_grid),name+" runtime grid");
@@ -194,7 +198,7 @@ void verify_quick_race(const std::filesystem::path& root) {
         }
         for(auto& actor:grid.actors)if(actor.config.role==Event0Role::opponent)
             check(scene.add_rival(std::move(actor.frame->scene),std::move(actor.base_instances),actor.frame->skin_binding.source,
-                std::move(actor.shadow),error,false,actor.glow_anchors,&actor.hull),name+" rival upload");
+                std::move(actor.shadow),error,false,actor.glow_anchors,&actor.hull,std::move(actor.neon)),name+" rival upload");
         for(auto& actor:grid.traffic)
             check(scene.add_rival(std::move(actor.frame->scene),std::move(actor.base_instances),kNoHandle,
                 std::move(actor.shadow),error,true,actor.glow_anchors,&actor.hull),name+" traffic upload");
@@ -221,5 +225,6 @@ void verify_quick_race(const std::filesystem::path& root) {
         check(deko_static_package_fits(commands.static_track_instance_count(),commands.static_track_definition_count(),
               commands.draw_count()-commands.static_track_draw_count(),scene.draw_capacity()),name+" Switch command budget");
     }
+    check(checked_neons>0,"production quick cases exercise at least one original neon selection");
     std::cout<<"PASS quick race modes, rival setup, traffic levels, grid start and scene admission\n";
 }

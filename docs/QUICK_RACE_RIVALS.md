@@ -49,7 +49,10 @@ producer.57EA80 compatibility supplies the final enabled slots and widebody
 decal bindings. Resolved paint and vinyl colors are composed into the runtime
 skin, and sponsor bindings are installed before the scene is uploaded.
 
-The generator runs during loading. Drawing does not resample it.
+The generator runs during loading. Drawing does not resample it. An installed
+Quick Race neon also retains its texture/color asset through grid upload into
+RaceGpuScene; selecting slot116 alone would not make it visible. Its existing
+controller reuses the vehicle shadow's terrain placement.
 
 ## Reproduction and acceptance
 

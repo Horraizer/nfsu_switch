@@ -262,6 +262,11 @@ bool load_race_grid(const std::filesystem::path& root,unsigned event,const std::
                (!owned&&(!preset.name.empty()||random_dress) && !bind_frontend_sponsors(inputs,actor.request.installed_parts,frame,error)) ||
                !prepare_car_shadow(preset.car,inputs,frame.car_pack,actor.shadow,error) ||
                !prepare_car_shadow_bounds(inputs,frame,actor.shadow,error))return false;
+            if(random_dress) {
+                actor.neon=std::make_unique<CarNeonAsset>();
+                if(!prepare_car_neon(inputs,frame,actor.shadow,*actor.neon,error))return false;
+                if(!actor.neon->enabled)actor.neon.reset();
+            }
         }
         auto levels=actor.config.role==Event0Role::human?reference_levels:actor.config.performance.value_or(VehicleUpgradeLevels{});
         if(actor.config.role==Event0Role::opponent) {

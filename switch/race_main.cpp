@@ -704,7 +704,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         for(auto& actor:intro_grid->actors) {
             if(actor.config.role==Event0Role::opponent)
                 require(scene.add_rival(std::move(actor.frame->scene),std::move(actor.base_instances),
-                    actor.frame->skin_binding.source,std::move(actor.shadow),error,false,actor.glow_anchors,&actor.hull),error);
+                    actor.frame->skin_binding.source,std::move(actor.shadow),error,false,actor.glow_anchors,&actor.hull,std::move(actor.neon)),error);
             actor.frame.reset();
         }
     }

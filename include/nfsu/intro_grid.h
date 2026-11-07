@@ -1,6 +1,7 @@
 #pragma once
 #include "nfsu/event0_setup.h"
 #include "nfsu/car_shadow.h"
+#include "nfsu/car_neon.h"
 #include "nfsu/light_glows.h"
 #include <memory>
 namespace nfsu {
@@ -19,6 +20,7 @@ struct IntroGridActor {
     VehiclePose pose;
     std::vector<PreparedInstance> base_instances;
     CarShadowAsset shadow;
+    std::unique_ptr<CarNeonAsset> neon;
     CarGlowAnchors glow_anchors{};
 };
 struct IntroGrid {
