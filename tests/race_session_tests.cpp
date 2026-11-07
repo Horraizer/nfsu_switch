@@ -79,6 +79,34 @@ struct RaceWorldContactProbe {
         props.restore_proxy(p);
         return p.support_lift==0&&p.render_support_lift==0&&p.state.position.z==10.25;
     }
+    static bool settled_pool_ground(std::string& error,bool conversion=false) {
+        VehicleTrackLayout layout;layout.name="layered-prop-ground";
+        for(float height:{10.F,0.F}) {
+            VehicleTrackQuad quad;const float xy[4][2]={{-5,-5},{5,-5},{5,5},{-5,5}};
+            for(unsigned k=0;k<4;++k) {
+                quad.corner[k][0]=xy[k][0];quad.corner[k][1]=xy[k][1];quad.corner[k][2]=height;
+            }
+            layout.quads.push_back(quad);
+        }
+        VehicleTrackCourse course;if(!build_vehicle_track_course(layout,course,error))return false;
+        RaceProps props;props.queued_contacts_=true;props.clock_=1000;
+        auto p=live_cube(0,{1,0,1},{},1);p.state.rigid_body.gravity=false;
+        p.contact_count=1;p.first_contact_tick=1;p.sphere_radius=1;
+        props.objects_.push_back(p);auto& live=props.objects_[0];
+        TrackContact ground;
+        if(conversion) {
+            live.state.position.z=10.1;live.state.rigid_body.position[2]=10.1F;
+            props.convert_proxy(live,course.world);
+            live.state.position.z=1;live.state.rigid_body.position[2]=1;
+        } else {
+            if(!query_track_ground(course.world,{1,0,10.1},props.maintenance_ground_[0],ground)||
+               ground.point[2]!=10.F)return false;
+            if(!props.advance_body(live,course.world,error,1.F/60.F)||live.awake)return false;
+        }
+        props.maintain_pool(course.world,live.state.position,1000,51);
+        return !live.expired&&query_track_ground(course.world,live.state.position,
+            props.maintenance_ground_[0],ground)&&ground.point[2]==0.F;
+    }
     static bool queued_scenery(RaceSession& s,std::string& error,bool pressure=false) {
         VehicleHull hull;
         for(float x:{-1.F,1.F})for(float y:{-1.F,1.F})for(float z:{-1.F,1.F})
@@ -171,6 +199,10 @@ struct RaceWorldContactProbe {
 int main() {
     using namespace nfsu;
     std::string error; std::vector<RaceInputRun> runs;
+    check(RaceWorldContactProbe::settled_pool_ground(error),
+          "settled prop discards upper-road cache before below-road reclamation");
+    check(RaceWorldContactProbe::settled_pool_ground(error,true),
+          "prop conversion does not seed persistent upper-road maintenance cache");
     for (const auto* text : {"", "NFSU_RACE_INPUT 2\n1 0 0\n", "NFSU_RACE_INPUT 1\n0 0 0\n",
         "NFSU_RACE_INPUT 1\n120000 0 0\n1 0 0\n", "NFSU_RACE_INPUT 1\n1 0 32768\n",
         "NFSU_RACE_INPUT 1\n1 -1 0\n", "NFSU_RACE_INPUT 1\n1 0 0 extra\n"})

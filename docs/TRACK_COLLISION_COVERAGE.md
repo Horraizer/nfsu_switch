@@ -26,6 +26,9 @@ activation clock, retains the descriptor exemption and COM-relative sphere
 radius, and frees eligible bodies before admitting more proxies. The road-height
 caches are bounded by live slots rather than allocated for every placement.
 Rivals and traffic do not act as human proximity anchors.
+Original596570 uses a temporary ground cache for conversion, separately from
+the live body cache. Original597C70 resets440740 ground state when a body settles. That reset
+is retained so an old upper-road cache cannot delete debris on a lower road.
 
 A failed conversion also retires its scenery owner. The production renderer now
 handles an expired placement even when it never received an impulse. This keeps
@@ -46,7 +49,9 @@ their explicit empty object world.
   boundaries. It is not a natural full-world contact recording.
 - nfsu_race_session_tests exercises the actual contact queue with an occupied
   pool of distant, resting objects and a new roadside collision. This state
-  failed before the fix and retains the new collision afterward.
+  failed before the fix and retains the new collision afterward. A layered-road
+  case also requires settled debris to survive after discarding an upper-road
+  ground-cache hit.
 - nfsu_freeride_skyline_retail checks the solo Quick Race branch and runs an
   expired, never-hit placement through the actual renderer to reject stale
   visible geometry.

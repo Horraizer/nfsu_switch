@@ -11,6 +11,17 @@ from physics256_native import Machine,STOP
 raw=(Path(sys.argv[1])/'speed.exe').read_bytes()
 assert hashlib.sha256(raw).hexdigest()=='c0fad450912952f53809a54690d235aa8b4e25b9f46650693c7cbee1b4c074b7'
 image=Image(raw)
+
+# Original597C70 resets its ground cache through440740 when a body settles.
+m=Machine(image);body,polygon=0x1100000,0x1110000;cache=body+0x178
+m.allowed=[(0x597c70,0x597c8b),(0x440740,0x4407b0)]
+m.put(body+0x4c2,1,'B');m.put(body+0x1d,1,'B');m.put(0x73446c,1)
+m.put(body+0x64,cache);m.put(cache+0x20,polygon);m.put(polygon+8,1,'B')
+m.put(cache+0x2a0,1);m.put(cache+0x2b0,polygon)
+m.run(0x597c70,eax=body)
+assert m.get(body+0x4c2,'B')==0 and m.get(cache+0x2a0)==0
+assert m.get(cache+0x2b0)==0 and m.get(polygon+8,'B')==0
+print('original597C70/440740 settle cache reset verified',file=sys.stderr)
 def adjacent(x,delta):
     bits=struct.unpack('<I',struct.pack('<f',x))[0]
     return struct.unpack('<f',struct.pack('<I',bits+delta))[0]

@@ -49,10 +49,9 @@ std::array<float,3> race_prop_visual_position(const RaceProp& p) noexcept {
 }
 void RaceProps::convert_proxy(RaceProp& p,const TrackContactWorld& world) {
     if(!p.placement_ready){p.placement_pose=race_contact_pose(p.state);p.placement_ready=true;}
-    // The native conversion owns a fresh440740 cache, not a wheel's last hit.
-    TrackGroundCache local_cache;TrackContact contact;
-    auto& cache=p.world_slot<maintenance_ground_.size()?maintenance_ground_[p.world_slot]:local_cache;
-    cache={};
+    //596570 uses a temporary440740 cache; the new body's own cache stays fresh.
+    TrackGroundCache cache;TrackContact contact;
+    if(p.world_slot<maintenance_ground_.size())maintenance_ground_[p.world_slot]={};
     const auto origin=race_prop_visual_position(p);
     if(query_track_ground(world,{origin[0],origin[1],origin[2]},cache,contact)) {
         float minimum=0;const auto centre=p.spec.handling.centre_of_mass[2];
@@ -304,7 +303,11 @@ bool RaceProps::advance_body(RaceProp& p,const TrackContactWorld& world,std::str
     p.quiet=queued_contacts_?age(p.first_contact_tick):p.terrain_contact?age(p.ground_contacts.front().created):0;
     // 597B80 ->597C70 only clears active flags, retaining pose and momentum.
     if(prop_can_settle(b.velocity,b.angular_velocity,contact,
-                       age(p.last_car_contact),p.quiet))p.awake=false;
+                       age(p.last_car_contact),p.quiet)) {
+        p.awake=false;
+        //597C70 calls440740: an old upper-road hit must not survive settling.
+        if(p.world_slot<maintenance_ground_.size())maintenance_ground_[p.world_slot]={};
+    }
     // Both original scheduler paths expire stale records after body update,
     // at 0.3 s since last touch, not on the first missed vertex projection.
     p.render_support_lift=p.support_lift;
