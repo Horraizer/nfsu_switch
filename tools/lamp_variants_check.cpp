@@ -40,6 +40,7 @@ int main(int argc,char** argv) {
                 // merely that the desired part name exists in the database.
                 const auto& selected=frame.report.slots[static_cast<unsigned>(part.slot)];
                 require(selected.outcome==StockSlotOutcome::drawn,"lamp solid not drawn");
+                require(selected.record==part.index,"requested lamp kit was not selected");
                 for(const auto& draw:frame.scene.draws)if(draw.mesh==selected.mesh && draw.drawable && draw.index_count)
                     require(draw.texture!=kNoHandle,"selected lamp has an unresolved texture");
                 const auto anchors=collect_car_glow_anchors(frame);
@@ -49,7 +50,12 @@ int main(int argc,char** argv) {
                 std::array<std::size_t,5> counts{};
                 for(const auto& marker:mesh.markers)for(unsigned group=0;group<5;++group) {
                     if(marker.name_hash!=hashes[group])continue;
-                    ++counts[group];++emitters;
+                    const auto index=counts[group]++;++emitters;
+                    require(index<anchors[group].size(),"authored emitter missing from collected group");
+                    const auto& a=anchors[group][index];
+                    require(a.slot.x==marker.matrix[12] && a.slot.y==marker.matrix[13] && a.slot.z==marker.matrix[14] &&
+                            a.normal.x==marker.matrix[8] && a.normal.y==marker.matrix[9] && a.normal.z==marker.matrix[10],
+                            "authored emitter position or normal changed during collection");
                     std::cout<<"SOURCE "<<group;
                     for(float f:marker.matrix)std::cout<<' '<<f;
                     std::cout<<'\n';
