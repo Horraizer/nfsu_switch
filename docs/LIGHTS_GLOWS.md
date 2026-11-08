@@ -6,8 +6,9 @@ The direct-owner Light Glow change replaces the procedural car overlay when
 race visuals are enabled. It reuses the recovered frontend 0x5443F0 primitive:
 authored inner/outer headlamp and tail textures from GLOBALB.BUN, descriptor
 sizes/colors, powered marker-normal facing and original byte truncation.
-Seven reserved slots cover two layers per headlamp and three brake markers;
-missing or culled markers remain invisible. Ordinary-owner head/tail gains
+Reserved sprite slots now include every authored marker of the installed lamps;
+repeated names are retained, and missing or culled markers remain invisible.
+See docs/TUNED_LAMPS.md for the original collector and variant checks. Ordinary-owner head/tail gains
 and the service-brake response follow 0x56D8D0. Handbrake alone is not the
 service-brake input. The shared frontend primitive's arithmetic is unchanged.
 
