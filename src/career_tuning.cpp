@@ -1,3 +1,4 @@
+#include "nfsu/custom_vinyl.h"
 #include "nfsu/career_tuning.h"
 #include <algorithm>
 #include <stdexcept>
@@ -106,6 +107,7 @@ bool CareerTuningCatalog::load(const std::vector<unsigned char>& front,
             const int size=static_cast<signed char>(global[std::size_t(car.offset)+0xdc]);
             next.wheel_sizes_.emplace_back(bin_hash(car.name),size);
         }
+        append_kr_vinyl_part(next.parts_);
         next.ready_=true;*this=std::move(next);error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
@@ -115,6 +117,7 @@ std::uint32_t CareerTuningCatalog::price(unsigned category,unsigned level)const 
         prices_[category].purchase[level-1]:0;
 }
 std::uint32_t CareerTuningCatalog::part_price(const CarPartRecord& part)const noexcept {
+    if(part.part_name_hash==kKrVinylPart)return 0;
     const auto category=slot_category(part.slot);
     return category<0?0:price(unsigned(category),part.upgrade_level);
 }
@@ -197,6 +200,7 @@ bool CareerTuningCatalog::wheel_fits(const std::string& car,const CarPartRecord&
 }
 bool CareerTuningCatalog::part_available(const CarPartRecord& part,
     const std::array<std::uint8_t,256>& status,std::uint32_t earned_high_water)const {
+    if(part.part_name_hash==kKrVinylPart)return ready_;
     const int category=slot_category(part.slot);
     if(category<0)return false;
     // Original4E3F90/4E4033 checks style kind2 by the actual part hash for
@@ -249,7 +253,7 @@ float CareerTuningCatalog::reputation(const InstalledPartSelection& installed)co
     if(!ready_)return 0;
     const auto level=[&](unsigned slot) {
         const auto index=installed.records[slot];
-        return index&&*index<parts_.records.size()?unsigned(parts_.records[*index].upgrade_level):0U;
+        return index&&*index<parts_.records.size()&&parts_.records[*index].part_name_hash!=kKrVinylPart?unsigned(parts_.records[*index].upgrade_level):0U;
     };
     const auto present=[&](unsigned first,unsigned last) {
         for(auto i=first;i<=last;++i)if(installed.records[i]&&*installed.records[i]<parts_.records.size())return true;

@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <tuple>
 #include <fstream>
 #include <stdexcept>
 
@@ -121,14 +122,11 @@ Skeleton skeleton(const Elf& e,std::size_t at) {
     }
     return s;
 }
-std::vector<Matrix> skin_pose(const Elf& animation,std::size_t at,unsigned frame,const Skeleton& s) {
-    auto pose=s.pose;const auto n=animation.data.word(at+8);need(n==3,"crowd compound channel count");
-    for(unsigned i=0;i<n;++i)channel(animation.data,animation.data.u32(at+12+4*i),frame,pose);
-    std::vector<Matrix> world(pose.size()),skin(pose.size());
+void skin_pose(const std::vector<Pose>& pose,const Skeleton& s,std::vector<Matrix>& world,std::vector<Matrix>& skin) {
     for(std::size_t i=0;i<pose.size();++i) {
         world[i]=pose_matrix(pose[i]);if(s.parent[i]>=0)world[i]=multiply(world[i],world[std::size_t(s.parent[i])]);
         skin[i]=multiply(s.inverse[i],world[i]);
-    }return skin;
+    }
 }
 std::vector<Pose> drift_car_motion(const std::filesystem::path& root,const std::string& region) {
     std::ifstream file(root/("Tracks/STREAM"+region+".BUN"),std::ios::binary|std::ios::ate);
@@ -229,8 +227,8 @@ CrowdMesh mesh(View b,Chunk root) {
         }
     }return out;
 }
-std::vector<MeshVertex> skin_mesh(const CrowdMesh& m,const std::vector<Matrix>& bones) {
-    std::vector<MeshVertex> out;out.reserve(m.vertices.size());
+void skin_mesh(const CrowdMesh& m,const std::vector<Matrix>& bones,std::vector<MeshVertex>& out) {
+    out.clear();
     for(const auto& source:m.vertices) {
         auto v=source.vertex;const float p[]={v.px,v.pz,v.py},n[]={v.nx,v.nz,v.ny};float q[3]{},normal[3]{};
         for(unsigned j=0;j<3;++j)if(source.weight[j]!=0) {
@@ -238,16 +236,18 @@ std::vector<MeshVertex> skin_mesh(const CrowdMesh& m,const std::vector<Matrix>& 
             for(unsigned k=0;k<3;++k) {q[k]+=source.weight[j]*(p[0]*b[k]+p[1]*b[4+k]+p[2]*b[8+k]+b[12+k]);normal[k]+=source.weight[j]*(n[0]*b[k]+n[1]*b[4+k]+n[2]*b[8+k]);}
         }
         v.px=q[0];v.pz=q[1];v.py=q[2];v.nx=normal[0];v.nz=normal[1];v.ny=normal[2];out.push_back(v);
-    }return out;
+    }
 }
 }
 
 struct StartCrowd::Data {
     struct Clip {
-        struct Sample {std::size_t vertex=0,index=0;std::uint32_t first=0;};
-        struct Batch {std::vector<MeshVertex> vertices;};
-        CrowdMesh mesh;
-        std::vector<Batch> batches;std::vector<Sample> samples;
+        CrowdMesh mesh;Skeleton skeleton;
+        std::vector<std::vector<Pose>> frames;
+        std::vector<Pose> pose;std::vector<Matrix> world,skin;
+        std::vector<MeshVertex> vertices;
+        std::size_t vertex=0,index=0;
+        float speed=1;double sampled=-1;
     };
     struct Actor {Matrix local;std::size_t clip=0,first_draw=0,draws=0;float speed=1;};
     std::vector<Clip> clips;std::vector<Actor> actors;RenderTextureSet textures;RecordedCommands commands;
@@ -268,7 +268,7 @@ std::uint64_t StartCrowd::bytes()const{return data_->resident;}
 void StartCrowd::rebase(std::size_t offset) {
     data_->upload_base+=offset;
     for(auto& d:data_->commands.owning_draws()) {d.vertex_resource+=offset;d.index_resource+=offset;d.texture_resource+=offset;}
-    for(auto& c:data_->clips)for(auto& s:c.samples) {s.vertex+=offset;s.index+=offset;}
+    for(auto& c:data_->clips) {c.vertex+=offset;c.index+=offset;}
 }
 unsigned road_start_playlist(unsigned racers,unsigned grid) {
     if(!racers || racers>4 || !grid || grid>racers)throw std::runtime_error("start grid domain");
@@ -503,29 +503,24 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
             next->camera_cuts.push_back(next->camera_poses.size());
             }
         }
-        std::map<std::pair<std::uint32_t,std::uint32_t>,std::size_t> clips;std::vector<std::uint32_t> wanted;
+        std::map<std::tuple<std::uint32_t,std::uint32_t,float>,std::size_t> clips;std::vector<std::uint32_t> wanted;
         for(const auto& r:records) {
             need(meshes.count(r.mesh) && anim_index.count(r.animation) && skeletons.count(r.skeleton),"crowd actor resource missing");
-            auto key=std::make_pair(r.mesh,r.animation);auto found=clips.find(key);std::size_t index;
+            auto key=std::make_tuple(r.mesh,r.animation,r.speed);auto found=clips.find(key);std::size_t index;
             if(found==clips.end()) {
                 index=next->clips.size();clips[key]=index;Data::Clip c;c.mesh=mesh(sb,meshes.at(r.mesh));
                 const auto& anim=animations.at(anim_index.at(r.animation));const auto frames=anim.first.data.word(anim.second+10);
                 need(frames && frames<=1024,"crowd clip frame count");
-                const auto vertices=c.mesh.vertices.size(),per_batch=65536/vertices;
-                need(per_batch>0,"crowd pose too large");
-                c.samples.reserve(frames);c.batches.reserve((frames+per_batch-1)/per_batch);
-                // Bake directly into final immutable batches. Holding every
-                // pose separately before copying doubled the load-time payload.
+                c.skeleton=skeletons.at(r.skeleton);c.speed=r.speed;c.frames.reserve(frames);
                 for(unsigned f=0;f<frames;++f) {
-                    if(f%per_batch==0) {
-                        c.batches.emplace_back();
-                        c.batches.back().vertices.reserve(std::min<std::size_t>(per_batch,frames-f)*vertices);
-                    }
-                    auto pose=skin_mesh(c.mesh,skin_pose(anim.first,anim.second,f,skeletons.at(r.skeleton)));
-                    auto& batch=c.batches.back();
-                    c.samples.push_back({c.batches.size()-1,0,std::uint32_t(batch.vertices.size())});
-                    batch.vertices.insert(batch.vertices.end(),pose.begin(),pose.end());
+                    auto pose=c.skeleton.pose;const auto count=anim.first.data.word(anim.second+8);
+                    need(count==3,"crowd compound channel count");
+                    for(unsigned k=0;k<count;++k)channel(anim.first.data,anim.first.data.u32(anim.second+12+4*k),f,pose);
+                    c.frames.push_back(std::move(pose));
                 }
+                c.pose=c.frames.front();c.world.resize(c.pose.size());c.skin.resize(c.pose.size());
+                c.vertices.reserve(c.mesh.vertices.size());skin_pose(c.pose,c.skeleton,c.world,c.skin);
+                skin_mesh(c.mesh,c.skin,c.vertices);
                 for(auto h:c.mesh.textures)wanted.push_back(h);
                 next->clips.push_back(std::move(c));
             }else index=found->second;
@@ -542,33 +537,35 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
             need(check_texture_upload_format(TextureUploadFormat::rgba8,t.width,t.height,r.bytes,r.texture,error),"crowd texture shape");
             texture_resources[t.hash]=table.resources.size();table.resources.push_back(r);++table.totals.textures;table.totals.texture_bytes+=r.bytes;table.totals.largest_texture_bytes=std::max(table.totals.largest_texture_bytes,r.bytes);
         }
-        // Pack many poses into each u16-indexed buffer. Each draw selects
-        // its base vertex with shared indices; no per-frame upload or extra resource
-        // allocation is needed when an actor changes animation sample.
+        // Stream only the current interpolated skin through the backend's
+        // existing fenced frame slots. The CPU pointers stay stable; no
+        // duplicate whole-mesh poses or per-frame allocation is required.
         for(auto& c:next->clips) {
-            const auto first=table.resources.size();
-            for(auto& batch:c.batches) {
-                UploadResource r;r.name="crowd/poses";r.kind=UploadResourceKind::vertex_buffer;r.memory=UploadMemory::buffer;
-                r.data=reinterpret_cast<const unsigned char*>(batch.vertices.data());r.bytes=batch.vertices.size()*sizeof(MeshVertex);
-                r.element_bytes=sizeof(MeshVertex);r.elements=batch.vertices.size();r.alignment=alignof(MeshVertex);
-                table.resources.push_back(r);++table.totals.vertex_buffers;table.totals.vertex_bytes+=r.bytes;
-            }
+            c.vertex=table.resources.size();UploadResource r;r.name="crowd/current-pose";
+            r.kind=UploadResourceKind::vertex_buffer;r.memory=UploadMemory::buffer;r.streamed_vertices=true;
+            r.data=reinterpret_cast<const unsigned char*>(c.vertices.data());r.bytes=c.vertices.size()*sizeof(MeshVertex);
+            r.element_bytes=sizeof(MeshVertex);r.elements=c.vertices.size();r.alignment=alignof(MeshVertex);
+            table.resources.push_back(r);++table.totals.vertex_buffers;table.totals.vertex_bytes+=r.bytes;
             UploadResource idx;idx.name="crowd/indices";idx.kind=UploadResourceKind::index_buffer;idx.memory=UploadMemory::buffer;
             idx.data=reinterpret_cast<const unsigned char*>(c.mesh.indices.data());idx.bytes=c.mesh.indices.size()*2;
             idx.element_bytes=2;idx.elements=c.mesh.indices.size();idx.alignment=2;
-            const auto index=table.resources.size();table.resources.push_back(idx);
+            c.index=table.resources.size();table.resources.push_back(idx);
             ++table.totals.index_buffers;table.totals.index_bytes+=idx.bytes;
-            for(auto& sample:c.samples) {sample.vertex=first+sample.vertex;sample.index=index;}
-
         }
         table.totals.resources=table.resources.size();next->resident=table.totals.vertex_bytes+table.totals.index_bytes+table.totals.texture_bytes;
+        for(const auto& c:next->clips) {
+            next->resident+=c.mesh.vertices.size()*sizeof(SkinVertex)+c.pose.size()*sizeof(Pose);
+            next->resident+=(c.world.size()+c.skin.size()+c.skeleton.inverse.size())*sizeof(Matrix);
+            next->resident+=c.skeleton.pose.size()*sizeof(Pose)+c.skeleton.parent.size()*sizeof(int);
+            for(const auto& frame:c.frames)next->resident+=frame.size()*sizeof(Pose);
+        }
         need(next->resident<48*1024*1024,"crowd animation payload exceeds budget");
         for(auto& a:next->actors) {
             const auto& c=next->clips[a.clip];a.first_draw=next->commands.owning_draws().size();
             for(const auto& m:c.mesh.materials) {
-                RecordedDraw d;d.name="start-crowd/actor";d.vertex_resource=c.samples[0].vertex;d.index_resource=c.samples[0].index;
+                RecordedDraw d;d.name="start-crowd/actor";d.vertex_resource=c.vertex;d.index_resource=c.index;
                 const auto h=c.mesh.textures[m.texture_slot];need(texture_resources.count(h)!=0,"crowd texture unresolved");d.texture_resource=texture_resources.at(h);
-                d.vertex_count=std::uint32_t(c.batches[0].vertices.size());d.first_index=m.first_index;d.index_count=m.index_count;
+                d.vertex_count=std::uint32_t(c.vertices.size());d.first_index=m.first_index;d.index_count=m.index_count;
                 for(const auto& p:shader_manifest::kPrograms)if(std::strcmp(p.name,"car_textured")==0) {d.program=&p;for(std::size_t i=0;i<p.variant_count;++i)if(std::strcmp(p.variants[i].name,"opaque")==0)d.pipeline=p.variants[i];}
                 need(d.program && d.pipeline.name,"crowd shader absent");d.pipeline.cull=shader_manifest::Cull::none;d.material.fallback[3]=2;
                 next->commands.owning_draws().push_back(d);++a.draws;
@@ -596,13 +593,18 @@ void StartCrowd::frame(const RaceSession& session) {
         data_->anchored=true;
     }
     const double seconds=double(session.start_scene_ticks())/kRaceTicksPerSecond;
+    if(data_->active)for(auto& c:data_->clips) {
+        const double phase=std::fmod(std::max(0.0,seconds)*30*c.speed,double(c.frames.size()));
+        if(phase==c.sampled)continue;
+        const auto first=std::size_t(phase),second=std::min(first+1,c.frames.size()-1);
+        const float fraction=float(phase-double(first));
+        for(std::size_t i=0;i<c.pose.size();++i)
+            need(eagl::blend_pose(c.frames[first][i],c.frames[second][i],fraction,c.pose[i]),"crowd interpolated quaternion invalid");
+        skin_pose(c.pose,c.skeleton,c.world,c.skin);skin_mesh(c.mesh,c.skin,c.vertices);c.sampled=phase;
+    }
     for(const auto& a:data_->actors) {
-        const auto& c=data_->clips[a.clip];const auto pose=std::size_t(std::max(0.0,seconds)*30*a.speed)%c.samples.size();const auto world=multiply(a.local,data_->anchor);
-        for(std::size_t i=0;i<a.draws;++i) {auto& d=data_->commands.owning_draws()[a.first_draw+i];const auto& sample=c.samples[pose];
-            d.vertex_resource=sample.vertex;d.index_resource=sample.index;
-            d.first_vertex=sample.first;d.first_index=c.mesh.materials[i].first_index;
-            d.vertex_count=std::uint32_t(data_->commands.resource_table().resources[sample.vertex-data_->upload_base].elements);
-            std::copy(world.begin(),world.end(),d.placement.rows);}
+        const auto world=multiply(a.local,data_->anchor);
+        for(std::size_t i=0;i<a.draws;++i)std::copy(world.begin(),world.end(),data_->commands.owning_draws()[a.first_draw+i].placement.rows);
     }
 }
 bool load_drift_start_pose(const std::filesystem::path& root,const VehicleTrackCourse& course,VehiclePose& out,std::string& error,const std::string& region) {

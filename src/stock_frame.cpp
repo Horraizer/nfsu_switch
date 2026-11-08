@@ -1,3 +1,4 @@
+#include "nfsu/custom_vinyl.h"
 #include "nfsu/stock_frame.h"
 
 #include "nfsu/image.h"
@@ -426,6 +427,8 @@ bool prepare_stock_paint_variant(const StockFrameInputs& inputs,StockFrame& fram
             for(unsigned k=0;k<4;++k)rgba[4*i+k]=static_cast<unsigned char>(pixel>>(8*k));
         }
     }
+    if(skin.selection.kr_vinyl&&cache.slot!=41&&!rgba.empty()&&
+       !apply_kr_vinyl(frame.scene,skin.car,cache.body.request().width,cache.body.request().height,rgba,error))return false;
     // Engine accents and vinyl remaps alter only the skin. Other paint
     // types can also replace the material on their own painted surfaces.
     if(cache.slot==37||cache.slot>=42)return true;
@@ -488,6 +491,7 @@ static bool prepare_stock_frame_impl(
         const auto parse_part_tables = [&] {
             frame.parts =
                 parse_car_part_database(parts_file.bytes.data(), parts_file.bytes.size());
+            if(skin.selection.kr_vinyl)append_kr_vinyl_part(frame.parts);
             for (const CarPartIssue& issue : frame.parts.issues) {
                 frame.issues.push_back(at(parts_file.path, issue.offset, issue.message));
             }
@@ -674,6 +678,7 @@ static bool prepare_stock_frame_impl(
 
         // The stock assembly resolved once against no textures, for the
         // meshes whose texture hashes a shared source is asked to decode.
+        std::unique_ptr<PreparedCarScene> kr_geometry;
         std::vector<SceneMeshRef> mesh_refs;
         bool wants_left_brake = false;
         std::size_t rim=kNoCarPart,color=kNoCarPart;
@@ -697,6 +702,7 @@ static bool prepare_stock_frame_impl(
                     return instance.part_slot == kSlotBrake &&
                            (instance.copy == 0 || instance.copy == 3);
                 });
+            if(skin.selection.kr_vinyl)kr_geometry=std::make_unique<PreparedCarScene>(std::move(unbound));
         }
 
         // Native5A9A90/5A9AF0 use the installed rim TEXTURE family.
@@ -902,6 +908,9 @@ static bool prepare_stock_frame_impl(
                 error = "skin composite: " + skin_error;
                 return false;
             }
+
+            if(skin.selection.kr_vinyl && (!kr_geometry || !apply_kr_vinyl(*kr_geometry,skin.car,
+                frame.skin.width,frame.skin.height,frame.skin.rgba,error)))return false;
 
             // The target hash first, then <car>_SKIN1 unless body_bind is
             // cleared. The generated texture carries the source index one

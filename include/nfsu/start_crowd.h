@@ -8,7 +8,7 @@ namespace nfsu {
 // Deterministic port choice; retail can choose any of 2331..2334.
 inline constexpr unsigned kFirstDriftStartScene=2333;
 // Authored race start scene. Retail payloads are decoded at load, never embedded.
-// Baked animation buffers are immutable after upload; the scene end retires the crowd after GO.
+// Fractional skeletal poses use fenced streamed vertices; scene end retires the crowd after GO.
 bool load_drift_start_pose(const std::filesystem::path&,const VehicleTrackCourse&,VehiclePose&,std::string&,const std::string& region="L1RB");
 // Single-player road playlists in original47BC63. Variant is an index into
 // retail data, not a scene ID. The caller supplies a presentation RNG value.

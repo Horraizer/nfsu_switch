@@ -42,4 +42,6 @@ struct Elf {
 };
 // Integer sample of EAGL DeltaQ, DeltaF3 or DeltaF1 into a standard pose.
 void channel(View,std::size_t,unsigned,std::vector<Pose>&);
+// Original DeltaQ normalized-component interpolation, without sign rewriting.
+bool blend_pose(const Pose&,const Pose&,float fraction,Pose&) noexcept;
 }} // namespace nfsu::eagl

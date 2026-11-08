@@ -134,14 +134,7 @@ bool sample_world_motion_clip(const WorldMotionClip& clip,float frame,eagl::Pose
     const auto last=clip.frames.size()-1;
     const float position=std::max(0.F,std::min(float(last),frame));
     const auto first=std::size_t(position),second=std::min(first+1,last);
-    out=clip.frames[first];const float fraction=position-float(first);
-    if(fraction==0)return true;
-    const auto& b=clip.frames[second];
-    for(unsigned k=0;k<12;++k)out[k]=(b[k]-out[k])*fraction+out[k];
-    const float square=((out[4]*out[4]+out[5]*out[5])+out[6]*out[6])+out[7]*out[7];
-    const float scale=1.F/std::sqrt(square);
-    for(unsigned k=4;k<8;++k)out[k]*=scale;
-    return std::isfinite(scale);
+    return eagl::blend_pose(clip.frames[first],clip.frames[second],position-float(first),out);
 }
 std::array<float,16> world_motion_pose_matrix(const eagl::Pose& p) noexcept {
     const float x=p[4],y=p[5],z=p[6],w=p[7];

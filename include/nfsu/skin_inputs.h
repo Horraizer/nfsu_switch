@@ -236,6 +236,7 @@ struct SkinDoorlineSelection {
 // The complete explicit input state. Layer order is the gatherer's:
 // hood/spoiler vinyl, VINYL_LAYER0..3, doorline.
 struct BodySkinSelection {
+    bool kr_vinyl=false; // Owner-provided whole-car cosmetic, separate from retail texture names.
     // The car name used as the source-name prefix, raw and never folded.
     std::string car_name;
     SkinTargetType target = SkinTargetType::type32;

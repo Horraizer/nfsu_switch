@@ -30,6 +30,12 @@ private:
     static nfsu::FileSystemService& base(){return nfsu::posix_file_system();}
 };
 }
+std::uint64_t crowd_pose_hash(const nfsu::RecordedCommands& commands) {
+    std::uint64_t hash=14695981039346656037ULL;
+    for(const auto& r:commands.resource_table().resources)if(r.streamed_vertices)
+        for(std::size_t i=0;i<r.bytes;++i)hash=(hash^r.data[i])*1099511628211ULL;
+    return hash;
+}
 int main(int argc,char** argv) {
     if(argc!=2)return 1;
     CrowdIoFiles files;nfsu::StartCrowd crowd;std::string error;
@@ -55,10 +61,10 @@ int main(int argc,char** argv) {
     }
     nfsu::RaceSession session(course);
     if(!session.start(error)) {std::cerr<<"FAIL: start "<<error<<"\n";return 1;}
-    crowd.frame(session);const auto initial=crowd.commands().owning_draws()[0].first_vertex;
+    crowd.frame(session);const auto initial=crowd_pose_hash(crowd.commands());
     if(!crowd.draw_count()) {std::cerr<<"FAIL: crowd missing before countdown\n";return 1;}
     const auto* stable=commands.resource_table().resources[0].data;
-    bool moved=false;
+    bool moved=false;unsigned early_changes=0;auto previous=initial;
     for(unsigned tick=0;tick<600;++tick) {
         auto pad=nfsu::race_input_frame({1,0,0},tick);
         if(!session.advance(pad,error)) {std::cerr<<"FAIL: advance "<<error<<"\n";return 1;}
@@ -67,18 +73,20 @@ int main(int argc,char** argv) {
         const bool expected=!timing.go_valid ||
             (std::int64_t(timing.now_ticks)-timing.go_ticks)*30<140LL*nfsu::kRaceTicksPerSecond;
         if((crowd.draw_count()!=0)!=expected) {std::cerr<<"FAIL: crowd scene-end lifecycle\n";return 1;}
-        if(!session.timing().go_valid)moved|=crowd.commands().owning_draws()[0].first_vertex!=initial;
-        const auto sample=crowd.commands().owning_draws()[0].first_vertex;
+        const auto sample=crowd_pose_hash(crowd.commands());
+        if(!session.timing().go_valid)moved|=sample!=initial;
+        if(tick<4&&sample!=previous)++early_changes;
+        previous=sample;
         crowd.frame(session);
-        if(sample!=crowd.commands().owning_draws()[0].first_vertex || stable!=commands.resource_table().resources[0].data) {
+        if(sample!=crowd_pose_hash(crowd.commands()) || stable!=commands.resource_table().resources[0].data) {
             std::cerr<<"FAIL: paused sample or upload changed\n";return 1;
         }
     }
-    if(!moved || !session.timing().go_valid || crowd.draw_count()) {std::cerr<<"FAIL: no animation or GO\n";return 1;}
+    if(!moved || early_changes<3 || !session.timing().go_valid || crowd.draw_count()) {std::cerr<<"FAIL: no animation or GO\n";return 1;}
     nfsu::RaceSession restarted(course);
     if(!restarted.start(error)) {std::cerr<<"FAIL: restart "<<error<<"\n";return 1;}
     crowd.frame(restarted);
-    if(!crowd.draw_count() || crowd.commands().owning_draws()[0].first_vertex!=initial) {std::cerr<<"FAIL: restart crowd\n";return 1;}
+    if(!crowd.draw_count() || crowd_pose_hash(crowd.commands())!=initial) {std::cerr<<"FAIL: restart crowd\n";return 1;}
     // Production road camera path, both marker directions, every grid family.
     for(const auto& row:kNativeStartPlaylist)
         if(nfsu::road_start_playlist(row[0],row[1])!=row[2]){std::cerr<<"FAIL: native playlist family\n";return 1;}
@@ -149,7 +157,7 @@ int main(int argc,char** argv) {
         if(!camera.camera(race,view)||!nfsu::validate_camera(view,error)){std::cerr<<"FAIL: challenge view "<<event<<" "<<error<<"\n";return 1;}
         std::cout<<"PASS: challenge start event="<<event<<" track="<<slot.track<<" direction="<<int(slot.direction)<<" scene="<<scene<<"\n";
     }
-    std::cout<<"PASS: animation, stable uploads, original post-GO disappearance and restart\n";
+    std::cout<<"PASS: fractional animation, stable streamed pointers, original post-GO disappearance and restart\n";
     std::cout<<"PASS: crowd actors="<<crowd.actor_count()<<" draws="<<commands.draw_count()
         <<" resources="<<commands.resource_table().resources.size()<<" bytes="<<crowd.bytes()<<"\n";
 }

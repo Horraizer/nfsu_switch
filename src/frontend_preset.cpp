@@ -1,3 +1,4 @@
+#include "nfsu/custom_vinyl.h"
 #include "nfsu/frontend_preset.h"
 #include "nfsu/texture.h"
 #include <cstring>
@@ -121,6 +122,7 @@ bool resolve_frontend_preset_skin(const std::vector<unsigned char>& globals,
     }
     if(!strings) {error="frontend part strings absent";return false;}
     for(unsigned layer=0;layer<4;++layer) if(const auto* selected=part(31+layer)) {
+        if(selected->part_name_hash==kKrVinylPart){skin.kr_vinyl=true;continue;}
         bool duplicate=false;
         for(unsigned previous=0;previous<layer;++previous)
             duplicate=duplicate || part(31+previous)==selected;

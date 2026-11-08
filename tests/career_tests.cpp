@@ -1,3 +1,4 @@
+#include "nfsu/custom_vinyl.h"
 #include "nfsu/career.h"
 #include "nfsu/arg_path.h"
 #include "nfsu/career_ride.h"
@@ -44,12 +45,14 @@ using namespace nfsu;
 #include "career_garage_original_tests.inc"
 #include "career_info_tests.inc"
 #include "free_drive_retail.inc"
+#include "custom_vinyl_retail.inc"
 int main(int argc,char** argv) {
     if(argc<2||argc>4){std::cerr<<"retail root required\n";return 2;}
     const auto base=std::filesystem::temp_directory_path()/("nfsu-career-"+
         std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
     const auto check=[&](bool ok,const std::string& name){if(!ok)throw std::runtime_error(name);};
     try {
+        if(argc>=3&&std::string(argv[2])=="--kr-vinyl"){verify_kr_vinyl(argv[1],argc==4?std::filesystem::u8path(argv[3]):std::filesystem::path{});return 0;}
         if(argc==3&&std::string(argv[2])=="--quick-race"){verify_quick_race(argv[1]);return 0;}
         if(argc>=3&&std::string(argv[2])=="--free-drive"){verify_free_drive(argv[1],argc==4?argv[3]:"");return 0;}
         CareerCatalog catalog;std::string error;if(!catalog.load(argv[1],error))throw std::runtime_error(error);

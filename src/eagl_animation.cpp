@@ -4,6 +4,14 @@ namespace nfsu { namespace eagl {
 namespace {
 std::size_t align(std::size_t n,std::size_t a){return (n+a-1)&~(a-1);}
 }
+bool blend_pose(const Pose& a,const Pose& b,float fraction,Pose& out) noexcept {
+    out=a;if(fraction==0)return true;
+    for(unsigned k=0;k<12;++k)out[k]=(b[k]-a[k])*fraction+a[k];
+    const float square=((out[4]*out[4]+out[5]*out[5])+out[6]*out[6])+out[7]*out[7];
+    const float scale=1.F/std::sqrt(square);
+    for(unsigned k=4;k<8;++k)out[k]*=scale;
+    return std::isfinite(scale);
+}
 // EAGL DeltaQ, DeltaF3 and DeltaF1. Original functions 6315F0, 62DF90,
 // 62CB50. Random access begins at a block's absolute sample, then applies
 // its byte deltas; the stored indices address bone quaternions or pose floats.
