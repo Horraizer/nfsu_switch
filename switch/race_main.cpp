@@ -2188,6 +2188,11 @@ int main(int argc, char** argv) {
                                 }
                                 // Port profiles are separate from retail assets and PC saves.
                                 const std::filesystem::path save_base=sandbox?std::filesystem::path{}:active_profile->base;
+                                const auto select_quick_car=[&](const std::string& identity,CareerProfile& next) {
+                                    const auto saved=free_rides.find(identity);
+                                    require(career.quick_profile(identity,earned_style,next,frontend_error,
+                                        saved==free_rides.end()?nullptr:&saved->second),frontend_error);
+                                };
                                 if(sandbox) {
                                     if(garage_car){
                                         require(career.free_profile(*garage_car,profile,frontend_error),frontend_error);
@@ -2200,7 +2205,7 @@ int main(int argc, char** argv) {
                                         if(free_profile) {
                                             profile=*free_profile;
                                             if(const auto* bonus=career.bonus_car(profile.bonus_preset);bonus&&bonus->points>earned_style)
-                                                require(career.free_profile(profile.car,profile,frontend_error),frontend_error);
+                                                select_quick_car(profile.car,profile);
                                         }
                                         else require(career.free_profile("SKYLINE",profile,frontend_error),frontend_error);
                                         profile.page=CareerPage::menu;
@@ -2505,8 +2510,7 @@ int main(int argc, char** argv) {
                                                                 const auto identity=profile.bonus_preset.empty()?profile.car:profile.bonus_preset;
                                                                 const auto at=unsigned(std::find(cars.begin(),cars.end(),identity)-cars.begin());
                                                                 const auto& car=cars.at(cycle(at,unsigned(cars.size()),direction));
-                                                                require(career.quick_profile(car,earned_style,next,frontend_error),frontend_error);
-                                                                if(next.bonus_preset.empty())if(const auto found=free_rides.find(car);found!=free_rides.end())next.ride=found->second;
+                                                                select_quick_car(car,next);
                                                                 garage.reset(career,next);garage_signature.clear();selection=1;ride_changed=true;break;
                                                             }
                                                             case Row::performance:next.ride.performance.fill(cycle(next.ride.performance[2],4,direction));ride_changed=true;break;

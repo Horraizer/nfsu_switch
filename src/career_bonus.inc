@@ -11,9 +11,13 @@ std::vector<std::string> CareerCatalog::quick_cars(std::uint32_t earned)const {
     return result;
 }
 bool CareerCatalog::quick_profile(const std::string& identity,std::uint32_t earned,
-    CareerProfile& profile,std::string& error)const {
+    CareerProfile& profile,std::string& error,const CareerRide* ordinary_ride)const {
     const auto* bonus=bonus_car(identity);
-    if(!bonus)return free_profile(identity,profile,error);
+    if(!bonus) {
+        CareerProfile next;if(!free_profile(identity,next,error))return false;
+        if(ordinary_ride)next.ride=*ordinary_ride;
+        profile=std::move(next);return true;
+    }
     if(!free_drive_||earned<bonus->points)return refuse(error,"bonus car not yet earned");
     CareerProfile next;if(!free_profile(bonus->car,next,error))return false;
     next.bonus_preset=bonus->preset;

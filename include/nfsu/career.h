@@ -102,7 +102,7 @@ public:
     const CareerBonusCar* bonus_car(const std::string& preset)const;
     std::vector<std::string> quick_cars(std::uint32_t earned_high_water)const;
     bool quick_profile(const std::string& identity,std::uint32_t earned_high_water,
-                       CareerProfile&,std::string& error)const;
+                       CareerProfile&,std::string& error,const CareerRide* ordinary_ride=nullptr)const;
     std::string quick_car_label(const CareerProfile&)const;
     const RaceEventTable& events()const{return events_;}
     CareerInfoValues info_values(const CareerProfile&,const CareerInfoMenu&,bool metric=false)const;

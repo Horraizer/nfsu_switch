@@ -41,6 +41,16 @@ void verify_bonus_cars(const std::filesystem::path& root,const std::filesystem::
         check(!career_performance_levels(catalog,changed).nitrous_item,"bonus has no sandbox unique override");
         CareerProfile ordinary;check(catalog.free_profile(p.car,ordinary,error),"return to ordinary model");
         check(ordinary.bonus_preset.empty()&&ordinary.ride.performance==CareerRide{}.performance,"ordinary choice clears preset");
+        auto cached=ordinary.ride;cached.performance.fill(1);
+        const auto paint=setup.request.installed_parts.records[30];
+        check(paint&&*paint!=kNoCarPart,"original bonus paint for ordinary cache");
+        cached.installed[30]=catalog.tuning().parts().records[*paint].part_name_hash;
+        auto resumed=p;
+        check(catalog.quick_profile(p.car,0,resumed,error,&cached),"unearned bonus falls back through ordinary selection");
+        check(resumed.bonus_preset.empty()&&resumed.ride.performance==cached.performance&&resumed.ride.installed==cached.installed,
+            "profile-switch fallback preserves ordinary tuning and paint");
+        check(catalog.quick_profile(expected.preset,expected.points,resumed,error,&cached)&&resumed.ride.installed==CareerRide{}.installed&&
+            resumed.ride.performance==expected.performance,"bonus cannot inherit an ordinary cached ride");
         check(CareerGarage::installed_signature(ordinary)!=CareerGarage::installed_signature(p),"same-model preset refreshes resident preview");
         FrontendGpuScene preview;check(preview.load_garage(root,1280,720,{setup},error),"bonus live preview");
         check(preview.frame(.016F,64,error)&&validate_recorded_commands(preview.commands(),error),"bonus preview commands");
