@@ -15,7 +15,10 @@ struct FrontendBrowserCamera {
     std::array<float,3> translation{{0,.75F,0}},translation_source=translation,translation_destination=translation;
     std::array<float,3> target{{0,0,.75F}},target_source=target,target_destination=target;
     float elapsed=0, duration=0;
-    bool tracking=false;
+    bool tracking=false,manual=false;
+    // Port stick deltas enter original4870C0 mode3. Its detail-camera
+    // offsets return through487F50 rather than remaining on the orbit.
+    void orbit(float yaw_degrees,float pitch_degrees) noexcept;
     bool focus(unsigned slot) noexcept;
     void magazine(const std::array<float,11>& values)noexcept;
     void prepare() noexcept;

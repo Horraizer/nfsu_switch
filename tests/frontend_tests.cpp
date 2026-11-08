@@ -29,6 +29,7 @@ constexpr float native_floor_sprite1280[4][3]={
 void check(bool value,const char* message) { if(!value) throw std::runtime_error(message); }
 #include "frontend_browser_camera_samples.inc"
 #include "frontend_garage_camera_samples.inc"
+#include "frontend_manual_camera_samples.inc"
 #include "post_race_selector_native.inc"
 #include "post_race_speech_native.inc"
 int main(int argc,char** argv) {
@@ -442,6 +443,43 @@ int main(int argc,char** argv) {
                 }
             }
             check(sample==std::size(garage_camera_samples),"all original garage camera checkpoints");
+        }
+        {
+            unsigned sample=0;
+            for(unsigned entry=0;entry<std::size(manual_camera_samples);entry+=11) {
+                const auto slot=manual_camera_samples[entry].slot;
+                FrontendBrowserCamera camera;check(camera.focus(slot),"manual orbit starts from original detail preset");
+                for(unsigned i=0;i<600;++i)camera.update(1.F/60);
+                for(unsigned i=0;i<420;++i) {
+                    camera.orbit(i<300?3.F:0.F,i<180?-1.F:i<300?1.F:0.F);
+                    camera.update(1.F/60);
+                    check(camera.manual&&!camera.tracking,"manual orbit stays active after releasing stick");
+                    const auto frame=camera.frame(0,1280,720);
+                    check(frame.eye.y>.05,"manual orbit never enters the road or near plane");
+                    const auto& expected=manual_camera_samples[sample];
+                    if(expected.slot!=slot||expected.frame!=i)continue;
+                    float actual[11];
+                    std::copy(camera.pose.begin(),camera.pose.end(),actual);
+                    std::copy(camera.translation.begin(),camera.translation.end(),actual+5);
+                    std::copy(camera.target.begin(),camera.target.end(),actual+8);
+                    for(unsigned j=0;j<11;++j)if(std::abs(actual[j]-expected.state[j])>=.001F)
+                        throw std::runtime_error("manual camera state slot="+std::to_string(slot)+" frame="+std::to_string(i)+" field="+std::to_string(j));
+                    const auto& v=expected.view;
+                    const Vec3 basis[3]={frame.right,frame.up,frame.forward};
+                    const Vec3 wanted[3]={{v[0],v[8],-v[4]},{-v[1],-v[9],v[5]},{v[2],v[10],-v[6]}};
+                    for(unsigned j=0;j<3;++j)check(std::abs(basis[j].x-wanted[j].x)<.00004&&
+                        std::abs(basis[j].y-wanted[j].y)<.00004&&std::abs(basis[j].z-wanted[j].z)<.00004,"native manual orbit view basis");
+                    const double translation[3]={-(frame.right.x*frame.eye.x+frame.right.y*frame.eye.y+frame.right.z*frame.eye.z),
+                        frame.up.x*frame.eye.x+frame.up.y*frame.eye.y+frame.up.z*frame.eye.z,
+                        -(frame.forward.x*frame.eye.x+frame.forward.y*frame.eye.y+frame.forward.z*frame.eye.z)};
+                    for(unsigned j=0;j<3;++j)check(std::abs(translation[j]-v[12+j])<.0004,"native manual orbit view translation");
+                    ++sample;if(sample==std::size(manual_camera_samples))break;
+                }
+                check(camera.focus(slot)&&!camera.manual&&camera.tracking,"return to detail resumes original focus transition");
+            }
+            check(sample==std::size(manual_camera_samples),"all native manual camera checkpoints");
+            FrontendBrowserCamera idle;idle.focus(31);const auto destination=idle.destination;
+            idle.orbit(0,0);check(idle.tracking&&!idle.manual&&idle.destination==destination,"neutral input preserves detail transition");
         }
         check(frontend_wheel_phase(0,.231441572F,.31F)==7787 &&
               frontend_wheel_phase(0,.229F,.31F)==7705 &&
@@ -877,6 +915,32 @@ int main(int argc,char** argv) {
                         "advanced reference scene changes its rendered pixels");
                 }
                 std::cout << "PASS: moving menu reference renders at frames 60 and 420\n";
+            }
+            {
+                FrontendGpuScene garage_orbit;
+                if(!garage_orbit.load_browser(root,1280,720,{"CIVIC"},error))throw std::runtime_error("orbit browser load: "+error);
+                for(unsigned slot:{31U,32U,33U,34U,17U,39U}) {
+                    garage_orbit.focus_part(slot);
+                    if(!garage_orbit.frame(3,1000,error))throw std::runtime_error("orbit focus frame: "+error);
+                    for(unsigned i=0;i<420;++i) {
+                        garage_orbit.orbit(i<300?3.F:0.F,i<180?-1.F:i<300?1.F:0.F);
+                        if(!garage_orbit.frame(1.F/60,1000,error))throw std::runtime_error("orbit sweep frame: "+error);
+                        check(garage_orbit.commands().frame.eye[1]>.05F,"live garage orbit eye remains above floor");
+                    }
+                    if(!validate_recorded_commands(garage_orbit.commands(),error))throw std::runtime_error("orbit commands: "+error);
+                    const auto& uniform=garage_orbit.commands().frame;
+                    const double delta[3]={-uniform.eye[0],.75-uniform.eye[1],-uniform.eye[2]};
+                    const auto dot=[&](const float* basis){return delta[0]*basis[0]+delta[1]*basis[1]+delta[2]*basis[2];};
+                    const double depth=dot(uniform.forward);
+                    check(depth>uniform.projection[2]&&std::abs(dot(uniform.right)*uniform.projection[0])<depth&&
+                        std::abs(dot(uniform.up)*uniform.projection[1])<depth,"live car center stays inside returned orbit frustum");
+                    if(slot==31||slot==34) {
+                        std::vector<unsigned char> pixels;
+                        if(!garage_orbit.render_reference(pixels,error))throw std::runtime_error("orbit reference render: "+error);
+                        check(pixels.size()==1280*720*4,"actual vinyl orbit reference frame rendered");
+                    }
+                }
+                std::cout<<"PASS: live garage manual orbit through all vinyl layers, rims and caliper-paint focus\n";
             }
             audio::FrontendSfx sfx;
             check(sfx.load(root,error),error.c_str());

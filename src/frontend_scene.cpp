@@ -885,9 +885,7 @@ void FrontendGpuScene::magazine_camera(const std::array<float,11>& values) {
 void FrontendGpuScene::orbit(float yaw,float pitch) {
     auto& p=*impl_;if(!p.ready||(p.car_templates.empty()&&p.focus_slot==~0U)||p.transition||!std::isfinite(yaw)||!std::isfinite(pitch)||
         (yaw==0.F&&pitch==0.F))return;
-    p.browser_camera.tracking=false;
-    auto& pose=p.browser_camera.pose;pose[1]=std::fmod(pose[1]+yaw+360.F,360.F);
-    pose[0]=std::clamp(pose[0]+pitch,75.F,130.F);
+    p.browser_camera.orbit(yaw,pitch);
 }
 std::size_t FrontendGpuScene::draw_capacity() const {
     return impl_->capacity?impl_->capacity:impl_->commands.draw_count();
@@ -922,7 +920,7 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
         }
     }
     if(!p.car_templates.empty()||p.focus_slot!=~0U) {
-        if(p.browser_camera.tracking)p.browser_camera.update(seconds);
+        if(p.browser_camera.tracking||p.browser_camera.manual)p.browser_camera.update(seconds);
         p.browser_frame=p.browser_camera.frame(p.travel,p.options.width,p.options.height);
         p.options.explicit_camera=&p.browser_frame;
     }

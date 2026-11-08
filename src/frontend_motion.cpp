@@ -35,7 +35,7 @@ void FrontendBrowserCamera::begin(float pitch,float yaw,float scale) noexcept {
     source=pose;destination={{browser_angle(pose[0],pitch),browser_angle(pose[1],yaw),6,0,45}};
     duration=float(std::max(double(.3F),(std::abs(double(source[4])-destination[4])*2+
         std::abs(double(source[1])-destination[1])+std::abs(double(source[0])-destination[0]))*double(.0055F)));
-    duration*=scale;elapsed=0;tracking=true;
+    duration*=scale;elapsed=0;tracking=true;manual=false;
 }
 bool FrontendBrowserCamera::focus(unsigned slot) noexcept {
     // 4AEA50 selects the first matching native slot row from 6FB0B0.
@@ -82,16 +82,53 @@ bool FrontendBrowserCamera::focus(unsigned slot) noexcept {
     for(unsigned i=0;i<3;++i){translation_destination[i]=preset[5+i];target_destination[i]=preset[8+i];}
     duration=float(std::max(double(.3F),(std::abs(double(source[4])-destination[4])*2+
         std::abs(double(source[1])-destination[1])+std::abs(double(source[0])-destination[0]))*double(.0055F)));
-    elapsed=0;tracking=true;return true;
+    elapsed=0;tracking=true;manual=false;return true;
 }
 void FrontendBrowserCamera::magazine(const std::array<float,11>& values)noexcept {
-    tracking=false;pose={{values[1],values[0],values[2],values[7],values[6]}};
+    tracking=false;manual=false;pose={{values[1],values[0],values[2],values[7],values[6]}};
     translation={{values[3],values[4],values[5]}};target={{values[8],values[9],values[10]}};
 }
 void FrontendBrowserCamera::prepare() noexcept {begin(std::max(95.F,pose[0]),55,2);}
 void FrontendBrowserCamera::depart() noexcept {begin(115,0,3.2F);}
 void FrontendBrowserCamera::arrive() noexcept {begin(93,115,2);elapsed=duration;}
+void FrontendBrowserCamera::orbit(float yaw,float pitch) noexcept {
+    if(!std::isfinite(yaw)||!std::isfinite(pitch)||(yaw==0&&pitch==0))return;
+    tracking=false;manual=true;
+    pose[1]=std::fmod(pose[1]+yaw,360.F);if(pose[1]<0)pose[1]+=360.F;
+    pose[0]=std::clamp(pose[0]+pitch,85.F,140.F);pose[2]=6;
+}
 void FrontendBrowserCamera::update(float seconds) noexcept {
+    if(manual) {
+        if(!std::isfinite(seconds)||seconds<=0)return;
+        // Original487F50 synchronizes all four return times. Angular rates
+        // are75/50 degrees/s; each vector returns at2.2 units/s. The slowest
+        // channel sets their shared fraction. Small vectors use native.001.
+        const auto neutral_translation=std::array<float,3>{{0,.75F,0}};
+        const auto neutral_target=std::array<float,3>{{0,0,.75F}};
+        const float roll=browser_angle(pose[3],0);
+        const auto vector_time=[&](const auto& value,const auto& neutral) {
+            if(std::abs(value[0]-neutral[0])<.001F&&
+               std::abs(value[1]-neutral[1])<.001F&&std::abs(value[2]-neutral[2])<.001F)return 0.F;
+            double square=0;for(unsigned i=0;i<3;++i)square+=(double(value[i])-neutral[i])*(double(value[i])-neutral[i]);
+            return float(std::sqrt(square)/float(seconds*2.2F));
+        };
+        const float translation_time=vector_time(translation,neutral_translation);
+        const float target_time=vector_time(target,neutral_target);
+        const float time=std::max({float(std::abs(double(pose[3])-roll)/(double(seconds)*75)),
+            float(std::abs(double(pose[4])-45)/(double(seconds)*50)),
+            translation_time,target_time});
+        if(time==0)return;
+        const double fraction=std::min(1.,double(1.F/time));
+        pose[3]=float(pose[3]+(double(roll)-pose[3])*fraction);
+        pose[4]=float(pose[4]+(45.-pose[4])*fraction);
+        for(unsigned i=0;i<3;++i) {
+            if(translation_time>0)
+                translation[i]=float(translation[i]+(double(neutral_translation[i])-translation[i])*fraction);
+            if(target_time>0)
+                target[i]=float(target[i]+(double(neutral_target[i])-target[i])*fraction);
+        }
+        return;
+    }
     elapsed+=seconds;
     const float fraction=duration>0 && elapsed<duration?elapsed/duration:1;
     const double blend=(double(frontend_fixed_sine(browser_phase(double(fraction)*180-90)))+1)*.5;
