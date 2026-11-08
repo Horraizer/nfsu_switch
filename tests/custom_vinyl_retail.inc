@@ -23,6 +23,24 @@ void verify_kr_vinyl(const std::filesystem::path& root,const std::filesystem::pa
             changed+=custom.skin.rgba[i]!=plain.skin.rgba[i]||custom.skin.rgba[i+1]!=plain.skin.rgba[i+1]||custom.skin.rgba[i+2]!=plain.skin.rgba[i+2];
         }
         check(changed>128,"KR visible atlas coverage");
+        // These stock side mouldings previously crossed the center of the logo.
+        if(car.name=="FOCUS"||car.name=="PEUGOT") {
+            const char* pins[2];
+            if(car.name=="FOCUS") {
+                pins[0]="F36D90FC23587F7E276A84A142D629C247F254FF230376FD9C793F56BBBE575B";
+                pins[1]="1841033FE094A4D13A6C40934236FA75853C96053B32DC569FB2BF2EB0D4C539";
+            } else {
+                pins[0]="36A462D43A9B631A0E023B8FAAC2FB49CCCC4091607A0FD7D9F38ED8C77622CC";
+                pins[1]="41DE537D6191B8E61300006EA9DE31646389DDA012A9F1CE7B65F24EE33C3866";
+            }
+            for(unsigned side=0;side<2;++side) {
+                RenderOptions options;options.width=960;options.height=640;options.car_shading=true;
+                options.camera.yaw_deg=side?270.F:90.F;options.camera.pitch_deg=0;
+                check(render_stock_frame(custom,options,error),"KR unobstructed side render");
+                const auto& pixels=custom.frame.rgba();
+                check(sha256_hex(sha256(pixels.data(),pixels.size()))==pins[side],"KR side trim regression "+car.name+" side "+std::to_string(side));
+            }
+        }
         auto repaint=ride.skin;repaint.selection.base_color=skin_pack_paint(20,120,80,128);
         std::vector<unsigned char> painted;
         check(prepare_stock_paint_variant(inputs,custom,paint_cache,ride.request.installed_parts,repaint,painted,error)&&painted.size()==custom.skin.rgba.size(),"KR live paint preview");

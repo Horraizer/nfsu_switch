@@ -51,9 +51,11 @@ std::array<DoorFit,2> fit_doors(const PreparedCarScene& scene,const Bounds& body
     const double middle=(body.low[1]+body.high[1])*.5;
     std::array<std::vector<unsigned char>,2> mask;
     for(auto& side:mask)side.resize(std::size_t(width)*height);
-    for(const auto& instance:scene.instances)if(instance.part_slot==5||instance.part_slot==6) {
+    std::array<std::vector<double>,2> depth;
+    for(auto& side:depth)side.assign(std::size_t(width)*height,-1e20);
+    for(const auto& instance:scene.instances) {
         const auto& mesh=scene.meshes.at(instance.mesh);
-        for(const auto& draw:scene.draws)if(draw.mesh==instance.mesh&&draw.drawable&&(draw.texture_hash==body_hash||draw.texture_hash==target_hash))
+        for(const auto& draw:scene.draws)if(draw.mesh==instance.mesh&&draw.drawable)
         for(unsigned index=draw.first_index;index+2<draw.first_index+draw.index_count;index+=3) {
             const auto& triangle=mesh.triangles.at(index/3);
             const Point p[]={point(mesh.vertices.at(triangle.a),instance),point(mesh.vertices.at(triangle.b),instance),point(mesh.vertices.at(triangle.c),instance)};
@@ -65,11 +67,20 @@ std::array<DoorFit,2> fit_doors(const PreparedCarScene& scene,const Bounds& body
             const double d=(v[1]-v[2])*(u[0]-u[2])+(u[2]-u[1])*(v[0]-v[2]);if(std::abs(d)<1e-9)continue;
             const int left=std::max(0,int(std::floor(std::min({u[0],u[1],u[2]})))),right=std::min(int(width)-1,int(std::ceil(std::max({u[0],u[1],u[2]}))));
             const int low=std::max(0,int(std::floor(std::min({v[0],v[1],v[2]})))),high=std::min(int(height)-1,int(std::ceil(std::max({v[0],v[1],v[2]}))));
-            auto& side=mask[lateral>middle?1:0];
+            const unsigned which=lateral>middle?1:0;auto& side=mask[which];auto& side_depth=depth[which];
+            const bool paintable=(instance.part_slot==5||instance.part_slot==6)&&
+                (draw.texture_hash==body_hash||draw.texture_hash==target_hash);
             for(int y=low;y<=high;++y)for(int x=left;x<=right;++x){
                 const double a=((v[1]-v[2])*(x+.5-u[2])+(u[2]-u[1])*(y+.5-v[2]))/d;
                 const double b=((v[2]-v[0])*(x+.5-u[2])+(u[0]-u[2])*(y+.5-v[2]))/d;
-                if(a>=-1e-7&&b>=-1e-7&&a+b<=1.0000001)side[std::size_t(y)*width+unsigned(x)]=1;
+                if(a>=-1e-7&&b>=-1e-7&&a+b<=1.0000001) {
+                    const auto pixel=std::size_t(y)*width+unsigned(x);
+                    const double outer=(a*p[0][1]+b*p[1][1]+(1-a-b)*p[2][1]-middle)*(which?1:-1);
+                    // An opaque outer trim/handle takes precedence over paint behind it.
+                    if(outer>side_depth[pixel]+1e-6||(!paintable&&outer>=side_depth[pixel]-1e-6)) {
+                        side_depth[pixel]=outer;side[pixel]=paintable?1:0;
+                    }
+                }
             }
         }
     }
