@@ -353,8 +353,8 @@ int main(int argc, char** argv) {
         // The two Trolley model labels fit existing draw capacity, adding62 name bytes.
         // Pre-start NOS retains one purge draw template and two instances.
         // Lamp recovery replaces seven inline draws with a vector header
-        // and four legacy draws, plus five authored anchors and seven
-        // reusable original-sprite records: 24-3*384+5*56+7*72 = -344.
+        // and four legacy draws, plus five authored anchors and eight
+        // reusable original-sprite records: 24-3*408+5*56+8*72 = -344.
         // Both Default and Release replays retain their original state hashes.
         const std::uint64_t cache_pin = (tuned ? 4557968U : 4557937U) +
                                         (glows ? 39787U : 0U);
