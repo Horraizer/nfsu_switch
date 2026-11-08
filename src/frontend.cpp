@@ -1133,12 +1133,12 @@ void FrontendArt::Impl::draw_free_drive(Canvas canvas,const CareerCatalog& catal
     constexpr const char* traffic[]={"NONE","MINIMUM","MODERATE","MAXIMUM"};
     constexpr const char* difficulty[]={"EASY","MEDIUM","HARD"};
     unsigned index=0;
-    for(auto field:quick_race_rows(config.mode,track.type)) {
+    for(auto field:quick_race_rows(config.mode,track.type,!profile.bonus_preset.empty())) {
         using Row=QuickRaceRow;
         std::string value;
         switch(field) {
         case Row::track:value="TRACK: "+track.name+(track.direction?" (REVERSE)":"");break;
-        case Row::car:value="CAR: "+profile.car;break;
+        case Row::car:value="CAR: "+catalog.quick_car_label(profile);break;
         case Row::customize:value="CUSTOMIZE RIDE";break;
         case Row::performance:value="PERFORMANCE: "+
             (std::all_of(profile.ride.performance.begin(),profile.ride.performance.end(),[&](unsigned v){return v==level;})?

@@ -4,6 +4,7 @@
 #include "nfsu/texture.h"
 #include "nfsu/sha256.h"
 #include "nfsu/ai_powertrain.h"
+#include "nfsu/frontend_preset.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -190,6 +191,47 @@ bool CareerCatalog::load(const std::filesystem::path& root,std::string& error) {
             }
         }
         if(!next.tuning_.load(image,global,next.events_,error))return false;
+        RaceChunkPayload presets;
+        if(!find_race_chunk(image.data(),image.size(),0x30220,presets,issues)||
+           (presets.end-presets.begin)%0x408)return refuse(error,"bonus car preset table invalid");
+        for(const auto& reward:next.tuning_.style_rewards()) {
+            //004AC220 retains every kind3 descriptor in original table order.
+            if(reward.kind==3) {
+                CareerBonusCar bonus;bonus.points=reward.points;
+                // STYLE_SPONSOR_CAR_n is the descriptor identity, not an
+                // English language-table key. Reuse the authored award name.
+                bonus.label=text(reward.message);
+                if(bonus.label.compare(0,4,"the ")==0)bonus.label.erase(0,4);
+                if(!bonus.label.empty()&&bonus.label.back()=='.')bonus.label.pop_back();
+                bool found=false;
+                for(auto at=presets.begin;at<presets.end;at+=0x408) {
+                    const auto read_name=[&](unsigned offset) {
+                        std::string name;
+                        for(unsigned i=0;i<32;++i){const auto c=image[std::size_t(at)+offset+i];
+                            if(!c)return name;
+                            if(c<32||c>126)throw std::runtime_error("bonus preset name invalid");
+                            name+=char(c);}
+                        throw std::runtime_error("bonus preset name unterminated");
+                    };
+                    const auto preset=read_name(0x28);
+                    if(bin_hash(preset)!=reward.key)continue;
+                    if(found)return refuse(error,"duplicate bonus preset");
+                    found=true;bonus.preset=preset;bonus.car=read_name(8);
+                    if(!resolve_frontend_preset_parts(image,std::size_t(at),bonus.car,preset,
+                        next.tuning_.parts(),bonus.parts,error))return false;
+                    //004B26F0 leaves slot19 at0057D160's explicit null,
+                    //not at an inherited stock hood-decal selection.
+                    bonus.parts.records[19]=kNoCarPart;
+                }
+                if(!found)return refuse(error,"bonus preset unavailable");
+                const auto type=std::find_if(cars.records.begin(),cars.records.end(),[&](const auto& c){return c.name==bonus.car;});
+                if(type==cars.records.end())return refuse(error,"bonus car type unavailable");
+                //0057D160 clears performance before004B26F0.004BC830 then
+                //assigns level2 to the nine fields only for types3,6 and8.
+                if(type->index==3||type->index==6||type->index==8)bonus.performance.fill(2);
+                next.bonus_cars_.push_back(std::move(bonus));
+            }
+        }
         if(!next.magazines_.load(global,error))return false;
         for(const auto& reward:next.tuning_.style_rewards()) {
             auto message=text(0x32f16f00U);const auto at=message.find("%s");
@@ -255,9 +297,10 @@ const char* quick_race_mode_name(QuickRaceMode mode) noexcept {
     constexpr const char* names[]={"CIRCUIT","SPRINT","DRAG","DRIFT","LAP KNOCKOUT","FREE RUN"};
     return names[unsigned(mode)];
 }
-std::vector<QuickRaceRow> quick_race_rows(QuickRaceMode mode,RaceType backing) {
+std::vector<QuickRaceRow> quick_race_rows(QuickRaceMode mode,RaceType backing,bool bonus) {
     using Row=QuickRaceRow;
-    std::vector<Row> rows{Row::track,Row::car,Row::customize,Row::performance,Row::unique};
+    std::vector<Row> rows{Row::track,Row::car};
+    if(!bonus)rows.insert(rows.end(),{Row::customize,Row::performance,Row::unique});
     if(quick_race_type(mode,backing)!=RaceType::drift)rows.push_back(Row::traffic);
     if(mode!=QuickRaceMode::free_run) {
         rows.push_back(Row::difficulty);
@@ -329,6 +372,7 @@ bool CareerCatalog::free_profile(const std::string& car,CareerProfile& p,std::st
     if(!valid(next,error))return false;
     p=std::move(next);return true;
 }
+#include "career_bonus.inc"
 const CareerEventMedia* CareerCatalog::media(unsigned event)const {
     return find_race_event(events_,event)?&media_[event]:nullptr;
 }
@@ -351,6 +395,10 @@ std::vector<std::string> CareerCatalog::style_messages(std::uint32_t before,std:
     return result;
 }
 bool CareerCatalog::valid(const CareerProfile& p,std::string& error)const {
+    if(!p.bonus_preset.empty()) {
+        const auto* bonus=bonus_car(p.bonus_preset);
+        if(!free_drive_||!bonus||bonus->car!=p.car)return refuse(error,"bonus car outside Quick Race");
+    }
     if(!events_.ok()||p.difficulty>2||unsigned(p.page)>10||!find_race_event(events_,p.selected_event))return refuse(error,"invalid career selection");
     if(p.new_parts_event&&(p.new_parts_event>kCareerLastEvent||p.status[p.new_parts_event]!=kEventStatusWon))
         return refuse(error,"invalid career unlock context");

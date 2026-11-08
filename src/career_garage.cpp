@@ -226,14 +226,14 @@ bool CareerGarage::previewing()const {
     return state_.page==GaragePage::trade_in||state_.page==GaragePage::unique_parts||state_.page==GaragePage::decals_brands||state_.page==GaragePage::parts||state_.page==GaragePage::rim_styles||state_.page==GaragePage::rim_sizes||state_.page==GaragePage::colors;
 }
 std::string CareerGarage::installed_signature(const CareerProfile& p) {
-    std::string result=p.car;
+    std::string result=p.car+(p.bonus_preset.empty()?"":":bonus:"+p.bonus_preset);
     for(auto part:p.ride.installed)result+=":"+std::to_string(part);
     for(auto level:p.ride.performance)result+=":p"+std::to_string(level);
     for(auto unique:p.ride.unique)result+=":u"+std::to_string(unique);
     return result;
 }
 std::string CareerGarage::preview_signature(const CareerProfile& p)const {
-    std::string result=p.car+":"+std::to_string(previewing()?slot():120);
+    std::string result=p.car+(p.bonus_preset.empty()?"":":bonus:"+p.bonus_preset)+":"+std::to_string(previewing()?slot():120);
     if(state_.page==GaragePage::trade_in) {
         // Car selection changes resident draws, not the asset-job identity.
         // Every unlocked candidate in this bank shares the owned ride input.

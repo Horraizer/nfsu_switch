@@ -45,7 +45,7 @@ bool resolve_frontend_preset_parts(const std::vector<unsigned char>& front,
             if(value) record=lookup(0,30,value);
         } else if(slot>=31 && slot<=34) {
             // 0x4BC790 compares BINNAME attributes, not part-name hashes.
-            for(const auto& part:db.records)
+            if(value)for(const auto& part:db.records)
                 if(part.slot==31 && attribute(db,part,0x10C98090U)==value) {
                     record=part.index;break;
                 }

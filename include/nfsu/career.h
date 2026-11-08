@@ -48,6 +48,8 @@ struct CareerProfile {
     std::vector<CareerMagazine> magazine_covers;
     std::uint32_t magazine_random=0,magazine_pending=0;
     std::string car;
+    // Transient Quick Race identity, never serialized into an Underground save.
+    std::string bonus_preset;
     bool customization_seen=false;
     CareerTournament tournament;
     unsigned pending_unique=0;
@@ -58,6 +60,12 @@ struct CareerProfile {
     unsigned new_parts_event=0;
 };
 struct CareerCar { std::string name,brand;std::uint32_t cost=0; std::array<float,3> performance{}; };
+struct CareerBonusCar {
+    std::string preset,car,label;
+    std::uint32_t points=0;
+    InstalledPartSelection parts;
+    std::array<unsigned,9> performance{};
+};
 struct CareerEventMedia {
     std::string before,after,sender;
     std::uint32_t portrait=0; // original event130 texture hash; zero hides sender
@@ -80,7 +88,7 @@ struct FreeDriveCourse {
 };
 enum class QuickRaceRow { track, car, customize, performance, unique, traffic,
     difficulty, opponents, laps, catch_up, start };
-std::vector<QuickRaceRow> quick_race_rows(QuickRaceMode,RaceType backing);
+std::vector<QuickRaceRow> quick_race_rows(QuickRaceMode,RaceType backing,bool bonus=false);
 const char* quick_race_mode_name(QuickRaceMode) noexcept;
 class CareerCatalog {
 public:
@@ -90,6 +98,12 @@ public:
     const std::vector<FreeDriveCourse>& free_courses()const{return free_courses_;}
     std::vector<unsigned> quick_courses(QuickRaceMode)const;
     bool free_profile(const std::string& car,CareerProfile&,std::string& error)const;
+    const std::vector<CareerBonusCar>& bonus_cars()const{return bonus_cars_;}
+    const CareerBonusCar* bonus_car(const std::string& preset)const;
+    std::vector<std::string> quick_cars(std::uint32_t earned_high_water)const;
+    bool quick_profile(const std::string& identity,std::uint32_t earned_high_water,
+                       CareerProfile&,std::string& error)const;
+    std::string quick_car_label(const CareerProfile&)const;
     const RaceEventTable& events()const{return events_;}
     CareerInfoValues info_values(const CareerProfile&,const CareerInfoMenu&,bool metric=false)const;
     std::uint32_t statistics_track_mask(unsigned event,unsigned round)const;
@@ -139,6 +153,7 @@ private:
     CareerMagazineCatalog magazines_;
     std::array<CareerEventMedia,256> media_{};
     std::vector<CareerCar> starters_,cars_;
+    std::vector<CareerBonusCar> bonus_cars_;
     std::vector<std::pair<std::string,std::vector<unsigned>>> car_unlocks_;
     std::vector<std::pair<std::string,std::vector<unsigned char>>> rating_records_;
     std::array<float,5> rating_low_{},rating_high_{};

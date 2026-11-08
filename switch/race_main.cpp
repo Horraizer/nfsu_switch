@@ -2177,6 +2177,15 @@ int main(int argc, char** argv) {
                                 const bool sandbox=action==FrontendAction::free_drive;
                                 CareerCatalog career;CareerProfile profile;
                                 require(sandbox?career.load_free_drive(root,frontend_error):career.load(root,frontend_error),frontend_error);
+                                // Unrestricted ordinary practice cars do not unlock bonus presets.
+                                // Read the active real profile, never the sandbox's all-parts marker.
+                                std::uint32_t earned_style=0;
+                                if(sandbox&&!garage_car&&active_profile) {
+                                    CareerCatalog saved_catalog;CareerProfile saved;
+                                    require(saved_catalog.load(root,frontend_error),frontend_error);
+                                    require(load_career(active_profile->base,saved_catalog,saved,frontend_error),frontend_error);
+                                    earned_style=saved.style_high_water;
+                                }
                                 // Port profiles are separate from retail assets and PC saves.
                                 const std::filesystem::path save_base=sandbox?std::filesystem::path{}:active_profile->base;
                                 if(sandbox) {
@@ -2188,7 +2197,11 @@ int main(int argc, char** argv) {
                                         profile.ride.unique.fill(false);
                                         profile.page=CareerPage::garage;
                                     }else{
-                                        if(free_profile)profile=*free_profile;
+                                        if(free_profile) {
+                                            profile=*free_profile;
+                                            if(const auto* bonus=career.bonus_car(profile.bonus_preset);bonus&&bonus->points>earned_style)
+                                                require(career.free_profile(profile.car,profile,frontend_error),frontend_error);
+                                        }
                                         else require(career.free_profile("SKYLINE",profile,frontend_error),frontend_error);
                                         profile.page=CareerPage::menu;
                                     }
@@ -2207,7 +2220,7 @@ int main(int argc, char** argv) {
                                             ride.performance=saved==free_rides.end()?CareerRide{}.performance:saved->second.performance;
                                             ride.unique=saved==free_rides.end()?CareerRide{}.unique:saved->second.unique;
                                         }else free_profile=profile;
-                                        free_rides[profile.car]=ride;
+                                        if(profile.bonus_preset.empty())free_rides[profile.car]=ride;
                                     }
                                     std::printf("CAREER saved page=%u car=%s bank=%lu event=%u\n",unsigned(profile.page),
                                         profile.car.c_str(),static_cast<unsigned long>(profile.bank),profile.selected_event);
@@ -2465,7 +2478,7 @@ int main(int argc, char** argv) {
                                                         }
                                                     }else {
                                                         using Row=QuickRaceRow;
-                                                        const auto rows=quick_race_rows(quick_options.mode,career.free_courses().at(free_course).type);
+                                                        const auto rows=quick_race_rows(quick_options.mode,career.free_courses().at(free_course).type,!profile.bonus_preset.empty());
                                                         const auto cycle=[](unsigned value,unsigned count,int delta) {
                                                             return (value+count+delta)%count;
                                                         };
@@ -2474,7 +2487,7 @@ int main(int argc, char** argv) {
                                                             notice.clear();music.sound(prev?audio::FrontendSound::up:audio::FrontendSound::down);
                                                         }
                                                         const auto row=rows.at(selection);
-                                                        if(pressed&HidNpadButton_Y) {
+                                                        if((pressed&HidNpadButton_Y)&&profile.bonus_preset.empty()) {
                                                             auto next=profile;next.ride={};store(next);garage.reset(career,profile);
                                                             garage_signature.clear();notice="Stock car restored";prepare_garage();
                                                         }
@@ -2488,12 +2501,13 @@ int main(int argc, char** argv) {
                                                                 break;
                                                             }
                                                             case Row::car: {
-                                                                const auto& cars=career.starters();
-                                                                const auto at=unsigned(std::find_if(cars.begin(),cars.end(),[&](const auto& c){return c.name==profile.car;})-cars.begin());
-                                                                const auto& car=cars.at(cycle(at,unsigned(cars.size()),direction)).name;
-                                                                require(career.free_profile(car,next,frontend_error),frontend_error);
-                                                                if(const auto found=free_rides.find(car);found!=free_rides.end())next.ride=found->second;
-                                                                garage.reset(career,next);garage_signature.clear();ride_changed=true;break;
+                                                                const auto cars=career.quick_cars(earned_style);
+                                                                const auto identity=profile.bonus_preset.empty()?profile.car:profile.bonus_preset;
+                                                                const auto at=unsigned(std::find(cars.begin(),cars.end(),identity)-cars.begin());
+                                                                const auto& car=cars.at(cycle(at,unsigned(cars.size()),direction));
+                                                                require(career.quick_profile(car,earned_style,next,frontend_error),frontend_error);
+                                                                if(next.bonus_preset.empty())if(const auto found=free_rides.find(car);found!=free_rides.end())next.ride=found->second;
+                                                                garage.reset(career,next);garage_signature.clear();selection=1;ride_changed=true;break;
                                                             }
                                                             case Row::performance:next.ride.performance.fill(cycle(next.ride.performance[2],4,direction));ride_changed=true;break;
                                                             case Row::unique:next.ride.unique.fill(!std::all_of(next.ride.unique.begin(),next.ride.unique.end(),[](bool v){return v;}));ride_changed=true;break;

@@ -80,7 +80,7 @@ bool CareerTuningCatalog::load(const std::vector<unsigned char>& front,
             reward.points=u32(p);reward.kind=unsigned(p[4])|(unsigned(p[5])<<8);
             reward.group=p[6];reward.level=p[7];reward.key=u32(p+8);reward.message=u32(p+28);
             // Retail has direct vinyl families(kind0), sponsors(kind2),
-            // and magazines(kind3). No guessed kind1 string matching.
+            // and complete bonus-car presets(kind3). No guessed kind1 matching.
             if(reward.kind!=0 && reward.kind!=2 && reward.kind!=3)
                 throw std::runtime_error("unsupported original career style reward kind");
             next.style_.push_back(reward);
