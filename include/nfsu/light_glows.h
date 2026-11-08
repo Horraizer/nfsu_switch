@@ -3,17 +3,18 @@
 #include "nfsu/stock_frame.h"
 
 #include <array>
+#include <vector>
 
 namespace nfsu {
 
-// Five marker positions, in the source car's raw (forward, left, up) frame.
-// Missing markers stay absent; no invented position is drawn.
+// Authored lamp markers in raw (forward, left, up) coordinates.
+// Each of the five native names can occur more than once in a fitted part.
 struct CarGlowAnchor {
     Vec3 slot{};
     bool present = false;
     Vec3 normal{};
 };
-using CarGlowAnchors = std::array<CarGlowAnchor, 5>;
+using CarGlowAnchors = std::array<std::vector<CarGlowAnchor>, 5>;
 
 struct CarGlowSprite {
     Vec3 world{};
@@ -23,7 +24,7 @@ struct CarGlowSprite {
 };
 using CarGlowSprites = std::array<CarGlowSprite, 4>;
 
-CarGlowAnchors collect_car_glow_anchors(const StockFrame& stock) noexcept;
+CarGlowAnchors collect_car_glow_anchors(const StockFrame& stock);
 struct CarExhaustAnchor { CarGlowAnchor marker; unsigned slot=0; };
 using CarExhaustAnchors=std::array<CarExhaustAnchor,3>;
 CarExhaustAnchors collect_car_exhaust_anchors(const StockFrame& stock) noexcept;
@@ -42,7 +43,8 @@ struct OriginalCarGlow {
     unsigned char rgba[4]{};
     unsigned texture = 0;
 };
-using OriginalCarGlows = std::array<OriginalCarGlow,7>;
+using OriginalCarGlows = std::vector<OriginalCarGlow>;
+std::size_t original_car_glow_count(const CarGlowAnchors&) noexcept;
 std::array<OriginalCarGlow,2> place_nitrous_purge(const CarGlowAnchors& anchors,
     const PreparedCarScene& car,const CameraFrame& camera,bool active,std::uint64_t tick) noexcept;
 // Authored exhaust markers and SFX_FIREB; port axial billboard animation.
@@ -55,7 +57,11 @@ bool load_original_car_glow_textures(const std::filesystem::path& root,
     std::array<RenderTexture,3>& textures,std::string& error);
 OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
     const PreparedCarScene& car,const CameraFrame& camera,unsigned display_width,
-    double service_brake,bool body_markers=false) noexcept;
+    double service_brake,bool body_markers=false);
+// Runtime overload reuses caller storage: no allocation after scene preparation.
+void place_original_car_glows(const CarGlowAnchors&,const PreparedCarScene&,
+    const CameraFrame&,unsigned display_width,double service_brake,
+    bool body_markers,OriginalCarGlows&);
 
 bool draw_original_car_glows(Frame&,const RenderOptions&,
     const std::array<RenderTexture,3>&,const OriginalCarGlows&,RenderStats&,std::string&);

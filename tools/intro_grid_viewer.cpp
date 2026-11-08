@@ -153,7 +153,7 @@ int main(int argc,char** argv) {try {
             StockFrame frame;const auto request=stock_car_request(record.name);
             const bool ok=prepare_stock_frame(inputs,request,frame,error);
             const auto anchors=collect_car_glow_anchors(frame);
-            std::cout<<"ANCHORS "<<record.name;for(const auto& a:anchors)std::cout<<" "<<a.present;
+            std::cout<<"ANCHORS "<<record.name;for(const auto& a:anchors)std::cout<<" "<<!a.empty();
             std::cout<<" slots";for(const auto& instance:frame.scene.instances)std::cout<<" "<<instance.part_slot;
             std::cout<<" shadow="<<std::count_if(frame.car_pack.textures.begin(),frame.car_pack.textures.end(),[&](const auto& t){return t.hash==bin_hash(record.name+"_SHADOWIG");})<<"\n";
             all_assets=all_assets&&ok;

@@ -190,6 +190,7 @@ private:
         bool traffic=false,active=false;
         float service_brake=0;
         CarGlowAnchors anchors{};
+        OriginalCarGlows light_sprites;
         PreparedCarScene scene;
         std::vector<PreparedInstance> base;
         CarShadowAsset shadow;
@@ -247,7 +248,8 @@ private:
     std::array<MeshVertex, 4> glow_vertices_{};
     std::array<std::uint16_t, 6> glow_indices_{{0,1,2,0,2,3}};
     std::array<RecordedDraw, 3> glow_templates_{};
-    std::array<RecordedDraw, 7> glow_selected_{};
+    std::vector<RecordedDraw> glow_selected_;
+    OriginalCarGlows light_sprites_;
     std::vector<RecordedDraw> road_glows_;
     std::vector<RecordedDraw> actor_glows_;
     std::size_t actor_glow_count_=0;

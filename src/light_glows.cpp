@@ -80,11 +80,11 @@ ClipVertex glow_vertex(const CameraFrame& camera, const CarGlowSprite& sprite,
 }
 } // namespace
 
-CarGlowAnchors collect_car_glow_anchors(const StockFrame& stock) noexcept {
+CarGlowAnchors collect_car_glow_anchors(const StockFrame& stock) {
     CarGlowAnchors result{};
     for (const auto& marker : stock.report.markers) {
         for (std::size_t i = 0; i < kMarkerHashes.size(); ++i) {
-            if (result[i].present || marker.name_hash != kMarkerHashes[i]) continue;
+            if (marker.name_hash != kMarkerHashes[i]) continue;
             const GeometryReport* source = marker.geometry_source == 0 ? &stock.car_geometry :
                 marker.geometry_source - 1 < stock.geometry_sources().size() ?
                 &stock.geometry_sources()[marker.geometry_source - 1] : nullptr;
@@ -95,8 +95,7 @@ CarGlowAnchors collect_car_glow_anchors(const StockFrame& stock) noexcept {
             const Vec3 local{record.translation(0), record.translation(1), record.translation(2)};
             if (!std::isfinite(local.x) || !std::isfinite(local.y) || !std::isfinite(local.z))
                 continue;
-            result[i].slot=local; result[i].present=true;
-            result[i].normal={record.matrix[8],record.matrix[9],record.matrix[10]};
+            result[i].push_back({local,true,{record.matrix[8],record.matrix[9],record.matrix[10]}});
         }
     }
     return result;
@@ -148,11 +147,11 @@ std::array<OriginalCarGlow,2> place_nitrous_purge(const CarGlowAnchors& anchors,
     const auto* instance=lamp_instance(car,kSlotHeadlight);
     if(!active||!instance)return out;
     for(unsigned i=0;i<out.size();++i) {
-        if(!anchors[i].present)continue;
+        if(anchors[i].empty())continue;
         // Approximate the native emitter with a rising pair of soft puffs
         // attached to the front of the car.
         const double phase=double((tick+i*4)%16)/16.;
-        auto center=placed_slot(anchors[i].slot,instance->transform);
+        auto center=placed_slot(anchors[i].front().slot,instance->transform);
         center.y+=.23+.75*phase;
         const double size=.12+.29*phase;
         const auto& r=camera.right;const auto& u=camera.up;
@@ -233,11 +232,11 @@ CarGlowSprites place_car_glows(const CarGlowAnchors& anchors,
     for (std::size_t i = 0; i < result.size(); ++i) {
         const bool head = i < 2;
         result[i].head = head;
-        if (!anchors[i].present) continue;
+        if (anchors[i].empty()) continue;
         const auto* instance = lamp_instance(car, head ? kSlotHeadlight : kSlotBrakelight);
         if (!instance) continue;
         auto& sprite = result[i];
-        sprite.world = placed_slot(anchors[i].slot, instance->transform);
+        sprite.world = placed_slot(anchors[i].front().slot, instance->transform);
         const Vec3 to_eye = difference(camera.eye, sprite.world);
         const double distance_sq = dot3(to_eye, to_eye);
         if (!(distance_sq > 0.0) || distance_sq > 1600.0) continue;
@@ -270,18 +269,36 @@ bool load_original_car_glow_textures(const std::filesystem::path& root,
     }
     return true;
 }
+std::size_t original_car_glow_count(const CarGlowAnchors& anchors) noexcept {
+    std::size_t count=0;
+    for(unsigned i=0;i<anchors.size();++i)
+        count+=std::max(std::size_t(1),anchors[i].size())*(i<2?2:1);
+    return count;
+}
 OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
     const PreparedCarScene& car,const CameraFrame& camera,unsigned display_width,
-    double service_brake,bool body_markers) noexcept {
-    OriginalCarGlows result{};unsigned output=0;
+    double service_brake,bool body_markers) {
+    OriginalCarGlows result;
+    place_original_car_glows(anchors,car,camera,display_width,service_brake,body_markers,result);
+    return result;
+}
+void place_original_car_glows(const CarGlowAnchors& anchors,
+    const PreparedCarScene& car,const CameraFrame& camera,unsigned display_width,
+    double service_brake,bool body_markers,OriginalCarGlows& result) {
+    result.resize(original_car_glow_count(anchors));
+    std::fill(result.begin(),result.end(),OriginalCarGlow{});
+    unsigned output=0;
     for(unsigned i=0;i<anchors.size();++i) {
         const bool head=i<2;const unsigned layers=head?2:1;
-        for(unsigned layer=0;layer<layers;++layer) {
+        const auto count=std::max(std::size_t(1),anchors[i].size());
+        for(std::size_t lamp=0;lamp<count;++lamp)for(unsigned layer=0;layer<layers;++layer) {
             auto& sprite=result[output++];sprite.texture=head?(layer==0?0:2):1;
-            if(!anchors[i].present || display_width==0 || !std::isfinite(service_brake))continue;
+            if(anchors[i].empty() || display_width==0 || !std::isfinite(service_brake))continue;
+            const auto& anchor=anchors[i][lamp];
+            if(!anchor.present)continue;
             const auto* instance=lamp_instance(car,body_markers?kSlotBody:(head?kSlotHeadlight:kSlotBrakelight));
             if(!instance)continue;
-            const auto world=placed_slot(anchors[i].slot,instance->transform);
+            const auto world=placed_slot(anchor.slot,instance->transform);
             const Vec3 d=difference(world,camera.eye);const double distance2=dot3(d,d);
             const double depth=dot3(d,camera.forward);
             if(!(distance2>0) || distance2>40000 || depth<=camera.near_plane || depth>=camera.far_plane ||
@@ -292,7 +309,7 @@ OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
             const float toward[3]={float(-d.x/distance),float(d.z/distance),float(-d.y/distance)};
             const float right[3]={float(camera.right.x),float(-camera.right.z),float(camera.right.y)};
             const float up[3]={float(-camera.up.x),float(camera.up.z),float(-camera.up.y)};
-            const auto& n=anchors[i].normal;const auto* m=instance->transform;
+            const auto& n=anchor.normal;const auto* m=instance->transform;
             const double normal[3]={n.x*m[0]+n.y*m[4]+n.z*m[8],n.x*m[1]+n.y*m[5]+n.z*m[9],n.x*m[2]+n.y*m[6]+n.z*m[10]};
             const double facing=toward[0]*normal[0]+toward[1]*normal[1]+toward[2]*normal[2];
             // Original ordinary-owner base gains and service-axis response.
@@ -314,7 +331,6 @@ OriginalCarGlows place_original_car_glows(const CarGlowAnchors& anchors,
             sprite.transform[15]=1;
         }
     }
-    return result;
 }
 
 bool draw_original_car_glows(Frame& frame,const RenderOptions& options,

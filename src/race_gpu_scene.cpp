@@ -369,6 +369,8 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         if(dress&&!prepare_car_neon(inputs,stock,shadow_asset_,neon_asset_,error))return false;
         if (glows_enabled_) {
             glow_anchors_ = collect_car_glow_anchors(stock);
+            glow_selected_.resize(race_visuals_?original_car_glow_count(glow_anchors_):4);
+            light_sprites_.resize(original_car_glow_count(glow_anchors_));
             exhaust_anchors_ = collect_car_exhaust_anchors(stock);
         }
         if (loading) loading->checkpoint("car prepared");
@@ -502,6 +504,12 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
         for(const auto& d:r.commands.owning_draws())bytes+=d.name.capacity()+1;
     }
     bytes+=actor_glows_.capacity()*sizeof(RecordedDraw);
+    for(const auto& a:glow_anchors_)bytes+=a.capacity()*sizeof(CarGlowAnchor);
+    bytes+=light_sprites_.capacity()*sizeof(OriginalCarGlow)+glow_selected_.capacity()*sizeof(RecordedDraw);
+    for(const auto& r:rivals_) {
+        for(const auto& a:r.anchors)bytes+=a.capacity()*sizeof(CarGlowAnchor);
+        bytes+=r.light_sprites.capacity()*sizeof(OriginalCarGlow);
+    }
     if (glows_enabled_) bytes += sizeof(glow_templates_) + sizeof(glow_selected_) +
         sizeof(glow_vertices_) + sizeof(glow_indices_) +
         glow_head_.rgba.capacity() + glow_tail_.rgba.capacity() +
@@ -522,9 +530,9 @@ bool RaceGpuScene::add_rival(PreparedCarScene scene,std::vector<PreparedInstance
     }
     if(rivals_.empty())rivals_.reserve(3+kRaceTrafficCapacity);
     rivals_.emplace_back();
-    actor_glows_.reserve((3+kRaceTrafficCapacity)*std::tuple_size<OriginalCarGlows>::value);
-    actor_glows_.resize(rivals_.size()*std::tuple_size<OriginalCarGlows>::value);
-    auto& r=rivals_.back();r.traffic=traffic;r.anchors=anchors;
+    actor_glows_.resize(actor_glows_.size()+original_car_glow_count(anchors));
+    auto& r=rivals_.back();r.traffic=traffic;r.anchors=std::move(anchors);
+    r.light_sprites.resize(original_car_glow_count(r.anchors));
     r.scene=std::move(scene);r.base=std::move(base);r.shadow=std::move(shadow);
     auto options=race_render_options(sky_);options.texture_filter=texture_filter_;
     options.car_shading=car_shading_;options.material_state=MaterialStateMode::retail;
@@ -1265,8 +1273,8 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         }
         glow_count_ = 0;nitrous_count_=0;actor_glow_count_=0;
         if (glows_enabled_ && race_visuals_) {
-            const auto sprites=place_original_car_glows(glow_anchors_,car_,basis,options.width,session.light_service_brake());
-            for(const auto& sprite:sprites) {
+            place_original_car_glows(glow_anchors_,car_,basis,options.width,session.light_service_brake(),false,light_sprites_);
+            for(const auto& sprite:light_sprites_) {
                 auto& draw=glow_selected_[glow_count_++];draw=glow_templates_[sprite.texture];
                 std::copy(std::begin(sprite.transform),std::end(sprite.transform),draw.placement.rows);
                 for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=sprite.rgba[c];
@@ -1295,7 +1303,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             }
             const auto purge=place_nitrous_purge(glow_anchors_,car_,basis,
                 session.nitrous_purging(),session.world_visual_frame());
-            for(std::size_t i=0;i<purge.size();++i)if(glow_anchors_[i].present) {
+            for(std::size_t i=0;i<purge.size();++i)if(!glow_anchors_[i].empty()) {
                 const auto& puff=purge[i];
                 auto& draw=nitrous_selected_[nitrous_count_++];draw=purge_template_;
                 std::copy(std::begin(puff.transform),std::end(puff.transform),draw.placement.rows);
@@ -1303,9 +1311,9 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 draw.material.alpha[0]=float(puff.rgba[3])/255;
             }
             glow_count_+=nitrous_count_;
-            for(const auto& actor:rivals_) {
-                const auto lights=place_original_car_glows(actor.anchors,actor.scene,basis,options.width,actor.service_brake,actor.traffic);
-                for(const auto& light:lights) {
+            for(auto& actor:rivals_) {
+                place_original_car_glows(actor.anchors,actor.scene,basis,options.width,actor.service_brake,actor.traffic,actor.light_sprites);
+                for(const auto& light:actor.light_sprites) {
                     if(actor_glow_count_>=actor_glows_.size()){error="actor glow capacity differs from live roster";return false;}
                     auto& draw=actor_glows_[actor_glow_count_++];draw=glow_templates_[light.texture];
                     std::copy(std::begin(light.transform),std::end(light.transform),draw.placement.rows);

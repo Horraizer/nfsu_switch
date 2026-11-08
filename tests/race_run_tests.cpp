@@ -136,10 +136,10 @@ int main(int argc, char** argv) {
         tail_part.part_slot = kSlotBrakelight;
         lamp_car.instances = {head_part, tail_part};
         CarGlowAnchors lamp_anchors{};
-        lamp_anchors[0] = {{2, 0, 0}, true};
-        lamp_anchors[1] = {{2, 0.4, 0}, true};
-        lamp_anchors[2] = {{-2, 0, 0}, true};
-        lamp_anchors[3] = {{-2, 0.4, 0}, true};
+        lamp_anchors[0].push_back({{2, 0, 0}, true});
+        lamp_anchors[1].push_back({{2, 0.4, 0}, true});
+        lamp_anchors[2].push_back({{-2, 0, 0}, true});
+        lamp_anchors[3].push_back({{-2, 0.4, 0}, true});
         CameraFrame lamp_camera;
         lamp_camera.eye = {8, 0, 0};
         const auto from_front = place_car_glows(lamp_anchors, lamp_car, lamp_camera, false);
@@ -158,6 +158,33 @@ int main(int argc, char** argv) {
                 live_count(from_front) == 2 && live_count(from_side) == 0 &&
                 live_count(from_rear) == 2,
                 "car glows ignore marker side or camera-facing gate");
+        // Projector has several emitters bearing the same LEFT/RIGHT name.
+        // Native56A130 appends each marker, and56D8D0 visits the whole list.
+        StockFrame multi_lamp;
+        multi_lamp.car_geometry.meshes.resize(1);
+        const unsigned lamp_names[]={0x9DB90133U,0xD09091C6U,0x31A66786U,0xBF700A79U,0xA2A2FC7CU};
+        for(unsigned group=0;group<5;++group)for(unsigned copy=0;copy<3;++copy) {
+            MeshMarker source;source.name_hash=lamp_names[group];
+            source.matrix[12]=float(group);source.matrix[13]=float(copy);source.matrix[10]=1;
+            multi_lamp.car_geometry.meshes[0].markers.push_back(source);
+            StockMarker marker;marker.slot=group<2?kSlotHeadlight:kSlotBrakelight;
+            marker.name_hash=source.name_hash;marker.index=multi_lamp.report.markers.size();
+            multi_lamp.report.markers.push_back(marker);
+        }
+        auto multiple=collect_car_glow_anchors(multi_lamp);
+        for(unsigned group=0;group<5;++group) {
+            require(multiple[group].size()==3,"repeated tuned lamp marker was discarded");
+            for(unsigned copy=0;copy<3;++copy)
+                require(multiple[group][copy].slot.x==group && multiple[group][copy].slot.y==copy,
+                        "tuned lamp emitter moved or duplicated");
+        }
+        OriginalCarGlows reusable(original_car_glow_count(multiple));
+        require(reusable.size()==21,"tuned emitter list does not reserve two head layers and one tail layer");
+        const auto* allocation=reusable.data();
+        place_original_car_glows(multiple,lamp_car,lamp_camera,1280,0,false,reusable);
+        place_original_car_glows(multiple,lamp_car,lamp_camera,1280,1,false,reusable);
+        require(reusable.data()==allocation && reusable.size()==21,
+                "braking reallocates or drops tuned lamp sprite slots");
         const auto head_glow = make_car_glow_texture(true);
         const auto tail_glow = make_car_glow_texture(false);
         require(head_glow.width == 64 && head_glow.height == 64 &&

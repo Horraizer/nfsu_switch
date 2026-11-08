@@ -1202,6 +1202,11 @@ if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_car_selection_tests COMMAND nfsu_car_selection_tests)
     set_tests_properties(nfsu_car_selection_tests PROPERTIES TIMEOUT 120)
 
+    add_executable(nfsu_lamp_variants_check tools/lamp_variants_check.cpp)
+    target_link_libraries(nfsu_lamp_variants_check PRIVATE
+        nfsu_frontend nfsu_race_run nfsu_stock_view nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_lamp_variants_check)
+
     # The free-driving Eddie Skyline: the FE_SKYLINE preset through the menu
     # and dressed-race paths, their mechanical comparison, the stock
     # substitution and unresolved-material regressions, and the Switch race
@@ -2458,6 +2463,10 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_car_selection_retail COMMAND nfsu_car_selection_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_car_selection_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 1800)
+        add_test(NAME nfsu_lamp_variants_retail
+            COMMAND nfsu_lamp_variants_check "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_lamp_variants_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 600)
         # The free-driving Eddie Skyline of the owner request: the FE_SKYLINE
         # preset prepared through both the menu and the dressed race paths and
         # compared mechanically, plus the Switch race load with the dress.
