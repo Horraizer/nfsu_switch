@@ -42,7 +42,8 @@ Original PNG SHA-256:
 
 The compositor projects it onto the selected body's door surfaces and painted
 hood through each car's actual mesh UVs. Each side fits its complete square
-inside a connected painted panel, with an inset from the panel boundary;
+inside a connected painted panel, with an inset from the panel boundary.
+A side depth mask excludes outer non-painted mouldings and handles;
 whole-body height is not used as available door area. Glass, wheels and materials that do
 not bind the painted body target are excluded. A carbon hood with its own
 material therefore receives no painted-hood projection. RGB is blended while
@@ -50,7 +51,8 @@ the body's paint/gloss alpha remains intact. Color preview applies the same
 overlay to the recomposed skin. There is no additional race draw or shader pass.
 
 nfsu_kr_vinyl_retail installs it on all playable cars, checks actual body-target
-changes and preservation of gloss, exercises live repaint, and saves/reloads a
+changes and preservation of gloss, pins both stock FOCUS/PEUGOT side renders
+against trim occlusion, exercises live repaint, and saves/reloads a
 real campaign profile. Optional PC captures are produced with:
 
 ```text
@@ -61,3 +63,14 @@ The atlas projection is a port-owned feature, not an original-game mechanism.
 Large body-kit changes and each LOD should be inspected visually when adding a
 new car or mesh family; availability on a roster is not a guarantee of identical
 sticker proportions on every modified panel.
+
+## Ordinary speed blur
+
+The owner enabled the recovered ambient speed contribution and NOS release
+on 2026-11-08. The race calls SpeedBlur::frame with camera-space velocity,
+actual NOS resource activity and paused-envelope advancement, matching the
+existing original40CD40 oracle. Restart and non-racing stages clear the state.
+The lower camera-speed threshold, capped strength, two radial passes and byte
+composite factor remain the recovered algorithm, not a new hand-tuned effect.
+See SPEED_BLUR_RENDER_RECOVERY.md and nfsu_speed_blur_tests. Console GPU image
+parity and the cost during ordinary fast driving remain hardware acceptance.

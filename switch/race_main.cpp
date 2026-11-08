@@ -1132,7 +1132,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             {{float(blur_view.up.x),float(blur_view.up.y),float(blur_view.up.z)}},
             {{float(blur_view.forward.x),float(blur_view.forward.y),float(blur_view.forward.z)}});
         if(race.session().timing().stage==RaceStage::racing && !finished)
-            renderer.set_speed_blur(speed_blur.nitrous_frame(race.session().nitrous_boosting(),
+            renderer.set_speed_blur(speed_blur.frame(race.session().nitrous_boosting(),
                 local[0],local[1],local[2],!paused));
         else {speed_blur.reset();renderer.set_speed_blur({});}
         DekoPresentTiming present;

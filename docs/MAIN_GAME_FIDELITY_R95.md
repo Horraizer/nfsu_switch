@@ -81,7 +81,8 @@ projection producer40DD00. The half-size reduction and two radial passes run
 before cars/shadows/HUD.40D6E0 uses the same constant factor for every RGBA
 channel; using sampled image alpha as that factor is a different contract.
 The renderer now preserves source RGBA and uses the actual constant blend.
-The existing owner policy keeps ambient speed blur and release tail disabled.
+The owner enabled the original ambient speed blur and release tail on
+2026-11-08; the active race call site now uses that original arithmetic.
 
 The unmodified owner filter.efx was executed as ps_1_1 on local D3D9 HAL with
 D3DX9_24. Synthetic ramp/checker images, including variable alpha, exercise all

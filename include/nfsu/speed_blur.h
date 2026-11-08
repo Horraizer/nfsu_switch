@@ -19,8 +19,8 @@ class SpeedBlur {
 public:
     void reset() noexcept { envelope_ = 0; }
     float envelope() const noexcept { return envelope_; }
-    // Owner presentation policy: no ambient speed blur and no release tail.
-    // Keep frame() as the original arithmetic oracle, independently testable.
+    // Explicit NOS-only adapter retained for diagnostics and optional consumers.
+    // The race renderer uses frame() with the original ambient blur and tail.
     SpeedBlurFrame nitrous_frame(bool active, float x, float y, float z,
                                  bool advance = true) noexcept {
         if (!active) { reset(); return {}; }

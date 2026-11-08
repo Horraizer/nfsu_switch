@@ -47,5 +47,7 @@ and alpha arithmetic to the portable oracle.
 
 These checks do not execute the original GPU or Switch GPU. They identify a
 concrete sampling mismatch; they do not establish that every visible NOS
-complaint is fixed. Hardware image parity remains unverified. The explicit
-owner policy still disables ambient high-speed blur and release tails.
+complaint is fixed. Hardware image parity remains unverified. The race renderer uses the original ambient high-speed contribution and NOS
+release tail after the owner enabled them on 2026-11-08. Pause holds the
+envelope; restart and leaving active racing clear it. The optional NOS-only
+adapter remains available to diagnostics, not the race call site.

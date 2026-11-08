@@ -125,6 +125,10 @@ int main(int argc,char**) {
 
     check(!blur.frame(false,0,0,25).active(),"ordinary low speed skips passes");
 
+    const auto cruise=blur.frame(false,0,0,50);
+    check(cruise.alpha==95 && std::abs(cruise.offsets[0]-0.001875F)<1e-9F,
+          "ordinary camera speed drives original blur without NOS");
+
     auto a=blur.frame(true,0,0,50);
 
     check(a.alpha==179 && std::abs(a.offsets[0]-0.003877500305F)<1e-9F,

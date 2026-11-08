@@ -614,7 +614,9 @@ int main(int argc,char** argv) {try {
                 c.forward.z*c.up.x-c.forward.x*c.up.z,c.forward.x*c.up.y-c.forward.y*c.up.x};
             const auto local=camera_motion_to_view(v,{{float(right.x),float(right.y),float(right.z)}},
                 {{float(c.up.x),float(c.up.y),float(c.up.z)}},{{float(c.forward.x),float(c.forward.y),float(c.forward.z)}});
-            blur_frame=blur.nitrous_frame(session.nitrous().active,local[0],local[1],local[2]);
+            if(session.timing().stage==RaceStage::racing && session.timing().outcome==RaceOutcome::running)
+                blur_frame=blur.frame(session.nitrous_boosting(),local[0],local[1],local[2]);
+            else {blur.reset();blur_frame={};}
         }
         if(profiling && session.props())for(const auto& prop:session.props()->objects()) {
             const auto& b=prop.state.rigid_body;
