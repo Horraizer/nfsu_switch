@@ -41,6 +41,58 @@ Point subtract(const Point& a,const Point& b){return {{a[0]-b[0],a[1]-b[1],a[2]-
 struct Bounds {Point low{{1e20,1e20,1e20}},high{{-1e20,-1e20,-1e20}};bool valid=false;
  void add(const Point& p){valid=true;for(unsigned k=0;k<3;++k){low[k]=std::min(low[k],p[k]);high[k]=std::max(high[k],p[k]);}}
 };
+struct DoorFit {double x=0,z=0,size=0;};
+std::array<DoorFit,2> fit_doors(const PreparedCarScene& scene,const Bounds& body,
+                              std::uint32_t body_hash,std::uint32_t target_hash) {
+    const double cell=std::max((body.high[0]-body.low[0])/128.,(body.high[2]-body.low[2])/96.);
+    if(!(cell>0))throw std::runtime_error("KR side bounds");
+    const unsigned width=unsigned(std::ceil((body.high[0]-body.low[0])/cell))+1;
+    const unsigned height=unsigned(std::ceil((body.high[2]-body.low[2])/cell))+1;
+    const double middle=(body.low[1]+body.high[1])*.5;
+    std::array<std::vector<unsigned char>,2> mask;
+    for(auto& side:mask)side.resize(std::size_t(width)*height);
+    for(const auto& instance:scene.instances)if(instance.part_slot==5||instance.part_slot==6) {
+        const auto& mesh=scene.meshes.at(instance.mesh);
+        for(const auto& draw:scene.draws)if(draw.mesh==instance.mesh&&draw.drawable&&(draw.texture_hash==body_hash||draw.texture_hash==target_hash))
+        for(unsigned index=draw.first_index;index+2<draw.first_index+draw.index_count;index+=3) {
+            const auto& triangle=mesh.triangles.at(index/3);
+            const Point p[]={point(mesh.vertices.at(triangle.a),instance),point(mesh.vertices.at(triangle.b),instance),point(mesh.vertices.at(triangle.c),instance)};
+            const auto normal=cross(subtract(p[1],p[0]),subtract(p[2],p[0]));
+            const double length=std::sqrt(normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2]);
+            const double lateral=(p[0][1]+p[1][1]+p[2][1])/3.;
+            if(length<1e-9||std::abs(normal[1])<.5*length||std::abs(lateral-middle)<(body.high[1]-body.low[1])*.3)continue;
+            double u[3],v[3];for(unsigned k=0;k<3;++k){u[k]=(p[k][0]-body.low[0])/cell;v[k]=(p[k][2]-body.low[2])/cell;}
+            const double d=(v[1]-v[2])*(u[0]-u[2])+(u[2]-u[1])*(v[0]-v[2]);if(std::abs(d)<1e-9)continue;
+            const int left=std::max(0,int(std::floor(std::min({u[0],u[1],u[2]})))),right=std::min(int(width)-1,int(std::ceil(std::max({u[0],u[1],u[2]}))));
+            const int low=std::max(0,int(std::floor(std::min({v[0],v[1],v[2]})))),high=std::min(int(height)-1,int(std::ceil(std::max({v[0],v[1],v[2]}))));
+            auto& side=mask[lateral>middle?1:0];
+            for(int y=low;y<=high;++y)for(int x=left;x<=right;++x){
+                const double a=((v[1]-v[2])*(x+.5-u[2])+(u[2]-u[1])*(y+.5-v[2]))/d;
+                const double b=((v[2]-v[0])*(x+.5-u[2])+(u[0]-u[2])*(y+.5-v[2]))/d;
+                if(a>=-1e-7&&b>=-1e-7&&a+b<=1.0000001)side[std::size_t(y)*width+unsigned(x)]=1;
+            }
+        }
+    }
+    std::array<DoorFit,2> out;
+    for(unsigned side=0;side<2;++side) {
+        std::vector<unsigned> previous(width),current(width);double best=-1;
+        const double desired=(body.low[0]+body.high[0])*.5;
+        for(unsigned y=0;y<height;++y){
+            for(unsigned x=0;x<width;++x){
+                current[x]=mask[side][std::size_t(y)*width+x]?1U+(x&&y?std::min({current[x-1],previous[x],previous[x-1]}):0U):0U;
+                const unsigned size=current[x];if(size<=4)continue;
+                const double cx=body.low[0]+(double(x)+1-double(size)*.5)*cell;
+                // Prefer the central door area over small bumper/quarter patches.
+                if(std::abs(cx-desired)>(body.high[0]-body.low[0])*.2)continue;
+                const double score=double(size)-.1*std::abs(cx-desired)/cell;
+                if(score>best){best=score;out[side]={cx,body.low[2]+(double(y)+1-double(size)*.5)*cell,(double(size)-2)*cell*.94};}
+            }
+            current.swap(previous);
+        }
+        if(!(out[side].size>.1))throw std::runtime_error("KR painted side panel unavailable");
+    }
+    return out;
+}
 void blend_logo(const Logo& logo,double u,double v,unsigned char* destination) {
     if(u<0||u>1||v<0||v>1)return;
     const double x=u*(logo.width-1),y=v*(logo.height-1);const unsigned ix=unsigned(x),iy=unsigned(y);
@@ -59,7 +111,8 @@ bool apply_kr_vinyl(const PreparedCarScene& scene,const std::string& car,unsigne
         const auto& mesh=scene.meshes.at(instance.mesh);for(const auto& vertex:mesh.vertices)(instance.part_slot==8?hood:body).add(point(vertex,instance));
     }
     if(!body.valid){error="KR body geometry unavailable";return false;}
-    const auto body_hash=bin_hash(car+"_SKIN1"),target_hash=bin_hash("DUMMY_SKIN1");std::vector<unsigned char> painted(std::size_t(width)*height);
+    const auto body_hash=bin_hash(car+"_SKIN1"),target_hash=bin_hash("DUMMY_SKIN1");
+    const auto doors=fit_doors(scene,body,body_hash,target_hash);std::vector<unsigned char> painted(std::size_t(width)*height);
     for(const auto& instance:scene.instances)if(instance.part_slot==5||instance.part_slot==6||instance.part_slot==8) {
         const bool top=instance.part_slot==8;const auto& mesh=scene.meshes.at(instance.mesh);
         for(const auto& draw:scene.draws)if(draw.mesh==instance.mesh&&draw.drawable&&(draw.texture_hash==body_hash||draw.texture_hash==target_hash))
@@ -72,11 +125,11 @@ bool apply_kr_vinyl(const PreparedCarScene& scene,const std::string& car,unsigne
             const double denominator=(v[1]-v[2])*(u[0]-u[2])+(u[2]-u[1])*(v[0]-v[2]);if(std::abs(denominator)<1e-8)continue;
             const int left=std::max(0,int(std::floor(std::min({u[0],u[1],u[2]})))),right=std::min(int(width)-1,int(std::ceil(std::max({u[0],u[1],u[2]}))));
             const int first=std::max(0,int(std::floor(std::min({v[0],v[1],v[2]})))),last=std::min(int(height)-1,int(std::ceil(std::max({v[0],v[1],v[2]}))));
-            const auto& bounds=top?hood:body;const double side_size=std::clamp((body.high[0]-body.low[0])*.28,.8,1.3);
-            const double size=top?std::min((bounds.high[0]-bounds.low[0])*.75,(bounds.high[1]-bounds.low[1])*.7):side_size;
+            const auto& bounds=top?hood:body;
+            const double size=top?std::min((bounds.high[0]-bounds.low[0])*.75,(bounds.high[1]-bounds.low[1])*.7):1.;
             if(size<.1)continue;
             const double cx=(bounds.low[0]+bounds.high[0])*.5,cy=(bounds.low[1]+bounds.high[1])*.5;
-            const double cz=body.low[2]+(body.high[2]-body.low[2])*.42;
+
             for(int y=first;y<=last;++y)for(int x=left;x<=right;++x) {
                 const auto pixel=std::size_t(y)*width+unsigned(x);if(painted[pixel])continue;
                 const double a=((v[1]-v[2])*(x+.5-u[2])+(u[2]-u[1])*(y+.5-v[2]))/denominator;
@@ -84,8 +137,9 @@ bool apply_kr_vinyl(const PreparedCarScene& scene,const std::string& car,unsigne
                 if(a< -1e-7||b< -1e-7||c< -1e-7)continue;
                 Point p{};for(unsigned k=0;k<3;++k)p[k]=a*positions[0][k]+b*positions[1][k]+c*positions[2][k];
                 if(!top&&std::abs(p[1]-cy)<(bounds.high[1]-bounds.low[1])*.3)continue;
-                const double tx=top?(p[1]-cy)/size+.5:(p[0]-cx)*(p[1]>cy?-1:1)/size+.5;
-                const double ty=top?(p[0]-cx)/size+.5:(cz-p[2])/size+.5;
+                const auto& door=doors[p[1]>cy?1:0];
+                const double tx=top?(p[1]-cy)/size+.5:(p[0]-door.x)*(p[1]>cy?-1:1)/door.size+.5;
+                const double ty=top?(p[0]-cx)/size+.5:(door.z-p[2])/door.size+.5;
                 if(tx<0||tx>1||ty<0||ty>1)continue;
                 blend_logo(logo,tx,ty,rgba.data()+pixel*4);painted[pixel]=1;
             }

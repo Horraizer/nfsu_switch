@@ -41,7 +41,9 @@ Original PNG SHA-256:
 55c788f6ee341eb839340b3344cb228c97096cacd3b96e8c158526f820cf9f67
 
 The compositor projects it onto the selected body's door surfaces and painted
-hood through each car's actual mesh UVs. Glass, wheels and materials that do
+hood through each car's actual mesh UVs. Each side fits its complete square
+inside a connected painted panel, with an inset from the panel boundary;
+whole-body height is not used as available door area. Glass, wheels and materials that do
 not bind the painted body target are excluded. A carbon hood with its own
 material therefore receives no painted-hood projection. RGB is blended while
 the body's paint/gloss alpha remains intact. Color preview applies the same
