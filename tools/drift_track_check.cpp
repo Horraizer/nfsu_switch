@@ -75,7 +75,16 @@ int main(int argc,char** argv) {
     crowd.frame(race.session());
     if(!crowd.draw_count() || crowd.actor_count()<2){std::cerr<<"FAIL drift crowd missing";return 1;}
     const auto* upload=crowd.commands().resource_table().resources[0].data;
-    const auto first_sample=crowd.commands().owning_draws()[0].first_vertex;
+    const auto resources=crowd.commands().resource_table().resources;
+    const auto pose_hash=[&]() {
+        std::uint64_t hash=14695981039346656037ULL;
+        for(const auto& resource:crowd.commands().resource_table().resources)if(resource.streamed_vertices)
+            for(std::size_t i=0;i<resource.bytes;++i)hash=(hash^resource.data[i])*1099511628211ULL;
+        return hash;
+    };
+    bool has_stream=false;for(const auto& resource:resources)has_stream|=resource.streamed_vertices;
+    if(!has_stream){std::cerr<<"FAIL drift crowd has no streamed poses";return 1;}
+    const auto first_sample=pose_hash();
     bool crowd_moved=false,rolling_wheels=false;
     nfsu::CarAnimationState preceding_animation;
     nfsu::VehicleState preceding_car;
@@ -116,7 +125,13 @@ int main(int argc,char** argv) {
         if(upload!=crowd.commands().resource_table().resources[0].data) {
             std::cerr<<"FAIL drift crowd upload changed";return 1;
         }
-        if(tick<192*2)crowd_moved|=crowd.commands().owning_draws()[0].first_vertex!=first_sample;
+        const auto& current=crowd.commands().resource_table().resources;
+        if(current.size()!=resources.size()){std::cerr<<"FAIL drift crowd resource count changed";return 1;}
+        for(std::size_t i=0;i<current.size();++i)if(resources[i].streamed_vertices &&
+            (!current[i].streamed_vertices||current[i].data!=resources[i].data||current[i].bytes!=resources[i].bytes)) {
+            std::cerr<<"FAIL drift crowd streamed pose storage changed";return 1;
+        }
+        if(tick<192*2)crowd_moved|=pose_hash()!=first_sample;
         if((tick<810 && !crowd.draw_count()) || (tick>825 && crowd.draw_count())) {
             std::cerr<<"FAIL drift crowd retirement epoch";return 1;
         }
@@ -132,7 +147,8 @@ int main(int argc,char** argv) {
         largest_speed=std::max(largest_speed,float(race.session().car().owner_speeds.magnitude));
     }
     std::cout<<"LIVE slide tick="<<slide_at<<" speed="<<largest_speed<<" angle="<<largest_angle<<" pending="<<largest_score<<" banked="<<race.session().style().item(0).total<<" grip="<<smallest_grip<<"\n";
-    if(!crowd_moved||!rolling_wheels){std::cerr<<"FAIL drift crowd or rolling wheels did not animate";return 1;}
+    if(!crowd_moved){std::cerr<<"FAIL drift crowd posed vertices did not animate";return 1;}
+    if(!rolling_wheels){std::cerr<<"FAIL drift cinematic wheels did not roll";return 1;}
     std::cout<<"PASS drift crowd animation, stable uploads, retirement and staged HUD visibility\n";
     if(largest_score<=0 || smallest_grip>=1 || race.session().style().item(0).total<=0){std::cerr<<"FAIL live drift did not bank";return 1;}
     if(finish_probe) {

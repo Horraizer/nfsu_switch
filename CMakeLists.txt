@@ -992,6 +992,10 @@ if(NFSU_BUILD_TESTS)
     set_tests_properties(
         nfsu_input_tests nfsu_platform_tests nfsu_platform_neutrality
         PROPERTIES TIMEOUT 60)
+    # The source tokenizer also inspects embedded ASCII asset data. Avoid
+    # competing with this batch's CPU-heavy retail replays without relaxing
+    # its checks or timeout.
+    set_tests_properties(nfsu_platform_neutrality PROPERTIES RUN_SERIAL TRUE)
 endif()
 
 # Memory arenas and GPU upload bookkeeping for the Switch renderer, issues #52

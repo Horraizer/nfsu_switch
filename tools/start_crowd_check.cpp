@@ -64,6 +64,19 @@ int main(int argc,char** argv) {
     crowd.frame(session);const auto initial=crowd_pose_hash(crowd.commands());
     if(!crowd.draw_count()) {std::cerr<<"FAIL: crowd missing before countdown\n";return 1;}
     const auto* stable=commands.resource_table().resources[0].data;
+    const auto original_resources=commands.resource_table().resources;
+    const auto stable_streams=[&]() {
+        const auto& current=commands.resource_table().resources;
+        if(current.size()!=original_resources.size())return false;
+        bool streamed=false;
+        for(std::size_t i=0;i<current.size();++i)if(original_resources[i].streamed_vertices) {
+            streamed=true;
+            if(!current[i].streamed_vertices||current[i].data!=original_resources[i].data||
+               current[i].bytes!=original_resources[i].bytes)return false;
+        }
+        return streamed;
+    };
+    if(!stable_streams()){std::cerr<<"FAIL: no stable streamed pose buffers\n";return 1;}
     bool moved=false;unsigned early_changes=0;auto previous=initial;
     for(unsigned tick=0;tick<600;++tick) {
         auto pad=nfsu::race_input_frame({1,0,0},tick);
@@ -78,7 +91,7 @@ int main(int argc,char** argv) {
         if(tick<4&&sample!=previous)++early_changes;
         previous=sample;
         crowd.frame(session);
-        if(sample!=crowd_pose_hash(crowd.commands()) || stable!=commands.resource_table().resources[0].data) {
+        if(sample!=crowd_pose_hash(crowd.commands()) || stable!=commands.resource_table().resources[0].data || !stable_streams()) {
             std::cerr<<"FAIL: paused sample or upload changed\n";return 1;
         }
     }
@@ -86,7 +99,7 @@ int main(int argc,char** argv) {
     nfsu::RaceSession restarted(course);
     if(!restarted.start(error)) {std::cerr<<"FAIL: restart "<<error<<"\n";return 1;}
     crowd.frame(restarted);
-    if(!crowd.draw_count() || crowd_pose_hash(crowd.commands())!=initial) {std::cerr<<"FAIL: restart crowd\n";return 1;}
+    if(!crowd.draw_count() || crowd_pose_hash(crowd.commands())!=initial || !stable_streams()) {std::cerr<<"FAIL: restart crowd\n";return 1;}
     // Production road camera path, both marker directions, every grid family.
     for(const auto& row:kNativeStartPlaylist)
         if(nfsu::road_start_playlist(row[0],row[1])!=row[2]){std::cerr<<"FAIL: native playlist family\n";return 1;}
