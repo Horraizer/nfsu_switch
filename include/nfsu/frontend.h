@@ -14,14 +14,22 @@
 #include <utility>
 #include <vector>
 namespace nfsu {
-enum class FrontendAction { none, underground, free_drive, profiles, exit, multiplayer };
+enum class FrontendAction { none, underground, free_drive, profiles, exit, multiplayer, options };
 struct FrontendInput { bool up=false, down=false, accept=false, back=false, left=false, right=false, profiles=false; };
+struct RacePresentationOptions {
+    bool motion_blur=true;
+    bool low_car_reflections=false;
+    bool road_reflections=true;
+    bool metric_speed=false;
+};
 class FrontendMenu {
 public:
-    explicit FrontendMenu(bool multiplayer=false):multiplayer_(multiplayer){}
+    explicit FrontendMenu(bool multiplayer=false,bool options=false):multiplayer_(multiplayer),options_(options){}
     FrontendAction update(FrontendInput input);
     unsigned selected() const { return selected_; }
     bool multiplayer_enabled()const{return multiplayer_;}
+    bool options_enabled()const{return options_;}
+    unsigned multiplayer_selection()const{return options_?3U:2U;}
     void notice(std::string text) { notice_=std::move(text); }
     const std::string& notice() const { return notice_; }
     void song(const char* artist,const char* title,const char* album) {
@@ -35,7 +43,7 @@ public:
     const std::string& album() const {return album_;}
 private:
     unsigned selected_=0,song_revision_=1;
-    bool multiplayer_=false;
+    bool multiplayer_=false,options_=false;
     std::string notice_;
     std::string artist_="Lil Jon & the Eastside Boyz",title_="Get Low",album_="Kings of Crunk";
 };
@@ -264,6 +272,8 @@ public:
     void draw_profiles(ScreenImage,const std::vector<CareerProfileEntry>&,unsigned selected,const std::string& notice)const;
     void record_profiles(unsigned width,unsigned height,const std::vector<CareerProfileEntry>&,unsigned selected,
                          const std::string& notice,FrontendUiFrame&)const;
+    void record_options(unsigned width,unsigned height,const RacePresentationOptions&,unsigned selected,
+                        const std::string& notice,FrontendUiFrame&)const;
     void draw_pause(ScreenImage,const RacePauseMenu&)const;
     void record_pause(unsigned width,unsigned height,const RacePauseMenu&,FrontendUiFrame&,unsigned fade_out=~0U)const;
     bool load_post_race(const std::filesystem::path& root,std::string& error);

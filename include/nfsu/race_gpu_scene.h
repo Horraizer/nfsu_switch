@@ -80,6 +80,10 @@ public:
     std::size_t draw_capacity() const { return original_draw_distance_ ? kDekoPreparedDrawCapacity : kTrackSliceDrawLimit; }
     void set_race_visuals(bool enabled) { if(!ready_)race_visuals_=enabled; }
     void set_silhouette_shadows(bool enabled) { if (!ready_) silhouette_shadows_ = enabled; }
+    void set_low_car_reflections(bool enabled) noexcept {
+        low_car_reflections_=enabled;
+        cube_next_face_=0;
+    }
     void set_wet_road_reflections(bool enabled) noexcept { wet_road_reflections_ = enabled; }
     // `car` selects the racer every path draws and drives (issue #315); null
     // resolves the default 240SX through the retail car type table. The
@@ -148,6 +152,8 @@ private:
     bool dressed_ = false; // An explicit authored configuration was applied.
     TextureFilterMode texture_filter_ = TextureFilterMode::legacy;
     bool car_shading_ = false;
+    bool low_car_reflections_ = false;
+    unsigned cube_next_face_ = 0;
     bool wet_road_reflections_ = false;
     std::size_t resource_limit()const {
         return complete_zone_backing_?kTrackZoneBackingResourceLimit:kTrackSliceResourceLimit;

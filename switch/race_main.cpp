@@ -50,6 +50,72 @@
 #include <stdexcept>
 
 namespace {
+const std::filesystem::path presentation_path="sdmc:/switch/nfsu-saves/presentation.txt";
+
+nfsu::RacePresentationOptions read_presentation_options(bool road_default) {
+    nfsu::RacePresentationOptions options;
+    options.road_reflections=road_default;
+    for(const auto& path:{presentation_path,std::filesystem::path(presentation_path.string()+".bak")}) {
+        std::ifstream file(path);
+        unsigned version,blur,car,road,metric;
+        std::string extra;
+        if(file>>version>>blur>>car>>road>>metric && !(file>>extra) &&
+           version==1 && blur<=1 && car<=1 && road<=1 && metric<=1)
+            return {blur!=0,car!=0,road!=0,metric!=0};
+    }
+    return options;
+}
+
+bool write_presentation_options(const nfsu::RacePresentationOptions& options) {
+    std::error_code error;
+    std::filesystem::create_directories(presentation_path.parent_path(),error);
+    if(error)return false;
+    auto pending=presentation_path;
+    pending+=".tmp";
+    std::ofstream file(pending,std::ios::trunc);
+    file<<"1 "<<options.motion_blur<<' '<<options.low_car_reflections<<' '
+        <<options.road_reflections<<' '<<options.metric_speed<<'\n';
+    file.close();
+    if(!file)return false;
+    if(std::filesystem::exists(presentation_path,error)) {
+        const auto backup=presentation_path.string()+".bak";
+        std::filesystem::remove(backup,error);
+        if(error)return false;
+        std::filesystem::rename(presentation_path,backup,error);
+    }
+    if(error)return false;
+    std::filesystem::rename(pending,presentation_path,error);
+    return !error;
+}
+
+// Original 6FA7F0 first-visit groups. The package-selected tuner
+// requests at 50A84E use the active performance category instead.
+int career_garage_speech(const nfsu::CareerGarage& garage) {
+    using nfsu::GaragePage;
+    switch(garage.page()) {
+    case GaragePage::root:return 67;
+    case GaragePage::body:return 63;
+    case GaragePage::accessories:return 62;
+    case GaragePage::performance:return 75;
+    case GaragePage::packages:{
+        constexpr int speech[]={88,79,70,83,73,69,82,80,64};
+        return speech[garage.performance_field()];
+    }
+    case GaragePage::rims:return 77;
+    case GaragePage::paint:return 74;
+    case GaragePage::vinyl_layers:return 84;
+    case GaragePage::decals_zones:return 68;
+    case GaragePage::trade_in:return 81;
+    case GaragePage::parts:
+        // The port opens the part browser directly after selecting a body slot.
+        switch(garage.slot()) {
+        case 1:case 2:case 6:case 7:case 8:case 10:case 11:return 85;
+        default:return -1;
+        }
+    default:return -1;
+    }
+}
+
 bool ab_record=false,ab_replay=false,ab_minimal=false;
 
 std::string selected_car_label = "STOCK";
@@ -479,12 +545,13 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 enum class RaceReturn { menu, restart, intro_won, quit_tournament, restart_tournament, sweep_complete };
 RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
-          bool car_shading, bool wet_road_reflections, TextureFilterMode texture_filter,
+          bool car_shading, const RacePresentationOptions& presentation, TextureFilterMode texture_filter,
           std::uint32_t requested_height, bool gpu_boost, bool hud_mode, bool hud_trace, bool fps_overlay,
           const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
           const nfsu::CarAssets& selected_car, Screen& screen, PadState& pad, bool free_drive = false,
           const nfsu::RaceCarDress* dress = nullptr, std::uint32_t event_number = 1,
           const FrontendArt* post_art = nullptr, unsigned difficulty=1, unsigned* completed_place=nullptr, unsigned event_prize=0, unsigned previous_style=0, int* completed_style=nullptr, const CareerEventMedia* event_media=nullptr,float visual_reputation=0,const CareerCatalog* career_catalog=nullptr,unsigned previous_high_water=0,unsigned race_index=0,std::array<unsigned,4>* completed_places=nullptr,const CareerTournament* tournament=nullptr,bool nos_self_check=false,const std::string& player_name="YOU",CareerRaceReport* career_report=nullptr,const QuickRaceOptions* quick=nullptr,StartupJournal* sweep=nullptr,bool finish_sweep=false) {
+    const bool wet_road_reflections=presentation.road_reflections;
     if(career_report)*career_report={};
     if(completed_place)*completed_place=0;
     if(completed_style)*completed_style=0;
@@ -659,6 +726,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     std::printf("PARTICLES %s\n",particles_enabled?"ON":"OFF");
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     scene.set_wet_road_reflections(wet_road_reflections);
+    scene.set_low_car_reflections(presentation.low_car_reflections);
     scene.set_race_visuals(true);
     scene.set_silhouette_shadows(true);
     require(scene.set_original_draw_distance(true),"draw distance setup failed");
@@ -873,6 +941,10 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             docked = now_docked;
             const auto next_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
             if (next_height != scene_height) {
+                if(presentation.low_car_reflections) {
+                    scene.set_low_car_reflections(true);
+                    require(scene.frame(race.session(),frame,error),error);
+                }
                 require(renderer.reconfigure_target(frame.commands,error,scene.draw_capacity(),
                         profile_frame || !panel_mode,sky == "early",next_height,
                         hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
@@ -1131,7 +1203,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             {{float(right.x),float(right.y),float(right.z)}},
             {{float(blur_view.up.x),float(blur_view.up.y),float(blur_view.up.z)}},
             {{float(blur_view.forward.x),float(blur_view.forward.y),float(blur_view.forward.z)}});
-        if(race.session().timing().stage==RaceStage::racing && !finished)
+        if(presentation.motion_blur && race.session().timing().stage==RaceStage::racing && !finished)
             renderer.set_speed_blur(speed_blur.frame(race.session().nitrous_boosting(),
                 local[0],local[1],local[2],!paused));
         else {speed_blur.reset();renderer.set_speed_blur({});}
@@ -1216,7 +1288,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         const auto present_start = armGetSystemTick();
         if(hud_mode&&!pause_menu.hud())hud_frame={};
         if (hud_mode && pause_menu.hud()) build_race_hud_frame(race.session(),hud_atlas,frame.commands.width,
-                                           frame.commands.height,hud_frame);
+                                           frame.commands.height,hud_frame,presentation.metric_speed);
         if (hud_mode && pause_menu.hud() && hud_atlas.map.valid)
             require(append_race_minimap(race.session(),hud_atlas,frame.commands.width,
                     frame.commands.height,minimap_state,hud_frame),"minimap geometry invalid or HUD capacity exceeded");
@@ -2026,7 +2098,7 @@ int main(int argc, char** argv) {
 #endif
             if (selected) {
                 run(root,replay,panel,profile_frame,particles_enabled,sky,
-                    tuned,glows,car_shading,wet_road_reflections,texture_filter,scene_height,
+                    tuned,glows,car_shading,{true,false,wet_road_reflections,false},texture_filter,scene_height,
                     gpu_boost,hud,hud_trace,fps_overlay,explicit_performance ? &performance : nullptr,
                     handling_telemetry,steering,selected_car,screen,pad,false,nullptr,event_number,
                     nullptr,1,nullptr,0,0,nullptr,nullptr,0,nullptr,0,0,nullptr,nullptr,nos_self_check);
@@ -2093,8 +2165,22 @@ int main(int argc, char** argv) {
                 open_frontend();
                 FrontendClock frontend_clock;
                 FrontendAppletClockHook frontend_clock_hook(frontend_clock,frontend_presentation_stats);
-                FrontendMenu menu(true);
+                FrontendMenu menu(true,true);
+                auto presentation=read_presentation_options(wet_road_reflections);
+                if(wet_road_seen)presentation.road_reflections=wet_road_reflections;
+                bool options_open=false;
+                unsigned option_row=0;
+                std::string option_notice;
                 audio::FrontendMusic music;
+                std::uint32_t career_hints=0;
+                const auto play_career_hint=[&](int group) {
+                    const auto bit=1U<<unsigned(group-62);
+                    if(career_hints&bit)return;
+                    career_hints|=bit;
+                    std::string speech_error;
+                    if(!music.speech(group,speech_error))
+                        std::fprintf(stderr,"CAREER hint %d failed: %s\n",group,speech_error.c_str());
+                };
                 trace("music.start.before");
                 if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
                 trace("music.start.after");
@@ -2277,7 +2363,7 @@ int main(int argc, char** argv) {
                                     load_post_race();
                                     RaceReturn intro_result;
                                     do { intro_result=run(root,false,false,profile_frame,particles_enabled,sky,
-                                        false,glows,true,wet_road_reflections,texture_filter,scene_height,
+                                        false,glows,true,presentation,texture_filter,scene_height,
                                         gpu_boost,hud,false,fps_overlay,nullptr,handling_telemetry,steering,
                                         selected_car,screen,pad,false,nullptr,0,&art);
                                     } while(intro_result==RaceReturn::restart && appletMainLoop());
@@ -2413,20 +2499,44 @@ int main(int argc, char** argv) {
                                             if(!frontend_renderer)open_frontend();
                                             frontend_clock.resume();
                                             if(!career_music){require(music.start(root,frontend_error),frontend_error);career_music=true;}
+                                            if(profile.page==CareerPage::choose_car)
+                                                play_career_hint(audio::kStarterCarSelectSpeech);
                                             if(profile.page==CareerPage::unique_reward){
                                                 if(const auto* reward=career.media(profile.pending_unique);reward&&reward->reward_speech>=0)
                                                     if(!music.speech(reward->reward_speech,frontend_error))
                                                         std::fprintf(stderr,"CAREER reward speech failed: %s\n",frontend_error.c_str());
                                             }
-                                            if(profile.page==CareerPage::briefing){
-                                                if(const auto* message=career.media(profile.selected_event);message&&message->speech>=0)
-                                                    if(!music.speech(message->speech,frontend_error))std::fprintf(stderr,"CAREER speech failed: %s\n",frontend_error.c_str());
+                                            int magazine_voice=-1;
+                                            if(profile.page==CareerPage::briefing) {
+                                                music.stop_speech();
+                                                if(const auto* message=career.media(profile.selected_event)) {
+                                                    if(message->speech>=0&&!music.speech(message->speech,frontend_error))
+                                                        std::fprintf(stderr,"CAREER speech failed: %s\n",frontend_error.c_str());
+                                                    if(!message->magazine_rewards.empty())
+                                                        magazine_voice=audio::magazine_briefing_variant(profile.selected_event);
+                                                }
                                             }
                                             std::string notice;bool change=false,confirm=false,previous_negative=false,previous_positive=false,previous_color_up=false,previous_color_down=false;
+                                            std::optional<CareerProfile> starter_purchase;
+                                            bool starter_purchase_spoken=false;
                                             while(!change && !leave && appletMainLoop()) {
                                                 if(lobby_poll)lobby_poll();
                                                 if(appletGetFocusState()!=AppletFocusState_InFocus){frontend_clock.resume();continue;}
-                                                padUpdate(&pad);const auto pressed=padGetButtonsDown(&pad);const auto stick=padGetStickPos(&pad,0);
+                                                if(magazine_voice>=0&&music.speech_drained()) {
+                                                    if(!music.speech(audio::kMagazineBriefingSpeech,frontend_error,unsigned(magazine_voice)))
+                                                        std::fprintf(stderr,"CAREER magazine briefing failed: %s\n",frontend_error.c_str());
+                                                    magazine_voice=-1;
+                                                }
+                                                if(starter_purchase&&music.speech_drained()) {
+                                                    if(starter_purchase_spoken) {
+                                                        store(*starter_purchase);change=true;continue;
+                                                    }
+                                                    starter_purchase_spoken=true;
+                                                    play_career_hint(audio::kStarterCarPurchaseSpeech);
+                                                }
+                                                padUpdate(&pad);
+                                                const auto pressed=starter_purchase?0:padGetButtonsDown(&pad);
+                                                const auto stick=starter_purchase?decltype(padGetStickPos(&pad,0)){}:padGetStickPos(&pad,0);
                                                 const bool vertical=profile.page==CareerPage::menu&&!career_info.active();
                                                 const bool negative=vertical?stick.y>16000:stick.x<-16000;
                                                 const bool positive=vertical?stick.y<-16000:stick.x>16000;
@@ -2549,7 +2659,7 @@ int main(int argc, char** argv) {
                                                             std::fflush(stdout);
                                                             if(!practice)load_post_race();
                                                             RaceReturn result;
-                                                            do { result=run(root,false,false,profile_frame,particles_enabled,sky,false,glows,true,wet_road_reflections,texture_filter,scene_height,
+                                                            do { result=run(root,false,false,profile_frame,particles_enabled,sky,false,glows,true,presentation,texture_filter,scene_height,
                                                                 gpu_boost,hud,false,fps_overlay,&setup.performance,handling_telemetry,steering,chosen,screen,pad,practice,&dress,course.event,
                                                                 &art,launch.difficulty,nullptr,0,0,nullptr,nullptr,setup.reputation,nullptr,0,course.round,
                                                                 nullptr,nullptr,false,"YOU",nullptr,&launch);
@@ -2607,7 +2717,12 @@ int main(int argc, char** argv) {
                                                     }else if(profile.page==CareerPage::choose_car) {
                                                         if(frontend_scene.car_transitioning())continue;
                                                         if(!confirm){confirm=true;notice="Buy "+career.starters().at(selection).name+"? A: confirm / B: cancel";}
-                                                        else {auto next=profile;require(career.buy(next,selection,frontend_error),frontend_error);store(next);change=true;}
+                                                        else {
+                                                            auto next=profile;
+                                                            if(career.buy(next,selection,frontend_error)) {
+                                                                starter_purchase=std::move(next);notice.clear();
+                                                            }else notice=frontend_error;
+                                                        }
                                                     }else if(profile.page==CareerPage::map) {
                                                         if(profile.selected_event>kCareerLastEvent)notice="This event is outside the current campaign block.";
                                                         else {auto next=profile;require(career.begin_event(next,frontend_error),frontend_error);store(next);change=true;
@@ -2642,7 +2757,7 @@ int main(int argc, char** argv) {
                                                             do {
                                                                 CareerRaceReport career_report;
                                                                 try {outcome=run(root,false,false,profile_frame,particles_enabled,sky,
-                                                                    false,glows,true,wet_road_reflections,texture_filter,scene_height,
+                                                                    false,glows,true,presentation,texture_filter,scene_height,
                                                                     gpu_boost,hud,false,fps_overlay,&owned_setup.performance,handling_telemetry,steering,
                                                                     owned,screen,pad,false,&owned_dress,profile.selected_event,&art,profile.difficulty,&completed,
                                                                     career.media(profile.selected_event)->reward[profile.difficulty],profile.style_points,&style_earned,
@@ -2692,6 +2807,15 @@ int main(int argc, char** argv) {
                                                 }
                                                 require(frontend_scene.frame(static_cast<float>(elapsed/1000000000.0),frontend_clock.original_ticks(),frontend_error),frontend_error);
                                                 art.advance(static_cast<float>(elapsed/1000000000.0));
+                                                if(!sandbox&&!change&&!leave&&music.speech_drained()) {
+                                                    int hint=-1;
+                                                    if(career_info.active())
+                                                        hint=career_info.screen()==CareerInfoScreen::rankings?76:78;
+                                                    else if(profile.page==CareerPage::map)hint=72;
+                                                    else if(profile.page==CareerPage::magazines)hint=71;
+                                                    else if(profile.page==CareerPage::garage)hint=career_garage_speech(garage);
+                                                    if(hint>=0)play_career_hint(hint);
+                                                }
                                                 if(career_info.active())art.record_career_info(width,height,career,profile,career_info,frontend_ui);
                                                 else if(profile.page==CareerPage::magazines)art.record_magazine(width,height,magazine_recipe,profile.magazine_covers[selection].car,frontend_ui);
                                                 else if(sandbox&&profile.page==CareerPage::menu)art.record_free_drive(width,height,career,profile,selection,free_course,notice,frontend_ui,&quick_options,choose_quick_mode);
@@ -2742,12 +2866,34 @@ int main(int argc, char** argv) {
                     input.back=down&(HidNpadButton_B|HidNpadButton_Plus);
                     stick_up=up; stick_down=below;
                     const auto previous_selection=menu.selected();
-                    auto action=pending==FrontendAction::none?menu.update(input):FrontendAction::none;
+                    auto action=FrontendAction::none;
+                    const bool handling_options=options_open;
+                    if(handling_options) {
+                        if(input.back) {
+                            options_open=false;
+                            music.sound(audio::FrontendSound::back);
+                        }else if(input.up!=input.down) {
+                            option_row=(option_row+(input.up?3U:1U))%4U;
+                            music.sound(input.up?audio::FrontendSound::up:audio::FrontendSound::down);
+                        }else {
+                            const bool left=down&(HidNpadButton_Left|HidNpadButton_StickLLeft);
+                            const bool right=down&(HidNpadButton_Right|HidNpadButton_StickLRight);
+                            if(left!=right || input.accept) {
+                                bool* values[]={&presentation.motion_blur,&presentation.low_car_reflections,
+                                                &presentation.road_reflections,&presentation.metric_speed};
+                                *values[option_row]=!*values[option_row];
+                                option_notice=write_presentation_options(presentation)?"":"Could not save options to SD.";
+                                music.sound(left?audio::FrontendSound::left:audio::FrontendSound::right);
+                            }
+                        }
+                    }else if(pending==FrontendAction::none)action=menu.update(input);
                     const auto selection_done=armGetSystemTick();
-                    if(pending==FrontendAction::none && input.back) music.sound(audio::FrontendSound::back);
-                    else if(pending==FrontendAction::none && input.accept) music.sound(audio::FrontendSound::select);
-                    else if(menu.selected()!=previous_selection)
-                        music.sound(input.up?audio::FrontendSound::up:audio::FrontendSound::down);
+                    if(!handling_options) {
+                        if(pending==FrontendAction::none && input.back) music.sound(audio::FrontendSound::back);
+                        else if(pending==FrontendAction::none && input.accept) music.sound(audio::FrontendSound::select);
+                        else if(menu.selected()!=previous_selection)
+                            music.sound(input.up?audio::FrontendSound::up:audio::FrontendSound::down);
+                    }
                     if(action==FrontendAction::exit) {
                         pending=action;music.begin_stop();action=FrontendAction::none;
                     }
@@ -2755,6 +2901,13 @@ int main(int argc, char** argv) {
                         action=pending;pending=FrontendAction::none;
                     }
                     if (action==FrontendAction::exit) {music.stop();break;}
+                    if(action==FrontendAction::options) {
+                        load_post_race();
+                        require(frontend_renderer->set_frontend_overlay(art.atlas(),frontend_error),frontend_error);
+                        options_open=true;
+                        option_row=0;
+                        option_notice.clear();
+                    }
                     if(action==FrontendAction::profiles) {
                         choose_profile();frontend_clock.resume();menu.notice(active_profile?"PROFILE: "+active_profile->name:"");continue;
                     }
@@ -2794,7 +2947,10 @@ int main(int argc, char** argv) {
                     trace("frame.scene.after");
                     const auto scene_done=armGetSystemTick();
                     art.advance(static_cast<float>(elapsed_ns/1000000000.0));
-                    trace("frame.ui.before");art.record_ui(width,height,menu,frontend_ui);trace("frame.ui.after");
+                    trace("frame.ui.before");
+                    if(options_open)art.record_options(width,height,presentation,option_row,option_notice,frontend_ui);
+                    else art.record_ui(width,height,menu,frontend_ui);
+                    trace("frame.ui.after");
                     const auto ui_done=armGetSystemTick();
                     DekoUpdateTiming update_timing;
                     trace("frame.update.before");

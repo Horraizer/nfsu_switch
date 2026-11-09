@@ -97,6 +97,7 @@ struct RaceHudReadout {
     double rotation = 44;
     int gear = kVehicleGearNeutral;
     int mph = 0;
+    int kph = 0;
 };
 struct RaceHudFrame {
     std::array<TrackVertex, kRaceHudMaxQuads * 4> vertices{};
@@ -106,6 +107,7 @@ struct RaceHudFrame {
     RaceHudReadout readout{};
     RaceLapHudPanel lap{};
     DriftHudClock drift_clock;
+    bool metric_speed=false;
     bool drag_lamp_selected=false;
     int drag_lamp=-1;
     std::int32_t drag_lamp_at=0;
@@ -175,7 +177,7 @@ void build_race_hud_frame(const RaceSession& session,
 // English single-player circuit/free-lap presentation. Does not advance time.
 void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                           std::uint32_t width, std::uint32_t height,
-                          RaceHudFrame& frame) noexcept;
+                          RaceHudFrame& frame, bool metric_speed=false) noexcept;
 // Original HUD_SingleRace animate state, sampled at 1200 Hz after finish.
 void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,unsigned height,RaceHudFrame& frame,std::string_view message="Race Over") noexcept;
 // Pure geometry entry point for synthetic gear, speed and RPM checks.

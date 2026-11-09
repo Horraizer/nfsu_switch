@@ -139,6 +139,17 @@ PostRaceValues pause_values(const RacePauseMenu& menu,unsigned& page,unsigned& s
     return values;
 }
 }
+void FrontendArt::record_options(unsigned width,unsigned height,const RacePresentationOptions& options,
+    unsigned selected,const std::string& notice,FrontendUiFrame& frame)const {
+    frame.vertices.clear();frame.additive.clear();frame.background_quads=0;
+    const PostRaceValues values{
+        {"OptionName_1",options.motion_blur?"Motion Blur   ON":"Motion Blur   OFF"},
+        {"OptionName_2",options.low_car_reflections?"Car Reflections   LOW":"Car Reflections   HIGH"},
+        {"OptionName_3",options.road_reflections?"Road Reflections   ON":"Road Reflections   OFF"},
+        {"OptionName_4",options.metric_speed?"Speed Units   KM/H":"Speed Units   MPH"},
+        {"Controls","Left / Right: Adjust   B: Back"},{"Notice",notice}};
+    impl_->draw_dialog(Canvas{width,height,impl_->atlas,frame},0,values,selected,600);
+}
 void FrontendArt::draw_pause(ScreenImage image,const RacePauseMenu& menu)const {
     unsigned page=0,selected=0;const auto values=pause_values(menu,page,selected);
     impl_->draw_dialog(Canvas{image},page,values,selected,600);

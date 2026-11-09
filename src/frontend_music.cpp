@@ -85,8 +85,9 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
             // Cue gain is independent of the music transition fade.
             p.fade.apply(pcm,count,ending);
             p.speech_duck.apply(pcm,count,p.speech.active());
-            p.sfx.mix(pcm,count); p.speech.mix(pcm,count);
             p.rendered_frames+=count;
+            p.sfx.mix(pcm,count);
+            p.speech.mix(pcm,count,p.rendered_frames);
             if(effect || audible_music)p.drain_boundary=p.rendered_frames;
             if(ending && p.fade.silent() && !p.sfx.active() && !p.speech.active())p.silenced=true;
         },error)) { p.stream->stop(); p.stream.reset(); return false; }
@@ -114,9 +115,13 @@ bool FrontendMusic::playing() const { return impl_->active && !impl_->ending.loa
 void FrontendMusic::sound(FrontendSound cue) {
     if(!impl_->ending.load())impl_->sfx.play(cue);
 }
-bool FrontendMusic::speech(int entry,std::string& error) {
+bool FrontendMusic::speech(int entry,std::string& error,unsigned variant) {
     if(!playing()){error="frontend audio device is not active";return false;}
-    return impl_->speech.play(impl_->root,entry,error);
+    return impl_->speech.play(impl_->root,entry,error,variant);
+}
+bool FrontendMusic::speech_drained() const {
+    auto& p=*impl_;
+    return !p.active || !p.output.error().empty() || p.speech.drained(p.output.stats().played_frames);
 }
 void FrontendMusic::stop_speech(){impl_->speech.stop();}
 std::string FrontendMusic::error() const {

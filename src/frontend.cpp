@@ -18,12 +18,13 @@ FrontendAction FrontendMenu::update(FrontendInput input) {
     if(input.profiles) return FrontendAction::profiles;
     if(input.back) return FrontendAction::exit;
     if(input.up!=input.down) {
-        const unsigned count=multiplayer_?3:2;
+        const unsigned count=2+unsigned(multiplayer_)+unsigned(options_);
         selected_=(selected_+(input.up?count-1:1))%count;
         notice_.clear();
     }
     if(!input.accept) return FrontendAction::none;
-    if(selected_==2)return FrontendAction::multiplayer;
+    if(options_&&selected_==2)return FrontendAction::options;
+    if(multiplayer_&&selected_==multiplayer_selection())return FrontendAction::multiplayer;
     return selected_==0?FrontendAction::underground:FrontendAction::free_drive;
 }
 namespace {
@@ -1226,11 +1227,15 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
             if(free) label="QUICK RACE";
             if(o.name=="Customize") label="CUSTOMIZE RIDE";
             const bool online=o.name=="Online",lan=online&&menu.multiplayer_enabled();
-            if(online) label=lan&&menu.selected()==2?"> MULTIPLAYER":"MULTIPLAYER";
+            const bool options=o.name=="Options"&&menu.options_enabled();
+            const bool lan_selected=lan&&menu.selected()==menu.multiplayer_selection();
+            if(online) label=lan_selected?"> MULTIPLAYER":"MULTIPLAYER";
+            if(options&&menu.selected()==2) label="> OPTIONS";
             if(o.name=="Description") label=menu.selected()==0?"Begin your Underground career":
-                menu.selected()==1?"Set up a race or explore a track in Free Run.":"Host or join a race over your local network.";
+                menu.selected()==1?"Set up a race or explore a track in Free Run.":
+                menu.options_enabled()&&menu.selected()==2?"Change display options.":"Host or join a race over your local network.";
             if((underground || free) && !p.temporal) color=(menu.selected()==(free?1U:0U))?std::array<unsigned,4>{{242,233,207,255}}:std::array<unsigned,4>{{180,154,84,255}};
-            else if(lan)color=menu.selected()==2?std::array<unsigned,4>{{242,233,207,color[3]}}:std::array<unsigned,4>{{180,154,84,color[3]}};
+            else if(lan||options)color=(lan_selected||(options&&menu.selected()==2))?std::array<unsigned,4>{{242,233,207,color[3]}}:std::array<unsigned,4>{{180,154,84,color[3]}};
             else if(o.name=="STATISTICS" || o.name=="Options" || o.name=="Customize" || online)
                 color={{110,110,110,p.temporal?(color[3]*180+127)/255:180}};
             color=p.parent_color(o,color);

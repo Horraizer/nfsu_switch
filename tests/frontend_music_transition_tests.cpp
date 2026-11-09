@@ -48,6 +48,19 @@ int main(int argc,char** argv){
             check(std::all_of(base.begin(),base.end(),[](auto v){return v==123;}),"stopped speech preserves music PCM");
             check(!speech.play(root,95,error)&&!speech.active(),"invalid speech request cannot retain stale voice");
         }
+        {
+            FrontendMusic music;check(music.start(root,error),error.c_str());
+            for(const auto entry:{kStarterCarSelectSpeech,kStarterCarPurchaseSpeech}) {
+                check(music.speech(entry,error),error.c_str());
+                check(!music.speech_drained(),"purchase transition waits for original speech");
+                for(unsigned i=0;i<300;++i)pump(1024);
+                check(!music.speech_drained(),"queued speech has not yet reached the device cursor");
+                played=submitted;
+                check(music.speech_drained(),"purchase advances after the last speech block is played");
+            }
+            check(music.speech(kMagazineBriefingSpeech,error,unsigned(magazine_briefing_variant(102))),error.c_str());
+            check(!music.speech(kMagazineBriefingSpeech,error,23)&&music.speech_drained(),"invalid named speech variant cannot keep a stale voice");
+        }
         for(const auto cue:{FrontendSound::select,FrontendSound::back}){
             FrontendMusic music;check(music.start(root,error),error.c_str());
             pump(1024);played=submitted; // Prime the actual music fade.

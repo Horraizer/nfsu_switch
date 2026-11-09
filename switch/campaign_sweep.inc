@@ -87,7 +87,7 @@ void run_campaign_sweep(const std::string& root,Screen& screen,PadState& pad,
                 unsigned completed=0;int style=0;std::array<unsigned,4> places{};
                 CareerRaceReport race_report;
                 const auto* media=finish_sweep?career.media(test.event):nullptr;
-                const auto outcome=run(root,false,false,false,particles,sky,false,glows,true,reflections,filter,
+                const auto outcome=run(root,false,false,false,particles,sky,false,glows,true,{true,false,reflections,false},filter,
                     scene_height,gpu_boost,true,false,false,test.event?&setup.performance:nullptr,false,
                     steering,car,screen,pad,false,test.event?&dress:nullptr,test.event,&art,profile.difficulty,
                     &completed,media?media->reward[profile.difficulty]:0,result_profile.style_points,&style,

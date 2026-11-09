@@ -64,6 +64,7 @@ void test_published_speed() {
     car.velocity={12,0,16};car.owner_speeds.magnitude=20.F;
     nfsu::build_race_hud_frame_for_car(car,8500,8000,1280,720,frame);
     check(frame.readout.mph==44,"HUD includes published vertical speed on slopes/jumps");
+    check(frame.readout.kph==72,"original metric HUD converts the same published magnitude");
     car.velocity={0,0,0};
     nfsu::build_race_hud_frame_for_car(car,8500,8000,1280,720,frame);
     check(frame.readout.mph==44,"HUD consumes completed publication, not a new velocity sample");

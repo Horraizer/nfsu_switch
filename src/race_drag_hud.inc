@@ -345,8 +345,8 @@ void append_race_drag_hud(const RaceSession& session,const RaceHudAtlas& atlas,u
             } else if(name=="RacePositionNumber")std::snprintf(text,sizeof text,"%u",session.player_position());
             else if(name=="RacePositionNth")std::snprintf(text,sizeof text,"%s",session.player_position()==1?"st":session.player_position()==2?"nd":session.player_position()==3?"rd":"th");
             else if(name=="NumberRacers")std::snprintf(text,sizeof text,"/%u",unsigned(session.rival_count()+1));
-            else if(name=="3rdPersonSpeed")std::snprintf(text,sizeof text,"%d",frame.readout.mph);
-            else if(name=="3rdPersonSpeedUnits")std::snprintf(text,sizeof text,"MPH");
+            else if(name=="3rdPersonSpeed")std::snprintf(text,sizeof text,"%d",frame.metric_speed?frame.readout.kph:frame.readout.mph);
+            else if(name=="3rdPersonSpeedUnits")std::snprintf(text,sizeof text,"%s",frame.metric_speed?"KM/H":"MPH");
             else if(name=="3rdPersonGear") {
                 if(frame.readout.gear<2)std::snprintf(text,sizeof text,"%s",frame.readout.gear==0?"R":"N");
                 else std::snprintf(text,sizeof text,"%d",frame.readout.gear-1);

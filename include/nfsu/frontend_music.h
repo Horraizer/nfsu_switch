@@ -28,7 +28,8 @@ public:
     bool playing() const;
     void stop();
     void sound(FrontendSound cue);
-    bool speech(int entry,std::string& error);
+    bool speech(int entry,std::string& error,unsigned variant=0);
+    bool speech_drained() const;
     void stop_speech();
     std::string error() const;
     MenuSong now_playing() const;

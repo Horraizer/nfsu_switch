@@ -40,6 +40,11 @@ int main(int argc,char** argv) {
             menu.update(down);check(menu.update(accept)==FrontendAction::free_drive,"LAN menu preserves Quick Race");
             menu.update(down);check(menu.update(accept)==FrontendAction::multiplayer,"Multiplayer row opens LAN");
             menu.update(down);check(menu.update(accept)==FrontendAction::underground,"LAN menu wraps back to Underground");
+            FrontendMenu with_options(true,true);
+            with_options.update(down);with_options.update(down);
+            check(with_options.update(accept)==FrontendAction::options,"Options opens before LAN");
+            with_options.update(down);
+            check(with_options.update(accept)==FrontendAction::multiplayer,"Options leaves LAN reachable");
         }
         check(audio::original_music_next(3,{100,200,300},0)==3,"unplayed music does not advance");
         check(audio::original_music_next(0,{100,200,300},99)==1&&

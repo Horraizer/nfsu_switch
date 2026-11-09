@@ -500,14 +500,20 @@ void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,un
     }
 }
 
-void build_race_hud_frame(const RaceSession& session,
-                          std::uint32_t width, std::uint32_t height,
-                          RaceHudFrame& frame) noexcept {
+static void build_race_hud_geometry(const VehicleState&,double,double,std::uint32_t,std::uint32_t,
+                                    RaceHudFrame&,const RaceHudAtlas*) noexcept;
+static void build_race_hud_base(const RaceSession& session,
+                                std::uint32_t width,std::uint32_t height,RaceHudFrame& frame,
+                                const RaceHudAtlas* metric_atlas) noexcept {
     const auto& handling = session.spec().handling;
-    build_race_hud_frame_for_car(session.car(), handling.max_rpm,
-                                 handling.redline_rpm, width, height, frame);
+    build_race_hud_geometry(session.car(), handling.max_rpm, handling.redline_rpm,
+                            width,height,frame,metric_atlas);
     const auto snapshot = race_lap_hud_snapshot(session.course().route, session.timing(), 0);
     build_race_lap_hud_panel(snapshot, RaceLapHudStyle::unknown, frame.lap);
+}
+void build_race_hud_frame(const RaceSession& session,
+                          std::uint32_t width,std::uint32_t height,RaceHudFrame& frame) noexcept {
+    build_race_hud_base(session,width,height,frame,nullptr);
 }
 
 namespace {
@@ -696,8 +702,8 @@ void append_countdown(const RaceSession& session,const RaceHudAtlas& atlas,unsig
 }
 void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                           std::uint32_t width, std::uint32_t height,
-                          RaceHudFrame& frame) noexcept {
-    build_race_hud_frame(session,width,height,frame);
+                          RaceHudFrame& frame,bool metric_speed) noexcept {
+    build_race_hud_base(session,width,height,frame,metric_speed?&atlas:nullptr);
     if(session.start_cinematic()){frame.quads=0;return;}
     if(session.is_drag()&&!atlas.drag_objects.empty()) {
         frame.quads=0;frame.lap_first_quad=0;frame.atlas_height=atlas.height;
@@ -914,19 +920,28 @@ void append_race_boost_hud(const RaceHudAtlas& atlas, const NitrousSnapshot& nos
 }
 
 void build_race_hud_frame_for_car(const VehicleState& car,
-                          double max_rpm, double redline_rpm,
-                          std::uint32_t width, std::uint32_t height,
-                          RaceHudFrame& frame) noexcept {
+                                  double max_rpm,double redline_rpm,
+                                  std::uint32_t width,std::uint32_t height,RaceHudFrame& frame) noexcept {
+    build_race_hud_geometry(car,max_rpm,redline_rpm,width,height,frame,nullptr);
+}
+static void build_race_hud_geometry(const VehicleState& car,
+                                    double max_rpm,double redline_rpm,
+                                    std::uint32_t width,std::uint32_t height,RaceHudFrame& frame,
+                                    const RaceHudAtlas* metric_atlas) noexcept {
+    frame.metric_speed=metric_atlas!=nullptr;
     frame.quads = 0;
     frame.atlas_height=kRaceHudAtlasSize;
     frame.lap_first_quad = kRaceHudMaxQuads;
     frame.lap = {};
     // 4A0FBC consumes actor+3D4 (biased state+394), published by
     // 478A47..478A6E. Preserve its binary32 unit conversion/store.
-    const float displayed_mph=std::abs(car.owner_speeds.magnitude)*2.236999988555908203125F;
+    const float magnitude=std::abs(car.owner_speeds.magnitude);
+    const float displayed_mph=magnitude*2.236999988555908203125F;
+    const float displayed_kph=magnitude*3.6F;
     frame.readout={car.step,car.engine_rpm,car.wheel_rpm,max_rpm,redline_rpm,
         race_hud_needle_rotation(car.engine_rpm,max_rpm),car.gear,
-        static_cast<int>(std::min(999.0F,displayed_mph))};
+        static_cast<int>(std::min(999.0F,displayed_mph)),
+        static_cast<int>(std::min(999.0F,displayed_kph))};
     if (!width || !height) return;
     // Preserve the 720p presentation canvas. Reference 1280x800 captures are
     // compared at a common bottom edge (an 80px crop), not stretched. The
@@ -990,12 +1005,12 @@ void build_race_hud_frame_for_car(const VehicleState& car,
                    std::array<unsigned char,3>{{255,128,64}});
     //478F92..478FA3 exports clutch mode==3 to actor3E8;4A115A..4A1173
     // uses blue while engaged, orange during the other clutch phases.
-    const int mph=frame.readout.mph;
+    const int value=frame.metric_speed?frame.readout.kph:frame.readout.mph;
     char speed[4]{};
-    speed[0] = static_cast<char>('0'+mph/100);
-    speed[1] = static_cast<char>('0'+(mph/10)%10);
-    speed[2] = static_cast<char>('0'+mph%10);
-    const int first = mph >= 100 ? 0 : mph >= 10 ? 1 : 2;
+    speed[0] = static_cast<char>('0'+value/100);
+    speed[1] = static_cast<char>('0'+(value/10)%10);
+    speed[2] = static_cast<char>('0'+value%10);
+    const int first = value >= 100 ? 0 : value >= 10 ? 1 : 2;
     const float speed_scale=0.6F*texel*scale; // SAD 0x42F0
     float speed_width=0;
     for (int i=first;i<3;++i) speed_width+=glyph(speed[i]).advance;
@@ -1010,6 +1025,20 @@ void build_race_hud_frame_for_car(const VehicleState& car,
     // bearings/advances and SAD 0x43EC scale replace the bold-font fit.
     const float units_scale=0.8F*texel*scale;
     const auto units_pos=pos(63.64F,16.57F);
+    if(metric_atlas) {
+        constexpr std::string_view label="KM/H";
+        const auto& font=metric_atlas->lap_fonts[0];
+        float units_width=0;
+        for(unsigned char c:label)units_width+=font[c].advance;
+        x=units_pos[0]-units_width*units_scale;
+        for(unsigned char c:label) {
+            const auto& g=font[c];
+            if(g.width&&g.height)glyph_quad(frame,{{g.x,g.y,g.width+2,g.height+2},
+                g.width,g.height,g.bearing_x,g.bearing_y,g.advance},x,units_pos[1],units_scale,{{150,190,255}});
+            x+=g.advance*units_scale;
+        }
+        return;
+    }
     float units_width=0;
     for (const auto& letter : kUnits) units_width+=letter.advance;
     x=units_pos[0]-units_width*units_scale;

@@ -1061,12 +1061,15 @@ bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const CameraF
     commands.race_environment=car_shading_;
     if(!car_shading_)return true;
     commands.frame.options[2]|=32U;
-    // Native quality3 descriptor schedule: all six logical faces every frame.
-    commands.cube_face_mask=63;
+    // Native 40AF2B: low quality cycles one logical face; high updates all six.
+    // Initialize the full atlas before the first partial refresh.
+    commands.cube_face_mask=low_car_reflections_&&cube_next_face_ ? 1U<<(cube_next_face_-1) : 63U;
+    if(low_car_reflections_)cube_next_face_=cube_next_face_%6+1;
     const auto cameras=car_environment_cameras(basis,origin);
     auto& draws=commands.frontend_cube_draws;draws.reserve(kRaceCubeDrawLimit);
     std::size_t draw_count=0;
     for (unsigned face=0;face<6;++face) {
+        if(!(commands.cube_face_mask & (1U<<face)))continue;
         const auto& c=cameras[face];
         auto options=race_render_options(sky_);options.world_ticks=session.timing().step_ticks;options.width=options.height=128;options.explicit_camera=&c;
         RecordedCommands face_state;

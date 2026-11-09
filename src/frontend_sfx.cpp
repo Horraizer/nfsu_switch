@@ -53,7 +53,7 @@ void FrontendSfx::reset(){std::lock_guard<std::mutex> lock(mutex_);mixer_=Mixer{
 void FrontendSfx::mix(std::int16_t* stereo,std::size_t frames) {
     std::lock_guard<std::mutex> lock(mutex_);mixer_.render(stereo,frames,stereo,32768);
 }
-bool FrontendSpeech::play(const std::filesystem::path& root,int entry,std::string& error) {
+bool FrontendSpeech::play(const std::filesystem::path& root,int entry,std::string& error,unsigned variant) {
     if(entry<0){stop();error.clear();return true;}
     try {
         std::ifstream input(root/"Sound/STRMBANK/STRM_English_Speech_MB.abk",std::ios::binary|std::ios::ate);
@@ -65,10 +65,10 @@ bool FrontendSpeech::play(const std::filesystem::path& root,int entry,std::strin
         // Original 0x51DCE0 supplies 95 groups at 0x6F6BC8; 0x539B85
         // sums preceding group sizes. A request is NOT a bank ordinal.
         constexpr unsigned counts[]={1,7,5,1,8,2,1,5,4,5,2,6,3,2,1,6,6,5,5,7,1,1,6,3,2,3,4,4,2,4,2,3,2,1,2,2,2,2,1,3,3,5,1,4,6,3,3,3,4,3,3,3,3,3,3,3,3,3,1,3,3,4,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,3,1,1,1,3,3,1,1,23,4,5,3,4,2};
-        if(bank.entries.size()!=277||unsigned(entry)>=std::size(counts))throw std::runtime_error("speech request outside original groups");
-        unsigned ordinal=0;for(int i=0;i<entry;++i)ordinal+=counts[i];
-        // First campaign messages each have one variant. Later multi-variant
-        // requests currently use their first genuine variant.
+        if(bank.entries.size()!=277||unsigned(entry)>=std::size(counts)||variant>=counts[entry])
+            throw std::runtime_error("speech request outside original groups");
+        unsigned ordinal=variant;
+        for(int i=0;i<entry;++i)ordinal+=counts[i];
         const auto& selected=bank.entries[ordinal];
         if(selected.type!=1)throw std::runtime_error("speech request is not streamed");
         std::ifstream stream(root/"SpeechStreams/STRM_English_Speech_MB.ast",std::ios::binary|std::ios::ate);
@@ -88,8 +88,16 @@ bool FrontendSpeech::play(const std::filesystem::path& root,int entry,std::strin
         mixer_.play(0,&clip_,false,kFrontendCueGainQ15,65536);error.clear();return true;
     }catch(const std::exception& e){stop();error=e.what();return false;}
 }
-void FrontendSpeech::stop(){std::lock_guard<std::mutex> lock(mutex_);mixer_=Mixer{};}
+void FrontendSpeech::stop(){std::lock_guard<std::mutex> lock(mutex_);mixer_=Mixer{};last_output_frame_=0;}
 bool FrontendSpeech::active(){std::lock_guard<std::mutex> lock(mutex_);return mixer_.active(0);}
-void FrontendSpeech::mix(std::int16_t* pcm,std::size_t frames){std::lock_guard<std::mutex> lock(mutex_);mixer_.render(pcm,frames,pcm,32768);}
+bool FrontendSpeech::drained(std::uint64_t played_frames) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !mixer_.active(0)&&played_frames>=last_output_frame_;
+}
+void FrontendSpeech::mix(std::int16_t* pcm,std::size_t frames,std::uint64_t output_end_frame) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(mixer_.active(0))last_output_frame_=output_end_frame;
+    mixer_.render(pcm,frames,pcm,32768);
+}
 
 }
