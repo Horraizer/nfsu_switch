@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <thread>
 #include <chrono>
+#include <cstdio>
 #include <atomic>
 namespace nfsu::audio {
 struct FrontendMusic::Impl {
@@ -108,7 +109,14 @@ void FrontendMusic::stop() {
     auto& p=*impl_;
     if(p.active && !p.ending.load())p.next=(p.current()+1)%7;
     p.output.stop();
-    if(p.stream) { p.stream->stop(); p.stream.reset(); }
+    if(p.stream) {
+#ifdef __SWITCH__
+        if(p.active) std::fprintf(stderr,"SWITCH_MUSIC mode=frontend missing_frames=%llu buffered_frames=%zu\n",
+            static_cast<unsigned long long>(p.stream->ring().underruns()),p.stream->ring().size());
+#endif
+        p.stream->stop();
+        p.stream.reset();
+    }
     p.sfx.reset();p.speech.stop();p.active=false;
 }
 bool FrontendMusic::playing() const { return impl_->active && !impl_->ending.load(); }

@@ -135,7 +135,8 @@ private:
 // resamples to 48 kHz stereo and waits for room in a bounded ring.
 class AstStreamer {
 public:
-    explicit AstStreamer(std::size_t capacity_frames = 8192);
+    // Keep decoded music ahead of SD stalls without adding to the mixer queue.
+    explicit AstStreamer(std::size_t capacity_frames = 32768);
     ~AstStreamer();
     AstStreamer(const AstStreamer&) = delete;
     AstStreamer& operator=(const AstStreamer&) = delete;

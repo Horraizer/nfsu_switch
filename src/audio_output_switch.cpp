@@ -4,6 +4,7 @@
 #include <switch/audio/driver.h>
 #include <malloc.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -39,6 +40,7 @@ struct Output::Impl {
     std::atomic<std::uint32_t> queued_frames{0};
     std::atomic<std::uint32_t> work_us{0};
     std::uint32_t voice_drops=0;
+    std::uint64_t max_service_gap_us=0;
     mutable std::mutex error_mutex;
     std::string failure;
 
@@ -49,6 +51,7 @@ struct Output::Impl {
     void run() {
         try {
             bool primed = false;
+            auto previous_update = armGetSystemTick();
             while (running) {
                 const auto begin = armGetSystemTick();
                 std::size_t pending = 0;
@@ -74,6 +77,10 @@ struct Output::Impl {
                     fail("audrvUpdate failed");
                     return;
                 }
+                const auto updated = armGetSystemTick();
+                if (primed) max_service_gap_us = std::max(max_service_gap_us,
+                    static_cast<std::uint64_t>(armTicksToNs(updated - previous_update) / 1000));
+                previous_update = updated;
                 pending = 0;
                 for (const auto& buffer : buffers)
                     if (buffer.state == AudioDriverWaveBufState_Waiting ||
@@ -110,6 +117,7 @@ bool Output::start(Render render, std::string& error) {
     p.queued_frames = 0;
     p.work_us = 0;
     p.voice_drops = 0;
+    p.max_service_gap_us = 0;
     const AudioRendererConfig config{
         AudioRendererOutputRate_48kHz, kChannelPool, 0, 1, 1, 2};
     if (R_FAILED(audrenInitialize(&config))) {
@@ -196,10 +204,10 @@ void Output::stop() {
         threadClose(&p.thread);
         p.thread_started = false;
         const auto failure=error();
-        std::fprintf(stderr,"SWITCH_AUDIO played=%llu empty_queue=%llu voice_drops=%u error=%s\n",
+        std::fprintf(stderr,"SWITCH_AUDIO played=%llu empty_queue=%llu voice_drops=%u max_service_gap_us=%llu error=%s\n",
             static_cast<unsigned long long>(p.played_frames.load()),
             static_cast<unsigned long long>(p.late.load()),p.voice_drops,
-            failure.empty()?"none":failure.c_str());
+            static_cast<unsigned long long>(p.max_service_gap_us),failure.empty()?"none":failure.c_str());
     }
     if (p.renderer_started) {
         audrenStopAudioRenderer();
