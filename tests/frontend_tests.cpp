@@ -57,10 +57,11 @@ int main(int argc,char** argv) {
             check(tips.prologue()==2,"native prologue picks the input card");
             tips.shown(2);check(tips.prologue()==0,"native prologue card is capped at one showing");
             CareerProfile profile;RaceEventRecord event;
-            const unsigned general[]={14,15,16,17,18,14};
+            // HUD/Stability Control option tips are withheld on Switch.
+            const unsigned general[]={14,15,16,14,15,16};
             for(unsigned expected:general) {
                 const auto selected=tips.career(event,profile);
-                check(selected==expected,"native equal-priority loading hint rotation");
+                check(selected==expected,"equal-priority rotation among supported loading hints");
                 tips.shown(selected);
             }
             event.type=unsigned(RaceType::drag);

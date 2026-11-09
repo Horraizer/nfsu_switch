@@ -414,7 +414,9 @@ constexpr LoadingTip loading_tips[]={
     {8,0x5eea028b,0xf22344fb,0xf22344fc,11,8}
 };
 constexpr unsigned tip_bit(unsigned id){return 1U<<id;}
-constexpr unsigned common_loading_tips=tip_bit(14)|tip_bit(15)|tip_bit(16)|tip_bit(17)|tip_bit(18);
+// Tips 17 and 18 refer to the original HUD and Stability Control options.
+// Do not display their instructions until those options are available.
+constexpr unsigned common_loading_tips=tip_bit(14)|tip_bit(15)|tip_bit(16);
 }
 unsigned RaceLoadingTips::current()const {
     unsigned best=0,result=0;
