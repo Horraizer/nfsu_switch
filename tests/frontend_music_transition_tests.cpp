@@ -14,6 +14,7 @@
 namespace {
 nfsu::audio::Output::Render render;
 std::uint64_t submitted=0,played=0;
+std::string device_error;
 void check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
 std::vector<std::int16_t> pump(std::size_t frames){
     std::vector<std::int16_t> pcm(frames*2);check(bool(render),"device callback present");
@@ -24,9 +25,11 @@ namespace nfsu::audio {
 struct Output::Impl {};
 Output::Output():impl_(std::make_unique<Impl>()){}
 Output::~Output(){stop();}
-bool Output::start(Render callback,std::string& error){render=std::move(callback);submitted=played=0;error.clear();return true;}
+bool Output::start(Render callback,std::string& error){
+    render=std::move(callback);submitted=played=0;device_error.clear();error.clear();return true;
+}
 void Output::stop(){render={};}
-std::string Output::error()const{return {};}
+std::string Output::error()const{return device_error;}
 Output::Stats Output::stats()const noexcept{return {0,played,static_cast<std::uint32_t>(submitted-played),0};}
 }
 int main(int argc,char** argv){
@@ -70,6 +73,12 @@ int main(int argc,char** argv){
             const auto audible=pump(1024);
             check(std::any_of(audible.begin(),audible.end(),[](auto v){return v!=0;}),
                 "restoring menu volume keeps the current frontend track playing");
+            music.sound(FrontendSound::select);
+            check(music.sound_active(),"successful result audio queues its cue");
+            device_error="injected device failure after startup";
+            check(!music.sound_active()&&!music.playing(),
+                "failed output cannot delay the results exit or prevent restarting map music");
+            check(music.start(root,error)&&music.playing(),"frontend can restart after a failed output");
         }
         for(const auto cue:{FrontendSound::select,FrontendSound::back}){
             FrontendMusic music;check(music.start(root,error),error.c_str());

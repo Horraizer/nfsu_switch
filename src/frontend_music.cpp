@@ -128,11 +128,11 @@ void FrontendMusic::stop() {
     }
     p.sfx.reset();p.speech.stop();p.active=false;
 }
-bool FrontendMusic::playing() const { return impl_->active && !impl_->ending.load(); }
+bool FrontendMusic::playing() const { return impl_->active && !impl_->ending.load() && error().empty(); }
 void FrontendMusic::sound(FrontendSound cue) {
     if(!impl_->ending.load())impl_->sfx.play(cue);
 }
-bool FrontendMusic::sound_active() const {return impl_->sfx.active();}
+bool FrontendMusic::sound_active() const {return playing() && impl_->sfx.active();}
 bool FrontendMusic::speech(int entry,std::string& error,unsigned variant) {
     if(!playing()){error="frontend audio device is not active";return false;}
     return impl_->speech.play(impl_->root,entry,error,variant);
