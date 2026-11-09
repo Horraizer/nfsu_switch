@@ -48,7 +48,7 @@ bool RaceStyle::load(const std::filesystem::path& root,std::string& error,bool d
     configure(rules,drift);error.clear();return true;
 }
 void RaceStyle::configure(const std::array<RaceStyleRule,kRaceStyleKinds>& rules,bool drift) {
-    rules_=rules;items_={};notices_={};drift_publication_={};count_=0;total_=0;ready_=true;drift_=drift;
+    rules_=rules;items_={};notices_={};retired_notice_.reset();drift_publication_={};count_=0;total_=0;ready_=true;drift_=drift;
 }
 double RaceStyle::accrue(unsigned i,float seconds) noexcept {
     auto& s=items_[i];const auto& r=rules_[i];
@@ -111,6 +111,7 @@ void RaceStyle::publish(unsigned i,std::int32_t now) noexcept {
 }
 void RaceStyle::update(std::int32_t now,float seconds) noexcept {
     if(!ready_)return;
+    retired_notice_.reset();
     float banked=0;
     //43DE72 clears item0+15 in drift;436A28 excludes it from general style.
     for(unsigned i=drift_?1:0;i<items_.size();++i)
@@ -137,7 +138,10 @@ void RaceStyle::update(std::int32_t now,float seconds) noexcept {
     if(count_) {
         unsigned at=0;while(at<count_ && notices_[at].continuous)++at;if(at==count_)at=0;
         auto& n=notices_[at];if(!n.started){n.started=true;n.shown=now;}
-        if(elapsed(now,n.shown)>(count_>1?.5:1.)) {
+        // 4A83C0 formats the selected notice before unlinking it. Drift
+        // removes a selected continuous notice on that same display update.
+        if((drift_&&n.continuous)||elapsed(now,n.shown)>(count_>1?.5:1.)) {
+            retired_notice_=n;
             for(unsigned j=at+1;j<count_;++j)notices_[j-1]=notices_[j];
             --count_;
         }
@@ -147,6 +151,7 @@ int RaceStyle::total() const noexcept {
     return total_;
 }
 const RaceStyleNotice* RaceStyle::notice() const noexcept {
+    if(retired_notice_)return &*retired_notice_;
     if(!count_)return nullptr;
     for(unsigned i=0;i<count_;++i)if(!notices_[i].continuous)return &notices_[i];
     return &notices_[0];

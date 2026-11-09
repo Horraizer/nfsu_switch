@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 namespace nfsu {
 constexpr unsigned kRaceStyleKinds=31;
@@ -60,6 +61,7 @@ private:
     std::array<RaceStyleRule,kRaceStyleKinds> rules_{};
     std::array<RaceStyleItem,kRaceStyleKinds> items_{};
     std::array<RaceStyleNotice,kRaceStyleKinds> notices_{};
+    std::optional<RaceStyleNotice> retired_notice_;
     DriftScorePublication drift_publication_;
     unsigned count_=0;
     int total_=0;

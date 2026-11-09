@@ -12,6 +12,31 @@ int main(int argc,char** argv) {try {
         return 0;
     }
     check(argc==2,"retail root required");
+    {
+        // Original 4A83C0 still displays the selected record on the update
+        // that removes it. An ordinary continuous notice keeps its timer.
+        std::array<RaceStyleRule,kRaceStyleKinds> rules{};
+        auto& continuous=rules[11];
+        continuous.continuous=true;continuous.enabled=true;
+        continuous.rate=100.F;continuous.timeout=.2F;
+        for(bool drift:{false,true}) {
+            RaceStyle notices;notices.configure(rules,drift);
+            notices.trigger(11,1.F,4000);notices.update(4000,.05F);
+            notices.trigger(11,1.F,4067);notices.update(4067,.05F);
+            notices.update(4134,.05F);
+            check(notices.notice()&&notices.notice()->kind==11,"continuous notice rendered on admission");
+            notices.cancel(11);notices.update(4201,.05F);
+            check(notices.notice()&&notices.notice()->failed,"failed continuous notice renders its last publication");
+            notices.update(4268,.05F);
+            check(bool(notices.notice())!=drift,"continuous notice retired after the drift display update");
+            if(!drift) {
+                notices.update(8301,0.F);
+                check(notices.notice()&&notices.notice()->kind==11,"expired ordinary notice rendered on removal");
+                notices.update(8368,0.F);
+                check(!notices.notice(),"expired ordinary notice absent on next update");
+            }
+        }
+    }
     RaceStyle score;std::string error;
     check(score.load(argv[1],error),error.c_str());
     check(score.rule(11).continuous&&score.rule(11).rate==100&&score.rule(11).minimum==50,"powerslide tuning");
