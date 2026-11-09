@@ -996,7 +996,14 @@ int main(int argc,char** argv) {
             // GPU-only loading must retain authored textures/font coordinates
             // and update selection without a CPU background or texture reload.
             FrontendArt gpu_art;
-            check(gpu_art.load_startup(root,error),error.c_str());
+            check(gpu_art.load_startup(root,error,true),error.c_str());
+            std::fill(pixels.begin(),pixels.end(),0);
+            gpu_art.draw_startup_splash({pixels.data(),1280,720,1280*4});
+            std::size_t lit_splash_pixels=0;
+            for(std::size_t p=0;p<pixels.size();p+=4)
+                if(pixels[p]||pixels[p+1]||pixels[p+2])++lit_splash_pixels;
+            check(pixels[3]==255&&lit_splash_pixels>1280*100,"retail splash sprite is visible");
+            gpu_art.release_startup_splash();
             check(gpu_art.load_post_race(root,error),error.c_str());
             {
                 FrontendUiFrame pause_ui,profile_ui,welcome_ui;RacePauseMenu pause;

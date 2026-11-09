@@ -27,6 +27,13 @@ def check(root,renderer,main):
     assert 'main_sprites=%.3f upscale=%.3f' in renderer
     assert 'consume_frontend_query(slot);' in renderer
     assert 'frontend_query_pending[slot]=frontend && frontend_profile_passes;' in renderer
+    startup=main[main.index('const auto intro=play_original_intro('):main.index('const auto run_career_action=[&]')]
+    assert startup.index('show_startup_splash();')<startup.index('while(!choose_profile(true))')
+    assert startup.index('while(!choose_profile(true))')<startup.index('trace("profile.after")')
+    assert startup.index('trace("profile.after")')<startup.index('FrontendAction pending=FrontendAction::none;')
+    assert 'refresh_profile()' not in startup
+    picker=startup[startup.index('const auto choose_profile='):startup.index('trace("profile.before")')]
+    assert picker.index('art.record_profiles(')<picker.index('padGetButtonsDown(&pad)')
     start=main.index('const auto run_career_action=[&]')
     transition=main[start:main.index('\n                while (appletMainLoop()) {',start)]
     assert transition.index('frontend_renderer.reset();')<transition.index('frontend_gpu_profile.reset();')<transition.index('run(root,')

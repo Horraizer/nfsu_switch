@@ -264,7 +264,9 @@ public:
     FrontendArt();
     ~FrontendArt();
     bool load(const std::filesystem::path& root, std::string& error,bool background=true);
-    bool load_startup(const std::filesystem::path& root,std::string& error);
+    bool load_startup(const std::filesystem::path& root,std::string& error,bool splash=false);
+    void draw_startup_splash(ScreenImage image)const;
+    void release_startup_splash();
     bool load_underground_welcome(const std::filesystem::path& root,std::string& error);
     void draw_underground_welcome(ScreenImage image,bool exit_selected=false,unsigned tick=600)const;
     void record_underground_welcome(unsigned width,unsigned height,bool exit_selected,FrontendUiFrame& frame,unsigned tick=600)const;
@@ -305,7 +307,8 @@ public:
     const FrontendUiAtlas& atlas() const;
     void record_ui(unsigned width,unsigned height,const FrontendMenu& menu,FrontendUiFrame& frame) const;
 private:
-    bool load_assets(const std::filesystem::path&,std::string&,bool background,bool startup);
+    bool load_assets(const std::filesystem::path&,std::string&,bool background,bool startup,bool splash=false);
+    void decode_startup_splash(const std::vector<unsigned char>&,std::string&);
     void decode_welcome(const std::vector<unsigned char>&,const std::vector<unsigned char>&,
                         const std::vector<unsigned char>&,std::string&);
     void decode_profiles(const std::vector<unsigned char>&,const std::vector<unsigned char>&,std::string&);

@@ -96,9 +96,14 @@ non-default pause volume controls apply user attenuation separately.
 
 ## Profile creation and storage
 
-Press X in the main menu to load or create a profile. Go Underground opens
-profile creation when no career exists. A loads the selected profile; X creates
-one; B returns. The active selection is retained across process restarts.
+The retail boot table at 0x6FA1A4 runs the startup movies, LS_Splash_PC,
+then MU_UG_NewOrLoad_PC2 before the main menu. The port shows the authored
+splash, then opens the named-profile browser using the PC_LoadSave layout.
+The Switch splash accepts A or Plus. In the browser A loads the selected
+profile, X creates one, and A also creates one when the list is empty.
+B returns to the splash until a profile is confirmed. The last selected
+profile is preselected on a later boot. X in the main menu reopens the
+profile browser.
 
 Creation opens libnx's normal software keyboard, with the recovered name length
 limit and an ASCII check matching the currently available font. The system

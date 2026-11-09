@@ -21,6 +21,32 @@ DialogArt read_dialog(const std::vector<unsigned char>& image,std::size_t at,std
     return out;
 }
 }
+void FrontendArt::decode_startup_splash(const std::vector<unsigned char>& front,std::string& error) {
+    // LS_Splash_PC.fng in the authenticated FrontB image.
+    const auto art=read_dialog(front,0xbb5d8c,{},
+        [](unsigned,const std::string& fallback){return fallback;},error);
+    auto& p=*impl_;
+    for(auto object:art.objects) {
+        const auto& script=art.scripts.at(object.id);
+        post_state(object,script.data(),script.size(),"Init");
+        if(object.name=="LS_Splash_PC")p.splash_picture=std::move(object);
+        else if(object.name=="mouse_click")p.splash_prompt=std::move(object);
+    }
+    if(p.splash_picture.type!=1||p.splash_prompt.type!=2||
+       !texture(front,bin_hash("LS_SPLASH_PC"),p.startup_splash,error))
+        throw std::runtime_error("original startup splash artwork absent");
+}
+void FrontendArt::draw_startup_splash(ScreenImage image)const {
+    const auto& p=*impl_;
+    fill_screen_rect(image,0,0,image.width,image.height,{0,0,0,255});
+    const auto& picture=p.splash_picture;
+    quad(Canvas{image},p.startup_splash,combine({},picture,false),
+        -picture.w/2,-picture.h/2,picture.w,picture.h,picture.uv,picture.color);
+    const auto& prompt=p.splash_prompt;
+    p.text(Canvas{image},prompt,combine({},prompt,true),"Press A or + to continue",prompt.color,0);
+}
+void FrontendArt::release_startup_splash() {impl_->startup_splash={};}
+
 bool FrontendArt::load_profile_pages(const std::filesystem::path& root,std::string& error) {
     try {
         std::vector<unsigned char> image,language;std::vector<RaceTableIssue> issues;

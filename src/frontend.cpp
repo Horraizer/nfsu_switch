@@ -411,7 +411,8 @@ struct DialogArt {
     std::vector<unsigned> resources;
 };
 struct FrontendArt::Impl {
-    Image background;
+    Image background,startup_splash;
+    Object splash_picture,splash_prompt;
     FrontendUiAtlas atlas;
     void draw(Canvas image,const FrontendMenu& menu) const;
     std::map<unsigned,Image> textures;
@@ -697,10 +698,10 @@ FrontendArt::~FrontendArt()=default;
 bool FrontendArt::load(const std::filesystem::path& root,std::string& error,bool background) {
     return load_assets(root,error,background,false);
 }
-bool FrontendArt::load_startup(const std::filesystem::path& root,std::string& error) {
-    return load_assets(root,error,false,true);
+bool FrontendArt::load_startup(const std::filesystem::path& root,std::string& error,bool splash) {
+    return load_assets(root,error,false,true,splash);
 }
-bool FrontendArt::load_assets(const std::filesystem::path& root,std::string& error,bool background,bool startup) {
+bool FrontendArt::load_assets(const std::filesystem::path& root,std::string& error,bool background,bool startup,bool splash) {
     impl_=std::make_unique<Impl>();auto& out=*impl_;
     try {
         std::vector<unsigned char> front,global,language,font_global,language_textures;
@@ -764,6 +765,7 @@ bool FrontendArt::load_assets(const std::filesystem::path& root,std::string& err
         if(startup) {
             decode_welcome(front,language,global,error);
             decode_profiles(front,language,error);
+            if(splash)decode_startup_splash(front,error);
         } else out.pack_atlas();
         out.background.width=1280;out.background.height=720;
         if(background && !load_frontend_scene(root,out.background.rgba,1280,720,error)) return false;

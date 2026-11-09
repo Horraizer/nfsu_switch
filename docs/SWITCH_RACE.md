@@ -13,7 +13,13 @@ the bounded track loader merged in #207.
 
 ## Install and use
 
-Copy the supplied NRO to `sdmc:/switch/nfsu_switch_race.nro` and launch in
+For the HOME Menu forwarder, every updated build uses the filename
+`NFSU_switch.nro` at `sdmc:/switch/nfsu-switch/NFSU_switch.nro`. The local
+delivery copy lives at `build/forwarder-latest/switch/nfsu-switch/NFSU_switch.nro`
+in the main workspace. Copy that folder structure to the SD card root to
+update the executable. The installed forwarder uses this same path.
+
+For the direct diagnostic entry, copy the supplied NRO to `sdmc:/switch/nfsu_switch_race.nro` and launch in
 full-memory Homebrew Menu mode. Keep the existing 12 first-lap files under
 `sdmc:/nfsu`. The default stock selection needs no additional retail file: the track-info table is
 read from the checked `Global/GLOBALB.BUN`, not the modified desktop

@@ -290,11 +290,11 @@ public:
         blit_movie(frame,pixels,width,height,stride);
         framebufferEnd(&fb_);
     }
-    void menu(const FrontendArt& art, const FrontendMenu& menu) {
+    void startup_splash(const FrontendArt& art) {
         if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
         u32 stride=0; auto* pixels=static_cast<unsigned char*>(framebufferBegin(&fb_,&stride));
         if (!pixels) throw std::runtime_error("framebuffer unavailable");
-        art.draw({pixels,width,height,stride},menu);
+        art.draw_startup_splash({pixels,width,height,stride});
         framebufferEnd(&fb_);
     }
     void show(const std::vector<std::string>& lines, const std::vector<unsigned char>* rgba = nullptr) {
@@ -2153,7 +2153,27 @@ int main(int argc, char** argv) {
                 FrontendArt art; std::string frontend_error;
                 screen.show({"Loading original frontend..."});
                 trace("art.load.before");
-                require(art.load_startup(root,frontend_error),frontend_error);
+                require(art.load_startup(root,frontend_error,true),frontend_error);
+                frontend_loading.finish();
+                const auto show_startup_splash=[&] {
+                    trace("splash.before");
+                    screen.startup_splash(art);
+                    padUpdate(&pad);
+                    while(appletMainLoop()) {
+                        if(appletGetFocusState()==AppletFocusState_InFocus) {
+                            padUpdate(&pad);
+                            const auto pressed=padGetButtonsDown(&pad);
+                            if(pressed&HidNpadButton_B)throw Cancel{};
+                            if(pressed&(HidNpadButton_A|HidNpadButton_Plus)) {
+                                trace("splash.after");
+                                return;
+                            }
+                        }
+                        svcSleepThread(16666667);
+                    }
+                    throw Cancel{};
+                };
+                show_startup_splash();
                 bool post_race_loaded=false;
                 const auto load_post_race=[&] {
                     if(post_race_loaded)return;
@@ -2195,7 +2215,6 @@ int main(int argc, char** argv) {
                     require(frontend_renderer->open_frontend(frontend_scene.commands(),art.atlas(),frontend_error,menu_height,profile_frame && !ab_minimal,active_trace,frontend_scene.draw_capacity()),frontend_error);
                     trace("renderer.ready");
                 };
-                frontend_loading.finish();
                 open_frontend();
                 FrontendClock frontend_clock;
                 FrontendAppletClockHook frontend_clock_hook(frontend_clock,frontend_presentation_stats);
@@ -2224,20 +2243,22 @@ int main(int argc, char** argv) {
                 }
                 CareerProfiles profiles("sdmc:/switch/nfsu-saves");
                 std::optional<CareerProfileEntry> active_profile;
-                const auto refresh_profile=[&] {
-                    std::vector<CareerProfileEntry> entries;unsigned selected=0;
-                    require(profiles.list(entries,selected,frontend_error),frontend_error);
-                    if(!entries.empty())active_profile=entries[selected];
-                };
-                refresh_profile();
-                const auto choose_profile=[&] {
+                const auto choose_profile=[&](bool startup=false) {
                     CareerCatalog catalog;require(catalog.load(root,frontend_error),frontend_error);
                     std::vector<CareerProfileEntry> entries;unsigned selected=0;
                     require(profiles.list(entries,selected,frontend_error),frontend_error);
                     std::string notice;
+                    padUpdate(&pad);
                     while(appletMainLoop()) {
                         if(appletGetFocusState()!=AppletFocusState_InFocus){frontend_clock.resume();continue;}
+                        const auto elapsed=frontend_clock.sample(armTicksToNs(armGetSystemTick()));
+                        require(frontend_scene.frame(float(elapsed/1000000000.0),frontend_clock.original_ticks(),frontend_error),frontend_error);
+                        art.advance(float(elapsed/1000000000.0));
+                        require(frontend_renderer->update(frontend_scene.commands(),frontend_error),frontend_error);
+                        art.record_profiles(width,height,entries,selected,notice,frontend_ui);
+                        require(frontend_renderer->present_frontend(frontend_ui,frontend_error),frontend_error);
                         padUpdate(&pad);const auto pressed=padGetButtonsDown(&pad);
+                        if(startup&&(pressed&HidNpadButton_Plus))throw Cancel{};
                         if(pressed&(HidNpadButton_B|HidNpadButton_Plus)){music.sound(audio::FrontendSound::back);return false;}
                         if(!entries.empty()) {
                             if(pressed&(HidNpadButton_Up|HidNpadButton_StickLUp)){selected=(selected+unsigned(entries.size())-1)%unsigned(entries.size());music.sound(audio::FrontendSound::up);}
@@ -2272,15 +2293,22 @@ int main(int argc, char** argv) {
                             if(!load_career(entries[selected].base,catalog,probe,frontend_error)||!profiles.select(entries[selected].id,frontend_error)){notice=frontend_error;continue;}
                             active_profile=entries[selected];music.sound(audio::FrontendSound::select);return true;
                         }
-                        const auto elapsed=frontend_clock.sample(armTicksToNs(armGetSystemTick()));
-                        require(frontend_scene.frame(float(elapsed/1000000000.0),frontend_clock.original_ticks(),frontend_error),frontend_error);
-                        art.advance(float(elapsed/1000000000.0));
-                        require(frontend_renderer->update(frontend_scene.commands(),frontend_error),frontend_error);
-                        art.record_profiles(width,height,entries,selected,notice,frontend_ui);
-                        require(frontend_renderer->present_frontend(frontend_ui,frontend_error),frontend_error);
                     }
                     return false;
                 };
+                trace("profile.before");
+                while(!choose_profile(true)) {
+                    if(!appletMainLoop())throw Cancel{};
+                    require(frontend_renderer->close(frontend_error),frontend_error);
+                    frontend_renderer.reset();frontend_gpu_profile.reset();
+                    show_startup_splash();
+                    open_frontend();
+                    frontend_clock.resume();
+                }
+                art.release_startup_splash();
+                trace("profile.after");
+                frontend_clock.resume();
+                frontend_presentation_stats.reset();
                 bool stick_up=false,stick_down=false;
                 std::optional<CareerProfile> free_profile;
                 std::map<std::string,CareerRide> free_rides;
@@ -2964,9 +2992,6 @@ int main(int argc, char** argv) {
                         open_frontend();frontend_clock.resume();
                         stick_up=stick_down=false;
                         continue;
-                    }
-                    if(action==FrontendAction::underground&&!active_profile) {
-                        if(!choose_profile())continue;
                     }
                     if (action==FrontendAction::underground || action==FrontendAction::free_drive) {
                         run_career_action(action,nullptr,0,{});
