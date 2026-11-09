@@ -92,7 +92,7 @@ void run_campaign_sweep(const std::string& root,Screen& screen,PadState& pad,
                     steering,car,screen,pad,false,test.event?&dress:nullptr,test.event,&art,profile.difficulty,
                     &completed,media?media->reward[profile.difficulty]:0,result_profile.style_points,&style,
                     media,setup.reputation,finish_sweep?&career:nullptr,result_profile.style_high_water,test.round,&places,
-                    start_tournament.event?&start_tournament:nullptr,false,profile.name,&race_report,nullptr,&log,finish_sweep);
+                    start_tournament.event?&start_tournament:nullptr,false,profile.name,&race_report,nullptr,&log,finish_sweep,finish_sweep?&profile:nullptr);
                 if(finish_sweep) {
                     require(completed==1&&race_report.started&&race_report.won&&
                         outcome==(test.event?RaceReturn::menu:RaceReturn::intro_won),

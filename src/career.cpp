@@ -152,6 +152,17 @@ bool CareerCatalog::load(const std::filesystem::path& root,std::string& error) {
             0x74c345eeU,0x3f59e16eU,0xe855761aU,0x2ce41d89U,0x269a1649U,0xfcfe55f5U,
             0x49250a46U,0x0e67ada1U,0x994ac061U,0xfdc2f7d9U,0x35d89f9cU,0x78eff98fU,0x32429d3dU})
             next.info_labels_[hash]=text(hash);
+        // Native 49E400 / 6FBA08: event cover text in magazine-key order.
+        constexpr unsigned event_cover_messages[]={0x50e70065U,0x98f01a84U,0x71372a28U,
+            0x0d74943fU,0xe93bb138U,0xe90c59d7U,0x024609f5U,0x98f01a84U,
+            0xe93bb138U,0x54ef0621U,0x55b8d817U};
+        // Native 49EBF0 / 6FBA60: task messages, ordered by cover index.
+        constexpr unsigned task_cover_messages[]={0x08b85c11U,0x08b85c12U,0x08b85c13U,
+            0x08b85c14U,0x08b85c15U,0x08b85c16U,0x08b85c17U,0x08b85c18U,
+            0x08b85c19U,0x1fc3de61U,0x1fc3de62U,0x1fc3de63U,
+            0x04052b3bU,0x1fc3de65U,0x1fc3de66U,0x1fc3de67U};
+        for(unsigned i=0;i<next.magazine_task_messages_.size();++i)
+            next.magazine_task_messages_[i]=text(task_cover_messages[i]);
         for(const auto& record:next.events_.records) {
             const auto event=record.number;
             if(!event||event>kCareerLastEvent)continue;
@@ -160,7 +171,7 @@ bool CareerCatalog::load(const std::filesystem::path& root,std::string& error) {
             if(count>5)return refuse(error,"campaign reward count exceeds original slots");
             for(unsigned i=0;i<count;++i) {
                 const auto kind=u32(raw+0x38+12*i),value=u32(raw+0x3c+12*i),direction=u32(raw+0x40+12*i);
-                std::string key;unsigned wrapper=0x32f16f00U;
+                std::string key;unsigned wrapper=0x32f16f00U,content=0;
                 if(kind==0) {
                     //49E43F formats the actual category name and level, then
                     //chooses its visual/performance wrapper. Level4 is claimed
@@ -176,6 +187,12 @@ bool CareerCatalog::load(const std::filesystem::path& root,std::string& error) {
                     if(direction==4)continue;
                     key=std::string("EVENT_REWARD_")+categories[value]+"_LEVEL_"+std::to_string(direction);
                     wrapper=value>=16?0xa512f58cU:0x43eeb333U;
+                }else if(kind==1) {
+                    unsigned index=0;
+                    while(index<std::size(event_cover_messages)&&CareerMagazineCatalog::key(index)!=value)++index;
+                    if(index==std::size(event_cover_messages))return refuse(error,"unknown original event cover message");
+                    wrapper=0x7357569fU;
+                    content=event_cover_messages[index];
                 }else if(kind==2) {
                     const auto car=std::find_if(cars.records.begin(),cars.records.end(),[&](const auto& c){return bin_hash(c.name)==value;});
                     if(car==cars.records.end())return refuse(error,"reward car outside original table");
@@ -186,7 +203,7 @@ bool CareerCatalog::load(const std::filesystem::path& root,std::string& error) {
                 else continue;
                 auto message=text(wrapper);const auto at=message.find("%s");
                 if(at==std::string::npos)throw std::runtime_error("reward message placeholder missing");
-                message.replace(at,2,text(bin_hash(key)));std::replace(message.begin(),message.end(),'^','\n');
+                message.replace(at,2,text(content?content:bin_hash(key)));std::replace(message.begin(),message.end(),'^','\n');
                 next.media_[event].unlock_messages.push_back(std::move(message));
             }
         }
@@ -711,14 +728,34 @@ bool CareerCatalog::dismiss_magazines(CareerProfile& p,std::string& error)const 
     for(auto& cover:p.magazine_covers)cover.seen=true;
     p.page=CareerPage::menu;error.clear();return true;
 }
-bool CareerCatalog::refresh_magazines(CareerProfile& p,bool capture,std::string& error)const {
-    if(p.car.empty()){error.clear();return true;}
+CareerFinishRewards CareerCatalog::finish_rewards(const CareerProfile& p,bool event_won)const {
+    CareerFinishRewards result;
+    if(!event_won||free_drive_||p.page!=CareerPage::briefing)return result;
+    const auto* event=media(p.selected_event);
+    if(!event)return result;
+    // Native 496240: terminal victory and unique or magazine reward.
+    result.collect=!event->unique_categories.empty()||!event->magazine_rewards.empty();
+    const auto pending=magazine_task_mask(p);
+    for(unsigned task=0;task<magazine_task_messages_.size();++task) {
+        if(!(pending&(1U<<task)))continue;
+        const auto seen=std::any_of(p.magazine_covers.begin(),p.magazine_covers.end(),
+            [&](const auto& cover){return cover.index==task+11&&cover.seen;});
+        if(seen)continue;
+        result.magazine_tasks.push_back(magazine_task_messages_[task]);
+        // The last four (online reputation) are acknowledged in the popup.
+        if(task<12)result.collect=true;
+    }
+    return result;
+}
+std::uint32_t CareerCatalog::magazine_task_mask(const CareerProfile& p)const {
+    auto pending=p.magazine_pending;
+    if(p.car.empty())return pending;
     //51AED0: complete packages, including suspension, excluding aero fields.
-    for(unsigned level=1;level<=3;++level)if(std::all_of(p.ride.performance.begin(),p.ride.performance.end(),[&](auto value){return value>=level;}))p.magazine_pending|=1U<<(level-1);
+    for(unsigned level=1;level<=3;++level)if(std::all_of(p.ride.performance.begin(),p.ride.performance.end(),[&](auto value){return value>=level;}))pending|=1U<<(level-1);
     InstalledPartSelection visual;
     const auto level=[&](unsigned slot){const auto* part=tuning_.find_part(p.car,slot,p.ride.installed[slot]);return part?unsigned(part->upgrade_level):0U;};
     for(unsigned slot=0;slot<120;++slot)if(const auto* part=tuning_.find_part(p.car,slot,p.ride.installed[slot]))visual.records[slot]=part->index;
-    if(tuning_.reputation(visual)>=1.F)p.magazine_pending|=1U<<3;
+    if(tuning_.reputation(visual)>=1.F)pending|=1U<<3;
     //51B060 uses actual installed levels and separate whole-body-kit override.
     unsigned front=level(1),rear=level(2),spoiler=level(10);if(level(6)==4)front=rear=spoiler=4;
     const unsigned hood=level(8),roof=level(11),exhaust=level(17),rims=level(15),neon=level(7),lights=level(115),tails=level(116),mirror=level(14),paint=level(30),side=level(13);
@@ -727,10 +764,15 @@ bool CareerCatalog::refresh_magazines(CareerProfile& p,bool capture,std::string&
     for(unsigned slot=59;slot<=66;++slot)if(p.ride.installed[slot])decal=3;
     for(unsigned slot=83;slot<=114&&!decal;++slot)if(p.ride.installed[slot])decal=2;
     for(unsigned slot=67;slot<=82&&!decal;++slot)if(p.ride.installed[slot])decal=1;
-    if(front&&rear&&spoiler&&roof&&hood&&exhaust&&decal&&vinyl&&lights&&tails)p.magazine_pending|=1U<<4;
-    if(front>1&&rear>1&&spoiler>1&&roof>1&&hood>1&&exhaust>1&&decal>1&&vinyl>1&&neon>1&&lights>1&&tails>1&&rims>1&&paint>1)p.magazine_pending|=1U<<5;
-    if(front>2&&rear>2&&spoiler>2&&roof>2&&side>2&&mirror>2&&exhaust>2&&(decal>2||hood>2)&&vinyl>2&&neon>2&&lights>2&&tails>2&&rims>2&&paint>2)p.magazine_pending|=1U<<6;
-    if(hood>3&&exhaust>3&&roof>3&&vinyl>3&&front>2&&rear>2&&spoiler>2&&side==3&&mirror==3&&neon==3&&lights==3&&tails==3&&rims==3&&paint==3)p.magazine_pending|=1U<<7;
+    if(front&&rear&&spoiler&&roof&&hood&&exhaust&&decal&&vinyl&&lights&&tails)pending|=1U<<4;
+    if(front>1&&rear>1&&spoiler>1&&roof>1&&hood>1&&exhaust>1&&decal>1&&vinyl>1&&neon>1&&lights>1&&tails>1&&rims>1&&paint>1)pending|=1U<<5;
+    if(front>2&&rear>2&&spoiler>2&&roof>2&&side>2&&mirror>2&&exhaust>2&&(decal>2||hood>2)&&vinyl>2&&neon>2&&lights>2&&tails>2&&rims>2&&paint>2)pending|=1U<<6;
+    if(hood>3&&exhaust>3&&roof>3&&vinyl>3&&front>2&&rear>2&&spoiler>2&&side==3&&mirror==3&&neon==3&&lights==3&&tails==3&&rims==3&&paint==3)pending|=1U<<7;
+    return pending;
+}
+bool CareerCatalog::refresh_magazines(CareerProfile& p,bool capture,std::string& error)const {
+    if(p.car.empty()){error.clear();return true;}
+    p.magazine_pending=magazine_task_mask(p);
     if(capture)for(unsigned task=0;task<16;++task)if(p.magazine_pending&(1U<<task)){
         const auto index=task+11;
         if(std::any_of(p.magazine_covers.begin(),p.magazine_covers.end(),[&](const auto& cover){return cover.index==index;}))continue;

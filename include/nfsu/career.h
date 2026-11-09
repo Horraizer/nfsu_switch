@@ -90,6 +90,10 @@ enum class QuickRaceRow { track, car, customize, performance, unique, traffic,
     difficulty, opponents, laps, catch_up, start };
 std::vector<QuickRaceRow> quick_race_rows(QuickRaceMode,RaceType backing,bool bonus=false);
 const char* quick_race_mode_name(QuickRaceMode) noexcept;
+struct CareerFinishRewards {
+    bool collect=false;
+    std::vector<std::string> magazine_tasks;
+};
 class CareerCatalog {
 public:
     bool load(const std::filesystem::path& retail,std::string& error);
@@ -128,6 +132,7 @@ public:
     bool event_finished(CareerProfile&,unsigned event,unsigned place,std::string& error)const;
     bool award_unique(CareerProfile&,unsigned category,std::uint32_t part_hash,std::string& error)const;
     bool buy(CareerProfile&,std::size_t car,std::string& error)const;
+    CareerFinishRewards finish_rewards(const CareerProfile&,bool event_won)const;
     bool refresh_magazines(CareerProfile&,bool capture,std::string& error)const;
     bool dismiss_magazines(CareerProfile&,std::string& error)const;
     bool owns(const CareerProfile&,unsigned category,std::uint32_t key)const noexcept;
@@ -141,6 +146,8 @@ public:
     bool movie_finished(CareerProfile&,std::string& error)const;
     bool enter_customization(CareerProfile&,std::string& error)const;
 private:
+    std::uint32_t magazine_task_mask(const CareerProfile&)const;
+    std::array<std::string,16> magazine_task_messages_{};
     bool free_drive_=false;
     std::vector<FreeDriveCourse> free_courses_;
     RaceEventTable events_;

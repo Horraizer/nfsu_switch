@@ -550,7 +550,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
           const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
           const nfsu::CarAssets& selected_car, Screen& screen, PadState& pad, bool free_drive = false,
           const nfsu::RaceCarDress* dress = nullptr, std::uint32_t event_number = 1,
-          const FrontendArt* post_art = nullptr, unsigned difficulty=1, unsigned* completed_place=nullptr, unsigned event_prize=0, unsigned previous_style=0, int* completed_style=nullptr, const CareerEventMedia* event_media=nullptr,float visual_reputation=0,const CareerCatalog* career_catalog=nullptr,unsigned previous_high_water=0,unsigned race_index=0,std::array<unsigned,4>* completed_places=nullptr,const CareerTournament* tournament=nullptr,bool nos_self_check=false,const std::string& player_name="YOU",CareerRaceReport* career_report=nullptr,const QuickRaceOptions* quick=nullptr,StartupJournal* sweep=nullptr,bool finish_sweep=false) {
+          const FrontendArt* post_art = nullptr, unsigned difficulty=1, unsigned* completed_place=nullptr, unsigned event_prize=0, unsigned previous_style=0, int* completed_style=nullptr, const CareerEventMedia* event_media=nullptr,float visual_reputation=0,const CareerCatalog* career_catalog=nullptr,unsigned previous_high_water=0,unsigned race_index=0,std::array<unsigned,4>* completed_places=nullptr,const CareerTournament* tournament=nullptr,bool nos_self_check=false,const std::string& player_name="YOU",CareerRaceReport* career_report=nullptr,const QuickRaceOptions* quick=nullptr,StartupJournal* sweep=nullptr,bool finish_sweep=false,const CareerProfile* career_profile=nullptr) {
     const bool wet_road_reflections=presentation.road_reflections;
     if(career_report)*career_report={};
     if(completed_place)*completed_place=0;
@@ -1632,20 +1632,18 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             }
             require(load_race_car_labels(root,models,labels,error),error);
             const bool tournament_win=resolved_tournament.event&&resolved_tournament.round==supported_tournament_row(event_number)->count&&resolved_tournament.order()[0]==0;
-            const unsigned prize=resolved_tournament.event?(tournament_win?event_prize:0):
-                race.session().player_won()?event_prize:0;
+            const bool event_won=resolved_tournament.event?tournament_win:race.session().player_won();
+            const unsigned prize=event_won?event_prize:0;
             auto values=post_race_report(race.session(),result_stats.values(race.session(),race.car()),labels,prize,previous_style,visual_reputation);
             if(resolved_tournament.event)bind_post_race_tournament(values,race.session(),resolved_tournament,
                 configuration_places,configuration_to_actor,labels);
             values["UserName"]=player_name;values["RacerName"]=player_name+" - "+labels[0];
             for(unsigned row=1;row<=4;++row)if(values["Name"+std::to_string(row)]=="YOU")values["Name"+std::to_string(row)]=player_name;
-            if(race.session().player_won()&&event_media&&!event_media->unique_categories.empty())values["CollectReward"]="1";
+            const auto career_rewards=career_catalog&&career_profile?
+                career_catalog->finish_rewards(*career_profile,event_won):CareerFinishRewards{};
+            if(career_rewards.collect)values["CollectReward"]="1";
             PostRaceStyleAnimator style_animator(values);FrontendClock post_clock;
             std::vector<std::pair<std::string,std::string>> rewards;
-            if(prize) {
-                rewards.emplace_back(values.at("RewardBlurbString"),"Race Victory Reward");
-                if(event_media)for(const auto& message:event_media->unlock_messages)rewards.emplace_back(message,"Race Victory Reward");
-            }
             if(career_catalog) {
                 const auto earned=std::uint32_t(std::clamp<std::int64_t>(std::int64_t(previous_style)+
                     post_race_style_subtotal(race.session())*post_race_style_multiplier(visual_reputation),0,0xffffffffLL));
@@ -1654,6 +1652,12 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 //losses. These are not mislabeled as a victory cash reward.
                 for(const auto& message:unlocked)rewards.emplace_back(message,"Style Reward");
             }
+            // Native 49ED00 queues style, magazine tasks, then victory and
+            // the authored event rewards. Cover notifications live in this queue.
+            for(const auto& message:career_rewards.magazine_tasks)rewards.emplace_back(message,"Style Reward");
+            if(prize)rewards.emplace_back(values.at("RewardBlurbString"),"Race Victory Reward");
+            if(event_won&&event_media)for(const auto& message:event_media->unlock_messages)
+                rewards.emplace_back(message,"Race Victory Reward");
             std::printf("RACE_STYLE previous=%u high_water=%u subtotal=%lld multiplier=%u rewards=%lu\n",previous_style,previous_high_water,
                 (long long)post_race_style_subtotal(race.session()),post_race_style_multiplier(visual_reputation),(unsigned long)rewards.size());
             std::vector<unsigned> statistic_actors;unsigned human_statistic=0;
@@ -1765,7 +1769,6 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     sweep_results_presented=true;
                 }
                 if(first_post_frame&&menu.page()==PostRacePage::results) {
-                    const bool event_won=resolved_tournament.event?tournament_win:race.session().player_won();
                     const int voice=audio::post_race_speech(event_number,event_won);
                     if(voice>=0) {
                         std::string voice_error;
@@ -2769,7 +2772,7 @@ int main(int argc, char** argv) {
                                                                     owned,screen,pad,false,&owned_dress,profile.selected_event,&art,profile.difficulty,&completed,
                                                                     career.media(profile.selected_event)->reward[profile.difficulty],profile.style_points,&style_earned,
                                                                     career.media(profile.selected_event),owned_setup.reputation,&career,profile.style_high_water,
-                                                                    round,&places,profile.tournament.event?&profile.tournament:nullptr,false,profile.name,&career_report);
+                                                                    round,&places,profile.tournament.event?&profile.tournament:nullptr,false,profile.name,&career_report,nullptr,nullptr,false,&profile);
                                                                 }catch(...) {
                                                                     // A renderer/finish-continuation failure does not
                                                                     // cancel a result already fixed by race timing.

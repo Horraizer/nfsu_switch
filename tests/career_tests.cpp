@@ -925,6 +925,29 @@ int main(int argc,char** argv) {
             }
         }
         {
+            auto result=resumed;result.page=CareerPage::briefing;result.ride={};
+            result.magazine_pending=0;result.magazine_covers.clear();
+            result.selected_event=1;
+            check(!catalog.finish_rewards(result,true).collect,"ordinary win continues without a claim");
+            result.selected_event=7;
+            check(catalog.finish_rewards(result,true).collect,"unique reward keeps Collect Reward");
+            result.selected_event=19;
+            check(catalog.finish_rewards(result,true).collect&&!catalog.finish_rewards(result,false).collect,
+                "event magazine can be collected only after a win");
+            const auto& notices=catalog.media(19)->unlock_messages;
+            check(std::any_of(notices.begin(),notices.end(),[](const auto& message){
+                return message.find("Race Victory!\n")!=std::string::npos&&message.find("cover of their magazine.")!=std::string::npos;
+            }),"event magazine uses the original victory popup wrapper");
+            result.selected_event=1;result.ride.performance.fill(1);
+            const auto task=catalog.finish_rewards(result,true);
+            check(task.collect&&task.magazine_tasks.size()==1&&result.magazine_pending==0,
+                "complete performance task yields a preview without consuming the cover");
+            check(catalog.finish_rewards(result,false).magazine_tasks.empty(),"loss or intermediate round has no magazine task popup");
+            CareerMagazine seen;seen.index=11;seen.seen=true;result.magazine_covers.push_back(seen);
+            const auto dismissed=catalog.finish_rewards(result,true);
+            check(!dismissed.collect&&dismissed.magazine_tasks.empty(),"previously acknowledged task has no new claim");
+        }
+        {
             auto photo=resumed;photo.bank=10000000;photo.page=CareerPage::garage;photo.customization_seen=true;
             for(unsigned id=1;id<=112;++id)if(find_race_event(catalog.events(),id))photo.status[id]=kEventStatusWon;
             for(unsigned field=0;field<9;++field)check(catalog.buy_performance(photo,field,1,error),error.c_str());

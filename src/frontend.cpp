@@ -1031,7 +1031,8 @@ void FrontendArt::Impl::draw_post_race(Canvas image,const PostRaceMenu& menu,con
                 if(high!=(index==menu.selected()))continue;
                 const char* ordinary[]={"Continue","Statistics","Restart"};
                 const char* tournament[]={menu.next_race()?"Quit Tournament":"Continue","Statistics","Restart Tournament","Restart Race","Next Race"};
-                if(o.type==2)value=menu.tournament()?tournament[index]:index==0&&values.count("CollectReward")?"Collect Reward":ordinary[index];
+                if(o.type==2)value=index==0&&!menu.next_race()&&values.count("CollectReward")?
+                    "Collect Reward":menu.tournament()?tournament[index]:ordinary[index];
             }else if(o.name!="TopBacking"&&o.name!="White16x16(14)"&&o.name!="45Corner")continue;
         }else {
             if(o.name=="ConduitMdITC_TT21i" || o.name=="quit_tag" || o.name=="next_tag" ||
