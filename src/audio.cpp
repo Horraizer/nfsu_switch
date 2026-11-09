@@ -437,8 +437,11 @@ Segment index_ast_segment_by_boundary(std::istream& input,
     segment.blocks = u32(count, 8);
     if (!segment.blocks || segment.blocks > 10000000U)
         fail(offset + length, "bad AST block count");
+    // The zero padding may occupy almost a full 128-byte alignment
+    // interval on its own. Leave room for the preceding SCEl header.
+    constexpr std::uint64_t tail_window=128+8;
     const auto tail_start = std::max(offset, next_offset -
-        std::min<std::uint64_t>(next_offset - offset, 128));
+        std::min(next_offset - offset, tail_window));
     const auto tail = read_at(input, tail_start,
         static_cast<std::size_t>(next_offset - tail_start), size);
     for (std::size_t i = 0; i + 8 <= tail.size(); ++i) {

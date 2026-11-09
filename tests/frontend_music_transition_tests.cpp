@@ -34,7 +34,7 @@ int main(int argc,char** argv){
     try {
         if(argc!=2)throw std::runtime_error("retail root required");
         const std::filesystem::path root=argv[1];std::string error;
-        for(const int entry:{14,6,33}){
+        for(const int entry:{14,6,33,82}){
             FrontendSpeech speech;check(speech.play(root,entry,error),error.c_str());
             bool audible=false;unsigned blocks=0;
             while(speech.active()&&blocks++<3000){

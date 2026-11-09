@@ -374,6 +374,12 @@ void test_ast_streamer() {
     check(indexed.end == parts[0].end && indexed.frames == parts[0].frames &&
           indexed.blocks == parts[0].blocks && indexed.rate == parts[0].rate,
           "boundary AST index matches full scan");
+    auto padded = pcm_ast();
+    const auto unpadded_end = padded.size();
+    padded.resize(unpadded_end + 124, 0);
+    auto padded_input = input_of(padded);
+    check(audio::index_ast_segment_by_boundary(*padded_input, 0, padded.size()).end == unpadded_end,
+          "AST end header before a nearly full alignment pad is indexed");
     audio::AstStreamer repeated(4);
     check(repeated.start_playlist(input_of(playlist), parts, true, error),
           "start looping playlist");
