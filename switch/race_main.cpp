@@ -828,7 +828,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     RaceHudAtlas hud_atlas;
     if (hud_mode && !panel_mode)
         require(load_race_hud_atlas(root,hud_atlas,error,!drift_mode&&!drag_mode,
-            race.session().spec().nitrous.installed,drift_mode,race.track_number()),error);
+            race.session().spec().nitrous.installed,drift_mode,race.track_number(),
+            selected_race.type==RaceType::lap_knockout),error);
     if(drag_mode) {
         drag_mark("drag.hud.before");
         require(load_race_drag_hud(root,race_car.car_type_name,race.session().spec().handling,hud_atlas,error),error);

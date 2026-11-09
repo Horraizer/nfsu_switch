@@ -181,7 +181,7 @@ bool load_countdown(const std::vector<unsigned char>& bytes,RaceHudAtlas& atlas,
     return atlas.countdown_ready;
 }
 bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
-                    std::string& error,bool drag=false) {
+                    std::string& error,bool drag=false,bool knockout=false) {
     std::ifstream stream(root/"Languages/English.bin",std::ios::binary);
     if (!stream) { error="lap HUD English font file absent"; return false; }
     const std::vector<unsigned char> language{std::istreambuf_iterator<char>(stream),{}};
@@ -231,7 +231,7 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
         if (rgba.empty()) { error="lap HUD font texture absent"; return false; }
         atlas.lap_font_heights[f]=font.line_height;
         auto glyphs=std::string(needed[f])+(f==1 && atlas.drift_ready?"XTO SLOW!Wg.y":"")+
-            (f==1 ? (drag?"Gof!SiTotaledBlownEngK":"Youwk") : "");
+            (f==1 && drag?"Gof!SiTotaledBlownEngK":"")+(f==1 && knockout?"Youwk":"");
         // Comment_DATA uses the large font too; keep all earlier atlas UVs.
         if(f==1&&atlas.drift_ready)for(char c:std::string("GOOD DRIFTGREAT SUPERB!COLOSSAL!OUTRAGEOUS!INSANE DRIFT!!DRIFT KING!!"))
             if(glyphs.find(c)==std::string::npos)glyphs+=c;
@@ -373,7 +373,7 @@ double race_hud_needle_rotation(double rpm, double max_rpm) noexcept {
 }
 
 bool load_race_hud_atlas(const std::filesystem::path& root,
-                         RaceHudAtlas& atlas, std::string& error, bool first_track_map, bool boost, bool drift, unsigned map_track) {
+                         RaceHudAtlas& atlas, std::string& error, bool first_track_map, bool boost, bool drift, unsigned map_track, bool knockout) {
     atlas={};
     atlas.rgba.assign(kRaceHudAtlasWidth*kRaceHudAtlasSize*4, 0);
     for (const char* path : {"Global/INGAMEB.BUN", "Global/DYNTEX.BIN", "Global/GLOBALB.BUN",
@@ -454,7 +454,7 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
         }
         atlas.boost_ready=true;
     }
-    return load_lap_fonts(root,atlas,error);
+    return load_lap_fonts(root,atlas,error,false,knockout);
 }
 
 void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,unsigned height,RaceHudFrame& frame,std::string_view message) noexcept {

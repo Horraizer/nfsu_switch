@@ -551,7 +551,11 @@ int main(int argc,char** argv) {
             if(!image)throw std::runtime_error("shadow frame output failed");
         }
         RaceHudAtlas hud;
-        check(load_race_hud_atlas(root,hud,error,selection.type!=RaceType::drag,true,false,unsigned(selection.slot.track)));
+        const bool knockout=selection.type==RaceType::lap_knockout;
+        check(load_race_hud_atlas(root,hud,error,selection.type!=RaceType::drag,true,false,
+            unsigned(selection.slot.track),knockout));
+        if(knockout)for(unsigned char c:std::string_view("Youwereknockedout!"))
+            check(hud.lap_fonts[1][c].width>0);
         if(selection.type==RaceType::drag)check(load_race_drag_hud(root,selected_car,run.session().spec().handling,hud,error));
         RaceHudFrame hud_frame;RaceMinimapState map_state;
         build_race_hud_frame(run.session(),hud,1280,720,hud_frame);

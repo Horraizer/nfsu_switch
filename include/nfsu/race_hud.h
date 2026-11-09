@@ -162,7 +162,8 @@ float race_hud_turbo_rotation(float pressure,bool drag) noexcept;
 
 bool load_race_hud_atlas(const std::filesystem::path& root,
                          RaceHudAtlas& atlas, std::string& error, bool first_track_map = false,
-                         bool boost = false, bool drift = false, unsigned map_track = 0);
+                         bool boost = false, bool drift = false, unsigned map_track = 0,
+                         bool knockout = false);
 bool load_race_drag_hud(const std::filesystem::path&,const std::string& car,const VehicleHandling&,
                         RaceHudAtlas&,std::string&);
 void append_race_drag_hud(const RaceSession&,const RaceHudAtlas&,unsigned,unsigned,RaceHudFrame&) noexcept;
