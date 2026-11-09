@@ -27,7 +27,8 @@ def check(root,renderer,main):
     assert 'main_sprites=%.3f upscale=%.3f' in renderer
     assert 'consume_frontend_query(slot);' in renderer
     assert 'frontend_query_pending[slot]=frontend && frontend_profile_passes;' in renderer
-    transition=main[main.index('if (action==FrontendAction::underground || action==FrontendAction::free_drive)'):main.index('const auto music_error=')]
+    start=main.index('const auto run_career_action=[&]')
+    transition=main[start:main.index('\n                while (appletMainLoop()) {',start)]
     assert transition.index('frontend_renderer.reset();')<transition.index('frontend_gpu_profile.reset();')<transition.index('run(root,')
     assert transition.count('run(root,')==3
     close=transition[transition.index('const auto close_career='):transition.index('const auto prepare_garage=')]
