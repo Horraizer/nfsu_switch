@@ -1309,6 +1309,20 @@ void test_knockout() {
         s.racers[1].status==RacerStatus::normal_completion&&s.racers[1].position==1&&
         s.racers[0].status==RacerStatus::knocked_out&&s.racers[0].position==2,
         "same-tick final crossings eliminate second before awarding the win");
+
+    RaceTimingState lapped;
+    lapped.racers.resize(4);
+    lapped.stage=RaceStage::racing;lapped.race_start_valid=true;
+    lapped.racers[0].highest_lap=2;
+    lapped.racers[1].highest_lap=1;
+    const RaceTimingInput lapped_inputs[]={{&final_crossing,1,30},{},{},{}};
+    check(step_race_timing(route,c,lapped,lapped_inputs,events,error,lead)&&
+        lapped.outcome==RaceOutcome::finished&&
+        lapped.racers[0].status==RacerStatus::normal_completion&&lapped.racers[0].position==1&&
+        lapped.racers[1].status==RacerStatus::knocked_out&&lapped.racers[1].position==2&&
+        lapped.racers[2].status==RacerStatus::knocked_out&&lapped.racers[2].position==3&&
+        lapped.racers[3].status==RacerStatus::knocked_out&&lapped.racers[3].position==4,
+        "a leader who laps the field does not wait at the final line for earlier cuts");
 }
 
 int main() {

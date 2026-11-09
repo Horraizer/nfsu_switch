@@ -940,35 +940,43 @@ bool apply_lap_knockout(const RaceTimingConfig& config,RaceTimingState& state,
     unsigned eliminated=0;
     for(const auto& racer:state.racers)
         if(racer.status==RacerStatus::knocked_out)++eliminated;
-    bool round_advanced=false;
-    for(;eliminated+1<count;++eliminated) {
-        const auto round=int(eliminated)+1;
-        unsigned crossed=0,remaining=0,last=0,last_behind=0,last_crossing=0;
+    unsigned cut_through=eliminated;
+    for(unsigned round=eliminated+1;round<count;++round) {
+        unsigned crossed=0;
         bool new_crossing=false;
+        for(const auto& racer:state.racers) {
+            if(racer.status!=RacerStatus::not_finished||racer.highest_lap<int(round))continue;
+            ++crossed;
+            new_crossing|=racer.new_lap&&racer.highest_lap==int(round);
+        }
+        // 435730 retires every remaining car behind the cut. A lapped
+        // field can miss earlier cuts before the next one, including finish.
+        if(new_crossing&&crossed>=count-round)cut_through=round;
+    }
+    for(;eliminated<cut_through;++eliminated) {
+        unsigned last=0,last_behind=0,last_crossing=0;
+        bool behind=false,new_crossing=false;
         for(std::size_t i=0;i<count;++i) {
             const auto actor=order[i];
             const auto& racer=state.racers[actor];
             if(racer.status!=RacerStatus::not_finished)continue;
-            ++remaining;
             last=actor;
-            if(racer.highest_lap>=round) {
-                ++crossed;
-                if(racer.new_lap) {
-                    new_crossing=true;
-                    last_crossing=actor;
-                }
-            }else last_behind=actor;
+            if(racer.highest_lap<int(cut_through)) {
+                behind=true;
+                last_behind=actor;
+            }else if(racer.new_lap) {
+                new_crossing=true;
+                last_crossing=actor;
+            }
         }
-        if(remaining<2 || (!new_crossing&&!round_advanced) || crossed+1<remaining)break;
         // If the whole field crosses in one step, its current order breaks
         // the tie, as in the native sorted race-status pass.
-        const auto actor=crossed<remaining?last_behind:new_crossing?last_crossing:last;
+        const auto actor=behind?last_behind:new_crossing?last_crossing:last;
         auto& victim=state.racers[actor];
         victim.status=RacerStatus::knocked_out;
         victim.position=int(count-eliminated);
         victim.finish_valid=false;
         victim.finish_step=state.step;
-        round_advanced=true;
         // 435740 passes hide=true only for a non-human actor.
         if(actor>=config.humans) {
             victim.ghost_start_ticks=state.now_ticks;victim.ghost_seconds=2.F;
