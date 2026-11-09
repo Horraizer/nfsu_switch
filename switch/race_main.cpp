@@ -2327,6 +2327,7 @@ int main(int argc, char** argv) {
                 std::map<std::string,CareerRide> free_rides;
                 unsigned free_course=0;
                 QuickRaceOptions quick_options;
+                bool garage_fps_overlay=fps_overlay;
                 FrontendAction pending=FrontendAction::none;
                 const auto run_career_action=[&](FrontendAction action,const std::string* garage_car,
                         unsigned garage_tier,const std::function<void()>& lobby_poll) {
@@ -2514,6 +2515,9 @@ int main(int argc, char** argv) {
                                     };
                                     try {
                                         CareerMagazineRecipe magazine_recipe;
+                                        RaceDebugInput garage_debug_input;
+                                        FrontendPresentationStats garage_fps_stats;
+                                        FrontendPresentationWindow garage_fps_window;
                                         while(!leave && appletMainLoop()) {
                                             const auto movie=career.pending_movie(profile);
                                             if(!movie.empty()) {
@@ -2595,9 +2599,15 @@ int main(int argc, char** argv) {
                                             std::string notice;bool change=false,confirm=false,previous_negative=false,previous_positive=false,previous_color_up=false,previous_color_down=false;
                                             std::optional<CareerProfile> starter_purchase;
                                             bool starter_purchase_spoken=false;
+                                            garage_fps_stats.reset();
+                                            garage_fps_window={};
                                             while(!change && !leave && appletMainLoop()) {
                                                 if(lobby_poll)lobby_poll();
-                                                if(appletGetFocusState()!=AppletFocusState_InFocus){frontend_clock.resume();continue;}
+                                                if(appletGetFocusState()!=AppletFocusState_InFocus) {
+                                                    frontend_clock.resume();
+                                                    garage_fps_stats.reset();garage_fps_window={};
+                                                    continue;
+                                                }
                                                 if(magazine_voice>=0&&music.speech_drained()) {
                                                     if(!music.speech(audio::kMagazineBriefingSpeech,frontend_error,unsigned(magazine_voice)))
                                                         std::fprintf(stderr,"CAREER magazine briefing failed: %s\n",frontend_error.c_str());
@@ -2611,6 +2621,13 @@ int main(int argc, char** argv) {
                                                     play_career_hint(audio::kStarterCarPurchaseSpeech);
                                                 }
                                                 padUpdate(&pad);
+                                                const bool in_garage=profile.page==CareerPage::garage||profile.page==CareerPage::unique_reward;
+                                                const auto held=padGetButtons(&pad);
+                                                if(garage_debug_input.update(padIsConnected(&pad),
+                                                        (held&HidNpadButton_StickL)!=0,(held&HidNpadButton_StickR)!=0) && in_garage) {
+                                                    garage_fps_overlay=!garage_fps_overlay;
+                                                    garage_fps_stats.reset();garage_fps_window={};
+                                                }
                                                 const auto pressed=starter_purchase?0:padGetButtonsDown(&pad);
                                                 const auto stick=starter_purchase?decltype(padGetStickPos(&pad,0)){}:padGetStickPos(&pad,0);
                                                 const bool vertical=profile.page==CareerPage::menu&&!career_info.active();
@@ -2883,10 +2900,10 @@ int main(int argc, char** argv) {
                                                     }
                                                 }
                                                 if(change||leave)continue;
-                                                if(sandbox||(profile.page==CareerPage::garage||profile.page==CareerPage::unique_reward))prepare_garage();
+                                                if(sandbox||in_garage)prepare_garage();
                                                 else if(profile.page!=CareerPage::magazines)frontend_scene.road_target(50.F);
                                                 const auto elapsed=frontend_clock.sample(armTicksToNs(armGetSystemTick()));
-                                                if((profile.page==CareerPage::garage||profile.page==CareerPage::unique_reward)) {
+                                                if(in_garage) {
                                                     const auto orbit=padGetStickPos(&pad,1);
                                                     const auto axis=[](int value){return std::abs(value)>6000?float(value)/32767.F:0.F;};
                                                     frontend_scene.orbit(axis(orbit.x)*float(elapsed/1000000000.0)*90,
@@ -2906,9 +2923,13 @@ int main(int argc, char** argv) {
                                                 if(career_info.active())art.record_career_info(width,height,career,profile,career_info,frontend_ui);
                                                 else if(profile.page==CareerPage::magazines)art.record_magazine(width,height,magazine_recipe,profile.magazine_covers[selection].car,frontend_ui);
                                                 else if(sandbox&&profile.page==CareerPage::menu)art.record_free_drive(width,height,career,profile,selection,free_course,notice,frontend_ui,&quick_options,choose_quick_mode);
-                                                else art.record_career(width,height,career,profile,selection,notice,frontend_ui,(profile.page==CareerPage::garage||profile.page==CareerPage::unique_reward)?&garage:nullptr);
+                                                else art.record_career(width,height,career,profile,selection,notice,frontend_ui,in_garage?&garage:nullptr);
+                                                const bool show_garage_fps=in_garage&&garage_fps_overlay;
+                                                if(show_garage_fps)art.append_fps(width,height,garage_fps_window,frontend_ui);
                                                 require(frontend_renderer->update(frontend_scene.commands(),frontend_error),frontend_error);
                                                 require(frontend_renderer->present_frontend(frontend_ui,frontend_error),frontend_error);
+                                                if(show_garage_fps)
+                                                    garage_fps_stats.sample(armTicksToNs(armGetSystemTick()),garage_fps_window);
                                             }
                                         }
                                         music.stop();close_career();

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <functional>
@@ -1381,6 +1382,20 @@ void FrontendArt::record_ui(unsigned width,unsigned height,const FrontendMenu& m
     frame.vertices.clear();frame.additive.clear();frame.background_quads=0;
     frame.vertices.reserve(kFrontendUiMaxQuads*4);frame.additive.reserve(kFrontendUiMaxQuads);
     impl_->draw(Canvas{width,height,impl_->atlas,frame},menu);
+}
+void FrontendArt::append_fps(unsigned width,unsigned height,const FrontendPresentationWindow& window,
+                             FrontendUiFrame& frame)const {
+    char label[64]="FPS ...";
+    if(window.intervals)
+        std::snprintf(label,sizeof label,"%.1f FPS  %.1f ms",window.fps(),window.mean_ms());
+    if(frame.additive.size()+std::strlen(label)+1>kFrontendUiMaxQuads)return;
+    const Canvas canvas{width,height,impl_->atlas,frame};
+    const auto white=impl_->textures.find(0xe2a5c626U);
+    if(white!=impl_->textures.end())
+        quad(canvas,white->second,Transform{},-60,-230,120,24,{{0,0,1,1}},{{0,0,0,185}});
+    Object text;text.justification=5;
+    Transform pose;pose.y=-218;
+    impl_->text(canvas,text,pose,label,{{255,255,255,255}},8);
 }
 void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
     const auto& p=*this;

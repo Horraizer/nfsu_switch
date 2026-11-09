@@ -1026,6 +1026,15 @@ int main(int argc,char** argv) {
             std::vector<unsigned char> pixels(1280*720*4,0);
             art.draw({pixels.data(),1280,720,1280*4},menu);
             check(pixels[3]==255 && pixels[(719*1280+1279)*4+3]==255,"menu fills full image");
+            FrontendUiFrame fps_overlay;
+            art.record_ui(1280,720,menu,fps_overlay);
+            const auto ui_quads=fps_overlay.additive.size();
+            art.append_fps(1280,720,{120,2000000000,17000000},fps_overlay);
+            check(fps_overlay.additive.size()>ui_quads+1&&fps_overlay.vertices.size()==fps_overlay.additive.size()*4,
+                "frontend FPS overlay appends resident font glyphs and a panel");
+            for(std::size_t i=ui_quads*4;i<fps_overlay.vertices.size();++i)
+                check(fps_overlay.vertices[i].py>=0&&fps_overlay.vertices[i].py<72,
+                    "frontend FPS overlay stays at the top of the screen");
             // GPU-only loading must retain authored textures/font coordinates
             // and update selection without a CPU background or texture reload.
             {
