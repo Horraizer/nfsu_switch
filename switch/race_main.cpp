@@ -2218,7 +2218,10 @@ int main(int argc, char** argv) {
                 open_frontend();
                 FrontendClock frontend_clock;
                 FrontendAppletClockHook frontend_clock_hook(frontend_clock,frontend_presentation_stats);
-                FrontendMenu menu(true,true);
+                FrontendMenu menu(true,true,true);
+                CareerInfoMenu statistics;
+                std::optional<CareerCatalog> statistics_catalog;
+                CareerProfile statistics_profile;
                 auto presentation=read_presentation_options(wet_road_reflections);
                 if(wet_road_seen)presentation.road_reflections=wet_road_reflections;
                 bool options_open=false;
@@ -2931,7 +2934,18 @@ int main(int argc, char** argv) {
                     const auto previous_selection=menu.selected();
                     auto action=FrontendAction::none;
                     const bool handling_options=options_open;
-                    if(handling_options) {
+                    const bool handling_statistics=statistics.active();
+                    if(handling_statistics) {
+                        const bool left=down&(HidNpadButton_Left|HidNpadButton_StickLLeft);
+                        const bool right=down&(HidNpadButton_Right|HidNpadButton_StickLRight);
+                        if(input.back) {
+                            statistics.close();
+                            statistics_catalog.reset();
+                            music.sound(audio::FrontendSound::back);
+                        }else if(left!=right&&statistics.move(left?-1:1)) {
+                            music.sound(left?audio::FrontendSound::left:audio::FrontendSound::right);
+                        }
+                    }else if(handling_options) {
                         if(input.back) {
                             options_open=false;
                             music.sound(audio::FrontendSound::back);
@@ -2951,7 +2965,7 @@ int main(int argc, char** argv) {
                         }
                     }else if(pending==FrontendAction::none)action=menu.update(input);
                     const auto selection_done=armGetSystemTick();
-                    if(!handling_options) {
+                    if(!handling_options&&!handling_statistics) {
                         if(pending==FrontendAction::none && input.back) music.sound(audio::FrontendSound::back);
                         else if(pending==FrontendAction::none && input.accept) music.sound(audio::FrontendSound::select);
                         else if(menu.selected()!=previous_selection)
@@ -2964,6 +2978,20 @@ int main(int argc, char** argv) {
                         action=pending;pending=FrontendAction::none;
                     }
                     if (action==FrontendAction::exit) {music.stop();break;}
+                    if(action==FrontendAction::statistics&&active_profile) {
+                        statistics_catalog.emplace();
+                        bool atlas_changed=false;
+                        if(statistics_catalog->load(root,frontend_error)&&
+                           load_career(active_profile->base,*statistics_catalog,statistics_profile,frontend_error)&&
+                           art.load_statistics(root,atlas_changed,frontend_error)) {
+                            if(atlas_changed)require(frontend_renderer->set_frontend_overlay(art.atlas(),frontend_error,false),frontend_error);
+                            statistics.open(CareerInfoScreen::statistics);
+                        }else {
+                            menu.notice("STATISTICS: "+frontend_error);
+                            statistics_catalog.reset();
+                        }
+                        frontend_clock.resume();
+                    }
                     if(action==FrontendAction::options) {
                         load_post_race();
                         require(frontend_renderer->set_frontend_overlay(art.atlas(),frontend_error),frontend_error);
@@ -3009,6 +3037,7 @@ int main(int argc, char** argv) {
                     art.advance(static_cast<float>(elapsed_ns/1000000000.0));
                     trace("frame.ui.before");
                     if(options_open)art.record_options(width,height,presentation,option_row,option_notice,frontend_ui);
+                    else if(statistics.active())art.record_career_info(width,height,*statistics_catalog,statistics_profile,statistics,frontend_ui);
                     else art.record_ui(width,height,menu,frontend_ui);
                     trace("frame.ui.after");
                     const auto ui_done=armGetSystemTick();

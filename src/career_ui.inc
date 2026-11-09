@@ -64,6 +64,47 @@ std::vector<Object> career_objects(const std::vector<unsigned char>& front,std::
     return result;
 }
 }
+bool FrontendArt::load_statistics(const std::filesystem::path& root,bool& atlas_changed,std::string& error) {
+    atlas_changed=false;
+    try {
+        impl_->info_revision=~0U;
+        if(!impl_->dialogs[5].objects.empty()){error.clear();return true;}
+        if(impl_->textures.empty())throw std::runtime_error("statistics requires frontend fonts");
+        std::vector<unsigned char> front,global,language,dynamic;std::vector<RaceTableIssue> issues;
+        if(!load_race_image(root/"FrontEnd/FrontB.lzc",front,issues) ||
+           !load_race_image(root/"Languages/English.bin",language,issues))
+            throw std::runtime_error("statistics input unreadable");
+        if(sha256_hex(sha256(front.data(),front.size()))!="94A714D1E8E3BEF7F77AEDCEE4FDC6350E285B06059B92D392687710E64E5D77")
+            throw std::runtime_error("career FNG identity mismatch");
+        constexpr std::size_t offset=0xbc818c; // MU_UG_StatsScreen
+        auto page=read_dialog(front,offset,career_info_resources(front,offset,impl_->large_hash,impl_->small_hash,error),
+            [&](unsigned hash,const std::string& fallback){return career_language(language,hash,fallback);},error);
+        Impl packed;packed.textures=impl_->textures;
+        for(const auto& object:page.objects) {
+            if((object.type!=1&&object.type!=9)||object.resource>=page.resources.size())continue;
+            const auto hash=page.resources[object.resource];
+            if(!hash||packed.textures.count(hash))continue;
+            Image image;
+            if(!texture(front,hash,image,error)) {
+                if(global.empty()&&!load_race_image(root/"Global/GLOBALB.BUN",global,issues))
+                    throw std::runtime_error("statistics global input unreadable");
+                if(!texture(global,hash,image,error)) {
+                    if(dynamic.empty()&&!load_race_image(root/"Global/DYNTEX.BIN",dynamic,issues))
+                        throw std::runtime_error("statistics dynamic input unreadable");
+                    if(!texture(dynamic,hash,image,error))
+                        throw std::runtime_error("statistics sprite absent: "+std::to_string(hash));
+                }
+            }
+            packed.textures.emplace(hash,std::move(image));
+        }
+        if(packed.textures.size()!=impl_->textures.size()) {
+            packed.pack_atlas(true);
+            impl_->textures=std::move(packed.textures);impl_->atlas=std::move(packed.atlas);
+            atlas_changed=true;
+        }
+        impl_->dialogs[5]=std::move(page);error.clear();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
 bool FrontendArt::load_career_pages(const std::filesystem::path& root,const CareerCatalog& catalog,std::string& error) {
     try {
         if(impl_->textures.empty())throw std::runtime_error("career pages require frontend fonts");
@@ -118,13 +159,14 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
             else if(required)throw std::runtime_error("garage sprite absent hash="+std::to_string(hash));
             error.clear();
         };
-        for(unsigned i=0;i<2;++i) {
+        std::array<DialogArt,2> info_pages;
+        for(unsigned i=0;i<info_pages.size();++i) {
             const std::size_t offset=i?0xbc818c:0xbc640c;
             auto art=read_dialog(front,offset,career_info_resources(front,offset,impl_->large_hash,impl_->small_hash,error),
                 [&](unsigned hash,const std::string& fallback){return career_language(language,hash,fallback);},error);
             for(const auto& object:art.objects)if((object.type==1||object.type==9)&&object.resource<art.resources.size())
                 add_hash(art.resources[object.resource],true);
-            impl_->dialogs[4+i]=std::move(art);
+            info_pages[i]=std::move(art);
         }
         add("GENERICPLACEHOLDER");
         for(auto offset:garage_offsets) {
@@ -236,6 +278,8 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
         impl_->career_browser=std::move(browser);impl_->career_scroller=std::move(scroller);
         impl_->career_sprint=std::move(sprint);impl_->career_backgrounds=std::move(backgrounds);impl_->career_titles=std::move(titles);impl_->career_descriptions=std::move(descriptions);impl_->career_track_names=std::move(track_names);
         impl_->textures=std::move(packed.textures);impl_->atlas=std::move(packed.atlas);impl_->career_maps=std::move(maps);
+        for(unsigned i=0;i<info_pages.size();++i)impl_->dialogs[4+i]=std::move(info_pages[i]);
+        impl_->info_revision=~0U;
         error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }

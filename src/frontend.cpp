@@ -18,14 +18,18 @@ FrontendAction FrontendMenu::update(FrontendInput input) {
     if(input.profiles) return FrontendAction::profiles;
     if(input.back) return FrontendAction::exit;
     if(input.up!=input.down) {
-        const unsigned count=2+unsigned(multiplayer_)+unsigned(options_);
+        const unsigned count=2+unsigned(multiplayer_)+unsigned(options_)+unsigned(statistics_);
         selected_=(selected_+(input.up?count-1:1))%count;
         notice_.clear();
     }
-    if(!input.accept) return FrontendAction::none;
-    if(options_&&selected_==2)return FrontendAction::options;
-    if(multiplayer_&&selected_==multiplayer_selection())return FrontendAction::multiplayer;
-    return selected_==0?FrontendAction::underground:FrontendAction::free_drive;
+    return input.accept?selected_action():FrontendAction::none;
+}
+FrontendAction FrontendMenu::selected_action() const {
+    if(selected_==0)return FrontendAction::underground;
+    if(selected_==1)return FrontendAction::free_drive;
+    if(statistics_&&selected_==2)return FrontendAction::statistics;
+    if(options_&&selected_==2+unsigned(statistics_))return FrontendAction::options;
+    return FrontendAction::multiplayer;
 }
 namespace {
 unsigned word(const unsigned char* p) {return unsigned(p[0])|unsigned(p[1])<<8;}
@@ -474,19 +478,22 @@ struct FrontendArt::Impl {
         }
         throw std::runtime_error("authored selection state absent");
     }
-    void select(unsigned selected) const {
-        if(!temporal || selected==last_selection)return;
+    void select(const FrontendMenu& menu) const {
+        const auto selected=menu.selected_action();
+        if(!temporal || unsigned(selected)==last_selection)return;
         const bool first=last_selection==~0U;
         const auto start=first?0:ui_ticks;
-        for(const auto& object:objects)if(object.name=="UndergroundMode" || object.name=="QuickRace") {
-            const bool high=selected==(object.name=="QuickRace"?1U:0U);
-            start_state(object,high,start,first && !high);
+        for(const auto& object:objects) {
+            if(object.name=="UndergroundMode")start_state(object,selected==FrontendAction::underground,start,first&&selected!=FrontendAction::underground);
+            else if(object.name=="QuickRace")start_state(object,selected==FrontendAction::free_drive,start,first&&selected!=FrontendAction::free_drive);
+            else if(menu.statistics_enabled()&&object.name=="STATISTICS")
+                start_state(object,selected==FrontendAction::statistics,start,first&&selected!=FrontendAction::statistics);
         }
         // Original main handler4B371D..4B3766 starts Description FadeIn
         // on the selected item HighLight event; switching restarts its keys.
         for(const auto& object:objects)if(object.name=="Description")
             start_named_state(object,"FadeIn",start);
-        last_selection=selected;
+        last_selection=unsigned(selected);
     }
 
     struct SampledObject {std::uint64_t generation=0;Object pose;};
@@ -589,12 +596,13 @@ struct FrontendArt::Impl {
         for(unsigned c=0;c<4;++c)color[c]=(color[c]*effective[c]+128)>>8;
         return color;
     }
-    bool visible(const Object& o,unsigned selected,unsigned depth=0) const {
+    bool visible(const Object& o,FrontendAction selected,unsigned depth=0) const {
         if(depth>32) return false;
         if(!temporal && o.name.rfind("hightlight",0)==0 && o.type==5) {
             // Native Highlight event target IDs: UG->df300d, QuickRace->ee300d.
-            const unsigned wanted=selected==0?0xd30df:0xd30ee;
-            if(selected==2 || o.id!=wanted) return false;
+            const unsigned wanted=selected==FrontendAction::underground?0xd30df:
+                selected==FrontendAction::free_drive?0xd30ee:selected==FrontendAction::statistics?0xd324e:0;
+            if(o.id!=wanted)return false;
         }
         if(o.name.rfind("MenuBack_",0)==0 || o.name=="arrow" || o.name=="next_tag" || o.name=="Group(105)" || o.name=="Help" || o.name=="Group(52)" || o.name=="Group(53)") return false;
         if(o.parent) for(const auto& parent:objects) if(parent.id==o.parent) return visible(parent,selected,depth+1);
@@ -1190,7 +1198,8 @@ void FrontendArt::record_ui(unsigned width,unsigned height,const FrontendMenu& m
 }
 void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
     const auto& p=*this;
-    p.select(menu.selected());
+    p.select(menu);
+    const auto selected=menu.selected_action();
     const auto song_tick=static_cast<std::uint32_t>(p.chyron_ticks);
     if(p.song_revision!=menu.song_revision()) {
         p.chyron.show(song_tick);p.song_revision=menu.song_revision();
@@ -1207,7 +1216,7 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
     std::stable_sort(order.begin(),order.end(),[&](std::size_t a,std::size_t b) {return p.transform(p.objects[a]).z>p.transform(p.objects[b]).z;});
     const unsigned hashes[]={0xe2a5c626,0x1f3bdb88,0x1abedeb1,0,bin_hash("ARROW3"),bin_hash("CIRCLE"),0x868a1fcf,bin_hash("NFSU_LOGO")};
     for(auto i:order) {
-        const auto& o=p.sample(p.objects[i]);if((o.chyron && !p.chyron.visible()) || !p.visible(o,menu.selected()) || o.type==5 || o.name=="NFSU_logo") continue;
+        const auto& o=p.sample(p.objects[i]);if((o.chyron && !p.chyron.visible()) || !p.visible(o,selected) || o.type==5 || o.name=="NFSU_logo") continue;
         auto color=o.color;
         // Original steady states from UnHighlight/Highlight, after Init fades.
         if(!p.temporal && !o.chyron && !color[3] && (o.type==2 || o.type==5)) color[3]=255;
@@ -1231,15 +1240,22 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
             if(o.name=="Customize") label="CUSTOMIZE RIDE";
             const bool online=o.name=="Online",lan=online&&menu.multiplayer_enabled();
             const bool options=o.name=="Options"&&menu.options_enabled();
-            const bool lan_selected=lan&&menu.selected()==menu.multiplayer_selection();
+            const bool statistics=o.name=="STATISTICS"&&menu.statistics_enabled();
+            const bool lan_selected=lan&&selected==FrontendAction::multiplayer;
+            const bool options_selected=options&&selected==FrontendAction::options;
             if(online) label=lan_selected?"> MULTIPLAYER":"MULTIPLAYER";
-            if(options&&menu.selected()==2) label="> OPTIONS";
-            if(o.name=="Description") label=menu.selected()==0?"Begin your Underground career":
-                menu.selected()==1?"Set up a race or explore a track in Free Run.":
-                menu.options_enabled()&&menu.selected()==2?"Change display options.":"Host or join a race over your local network.";
-            if((underground || free) && !p.temporal) color=(menu.selected()==(free?1U:0U))?std::array<unsigned,4>{{242,233,207,255}}:std::array<unsigned,4>{{180,154,84,255}};
-            else if(lan||options)color=(lan_selected||(options&&menu.selected()==2))?std::array<unsigned,4>{{242,233,207,color[3]}}:std::array<unsigned,4>{{180,154,84,color[3]}};
-            else if(o.name=="STATISTICS" || o.name=="Options" || o.name=="Customize" || online)
+            if(options_selected) label="> OPTIONS";
+            if(o.name=="Description") label=selected==FrontendAction::underground?"Begin your Underground career":
+                selected==FrontendAction::free_drive?"Set up a race or explore a track in Free Run.":
+                selected==FrontendAction::statistics?"View your racing statistics.":
+                selected==FrontendAction::options?"Change display options.":"Host or join a race over your local network.";
+            if((underground || free || statistics) && !p.temporal) {
+                const bool current=(underground&&selected==FrontendAction::underground)||
+                    (free&&selected==FrontendAction::free_drive)||(statistics&&selected==FrontendAction::statistics);
+                color=current?std::array<unsigned,4>{{242,233,207,255}}:std::array<unsigned,4>{{180,154,84,255}};
+            }
+            else if(lan||options)color=(lan_selected||options_selected)?std::array<unsigned,4>{{242,233,207,color[3]}}:std::array<unsigned,4>{{180,154,84,color[3]}};
+            else if((o.name=="STATISTICS"&&!statistics) || o.name=="Options" || o.name=="Customize" || online)
                 color={{110,110,110,p.temporal?(color[3]*180+127)/255:180}};
             color=p.parent_color(o,color);
             p.text(image,o,m,label,color,o.chyron?3:o.resource);

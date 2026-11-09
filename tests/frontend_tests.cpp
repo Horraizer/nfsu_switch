@@ -45,6 +45,12 @@ int main(int argc,char** argv) {
             check(with_options.update(accept)==FrontendAction::options,"Options opens before LAN");
             with_options.update(down);
             check(with_options.update(accept)==FrontendAction::multiplayer,"Options leaves LAN reachable");
+            FrontendMenu with_statistics(true,true,true);
+            for(auto expected:{FrontendAction::underground,FrontendAction::free_drive,FrontendAction::statistics,
+                               FrontendAction::options,FrontendAction::multiplayer,FrontendAction::underground}) {
+                check(with_statistics.update(accept)==expected,"Statistics preserves the authored main-menu order");
+                with_statistics.update(down);
+            }
         }
         check(audio::original_music_next(3,{100,200,300},0)==3,"unplayed music does not advance");
         check(audio::original_music_next(0,{100,200,300},99)==1&&
@@ -1020,6 +1026,27 @@ int main(int argc,char** argv) {
             }
             FrontendArt result_art,empty_art;
             check(!empty_art.prepare_post_race(result_art,error),"empty post source refused");
+            {
+                FrontendArt statistics_art;check(statistics_art.load_startup(root,error,true),error.c_str());
+                statistics_art.release_startup_splash();
+                FrontendMenu stats_row(true,true,true);FrontendInput down;down.down=true;
+                stats_row.update(down);stats_row.update(down);
+                FrontendUiFrame frame;statistics_art.advance(.016F);
+                statistics_art.record_ui(1280,720,stats_row,frame);
+                check(!frame.vertices.empty(),"authored Statistics main-menu highlight renders");
+                bool atlas_changed=false;
+                const bool loaded=statistics_art.load_statistics(root,atlas_changed,error);check(loaded,error.c_str());
+                check(atlas_changed,"first Statistics visit adds the missing sprites to the menu atlas");
+                const bool reopened=statistics_art.load_statistics(root,atlas_changed,error);check(reopened,error.c_str());
+                check(!atlas_changed,"returning to Statistics reuses the resident atlas");
+                CareerCatalog catalog;check(catalog.load(root,error),error.c_str());
+                CareerProfile profile;CareerInfoMenu statistics;statistics.open(CareerInfoScreen::statistics);
+                do {
+                    statistics_art.advance(1.F);
+                    statistics_art.record_career_info(1280,720,catalog,profile,statistics,frame);
+                    check(!frame.vertices.empty(),"main-menu Statistics category renders without garage assets");
+                }while(statistics.move(1));
+            }
             check(!gpu_art.prepare_post_race(gpu_art,error),"self post replacement refused");
             const auto source_pixels=gpu_art.atlas().rgba;
             check(gpu_art.prepare_post_race(result_art,error),error.c_str());

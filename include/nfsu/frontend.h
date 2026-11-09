@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 namespace nfsu {
-enum class FrontendAction { none, underground, free_drive, profiles, exit, multiplayer, options };
+enum class FrontendAction { none, underground, free_drive, profiles, exit, multiplayer, options, statistics };
 struct FrontendInput { bool up=false, down=false, accept=false, back=false, left=false, right=false, profiles=false; };
 struct RacePresentationOptions {
     bool motion_blur=true;
@@ -24,12 +24,14 @@ struct RacePresentationOptions {
 };
 class FrontendMenu {
 public:
-    explicit FrontendMenu(bool multiplayer=false,bool options=false):multiplayer_(multiplayer),options_(options){}
+    explicit FrontendMenu(bool multiplayer=false,bool options=false,bool statistics=false)
+        :multiplayer_(multiplayer),options_(options),statistics_(statistics){}
     FrontendAction update(FrontendInput input);
     unsigned selected() const { return selected_; }
     bool multiplayer_enabled()const{return multiplayer_;}
     bool options_enabled()const{return options_;}
-    unsigned multiplayer_selection()const{return options_?3U:2U;}
+    bool statistics_enabled()const{return statistics_;}
+    FrontendAction selected_action() const;
     void notice(std::string text) { notice_=std::move(text); }
     const std::string& notice() const { return notice_; }
     void song(const char* artist,const char* title,const char* album) {
@@ -43,7 +45,7 @@ public:
     const std::string& album() const {return album_;}
 private:
     unsigned selected_=0,song_revision_=1;
-    bool multiplayer_=false,options_=false;
+    bool multiplayer_=false,options_=false,statistics_=false;
     std::string notice_;
     std::string artist_="Lil Jon & the Eastside Boyz",title_="Get Low",album_="Kings of Crunk";
 };
@@ -290,6 +292,7 @@ public:
     void draw_magazine(ScreenImage,const CareerMagazineRecipe&,const std::string& car,bool background)const;
     void record_magazine(unsigned width,unsigned height,const CareerMagazineRecipe&,
                          const std::string& car,FrontendUiFrame&)const;
+    bool load_statistics(const std::filesystem::path& root,bool& atlas_changed,std::string& error);
     bool load_career_pages(const std::filesystem::path& root,const CareerCatalog&,std::string& error);
     void draw_career_info(ScreenImage,const CareerCatalog&,const CareerProfile&,const CareerInfoMenu&)const;
     void record_career_info(unsigned width,unsigned height,const CareerCatalog&,const CareerProfile&,
