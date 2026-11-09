@@ -1642,6 +1642,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             const auto career_rewards=career_catalog&&career_profile?
                 career_catalog->finish_rewards(*career_profile,event_won):CareerFinishRewards{};
             if(career_rewards.collect)values["CollectReward"]="1";
+            // Native 496E00 changes the confirmation only for unique challenges.
+            if(career_rewards.collect&&event_media&&!event_media->unique_categories.empty())
+                values["ConfirmCollectReward"]="1";
             PostRaceStyleAnimator style_animator(values);FrontendClock post_clock;
             std::vector<std::pair<std::string,std::string>> rewards;
             if(career_catalog) {

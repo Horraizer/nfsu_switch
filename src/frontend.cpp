@@ -952,7 +952,7 @@ void FrontendArt::Impl::draw_post_race(Canvas image,const PostRaceMenu& menu,con
             action==PostRaceAction::restart_tournament?"Start Tournament again from^the beginning?":
             action==PostRaceAction::next_race?"Advance to next race?":
             action==PostRaceAction::quit_tournament?"Quit Tournament? ^Quitting a tournament causes you to lose ^your tournament progress. Continue?":
-            values.count("CollectReward")?"Collect Reward?":"Continue?";
+            values.count("ConfirmCollectReward")?"Collect Reward?":"Continue?";
         labels["button1"]="OK";labels["button2"]="Cancel";labels["Controls"]="A: Accept   B: Cancel";
         const unsigned key=100+menu.revision();
         if(dialog_key!=key){dialog_key=key;dialog_started=ui_ticks;}
