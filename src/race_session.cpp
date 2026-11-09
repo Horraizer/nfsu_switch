@@ -185,6 +185,8 @@ void RaceSession::update_standings() {
         // Finished actors continue physically; their competitive progress
         // stays at the finish, like the retained original lap record.
         if(timing.finish_valid)samples[i].progress=timing.highest_lap*100.0;
+        else if(lap_knockout_&&timing.status==RacerStatus::knocked_out)
+            samples[i].progress=double(gap_actors_[i].progress)*100.0;
         gap_actors_[i]={float(samples[i].progress*.01),timing.finish_valid,timing.highest_lap,timing.finish_ticks};
     }
     standings_.update(samples,unsigned(rivals_.size()+1));
@@ -869,8 +871,9 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     if(!finish_probe_events_.empty())
         timing_inputs[0]={finish_probe_events_.data(),finish_probe_events_.size(),55.F};
     auto frame_timing=timing_config_;frame_timing.ticks_per_step=std::int32_t(world_dt*4000.F+.5F);
+    if(lap_knockout_)update_standings();
     if (!step_race_timing(course_.route, frame_timing, timing_, timing_inputs.data(),
-                          timing_events_, error)) { started_ = false; return false; }
+                          timing_events_, error,lap_knockout_?standings_.order.data():nullptr)) { started_ = false; return false; }
     finish_probe_events_.clear();
     if(held_grid && !race_car_held(timing_)) {
         vehicle_.release_grid_engine(drag_,drag_category_,drag_shift_scale_);
@@ -894,11 +897,6 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             row.finish_valid=false;row.finish_step=timing_.step;
         }
         if(timing_.racers[0].status!=RacerStatus::not_finished)timing_.outcome=RaceOutcome::finished;
-    }
-    if(lap_knockout_) {
-        if(!apply_lap_knockout(timing_config_,timing_,standings_.order.data(),standings_.count,error)) {
-            started_=false;return false;
-        }
     }
     if ((race_car_held(timing_)&&timing_.stage!=RaceStage::countdown) ||
         timing_.outcome!=RaceOutcome::running) {

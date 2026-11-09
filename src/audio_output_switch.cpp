@@ -6,6 +6,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <exception>
 #include <mutex>
 #include <utility>
@@ -37,6 +38,7 @@ struct Output::Impl {
     std::atomic<std::uint64_t> played_frames{0};
     std::atomic<std::uint32_t> queued_frames{0};
     std::atomic<std::uint32_t> work_us{0};
+    std::uint32_t voice_drops=0;
     mutable std::mutex error_mutex;
     std::string failure;
 
@@ -81,6 +83,7 @@ struct Output::Impl {
                 work_us = static_cast<std::uint32_t>(armTicksToNs(
                     armGetSystemTick() - begin) / 1000);
                 played_frames = audrvVoiceGetPlayedSampleCount(&driver, 0);
+                voice_drops = audrvVoiceGetVoiceDropsCount(&driver, 0);
                 primed = true;
                 eventWait(audrenGetFrameEvent(), 50000000ULL);
             }
@@ -106,6 +109,7 @@ bool Output::start(Render render, std::string& error) {
     p.played_frames = 0;
     p.queued_frames = 0;
     p.work_us = 0;
+    p.voice_drops = 0;
     const AudioRendererConfig config{
         AudioRendererOutputRate_48kHz, kChannelPool, 0, 1, 1, 2};
     if (R_FAILED(audrenInitialize(&config))) {
@@ -191,6 +195,11 @@ void Output::stop() {
         threadWaitForExit(&p.thread);
         threadClose(&p.thread);
         p.thread_started = false;
+        const auto failure=error();
+        std::fprintf(stderr,"SWITCH_AUDIO played=%llu empty_queue=%llu voice_drops=%u error=%s\n",
+            static_cast<unsigned long long>(p.played_frames.load()),
+            static_cast<unsigned long long>(p.late.load()),p.voice_drops,
+            failure.empty()?"none":failure.c_str());
     }
     if (p.renderer_started) {
         audrenStopAudioRenderer();

@@ -1252,6 +1252,7 @@ void test_knockout() {
     s.racers[1].new_lap=true;s.racers[1].highest_lap=1;
     check(apply_lap_knockout(c,s,order,4,error)&&s.racers[0].status==RacerStatus::not_finished,
         "leader completing first lap does not eliminate last before third crosses");
+    s.racers[2].highest_lap=1;
     s.racers[3].new_lap=true;s.racers[3].highest_lap=1;
     check(apply_lap_knockout(c,s,order,4,error)&&s.racers[0].status==RacerStatus::knocked_out&&
         s.racers[0].position==4&&!s.racers[0].finish_valid&&s.outcome==RaceOutcome::finished,
@@ -1262,6 +1263,7 @@ void test_knockout() {
         "duplicate knockout ranking refused before state changes");
     s={};s.racers.resize(4);s.outcome=RaceOutcome::running;
     const unsigned lead[]={0,1,2,3};
+    s.racers[0].highest_lap=2;
     s.racers[1].new_lap=true;s.racers[1].highest_lap=2;
     s.racers[3].status=RacerStatus::knocked_out;s.racers[3].position=4;
     check(apply_lap_knockout(c,s,lead,4,error)&&s.racers[2].status==RacerStatus::knocked_out&&
@@ -1272,6 +1274,41 @@ void test_knockout() {
     const auto since=s.racers[2].ghost_start_ticks;s.now_ticks+=10000;
     check(apply_lap_knockout(c,s,lead,4,error)&&s.racers[2].ghost_start_ticks==since,
         "repeated elimination inspection does not restart the blink interval");
+
+    s={};s.racers.resize(4);s.outcome=RaceOutcome::running;
+    s.racers[3].status=RacerStatus::knocked_out;s.racers[3].position=4;
+    const unsigned stale_rank[]={1,3,0,2};
+    s.racers[1].highest_lap=2;s.racers[1].new_lap=true;
+    s.racers[0].highest_lap=1;s.racers[2].highest_lap=1;
+    check(apply_lap_knockout(c,s,stale_rank,4,error)&&s.racers[0].status==RacerStatus::not_finished&&
+        s.racers[2].status==RacerStatus::not_finished,
+        "retired actor cannot trigger the second elimination while a live second place approaches");
+    s.racers[0].highest_lap=2;s.racers[0].new_lap=true;
+    check(apply_lap_knockout(c,s,stale_rank,4,error)&&s.racers[2].status==RacerStatus::knocked_out&&
+        s.racers[2].position==3&&s.racers[0].status==RacerStatus::not_finished,
+        "second active racer clears lap two and only third is eliminated");
+
+    // Two racers cleared lap two before this frame. A transient progress
+    // order must not select either one when the final live racer crosses.
+    RaceTimingState reordered;reordered.racers.resize(4);
+    reordered.racers[3].status=RacerStatus::knocked_out;reordered.racers[3].position=4;
+    for(unsigned i=0;i<3;++i)reordered.racers[i].highest_lap=2;
+    reordered.racers[2].new_lap=true;
+    const unsigned inaccurate_order[]={1,2,0,3};
+    check(apply_lap_knockout(c,reordered,inaccurate_order,4,error)&&
+        reordered.racers[0].status==RacerStatus::not_finished&&
+        reordered.racers[2].status==RacerStatus::knocked_out&&reordered.racers[2].position==3,
+        "lap two cannot eliminate a racer who already cleared the cut");
+
+    const auto route=hand_route(3);
+    s.stage=RaceStage::racing;s.race_start_valid=true;s.race_start_ticks=0;
+    const RaceProgressEvent final_crossing{RaceEventKind::lap_complete,0,route.finish,3,0};
+    const RaceTimingInput final_inputs[]={{&final_crossing,1,30},{&final_crossing,1,30},{},{}};
+    std::vector<RaceTimingEvent> events;
+    check(step_race_timing(route,c,s,final_inputs,events,error,stale_rank)&&
+        s.racers[1].status==RacerStatus::normal_completion&&s.racers[1].position==1&&
+        s.racers[0].status==RacerStatus::knocked_out&&s.racers[0].position==2,
+        "same-tick final crossings eliminate second before awarding the win");
 }
 
 int main() {

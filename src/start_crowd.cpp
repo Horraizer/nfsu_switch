@@ -260,7 +260,7 @@ struct StartCrowd::Data {
         std::size_t vertex=0,index=0;
         float speed=1;double sampled=-1;
     };
-    struct Actor {Matrix local;std::size_t clip=0,first_draw=0,draws=0;float speed=1;};
+    struct Actor {Matrix local;std::size_t clip=0,first_draw=0,draws=0;float speed=1;bool starter=false;};
     std::vector<Clip> clips;std::vector<Actor> actors;RenderTextureSet textures;RecordedCommands commands;
     std::size_t active=0,upload_base=0;std::uint64_t resident=0;
     Matrix anchor{};bool anchored=false;
@@ -454,7 +454,7 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
         auto next=std::make_unique<Data>();
         auto track=read_crowd_file(fs,root/("Tracks/TRACKB"+std::to_string(track_number)+".LZC"),16*1024*1024);Bytes decoded;std::size_t unused=0;
         need(jdlz_decompress(track.data(),track.size(),16*1024*1024,decoded,unused,error),"crowd TRACKB decode");
-        View tb(decoded);struct Record {Matrix local;std::uint32_t mesh,animation,skeleton;float speed;};std::vector<Record> records;
+        View tb(decoded);struct Record {Matrix local;std::uint32_t mesh,animation,skeleton;float speed;bool starter;};std::vector<Record> records;
         for(auto c:chunks(tb,0,tb.size))if(c.id==0x3b300)for(auto a=align(c.at+8,16);a+160<=c.end;a+=160) {
             const bool starter=tb.u32(a)==0x59eeb6b1;
             if((tb.u32(a)!=0x4186bfa8 && !starter) || tb.u32(a+12)!=scene)continue;
@@ -463,6 +463,7 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
             need(r.speed>0 && r.speed<=4,"crowd playback speed");
             // 5799AE: compound skeletal clips use half the 30Hz clock.
             if(starter)r.speed*=.5F;
+            r.starter=starter;
             records.push_back(r);
         }
         need(!records.empty() && records.size()<=64,"start scene actors absent");
@@ -621,7 +622,7 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
                 for(auto h:c.mesh.textures)wanted.push_back(h);
                 next->clips.push_back(std::move(c));
             }else index=found->second;
-            next->actors.push_back({r.local,index,0,0,r.speed});
+            next->actors.push_back({r.local,index,0,0,r.speed,r.starter});
         }
         std::sort(wanted.begin(),wanted.end());wanted.erase(std::unique(wanted.begin(),wanted.end()),wanted.end());
         const auto packs=parse_texture_pack_set(stream.data(),stream.size());RenderTextureSource source;source.bytes=&stream;source.wanted=&wanted;
@@ -687,6 +688,22 @@ void StartCrowd::frame(const RaceSession& session) {
         // 47CAC0 selects ForwardStartLine(0), not the player's grid slot.
         // 47CB50 aligns its plane with the road and adds the scene rotation.
         data_->anchor=start_anchor(session.course());
+        for(const auto& actor:data_->actors) {
+            auto world=multiply(actor.local,data_->anchor);
+            if(!actor.starter) {
+                const float authored_height=actor.local[14]*data_->anchor[10];
+                const float plane_z=world[14]-authored_height;
+                TrackGroundCache cache;
+                TrackContact floor;
+                // The anchor plane is only tangent at the start line. Keep
+                // authored offsets and avoid snapping to another road deck.
+                if(query_track_ground(session.course().world,{world[12],world[13],plane_z},cache,floor) &&
+                   std::abs(floor.point[2]-plane_z)<1.F)
+                    world[14]=floor.point[2]+authored_height;
+            }
+            for(std::size_t i=0;i<actor.draws;++i)
+                std::copy(world.begin(),world.end(),data_->commands.owning_draws()[actor.first_draw+i].placement.rows);
+        }
         data_->anchored=true;
     }
     const double seconds=double(session.start_scene_ticks())/kRaceTicksPerSecond;
@@ -698,10 +715,6 @@ void StartCrowd::frame(const RaceSession& session) {
         for(std::size_t i=0;i<c.pose.size();++i)
             need(eagl::blend_pose(c.frames[first][i],c.frames[second][i],fraction,c.pose[i]),"crowd interpolated quaternion invalid");
         skin_pose(c.pose,c.skeleton,c.world,c.skin);skin_mesh(c.mesh,c.skin,c.vertices);c.sampled=phase;
-    }
-    for(const auto& a:data_->actors) {
-        const auto world=multiply(a.local,data_->anchor);
-        for(std::size_t i=0;i<a.draws;++i)std::copy(world.begin(),world.end(),data_->commands.owning_draws()[a.first_draw+i].placement.rows);
     }
 }
 bool load_drift_start_pose(const std::filesystem::path& root,const VehicleTrackCourse& course,VehiclePose& out,std::string& error,const std::string& region) {

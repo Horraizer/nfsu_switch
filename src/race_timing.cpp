@@ -11,6 +11,16 @@ namespace nfsu {
 
 namespace {
 
+bool valid_knockout_order(const unsigned* order,std::size_t count) {
+    if(!order || count<2 || count>4)return false;
+    unsigned seen=0;
+    for(std::size_t i=0;i<count;++i) {
+        if(order[i]>=count || (seen&(1U<<order[i])))return false;
+        seen|=1U<<order[i];
+    }
+    return true;
+}
+
 // The executable's float constants, each the exact float it loads.
 // [0x006CCA38] = 0x3983126F, a tick in seconds.
 constexpr float kTickSeconds = 0.00025F;
@@ -566,7 +576,8 @@ bool race_car_held(const RaceTimingState& state) noexcept {
 
 bool step_race_timing(const RaceRoute& route, const RaceTimingConfig& config,
                       RaceTimingState& state, const RaceTimingInput* inputs,
-                      std::vector<RaceTimingEvent>& events, std::string& error) {
+                      std::vector<RaceTimingEvent>& events, std::string& error,
+                      const unsigned* knockout_order) {
     if (state.outcome == RaceOutcome::quit || state.outcome == RaceOutcome::clock_limit) {
         error = std::string("the race has ended: ") + race_outcome_name(state.outcome);
         return false;
@@ -583,6 +594,15 @@ bool step_race_timing(const RaceRoute& route, const RaceTimingConfig& config,
         emit(events, RaceTimingEventKind::clock_limit, state, state.now_ticks);
         error = "the world timer would pass " + std::to_string(kRaceTicksLimit) + " ticks";
         return false;
+    }
+    if(knockout_order) {
+        if(config.racers<2 || config.racers>4 || config.humans>config.racers ||
+           route.point_to_point || route.laps!=int(config.racers)-1) {
+            error="invalid knockout race configuration";return false;
+        }
+        if(!valid_knockout_order(knockout_order,config.racers)) {
+            error="invalid knockout rank permutation";return false;
+        }
     }
     const std::int32_t now = state.now_ticks;
     state.step_ticks = now;
@@ -682,6 +702,10 @@ bool step_race_timing(const RaceRoute& route, const RaceTimingConfig& config,
         }
     }
 
+    // 4356DC processes eliminations before the ordinary lap-limit finish.
+    if(knockout_order)
+        apply_lap_knockout(config,state,knockout_order,config.racers,error);
+
     //Career type4 uses native runtime mode2 (4B5FDF), not challenge
     //byte78A346.4358FB accepts an under-limit completed split; the normal
     //finish below still completes an over-limit route.5A3098 then decides
@@ -689,9 +713,14 @@ bool step_race_timing(const RaceRoute& route, const RaceTimingConfig& config,
     //challenge expiry/reason8 merely because a career deadline exists.
     // 0x00435A17..0x00435A5D: a race with laps finishes every racer whose
     // highest lap equals them, through 0x004350D0 with 1.
-    if (route.laps != 0) {
+    const bool knockout_final=!knockout_order ||
+        std::count_if(state.racers.begin(),state.racers.end(),[](const auto& racer) {
+            return racer.status==RacerStatus::knocked_out;
+        })==route.laps;
+    if (route.laps != 0 && knockout_final) {
         for (std::size_t r = 0; r < state.racers.size(); ++r) {
-            RaceRacerTiming& racer = state.racers[r];
+            const auto actor=knockout_order?knockout_order[r]:r;
+            RaceRacerTiming& racer = state.racers[actor];
             if (racer.status != RacerStatus::not_finished || racer.highest_lap != route.laps) {
                 continue;
             }
@@ -701,7 +730,7 @@ bool step_race_timing(const RaceRoute& route, const RaceTimingConfig& config,
             racer.finish_valid = racer.crossing_valid[finish] && state.race_start_valid;
             racer.finish_ticks = wrap_sub(racer.crossing_ticks[finish], state.race_start_ticks);
             racer.finish_step = state.step;
-            emit(events, RaceTimingEventKind::finished, state, now, static_cast<int>(r));
+            emit(events, RaceTimingEventKind::finished, state, now, static_cast<int>(actor));
             events.back().value = racer.position;
             events.back().ticks = racer.finish_ticks;
             events.back().lap = racer.lap;
@@ -903,27 +932,47 @@ bool apply_lap_knockout(const RaceTimingConfig& config,RaceTimingState& state,
     if(!order || count!=state.racers.size() || count!=config.racers || count<2 || count>4 || config.humans>count) {
         error="invalid knockout ranking";return false;
     }
-    unsigned seen=0;
-    for(std::size_t i=0;i<count;++i) {
-        if(order[i]>=count || (seen&(1U<<order[i]))){error="invalid knockout rank permutation";return false;}
-        seen|=1U<<order[i];
+    if(!valid_knockout_order(order,count)) {
+        error="invalid knockout rank permutation";return false;
     }
-    for(std::size_t i=0;i<count;++i) {
-        const auto& trigger=state.racers[order[i]];
-        if(!trigger.new_lap || trigger.highest_lap+int(i)+1!=int(count))continue;
-        for(std::size_t j=i+1;j<count;++j) {
-            auto& victim=state.racers[order[j]];
-            if(victim.status!=RacerStatus::not_finished)continue;
-            victim.status=RacerStatus::knocked_out;
-            victim.position=int(j)+1;
-            victim.finish_valid=false;
-            victim.finish_step=state.step;
-            //435740 passes hide=true only for a non-human actor;435344
-            //keeps its stop action/body but sets permanent ghost and2s blink.
-            if(order[j]>=config.humans) {
-                victim.ghost_start_ticks=state.now_ticks;victim.ghost_seconds=2.F;
-                victim.permanent_ghost=true;
-            }
+    // Retired actors can still coast in the world. Their positions cannot
+    // qualify as live crossing ranks or fill a place in the next round.
+    unsigned eliminated=0;
+    for(const auto& racer:state.racers)
+        if(racer.status==RacerStatus::knocked_out)++eliminated;
+    bool round_advanced=false;
+    for(;eliminated+1<count;++eliminated) {
+        const auto round=int(eliminated)+1;
+        unsigned crossed=0,remaining=0,last=0,last_behind=0,last_crossing=0;
+        bool new_crossing=false;
+        for(std::size_t i=0;i<count;++i) {
+            const auto actor=order[i];
+            const auto& racer=state.racers[actor];
+            if(racer.status!=RacerStatus::not_finished)continue;
+            ++remaining;
+            last=actor;
+            if(racer.highest_lap>=round) {
+                ++crossed;
+                if(racer.new_lap) {
+                    new_crossing=true;
+                    last_crossing=actor;
+                }
+            }else last_behind=actor;
+        }
+        if(remaining<2 || (!new_crossing&&!round_advanced) || crossed+1<remaining)break;
+        // If the whole field crosses in one step, its current order breaks
+        // the tie, as in the native sorted race-status pass.
+        const auto actor=crossed<remaining?last_behind:new_crossing?last_crossing:last;
+        auto& victim=state.racers[actor];
+        victim.status=RacerStatus::knocked_out;
+        victim.position=int(count-eliminated);
+        victim.finish_valid=false;
+        victim.finish_step=state.step;
+        round_advanced=true;
+        // 435740 passes hide=true only for a non-human actor.
+        if(actor>=config.humans) {
+            victim.ghost_start_ticks=state.now_ticks;victim.ghost_seconds=2.F;
+            victim.permanent_ghost=true;
         }
     }
     if(config.humans && std::all_of(state.racers.begin(),state.racers.begin()+config.humans,

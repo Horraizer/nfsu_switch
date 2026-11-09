@@ -147,6 +147,33 @@ int main(int argc,char** argv) {
             std::cerr<<"FAIL: full road crowd track="<<track<<" scene="<<selected<<" "<<error<<"\n";return 1;
         }
         if(!road.actor_count() || road.bytes()>48U*1024U*1024U) {std::cerr<<"FAIL: full road crowd missing/oversize\n";return 1;}
+        if(track==1003&&variant==2) {
+            // Event 10, reverse start. The plane at the line misses the
+            // surface by almost half a metre at the distant spectators.
+            nfsu::VehicleTrackCourse reverse_course;
+            if(!nfsu::load_vehicle_track_course(std::filesystem::u8path(argv[1])/"Tracks/TRACKB1003.LZC",
+                    3,1,0,0,reverse_course,error)) {std::cerr<<error<<"\n";return 1;}
+            nfsu::RaceSession reverse_race(reverse_course);
+            if(!reverse_race.start(error)) {std::cerr<<error<<"\n";return 1;}
+            road.frame(reverse_race);
+            unsigned supported=0;
+            const auto& draws=road.commands();
+            for(const auto& d:draws.owning_draws()) {
+                const auto* matrix=d.placement.rows;
+                nfsu::TrackGroundCache cache;
+                nfsu::TrackContact floor;
+                if(!nfsu::query_track_ground(reverse_course.world,{matrix[12],matrix[13],matrix[14]},cache,floor))continue;
+                ++supported;
+                const auto& buffer=draws.resource_table().resources.at(d.vertex_resource);
+                const auto* vertices=reinterpret_cast<const nfsu::MeshVertex*>(buffer.data)+d.first_vertex;
+                for(unsigned i=0;i<d.vertex_count;++i) {
+                    if(nfsu::placed_vertex(vertices[i],matrix).y<floor.point[2]-.10) {
+                        std::cerr<<"FAIL: spectator below reverse start surface\n";return 1;
+                    }
+                }
+            }
+            if(supported<20) {std::cerr<<"FAIL: reverse start footprint coverage\n";return 1;}
+        }
         std::cout<<"PASS: full road crowd track="<<track<<" scene="<<selected<<" actors="<<road.actor_count()<<" bytes="<<road.bytes()<<"\n";
     }
     // Exercise the same lazy anchor path as production for every campaign

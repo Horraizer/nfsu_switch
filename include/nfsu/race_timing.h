@@ -360,6 +360,8 @@ bool race_car_held(const RaceTimingState& state) noexcept;
 // (0x004355BA..0x004355EF), each unfinished racer's events (0x004338C0,
 // 0x00435600..0x00435630), the finish (0x00435A17..0x00435A5D); then the
 // world timer advances (0x00585E00). `inputs` holds config.racers entries.
+// With a knockout order, apply the completed-lap cut before normal finish;
+// the order contains config.racers actor indices sorted by current progress.
 // False, with a reason and nothing changed, for a race that has ended
 // (quit, clock limit), for inputs that do not describe this route - a
 // boundary index outside it, a lap outside -128..127, a percent that is not
@@ -368,7 +370,8 @@ bool race_car_held(const RaceTimingState& state) noexcept;
 // with outcome clock_limit instead.
 bool step_race_timing(const RaceRoute& route, const RaceTimingConfig& config,
                       RaceTimingState& state, const RaceTimingInput* inputs,
-                      std::vector<RaceTimingEvent>& events, std::string& error);
+                      std::vector<RaceTimingEvent>& events, std::string& error,
+                      const unsigned* knockout_order = nullptr);
 
 // RC_RESTART_RACE (0x004243C1 in the pause state, then 0x00422BD4): the
 // race torn down and built again - a fresh race status and lap records at
