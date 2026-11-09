@@ -4,6 +4,7 @@
 #include "nfsu/arg_path.h"
 #include "nfsu/drive_session.h"
 #include "nfsu/player_powertrain.h"
+#include "nfsu/track_ground.h"
 #include "../tests/race_start_native.inc"
 #include <fstream>
 #include <iomanip>
@@ -174,7 +175,7 @@ int main(int argc,char** argv) {
             }
             for(unsigned slot=0;slot<4;++slot) {
                 auto car=race.car();auto animation=race.animation();
-                if(!ending.finish_car(slot,1,race.spec(),car,animation)||
+                if(!ending.finish_car(slot,1,road,race.spec(),car,animation)||
                    !std::isfinite(car.position.z)||
                    std::hypot(car.position.x-road.start.ground.x,car.position.y-road.start.ground.y)>100) {
                     std::cerr<<"FAIL: ending car pose "<<id<<" slot="<<slot<<"\n";return 1;
@@ -182,6 +183,44 @@ int main(int argc,char** argv) {
             }
             std::cout<<"PASS: ending scene "<<id<<" place="<<place<<" reverse="<<reverse<<"\n";
         }
+    }
+    for(unsigned event:{3U,65U}) {
+        nfsu::SupportedRaceSelection selection;
+        nfsu::VehicleTrackCourse road;
+        if(!nfsu::supported_race_selection(event,0,selection)||
+           !nfsu::load_vehicle_track_course(retail/"Tracks"/("TRACKB"+std::to_string(selection.slot.track)+".LZC"),
+               selection.slot.laps,selection.slot.direction,selection.lap_skip,0,road,error)) {
+            std::cerr<<"FAIL: ending car test course "<<error<<"\n";return 1;
+        }
+        nfsu::RaceSession race(road);
+        nfsu::StartCrowd ending;
+        if(!race.start(error)||!ending.load_finish_camera(files,retail,2326,selection.region,road,error)) {
+            std::cerr<<"FAIL: solo loss pose setup "<<error<<"\n";return 1;
+        }
+        auto car=race.car();auto animation=race.animation();
+        if(!ending.finish_car(0,5,road,race.spec(),car,animation)) {
+            std::cerr<<"FAIL: solo loss pose unavailable\n";return 1;
+        }
+        const auto& q=car.orientation;
+        if(event==65&&std::abs(q.x)+std::abs(q.y)<.01) {
+            std::cerr<<"FAIL: solo loss pose did not follow sloped road\n";return 1;
+        }
+        const auto rotate=[&](const nfsu::VehicleVec3& v) {
+            const nfsu::VehicleVec3 a{q.y*v.z-q.z*v.y,q.z*v.x-q.x*v.z,q.x*v.y-q.y*v.x};
+            const nfsu::VehicleVec3 b{q.y*a.z-q.z*a.y,q.z*a.x-q.x*a.z,q.x*a.y-q.y*a.x};
+            return nfsu::VehicleVec3{v.x+2*(q.w*a.x+b.x),v.y+2*(q.w*a.y+b.y),v.z+2*(q.w*a.z+b.z)};
+        };
+        const auto& handling=race.spec().handling;
+        for(const auto& wheel:handling.wheels) {
+            const auto offset=rotate({wheel.longitudinal-handling.centre_of_mass[0],
+                wheel.lateral-handling.centre_of_mass[1],wheel.vertical-handling.centre_of_mass[2]-wheel.radius});
+            const nfsu::VehicleVec3 bottom{car.position.x+offset.x,car.position.y+offset.y,car.position.z+offset.z};
+            nfsu::TrackGroundCache cache;nfsu::TrackContact hit;
+            if(!nfsu::query_track_ground(road.world,bottom,cache,hit)||std::abs(bottom.z-hit.point[2])>.10) {
+                std::cerr<<"FAIL: solo loss wheel ground clearance event="<<event<<" z="<<bottom.z<<" ground="<<hit.point[2]<<"\n";return 1;
+            }
+        }
+        std::cout<<"PASS: solo loss car rests on the road event="<<event<<"\n";
     }
     std::vector<unsigned char> event_bytes;
     const auto events=nfsu::load_race_event_table(retail/"FrontEnd/FrontB.lzc",event_bytes);

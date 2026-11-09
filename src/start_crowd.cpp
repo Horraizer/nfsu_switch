@@ -269,6 +269,7 @@ struct StartCrowd::Data {
     std::array<std::vector<Pose>,4> finish_cars;
     std::array<std::vector<double>,4> finish_travel;
     unsigned finish_loop_start=0,finish_loop_end=0;
+    std::array<std::array<TrackGroundCache,kVehicleWheelCount>,4> finish_ground;
     // Signed authored root travel, prepared once, sampled by the same clock.
     std::vector<double> car_travel;
     std::vector<std::size_t> camera_cuts;
@@ -746,8 +747,8 @@ bool StartCrowd::finish_camera(double seconds,OrbitCamera& out,unsigned width,un
     }
     return sample_camera(frame,out,width,height);
 }
-bool StartCrowd::finish_car(unsigned slot,double seconds,const VehicleSpec& spec,VehicleState& out,
-                             CarAnimationState& animation) const {
+bool StartCrowd::finish_car(unsigned slot,double seconds,const VehicleTrackCourse& course,
+                             const VehicleSpec& spec,VehicleState& out,CarAnimationState& animation) const {
     if(!data_->anchored||slot>=data_->finish_cars.size()||!std::isfinite(seconds))return false;
     const auto& poses=data_->finish_cars[slot];
     if(poses.empty())return false;
@@ -759,9 +760,48 @@ bool StartCrowd::finish_car(unsigned slot,double seconds,const VehicleSpec& spec
     if(!eagl::blend_pose(poses[a],poses[b],fraction,pose))return false;
     const auto m=multiply(pose_matrix(pose),data_->anchor);
     const double heading=std::atan2(m[1],m[0]),s=std::sin(heading),c=std::cos(heading);
-    const auto& com=spec.handling.centre_of_mass;
-    out.position={m[12]+c*com[0]-s*com[1],m[13]+s*com[0]+c*com[1],m[14]+com[2]};
+    // 47C580 gives 427C50 the clip's XY and yaw. 4273D0 samples a
+    // four-wheel footprint and computes the body axes and COM height.
+    out.position={m[12],m[13],m[14]};
     out.orientation={std::cos(heading*.5),0,0,std::sin(heading*.5)};
+    std::array<PlayerRigidVector,kVehicleWheelCount> feet{};
+    float heights=0,ride=0;
+    bool supported=true;
+    for(unsigned i=0;i<feet.size();++i) {
+        const auto& wheel=spec.handling.wheels[i];
+        auto& foot=feet[i];
+        foot={float(m[12]+c*wheel.longitudinal-s*wheel.lateral),
+              float(m[13]+s*wheel.longitudinal+c*wheel.lateral),m[14]+wheel.vertical};
+        TrackContact hit;
+        if(!query_track_ground(course.world,{foot[0],foot[1],foot[2]},data_->finish_ground[slot][i],hit)) {
+            supported=false;
+            break;
+        }
+        foot[2]=hit.point[2];
+        heights+=foot[2];
+        ride+=wheel.radius-wheel.vertical;
+    }
+    if(supported) {
+        const auto axle_direction=[&](unsigned a,unsigned b,unsigned c_index,unsigned d) {
+            PlayerRigidVector axis{};
+            for(unsigned k=0;k<axis.size();++k)axis[k]=(feet[a][k]-feet[b][k])+(feet[c_index][k]-feet[d][k]);
+            const float length=std::sqrt(axis[0]*axis[0]+axis[1]*axis[1]+axis[2]*axis[2]);
+            if(length>0)for(float& component:axis)component/=length;
+            return axis;
+        };
+        const auto forward=axle_direction(0,2,1,3);
+        const auto& wheels=spec.handling.wheels;
+        const unsigned front_left=wheels[0].lateral>wheels[1].lateral?0:1;
+        const unsigned rear_left=wheels[2].lateral>wheels[3].lateral?2:3;
+        const auto lateral=axle_direction(front_left,1-front_left,rear_left,5-rear_left);
+        const PlayerRigidVector up{forward[1]*lateral[2]-forward[2]*lateral[1],
+                                   forward[2]*lateral[0]-forward[0]*lateral[2],
+                                   forward[0]*lateral[1]-forward[1]*lateral[0]};
+        if(up[2]>0.01F) {
+            out.position.z=heights*.25F+(ride*.25F+spec.handling.centre_of_mass[2])/up[2];
+            out.orientation=vehicle_orientation_from_axes({forward,lateral,up});
+        }
+    }
     out.steer_angle=0;
     out.velocity={};
     animation.braking=false;

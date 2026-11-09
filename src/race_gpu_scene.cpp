@@ -1171,7 +1171,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
     };
     VehicleState presented=session.car();auto presented_animation=session.animation();
     const bool start_car=crowd_.car(session,presented,&presented_animation);
-    if(finish_scene_&&!finish_scene_->finish_car(0,finish_scene_seconds_,session.spec(),presented,presented_animation)) {
+    if(finish_scene_&&!finish_scene_->finish_car(0,finish_scene_seconds_,session.course(),session.spec(),presented,presented_animation)) {
         error="ending NIS human pose unavailable";return false;
     }
     std::optional<std::array<VehicleState,3>> finish_rivals;
@@ -1248,7 +1248,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             if(finish_scene_) {
                 finish_animation=*animation;
                 auto& pose=finish_rivals->at(i);pose=*car;
-                if(!finish_scene_->finish_car(finish_slots_.at(i),finish_scene_seconds_,actor.spec(),pose,finish_animation)) {
+                if(!finish_scene_->finish_car(finish_slots_.at(i),finish_scene_seconds_,session.course(),actor.spec(),pose,finish_animation)) {
                     error="ending NIS rival pose unavailable";return false;
                 }
                 car=&pose;animation=&finish_animation;
@@ -1466,7 +1466,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             }
             const auto visual_start = profile ? timer->now_us() : 0;
             if (profile) profile->road_reflections_ms = (visual_start-reflection_start)/1000.0;
-            if(race_visuals_ && !prepare_visual_frame(session,presented,basis,out.commands,error))return false;
+            if(race_visuals_ && !prepare_visual_frame(session,finish_scene_?presented:session.car(),basis,out.commands,error))return false;
             if (profile) profile->race_visuals_ms = (timer->now_us()-visual_start)/1000.0;
             out.commands.source_ = this; out.commands.generation_ = generation_;
             stage(&RaceFrameProfile::combine_ms);

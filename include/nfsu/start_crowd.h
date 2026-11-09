@@ -31,7 +31,8 @@ public:
                             const std::string& region,const VehicleTrackCourse&,
                             std::string&);
     bool finish_camera(double seconds,OrbitCamera&,unsigned width,unsigned height) const;
-    bool finish_car(unsigned slot,double seconds,const VehicleSpec&,VehicleState&,CarAnimationState&) const;
+    bool finish_car(unsigned slot,double seconds,const VehicleTrackCourse&,const VehicleSpec&,
+                    VehicleState&,CarAnimationState&) const;
     const RecordedCommands& commands() const;
     void rebase(std::size_t);
     void frame(const RaceSession&);

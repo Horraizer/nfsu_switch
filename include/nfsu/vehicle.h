@@ -599,6 +599,10 @@ void vehicle_brake_pin(VehicleWheelState& wheel, double brake) noexcept;
 
 using PlayerRigidVector = std::array<float,3>;
 using PlayerRigidMatrix = std::array<PlayerRigidVector,3>; // rotation columns
+
+// Convert body axes in world coordinates to a normalized render quaternion.
+VehicleQuat vehicle_orientation_from_axes(const PlayerRigidMatrix&) noexcept;
+
 //584800/585410/585810 common rigid state in tonnes/kN units. The matrix
 // snapshot and velocity caches precede outer40BD40 normalization.
 struct PlayerRigidBodyState {

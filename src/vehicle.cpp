@@ -418,6 +418,10 @@ void add_issue(std::vector<VehicleHandlingIssue>& issues, std::size_t offset,
 
 } // namespace
 
+VehicleQuat vehicle_orientation_from_axes(const PlayerRigidMatrix& axes) noexcept {
+    return rigid_quaternion(axes,{});
+}
+
 // ---------------------------------------------------------------------------
 // Deterministic arithmetic
 // ---------------------------------------------------------------------------
