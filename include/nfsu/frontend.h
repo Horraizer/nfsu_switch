@@ -137,12 +137,25 @@ struct FrontendUiFrame {
     std::vector<TrackVertex> vertices;
     std::vector<unsigned char> additive;
 };
-// Original PC_Loading generic presentation; texels remain retail-owned.
+// Retail loading hints share one display-count table during a game session.
+class RaceLoadingTips {
+public:
+    unsigned prologue();
+    unsigned career(const RaceEventRecord&,const CareerProfile&);
+    unsigned quick(QuickRaceMode,unsigned nitrous_level);
+    unsigned current()const;
+    void shown(unsigned tip);
+private:
+    std::uint32_t enabled_=0;
+    std::array<unsigned char,22> shown_{};
+    unsigned career_nitrous_=0,quick_nitrous_=0;
+};
+// Original PC_Loading presentation; texels remain retail-owned.
 class RaceLoadingArt {
 public:
     RaceLoadingArt();
     ~RaceLoadingArt();
-    bool load(const std::filesystem::path& root,std::string& error);
+    bool load(const std::filesystem::path& root,std::string& error,unsigned tip=0);
     // Reference mode is for host diagnostics; runtime always uses the cache.
     void draw(ScreenImage image,double seconds,bool cached=true) const;
 private:

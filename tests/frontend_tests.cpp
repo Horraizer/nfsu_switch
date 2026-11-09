@@ -52,6 +52,32 @@ int main(int argc,char** argv) {
                 with_statistics.update(down);
             }
         }
+        {
+            RaceLoadingTips tips;
+            check(tips.prologue()==2,"native prologue picks the input card");
+            tips.shown(2);check(tips.prologue()==0,"native prologue card is capped at one showing");
+            CareerProfile profile;RaceEventRecord event;
+            const unsigned general[]={14,15,16,17,18,14};
+            for(unsigned expected:general) {
+                const auto selected=tips.career(event,profile);
+                check(selected==expected,"native equal-priority loading hint rotation");
+                tips.shown(selected);
+            }
+            event.type=unsigned(RaceType::drag);
+            check(tips.career(event,profile)==20,"native drag tutorial wins a tie");
+            tips.shown(20);
+            check(tips.career(event,profile)==4,"native drag steering follows tutorial");
+            event.kind=1;
+            check(tips.career(event,profile)==9,"native tournament tip outranks the race mode");
+            check(tips.quick(QuickRaceMode::lap_knockout,0)==7,"native Quick Race knockout selection");
+            check(tips.quick(QuickRaceMode::lap_knockout,1)==8,"native new nitrous tier takes priority");
+            for(unsigned i=0;i<8;++i) {
+                check(tips.current()==8,"native retained nitrous hint survives reload");
+                tips.shown(8);
+            }
+            check(tips.current()==7,"native limit drops the retained nitrous hint after eight views");
+            check(tips.quick(QuickRaceMode::lap_knockout,1)==7,"native nitrous high-water preserves prior tier");
+        }
         check(audio::original_music_next(3,{100,200,300},0)==3,"unplayed music does not advance");
         check(audio::original_music_next(0,{100,200,300},99)==1&&
               audio::original_music_next(0,{100,200,300},100)==2&&
@@ -1001,6 +1027,19 @@ int main(int argc,char** argv) {
             check(pixels[3]==255 && pixels[(719*1280+1279)*4+3]==255,"menu fills full image");
             // GPU-only loading must retain authored textures/font coordinates
             // and update selection without a CPU background or texture reload.
+            {
+                RaceLoadingArt generic;
+                const bool generic_loaded=generic.load(root,error);check(generic_loaded,error.c_str());
+                std::vector<unsigned char> base(1280*720*4),shown(base.size()),cached(base.size());
+                generic.draw({base.data(),1280,720,1280*4},.4,false);
+                for(unsigned tip:{2U,3U,4U,5U,6U,7U,8U,9U,11U,14U,15U,16U,17U,18U,19U,20U}) {
+                    RaceLoadingArt art;
+                    const bool loaded=art.load(root,error,tip);check(loaded,error.c_str());
+                    art.draw({shown.data(),1280,720,1280*4},.4,false);
+                    art.draw({cached.data(),1280,720,1280*4},.4,true);
+                    check(shown!=base&&shown==cached,"native loading card contributes visible cached artwork");
+                }
+            }
             FrontendArt gpu_art;
             check(gpu_art.load_startup(root,error,true),error.c_str());
             std::fill(pixels.begin(),pixels.end(),0);

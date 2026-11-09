@@ -263,14 +263,19 @@ class Screen {
     Framebuffer fb_{};
     bool opened_ = false;
 public:
-    void begin_loading(const std::filesystem::path& root) {
+    RaceLoadingTips tips;
+    void begin_loading(const std::filesystem::path& root,unsigned tip=0) {
         // A career load can begin before run() resolves its cars/parts. Reuse
         // that presentation and clock rather than decode the artwork twice.
         if(loading_)return;
         auto art=std::make_unique<RaceLoadingArt>();std::string error;
-        require(art->load(root,error),error);
+        if(!art->load(root,error,tip)) {
+            if(!tip)throw std::runtime_error(error);
+            std::fprintf(stderr,"LOADING tip %u unavailable: %s\n",tip,error.c_str());
+            tip=0;require(art->load(root,error),error);
+        }
         loading_=std::move(art);loading_start_=armGetSystemTick();
-        try {show({});} catch(...) {end_loading();throw;}
+        try {show({});tips.shown(tip);} catch(...) {end_loading();throw;}
     }
     void end_loading() {loading_.reset();}
     ~Screen() { close(); }
@@ -328,8 +333,8 @@ public:
 class LoadingScreen {
     Screen& screen_;bool active_;
 public:
-    LoadingScreen(Screen& screen,const std::filesystem::path& root,bool enabled=true)
-        :screen_(screen),active_(enabled) {if(active_)screen_.begin_loading(root);}
+    LoadingScreen(Screen& screen,const std::filesystem::path& root,bool enabled=true,unsigned tip=0)
+        :screen_(screen),active_(enabled) {if(active_)screen_.begin_loading(root,tip);}
     ~LoadingScreen(){finish();}
     void finish(){if(active_){screen_.end_loading();active_=false;}}
     LoadingScreen(const LoadingScreen&)=delete;
@@ -616,7 +621,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     };
     drag_mark("drag.load.begin");
     sweep_mark("race.loading_art");
-    LoadingScreen loading_screen(screen,root,!profile_frame&&!panel_mode&&!replay_mode);
+    LoadingScreen loading_screen(screen,root,!profile_frame&&!panel_mode&&!replay_mode,
+        post_art&&!sweep?screen.tips.current():0U);
     std::unique_ptr<IntroGrid> intro_grid;
     std::vector<IntroGridActor> solo_traffic;
     CarAssets race_car=selected_car;
@@ -2424,7 +2430,7 @@ int main(int argc, char** argv) {
                                     const auto prologue=play_underground_prologue(root,movie_poll,movie_present);
                                     if(prologue.outcome==IntroOutcome::quit)throw Cancel{};
                                     require(prologue.outcome!=IntroOutcome::error,prologue.error);
-                                    LoadingScreen intro_loading(screen,root,!profile_frame);
+                                    LoadingScreen intro_loading(screen,root,!profile_frame,screen.tips.prologue());
                                     load_post_race();
                                     RaceReturn intro_result;
                                     do { intro_result=run(root,false,false,profile_frame,particles_enabled,sky,
@@ -2708,7 +2714,9 @@ int main(int argc, char** argv) {
                                                             auto next=profile;next.page=CareerPage::garage;store(next);garage.reset(career,profile);change=true;
                                                         }else if(accept&&row==Row::start) {
                                                             close_career();music.stop();career_music=false;
-                                                            LoadingScreen free_loading(screen,root,!profile_frame);
+                                                            const auto nitrous_level=career_performance_levels(career,profile).nitrous;
+                                                            const auto tip=profile_frame?0U:screen.tips.quick(quick_options.mode,unsigned(nitrous_level));
+                                                            LoadingScreen free_loading(screen,root,!profile_frame,tip);
                                                             CarAssets chosen;require(load_car_assets(std::filesystem::path(root)/"Global/GLOBALB.BUN",profile.car,chosen,frontend_error),frontend_error);
                                                             CareerRideSetup setup;require(resolve_career_ride(garage_globals,career,profile,setup,frontend_error),frontend_error);
                                                             RaceCarDress dress;dress.request=&setup.request;dress.skin=&setup.skin;
@@ -2803,7 +2811,10 @@ int main(int argc, char** argv) {
                                                             if(played.outcome==IntroOutcome::quit)break;
                                                             auto next=profile;require(career.movie_finished(next,frontend_error),frontend_error);store(next);
                                                         }
-                                                        LoadingScreen race_loading(screen,root,!profile_frame);
+                                                        const auto* event=find_race_event(career.events(),profile.selected_event);
+                                                        require(event!=nullptr,"missing career event loading context");
+                                                        const auto tip=profile_frame?0U:screen.tips.career(*event,profile);
+                                                        LoadingScreen race_loading(screen,root,!profile_frame,tip);
                                                         CarAssets owned;require(load_car_assets(std::filesystem::path(root)/"Global/GLOBALB.BUN",profile.car,owned,frontend_error),frontend_error);
                                                         load_post_race();
                                                         std::vector<unsigned char> ride_globals;std::vector<RaceTableIssue> ride_issues;

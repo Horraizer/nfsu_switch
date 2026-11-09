@@ -324,17 +324,153 @@ bool texture(const std::vector<unsigned char>& bytes,unsigned hash,Image& image,
     }return false;
 }
 }
+namespace {
+void read_ui_font(const std::vector<unsigned char>& bytes,const char* name,RaceLapHudFont& f,unsigned& hash) {
+    for(std::size_t at=0;at+8<=bytes.size();) {
+        const auto size=dword(bytes.data()+at+4);
+        if(size>bytes.size()-at-8) throw std::runtime_error("invalid font chunk");
+        if(dword(bytes.data()+at)==0x30201 && size>=640 && ascii(bytes.data()+at+8,256)==name) {
+            const auto* header=bytes.data()+at+8+512;
+            auto texture_name=ascii(bytes.data()+at+8+256,256);
+            for(auto& c:texture_name) if(c>='a' && c<='z') c=char(c-32);
+            hash=bin_hash(texture_name);
+            const float height=float(header[18]+header[19]);
+            if(!decode_lap_hud_fntf(header,size-512,hash,height,0,1,f)) throw std::runtime_error("invalid original menu font");
+            return;
+        }at+=8+size;
+    }throw std::runtime_error("original menu font absent");
+}
+std::string career_language(const std::vector<unsigned char>&,unsigned,const std::string&);
+void draw_ui_text(Canvas target,const Object& o,const Transform& m,const std::string& value,
+                  std::array<unsigned,4> color,const RaceLapHudFont& font,const Image& image) {
+    if(o.wrap_width) {
+        const auto measure=[&](const std::string& line) {
+            float width=0;unsigned previous=0;
+            for(unsigned char code:line)for(const auto& g:font.glyphs)if(g.code==code) {
+                for(const auto& k:g.kerning)if(k.previous==previous)width+=float(k.adjustment);
+                width+=float(g.advance);previous=code;break;
+            }
+            return width;
+        };
+        std::vector<std::string> lines;std::string line,word;
+        const auto emit=[&]() {if(!word.empty()) {
+            const auto trial=line.empty()?word:line+" "+word;
+            if(!line.empty()&&measure(trial)>o.wrap_width){lines.push_back(line);line=word;}
+            else line=trial;
+            word.clear();
+        }};
+        for(char c:value) {
+            if(c==' '||c=='\n'){emit();if(c=='\n'){lines.push_back(line);line.clear();}}
+            else word+=c;
+        }
+        emit();if(!line.empty())lines.push_back(line);
+        auto plain=o;plain.wrap_width=0;auto pose=m;
+        for(const auto& l:lines){draw_ui_text(target,plain,pose,l,color,font,image);pose.x+=m.c*font.line_height;pose.y+=m.d*font.line_height;}
+        return;
+    }
+    float width=0;unsigned previous=0;
+    for(unsigned char code:value) for(const auto& g:font.glyphs) if(g.code==code) {
+        for(const auto& k:g.kerning) if(k.previous==previous) width+=float(k.adjustment);
+        width+=float(g.advance);previous=code;break;
+    }
+    float x=o.justification&1?-width/2:o.justification&2?-width:0;
+    const float y=o.justification&4?-font.line_height/2:o.justification&8?-font.line_height:0;
+    previous=0;
+    for(unsigned char code:value) for(const auto& g:font.glyphs) if(g.code==code) {
+        for(const auto& k:g.kerning) if(k.previous==previous) x+=float(k.adjustment);
+        const float tw=float(image.width),th=float(image.height);
+        quad(target,image,m,x+float(g.bearing_x),y+float(g.bearing_y),
+            float(g.width),float(g.height),
+            {{(float(g.x)-.5F)/tw,(float(g.y)-.5F)/th,(float(g.x)+g.width+.5F)/tw,(float(g.y)+g.height+.5F)/th}},color);
+        x+=float(g.advance);previous=code;break;
+    }
+}
+struct LoadingTip {
+    unsigned id,image,text,second,priority,limit;
+};
+// PC1.4 USA 6FA290, in the order used by 4DF710 for ties.
+constexpr LoadingTip loading_tips[]={
+    {0,0,0,0,0,0},
+    {11,0x76deb8d4,0x76deb8d4,0,2,0},
+    {14,0x6e708c62,0xccc53962,0xccc53963,2,0},
+    {15,0x0efdf5e9,0x0efdf5e9,0,2,0},
+    {16,0x17091e9c,0x17091e9c,0,2,0},
+    {17,0xfeff161a,0xe699bcf2,0,2,0},
+    {18,0xd89de7ec,0x52607dcc,0,2,0},
+    {19,0x8add839a,0x8add839a,0,2,0},
+    {1,0,0,0,2,0},
+    {21,0x84d8d976,0xae71e1c1,0xae71e1c2,2,0},
+    {12,0x4d2cc6bd,0x4d2cc6bd,0,8,0},
+    {20,0x15879258,0x15879258,0,9,0},
+    {3,0xfd2dc084,0x71548510,0,9,0},
+    {4,0x15852115,0x8c0d7bb5,0,9,0},
+    {2,0,0x0dc41f98,0,10,1},
+    {5,0xa9a879b3,0xa9a879b3,0,10,0},
+    {6,0xd698800a,0xd698800a,0,10,0},
+    {7,0xeb8c7fe5,0x00ac19a5,0x00ac19a6,10,0},
+    {9,0x22ef9817,0x80e29cc4,0x80e29cc5,10,0},
+    {10,0xdf8e76dc,0xfd07aa5c,0xfd07aa5d,10,1},
+    {13,0x84a3f481,0x3d732541,0x3d732542,10,0},
+    {8,0x5eea028b,0xf22344fb,0xf22344fc,11,8}
+};
+constexpr unsigned tip_bit(unsigned id){return 1U<<id;}
+constexpr unsigned common_loading_tips=tip_bit(14)|tip_bit(15)|tip_bit(16)|tip_bit(17)|tip_bit(18);
+}
+unsigned RaceLoadingTips::current()const {
+    unsigned best=0,result=0;
+    for(const auto& tip:loading_tips) {
+        if(!(enabled_&tip_bit(tip.id))||(tip.limit&&shown_[tip.id]>=tip.limit))continue;
+        const unsigned priority=(tip.priority<<8)|(255U-shown_[tip.id]);
+        if(priority>best){best=priority;result=tip.id;}
+    }
+    return result;
+}
+void RaceLoadingTips::shown(unsigned tip) {
+    if(tip&&tip<shown_.size())shown_[tip]=(shown_[tip]+1U)%255U;
+}
+unsigned RaceLoadingTips::prologue(){enabled_=tip_bit(2);return current();}
+unsigned RaceLoadingTips::career(const RaceEventRecord& event,const CareerProfile& profile) {
+    // 4DFA10 uses the authored event kind/type and original status bytes
+    // +351/+352 for events 5/6. The profile car selection is complete here.
+    enabled_=common_loading_tips;
+    if(event.type==unsigned(RaceType::drift))enabled_|=tip_bit(3)|tip_bit(20);
+    if(event.type==unsigned(RaceType::drag))enabled_|=tip_bit(4)|tip_bit(20);
+    if(event.type==unsigned(RaceType::lap_knockout))enabled_|=tip_bit(7);
+    if(event.kind==1)enabled_|=tip_bit(9);
+    if(event.kind==2)enabled_|=tip_bit(6);
+    if(event.kind==3&&event.type==unsigned(RaceType::sprint))enabled_|=tip_bit(5);
+    if(profile.status[6]==2)enabled_|=tip_bit(11);
+    // Native +1386 is cleared at career creation; the port has no imported
+    // PC career byte. Do not equate it with the garage tutorial flag.
+    if(profile.status[5]==2)enabled_|=tip_bit(19);
+    if(profile.ride.performance[4]>career_nitrous_) {
+        career_nitrous_=profile.ride.performance[4];enabled_|=tip_bit(8);
+    }
+    return current();
+}
+unsigned RaceLoadingTips::quick(QuickRaceMode mode,unsigned nitrous_level) {
+    enabled_=common_loading_tips;
+    if(mode==QuickRaceMode::drift)enabled_|=tip_bit(3)|tip_bit(20);
+    if(mode==QuickRaceMode::drag)enabled_|=tip_bit(4)|tip_bit(20);
+    if(mode==QuickRaceMode::lap_knockout)enabled_|=tip_bit(7);
+    if(nitrous_level>quick_nitrous_){quick_nitrous_=nitrous_level;enabled_|=tip_bit(8);}
+    return current();
+}
 struct RaceLoadingArt::Impl {
     std::array<Image,3> textures;
     std::array<Object,3> sprites;
-    Object group;
+    Object group,tip_group,tip_image;
+    std::array<Object,2> tip_lines;
+    Image tip_texture,tip_font_image;
+    RaceLapHudFont tip_font;
+    bool tip_ready=false;
     std::vector<unsigned char> background;
     unsigned cached_width=0,cached_height=0;
     bool ready=false;
 };
 RaceLoadingArt::RaceLoadingArt():impl_(std::make_unique<Impl>()){}
 RaceLoadingArt::~RaceLoadingArt()=default;
-bool RaceLoadingArt::load(const std::filesystem::path& root,std::string& error) {
+bool RaceLoadingArt::load(const std::filesystem::path& root,std::string& error,unsigned tip_id) {
     impl_=std::make_unique<Impl>();auto& out=*impl_;
     try {
         std::vector<unsigned char> global,a;std::vector<RaceTableIssue> issues;
@@ -349,11 +485,11 @@ bool RaceLoadingArt::load(const std::filesystem::path& root,std::string& error) 
         for(unsigned i=0;i<3;++i)if(!texture(global,bin_hash(names[i]),out.textures[i],error) &&
                                    !texture(a,bin_hash(names[i]),out.textures[i],error))
             throw std::runtime_error(std::string("loading sprite absent: ")+names[i]);
-        // PC_Loading.fng in authenticated GLOBALB. Only the generic branch:
-        // no PC keyboard/controller hints or unrelated random tip is invented.
+        // PC_Loading.fng in authenticated GLOBALB, including the authored
+        // retail tip group, picture and two message fields.
         const auto first=global.begin()+0x230208;
         std::vector<unsigned char> fng(first,first+8+0x56a8);
-        unsigned found=0;
+        unsigned found=0,tip_found=0;
         for(std::size_t pos=0;pos+16<=fng.size();++pos) {
             if(std::memcmp(fng.data()+pos,"FOb\xEA",4))continue;
             const auto n=dword(fng.data()+pos+12),outer=dword(fng.data()+pos+4);
@@ -364,12 +500,46 @@ bool RaceLoadingArt::load(const std::filesystem::path& root,std::string& error) 
             const unsigned clipped=n+8;std::memcpy(object.data()+4,&clipped,4);
             const auto o=decode_ui_object(object,0);
             if(o.name=="Generic_Loading_Group"){out.group=o;found|=1;}
+            if(tip_id) {
+                if(o.name=="Game_Tips"){out.tip_group=o;tip_found|=1;}
+                else if(o.name=="GAME_TIP_IMAGE"){out.tip_image=o;tip_found|=2;}
+                else if(o.name=="DragBlurb_A"){out.tip_lines[0]=o;tip_found|=4;}
+                else if(o.name=="DragBlurb_B"){out.tip_lines[1]=o;tip_found|=8;}
+            }
             for(unsigned i=0;i<3;++i)if(o.name==(i==0?"PC_load":i==1?"ChromeGeneric_LoadingBar":"generic_loading_bar")) {
                 out.sprites[i]=o;found|=2U<<i;
             }
             pos+=7+outer;
         }
         if(found!=15)throw std::runtime_error("original generic loading objects absent");
+        if(tip_id) {
+            const auto tip=std::find_if(std::begin(loading_tips),std::end(loading_tips),[&](const auto& t){return t.id==tip_id;});
+            if(tip==std::end(loading_tips)||tip_found!=15)throw std::runtime_error("original loading tip absent");
+            std::vector<unsigned char> language,language_textures;
+            if(!load_race_image(root/"Languages/English.bin",language,issues,limits)||
+               !load_race_image(root/"Languages/LanguageTextures.bin",language_textures,issues,limits))
+                throw std::runtime_error("loading tip language input unreadable");
+            unsigned font_hash=0;
+            read_ui_font(language,"conduitmditc_tt14i",out.tip_font,font_hash);
+            if(!texture(language_textures,font_hash,out.tip_font_image,error))
+                throw std::runtime_error("loading tip font image absent");
+            if(tip->image) {
+                std::vector<unsigned char> dynamic;
+                if(!load_race_image(root/"Global/DYNTEX.BIN",dynamic,issues,limits)||
+                   !texture(dynamic,tip->image,out.tip_texture,error))throw std::runtime_error("loading tip image absent");
+                out.tip_lines[0].text=career_language(language,tip->id==4?0x70c47a47:tip->text,"");
+                out.tip_lines[1].text=tip->second?career_language(language,tip->second,""):"";
+            }else {
+                // 4DE0E0 dispatches the input card for a zero image hash.
+                // Use the same platform bindings as the Switch race.
+                out.tip_lines[0].text="Left Stick: Steer   ZR: Accelerate   ZL: Brake   B: Handbrake\nA: Nitrous   X: Camera   R3: Look Back   +: Pause";
+                out.tip_lines[1].text=career_language(language,tip->text,"");
+            }
+            // Keep the authored centered baselines and readable side margins
+            // in the 720p viewport, including the longer English sentences.
+            for(auto& line:out.tip_lines)line.wrap_width=std::min(line.wrap_width,220U);
+            out.tip_ready=true;
+        }
         out.ready=true;error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
@@ -383,6 +553,16 @@ void RaceLoadingArt::draw(ScreenImage image,double seconds,bool cached)const {
         for(unsigned i=0;i<2;++i) {
             const auto& o=p.sprites[i];const auto m=combine(i?parent:Transform{},o,false);
             quad(Canvas{base},p.textures[i],m,-o.w/2,-o.h/2,o.w,o.h,o.uv,o.color);
+        }
+        if(p.tip_ready) {
+            const auto group=combine({},p.tip_group,true);
+            if(!p.tip_texture.rgba.empty()) {
+                const auto& o=p.tip_image;
+                const auto m=combine(group,o,false);
+                quad(Canvas{base},p.tip_texture,m,-o.w/2,-o.h/2,o.w,o.h,o.uv,o.color);
+            }
+            for(const auto& o:p.tip_lines)if(!o.text.empty())
+                draw_ui_text(Canvas{base},o,combine(group,o,false),o.text,o.color,p.tip_font,p.tip_font_image);
         }
     };
     // Loading polls can be much more frequent than frames. Rasterize the two
@@ -613,47 +793,7 @@ struct FrontendArt::Impl {
         const auto& font=resource==8?small:large;
         const unsigned hash=resource==8?small_hash:large_hash;
         const auto tex=textures.find(hash);if(tex==textures.end()) return;
-        if(o.wrap_width) {
-            const auto measure=[&](const std::string& line) {
-                float width=0;unsigned previous=0;
-                for(unsigned char code:line)for(const auto& g:font.glyphs)if(g.code==code) {
-                    for(const auto& k:g.kerning)if(k.previous==previous)width+=float(k.adjustment);
-                    width+=float(g.advance);previous=code;break;
-                }
-                return width;
-            };
-            std::vector<std::string> lines;std::string line,word;
-            const auto emit=[&]() {if(!word.empty()) {
-                const auto trial=line.empty()?word:line+" "+word;
-                if(!line.empty()&&measure(trial)>o.wrap_width){lines.push_back(line);line=word;}
-                else line=trial;
-                word.clear();
-            }};
-            for(char c:value) {
-                if(c==' '||c=='\n'){emit();if(c=='\n'){lines.push_back(line);line.clear();}}
-                else word+=c;
-            }
-            emit();if(!line.empty())lines.push_back(line);
-            auto plain=o;plain.wrap_width=0;auto pose=m;
-            for(const auto& l:lines){text(target,plain,pose,l,color,resource);pose.x+=m.c*font.line_height;pose.y+=m.d*font.line_height;}
-            return;
-        }
-        float width=0;unsigned previous=0;
-        for(unsigned char code:value) for(const auto& g:font.glyphs) if(g.code==code) {
-            for(const auto& k:g.kerning) if(k.previous==previous) width+=float(k.adjustment);
-            width+=float(g.advance);previous=code;break;
-        }
-        float x=o.justification&1?-width/2:o.justification&2?-width:0;
-        const float y=o.justification&4?-font.line_height/2:o.justification&8?-font.line_height:0;
-        previous=0;
-        for(unsigned char code:value) for(const auto& g:font.glyphs) if(g.code==code) {
-            for(const auto& k:g.kerning) if(k.previous==previous) x+=float(k.adjustment);
-            const float tw=float(tex->second.width),th=float(tex->second.height);
-            quad(target,tex->second,m,x+float(g.bearing_x),y+float(g.bearing_y),
-                float(g.width),float(g.height),
-                {{(float(g.x)-.5F)/tw,(float(g.y)-.5F)/th,(float(g.x)+g.width+.5F)/tw,(float(g.y)+g.height+.5F)/th}},color);
-            x+=float(g.advance);previous=code;break;
-        }
+        draw_ui_text(target,o,m,value,color,font,tex->second);
     }
 };
 void FrontendArt::Impl::pack_atlas(bool compact) {
@@ -747,23 +887,8 @@ bool FrontendArt::load_assets(const std::filesystem::path& root,std::string& err
         read_image("Global/GLOBALA.BUN",font_global);
         read_image("Languages/English.bin",language);read_image("Languages/LanguageTextures.bin",language_textures);
         if(sha256_hex(sha256(font_global.data(),font_global.size()))!="1502D9305F37E51503D4C4E57CAE32890059497AC450FEEE6D72B50323568953") throw std::runtime_error("original global font identity mismatch");
-        const auto font=[&](const std::vector<unsigned char>& bytes,const char* name,RaceLapHudFont& f,unsigned& hash) {
-            for(std::size_t at=0;at+8<=bytes.size();) {
-                const auto size=dword(bytes.data()+at+4);
-                if(size>bytes.size()-at-8) throw std::runtime_error("invalid font chunk");
-                if(dword(bytes.data()+at)==0x30201 && size>=640 && ascii(bytes.data()+at+8,256)==name) {
-                    const auto* header=bytes.data()+at+8+512;
-                    auto texture_name=ascii(bytes.data()+at+8+256,256);
-                    for(auto& c:texture_name) if(c>='a' && c<='z') c=char(c-32);
-                    hash=bin_hash(texture_name);
-                    const float height=float(header[18]+header[19]);
-                    if(!decode_lap_hud_fntf(header,size-512,hash,height,0,1,f)) throw std::runtime_error("invalid original menu font");
-                    return;
-                }at+=8+size;
-            }throw std::runtime_error("original menu font absent");
-        };
-        font(font_global,"conduitmditc_tt21i",out.large,out.large_hash);
-        font(language,"conduitmditc_tt14i",out.small,out.small_hash);
+        read_ui_font(font_global,"conduitmditc_tt21i",out.large,out.large_hash);
+        read_ui_font(language,"conduitmditc_tt14i",out.small,out.small_hash);
         for(unsigned hash:{out.large_hash,out.small_hash,0xe2a5c626U,0x1abedeb1U,0x1f3bdb88U,0x868a1fcfU,bin_hash("NFSU_LOGO"),bin_hash("ARROW3"),bin_hash("CIRCLE"),0x5ed3f261U}) {
             Image image;
             if(!texture(front,hash,image,error) && !texture(global,hash,image,error) && !texture(font_global,hash,image,error) && !texture(language_textures,hash,image,error)) throw std::runtime_error("original frontend sprite/font atlas absent hash="+std::to_string(hash));
