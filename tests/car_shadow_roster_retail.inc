@@ -47,8 +47,12 @@ void verify_shadow_roster(const std::filesystem::path& root) {
         check(p.projected&&p.alpha>0&&p.strip_mask,"UG0 authored tuned car has an initial projected shadow");
         std::cout<<"SHADOW_UG0 "<<actor.assets.car_type_name<<" alpha="<<p.alpha<<" mask="<<p.strip_mask<<'\n';
     }
-    for(const auto& actor:grid.traffic)if(actor.shadow.texture.usable()) {
-        const auto p=place_car_shadow(actor.shadow,actor.state,actor.placement_spec,grid.course.world);
+    check(!grid.traffic.empty(),"UG0 supplies traffic for the shadow roster");
+    for(const auto& actor:grid.traffic) {
+        check(actor.shadow.texture.usable()&&actor.shadow.texture.hash==bin_hash(actor.assets.car_type_name+"_SHADOWIG"),
+            "UG0 traffic uses the model's authored shadow from the local or shared pack");
+        // Traffic is only a pool here. Use an actual grid pose on the road.
+        const auto p=place_car_shadow(actor.shadow,grid.actors.front().state,actor.placement_spec,grid.course.world);
         check(p.projected&&p.alpha>0&&p.strip_mask,"UG0 traffic has its authored projected shadow");
     }
     std::cout<<"PASS shadow roster "<<checked<<" packages plus original UG0 racer/traffic grid\n";

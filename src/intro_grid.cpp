@@ -50,13 +50,25 @@ bool load_traffic(const std::filesystem::path& root,const std::vector<unsigned c
         if(!prepare_stock_frame(inputs,actor.request,frame,error)||
 
            !load_race_vehicle_spec(root/"Global/GLOBALB.BUN",name,{},actor.placement_spec,error))return false;
-        // Original 56F22F skips a null 5461C0 shadow lookup; no substitute.
+        // 56A130 uses the loaded texture registry. Most traffic SHADOWIG
+        // records are in Cars/TEXTURES.BIN, even though the body pack is local.
         const auto shadow_hash=bin_hash(name+"_SHADOWIG");
-        if(std::any_of(frame.car_pack.textures.begin(),frame.car_pack.textures.end(),
-            [shadow_hash](const auto& texture){return texture.hash==shadow_hash;})) {
-            if(!prepare_car_shadow(name,inputs,frame.car_pack,actor.shadow,error)||
-               !prepare_car_shadow_bounds(inputs,frame,actor.shadow,error))return false;
+        const auto has_shadow=[shadow_hash](const TexturePack& pack) {
+            return std::any_of(pack.textures.begin(),pack.textures.end(),
+                [shadow_hash](const auto& texture){return texture.hash==shadow_hash;});
+        };
+        const TexturePack* shadow_pack=&frame.car_pack;
+        auto shadow_file=StockFrameFile::car_textures;
+        if(!has_shadow(*shadow_pack)) {
+            const auto& shared=frame.shared_sets.at(1).packs;
+            const auto found=std::find_if(shared.begin(),shared.end(),has_shadow);
+            shadow_pack=found==shared.end()?nullptr:&*found;
+            shadow_file=StockFrameFile::shared_car_textures;
         }
+        // 56F22F skips the texture pass when the lookup returned null.
+        if(shadow_pack &&
+           (!prepare_car_shadow(name,inputs,*shadow_pack,actor.shadow,error,shadow_file)||
+            !prepare_car_shadow_bounds(inputs,frame,actor.shadow,error)))return false;
         actor.glow_anchors=collect_car_glow_anchors(frame);
         actor.base_instances=frame.scene.instances;out.push_back(std::move(actor));
     }

@@ -957,7 +957,9 @@ RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
             for(const auto* commands:{&r.shadow_commands,&r.commands}) {
                 if(i<commands->owning_draws().size()) {
                     const auto& d=commands->owning_draws()[i];
-                    const bool submit=r.active||commands!=&r.commands||d.instance==kNoHandle;
+                    const bool shadow=commands==&r.shadow_commands;
+                    const bool submit=shadow&&r.traffic?r.active&&d.material.alpha[0]>0:
+                        r.active||shadow||d.instance==kNoHandle;
                     return {d,d.instance,d.placement,d.material,false,submit};
                 }
                 i-=commands->owning_draws().size();

@@ -35,16 +35,15 @@ void row(float* values, std::size_t index, VehicleVec3 world) {
 } // namespace
 
 bool prepare_car_shadow(const std::string& car_type_name, const StockFrameInputs& inputs,
-                        const TexturePack& pack, CarShadowAsset& out, std::string& error) {
+                        const TexturePack& pack, CarShadowAsset& out, std::string& error,
+                        StockFrameFile texture_file) {
     error.clear();
-    // The retail shadow texture of the selected car: <name>_SHADOWIG in the
-    // car's own TEXTURES.BIN. Format and authored mip count vary by car.
-    // The 240SX's hash was 0xF36596F5.
+    // Format and authored mip count vary by car.
     const std::string shadow_name = car_type_name + "_SHADOWIG";
     const std::uint32_t shadow_hash = bin_hash(shadow_name);
     std::vector<std::uint32_t> wanted{shadow_hash};
     RenderTextureSource source;
-    source.bytes = &inputs.file(StockFrameFile::car_textures).bytes;
+    source.bytes = &inputs.file(texture_file).bytes;
     source.packs.push_back(&pack);
     source.wanted = &wanted;
     RenderTextureSet decoded;

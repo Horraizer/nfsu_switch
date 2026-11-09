@@ -606,10 +606,11 @@ int main(int argc,char** argv) {
                         actor.frame->skin_binding.source,std::move(actor.shadow),error,false,actor.glow_anchors,&actor.hull));
                 actor.frame.reset();
             }
-            std::size_t no_blob_traffic = kNoHandle;
+            std::size_t shared_shadow_traffic = kNoHandle;
             for(auto& actor:grid.traffic) {
-                if (!actor.shadow.texture.usable() && no_blob_traffic == kNoHandle)
-                    no_blob_traffic = static_cast<std::size_t>(&actor - grid.traffic.data());
+                if(shared_shadow_traffic==kNoHandle && actor.assets.car_type_name!="AMBULANCE" &&
+                   actor.shadow.texture.usable())
+                    shared_shadow_traffic=static_cast<std::size_t>(&actor-grid.traffic.data());
                 check(scene.add_rival(std::move(actor.frame->scene),std::move(actor.base_instances),
                     kNoHandle,std::move(actor.shadow),error,true,actor.glow_anchors,&actor.hull));
                 actor.frame.reset();
@@ -618,11 +619,12 @@ int main(int argc,char** argv) {
             verify_payload(scene,run,hud,selected_car,*human->config.performance,&grid);
             if(backing_test){verify_zone_backing_finish(root,run,scene);return 0;}
             if (std::getenv("NFSU_CAREER_SHADOW_WITNESS")) {
-                if (no_blob_traffic == kNoHandle || !run.session().traffic())
-                    throw std::runtime_error("shadow fixture needs traffic without a car-specific blob");
-                auto& traffic = const_cast<RaceTrafficActor&>(run.session().traffic()->actors().at(no_blob_traffic));
+                if (shared_shadow_traffic == kNoHandle || !run.session().traffic())
+                    throw std::runtime_error("shadow fixture needs traffic with a shared SHADOWIG texture");
+                auto& traffic = const_cast<RaceTrafficActor&>(run.session().traffic()->actors().at(shared_shadow_traffic));
+                const auto shadow_hash=bin_hash(grid.traffic[shared_shadow_traffic].assets.car_type_name+"_SHADOWIG");
                 traffic.car = run.session().car(); // Put the traffic hull on the starting road.
-                const std::string prefix = "rival" + std::to_string(run.session().rival_count()+no_blob_traffic+1) + "/";
+                const std::string prefix = "rival" + std::to_string(run.session().rival_count()+shared_shadow_traffic+1) + "/";
                 const std::string name = prefix + "shadow silhouette";
                 std::vector<const RecordedDraw*> body_definitions;
                 for (bool active : {false,true,false}) {
@@ -634,7 +636,7 @@ int main(int argc,char** argv) {
                     unsigned ramp_count = 0;
                     for (const auto& resource : table.resources)
                         if (resource.texture_hash == 0xbadb4475) ++ramp_count;
-                    bool found = false;
+                    bool found = false,found_ground=false;
                     std::vector<const RecordedDraw*> current_definitions;
                     for (std::size_t i = 0; i < witness.commands.draw_count(); ++i) {
                         const auto view = witness.commands.draw_view(i);
@@ -642,22 +644,28 @@ int main(int argc,char** argv) {
                             if(view.submit!=active)throw std::runtime_error("inactive traffic body submission differs");
                             current_definitions.push_back(&view.definition);
                         }
+                        if(view.definition.name==prefix+"shadow ground") {
+                            found_ground=true;
+                            const auto& texture=table.resources.at(view.definition.texture_resource);
+                            check(texture.texture_hash==shadow_hash&&texture.texture.mip_count>1&&
+                                (view.material.alpha[0]>0)==active&&view.submit==active);
+                        }
                         if (view.definition.name != name) continue;
                         found = true;
                         const auto& stream = table.resources.at(view.definition.vertex_resource);
                         const auto* vertices = reinterpret_cast<const MeshVertex*>(stream.data);
                         const auto& ramp = table.resources.at(view.definition.texture_resource);
                         if (!stream.streamed_vertices || ramp.texture_hash != 0xbadb4475 || ramp_count != 1 ||
-                            view.material.alpha[0] != (active ? 1.F : 0.F) ||
+                            view.material.alpha[0] != (active ? 1.F : 0.F) || view.submit!=active ||
                             (active && (!vertices[0].color[3] || vertices[1].px == vertices[2].px)))
                             throw std::runtime_error("traffic silhouette missing, static, or visible in an inactive slot");
                     }
-                    if (!found) throw std::runtime_error("traffic silhouette has no prepared draw");
+                    if (!found || !found_ground) throw std::runtime_error("traffic shadow layers have no prepared draw");
                     if(current_definitions.empty() || (!body_definitions.empty() && current_definitions!=body_definitions))
                         throw std::runtime_error("traffic body slots changed across activation");
                     body_definitions=std::move(current_definitions);
                 }
-                std::cout << "PASS SHADOWRAMP shared silhouette and traffic without SHADOWIG\n";
+                std::cout << "PASS SHADOWRAMP and shared SHADOWIG for active and inactive traffic\n";
                 return 0;
             }
             RaceGpuFrame frame;check(scene.frame(run.session(),frame,error));

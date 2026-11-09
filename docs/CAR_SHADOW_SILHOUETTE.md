@@ -3,6 +3,11 @@
 The Switch race scene enables the SHADOWRAMP layer for the player, rivals
 and traffic. It can draw independently of a car's SHADOWIG texture. The
 existing SHADOWIG and neon layers retain their own texture and ground taps.
+Traffic SHADOWIG textures are resolved from the model pack and the shared
+`Cars/TEXTURES.BIN`. In PC USA 1.4 the ambulance supplies its own SHADOWIG;
+the other traffic models use their own named textures from the shared pack.
+The original texture registry lookup at `5461C0` skips a missing texture
+without using a substitute.
 
 Retail PC USA 1.4 evidence:
 
@@ -35,8 +40,8 @@ distance gate. The original view descriptor, LOD selection, constant-height
 shortcut and strip ordering are not reproduced bit for bit. Reflection
 captures omit the layer, and the front end keeps its existing shadow path.
 
-`nfsu_car_shadow_silhouette_retail` checks an active traffic actor with no
-SHADOWIG, its streamed geometry, its inactive slot and the shared ramp.
+`nfsu_car_shadow_silhouette_retail` checks both projected layers on a traffic
+actor with a shared SHADOWIG, its inactive slot and the shared ramp.
 `nfsu_car_shadow_silhouette_sprint_retail` checks the expanded sprint backing
 with the layer enabled. `nfsu_career_full_retail` enables the layer for the
 production scene check of each authored campaign stage. Switch pixel

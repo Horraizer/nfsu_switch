@@ -62,11 +62,11 @@ bool prepare_car_shadow_ramp(const StockFrameInputs&, const StockFrame&,
                              RenderTexture&, std::string&);
 VehicleVec3 car_shadow_light_ray(const VehicleVec3& origin, const VehicleVec3& light_position) noexcept;
 
-// The shadow texture is the car's own, named "<car type name>_SHADOWIG" in
-// its TEXTURES.BIN (issue #315: every retail car directory holds one). The
-// name is looked up by its bin_hash in `pack`.
+// The texture is "<car type name>_SHADOWIG". Most traffic models keep
+// this texture in the shared car pack.
 bool prepare_car_shadow(const std::string& car_type_name, const StockFrameInputs& inputs,
-                        const TexturePack& pack, CarShadowAsset& out, std::string& error);
+                        const TexturePack& pack, CarShadowAsset& out, std::string& error,
+                        StockFrameFile texture_file = StockFrameFile::car_textures);
 CarShadowPlacement place_car_shadow(const RaceSession& session) noexcept;
 CarShadowPlacement place_car_shadow(const VehicleState& state,
                                     const VehicleSpec& spec) noexcept;
