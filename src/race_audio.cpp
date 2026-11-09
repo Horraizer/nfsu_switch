@@ -8,7 +8,6 @@
 #include "nfsu/sha256.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -1164,15 +1163,8 @@ void RaceAudioService::set_suspended(bool suspended) noexcept {
 
 void RaceAudioService::stop() {
     auto& p = *impl_;
-#ifdef __SWITCH__
-    const bool report_music=p.active && p.has_music;
-#endif
     p.active = false;
     p.output.stop();p.post_voice.stop();
-#ifdef __SWITCH__
-    if(report_music) std::fprintf(stderr,"SWITCH_MUSIC mode=race missing_frames=%llu buffered_frames=%zu\n",
-        static_cast<unsigned long long>(p.stream.ring().underruns()),p.stream.ring().size());
-#endif
     if(p.original_music) {
         original_race_music_next=original_music_next(p.music_first,p.music_lengths,p.music_frames.load());
         p.original_music=false;

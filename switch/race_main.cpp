@@ -1568,6 +1568,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     heap.observe(final_heap.uordblks,final_heap.arena);
     std::printf("RUN_STATS heap_sampling=2s timed_heap_samples=%llu final_snapshot=1 peaks=sampled_not_exact\n",
         (unsigned long long)timed_heap_samples);
+    const auto audio_stats=sound.stats();
+    std::printf("SWITCH_MUSIC mode=race missing_frames=%llu buffered_frames=%zu\n",
+        static_cast<unsigned long long>(audio_stats.ring_underruns),audio_stats.ring_fill);
     const auto measured_clocks=read_clocks();
     std::printf("RUN_STATS build=%s event=%lu height=%lu unpause_resets=%u CPU_HZ=%lu CPU_OK=%u GPU_HZ=%lu GPU_OK=%u EMC_HZ=%lu EMC_OK=%u\n",
         NFSU_RACE_BUILD_TAG,(unsigned long)event_number,(unsigned long)scene_height,unpause_resets,
