@@ -33,6 +33,7 @@ inline void audrvVoiceSetMixFactor(AudioDriver*,int,float,int,int) {}
 inline void audrvVoiceStart(AudioDriver*,int) {}
 inline bool audrvVoiceAddWaveBuf(AudioDriver* d,int,AudioDriverWaveBuf* b) {b->state = d->registered == 0 ? AudioDriverWaveBufState_Playing : (d->registered == 1 ? AudioDriverWaveBufState_Queued : AudioDriverWaveBufState_Waiting);++d->registered;++probe_submitted;return true;}
 inline uint32_t audrvVoiceGetPlayedSampleCount(AudioDriver*,int) {return 1024;}
+inline uint32_t audrvVoiceGetVoiceDropsCount(AudioDriver*,int) {return 0;}
 inline void audrenStopAudioRenderer() {}
 // Matches libnx audrvClose ownership: free/zero driver, not caller wave buffers.
 inline void audrvClose(AudioDriver* d) {*d={};}
