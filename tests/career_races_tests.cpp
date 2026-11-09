@@ -811,9 +811,13 @@ int main(int argc,char** argv) {
                 }
                 if(race_car_held(run.session().timing()))throw std::runtime_error("retirement countdown did not finish");
                 auto& state=const_cast<RaceTimingState&>(run.session().timing());
-                auto transition=state;transition.racers[2].new_lap=true;transition.racers[2].highest_lap=1;
+                auto transition=state;
+                for(unsigned i=0;i<3;++i) transition.racers[i].highest_lap=1;
+                transition.racers[2].new_lap=true;
                 const unsigned order[]={0,1,2,3};
                 check(apply_lap_knockout(run.session().timing_config(),transition,order,4,error));
+                if(transition.racers[3].status!=RacerStatus::knocked_out)
+                    throw std::runtime_error("retirement fixture did not eliminate the fourth racer");
                 state.racers[3]=transition.racers[3];
                 const auto original_step=state.step;const auto original_clock=state.now_ticks;
                 const auto draws=frame.commands.draw_count();
