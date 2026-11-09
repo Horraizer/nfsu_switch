@@ -1659,6 +1659,31 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 selected_race.region,scene_variant(),finish_scene_error);
             flow_mark(staged_finish?"post.scene":"post.scene_unavailable",finish_scene_error.c_str());
             double finish_scene_seconds=0;
+            const auto record_finish_scene=[&] {
+                scene.set_finish_scene_seconds(finish_scene_seconds);
+                if(scene.frame(race.session(),frame,finish_scene_error) &&
+                   renderer.update(frame.commands,finish_scene_error))return true;
+                // Presentation assets must not discard a completed race.
+                flow_mark("post.scene_unavailable",finish_scene_error.c_str());
+                scene.clear_finish_scene();
+                staged_finish=false;
+                require(scene.frame(race.session(),frame,error),error);
+                require(renderer.update(frame.commands,error),error);
+                return false;
+            };
+            // 422ED1 selects the ending NIS, then 422FE9 waits at least
+            // two seconds before it can request the results package.
+            if(staged_finish) {
+                FrontendClock finish_clock;
+                constexpr double minimum_scene_seconds=2.0;
+                while(finish_scene_seconds<=minimum_scene_seconds && appletMainLoop()) {
+                    padUpdate(&pad);
+                    if(finish_sweep&&(padGetButtonsDown(&pad)&HidNpadButton_Plus))throw Cancel{};
+                    if(!record_finish_scene())break;
+                    require(renderer.present(error),error);
+                    finish_scene_seconds+=double(finish_clock.sample(armTicksToNs(armGetSystemTick())))/1000000000.0;
+                }
+            }
             std::array<std::string,4> models{{race.car(),race.car(),race.car(),race.car()}},labels;
             if(intro_grid) {
                 unsigned actor=1;
@@ -1706,8 +1731,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 unsigned(rewards.size()),unsigned(statistic_actors.size()),human_statistic);
             if(resolved_tournament.event)menu.tournament(resolved_tournament.round<supported_tournament_row(event_number)->count);
             menu.animate();
-            // Retail changes from the race playlist to the frontend playlist
-            // for results. Reuse the same frontend player on return to the map.
+            // Keep race audio on the ending shot. At the results boundary
+            // reuse the same frontend player that continues on the map.
             bool frontend_audio=false;
             if(frontend_music) {
                 sound.stop();
@@ -1811,19 +1836,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     values["RewardBlurbString"]=unlocked.empty()?"":unlocked.back();
                 }
                 results_art.record_post_race(frame.commands.width,frame.commands.height,menu,values,ui);
-                if(staged_finish) {
-                    scene.set_finish_scene_seconds(finish_scene_seconds);
-                    if(!scene.frame(race.session(),frame,finish_scene_error) ||
-                       !renderer.update(frame.commands,finish_scene_error)) {
-                        // Presentation assets must not discard a completed race.
-                        flow_mark("post.scene_unavailable",finish_scene_error.c_str());
-                        scene.clear_finish_scene();
-                        staged_finish=false;
-                        require(scene.frame(race.session(),frame,error),error);
-                        require(renderer.update(frame.commands,error),error);
-                    }
-                    finish_scene_seconds+=seconds;
-                }
+                if(staged_finish && record_finish_scene())finish_scene_seconds+=seconds;
                 require(renderer.present_frontend(ui,error),error);
                 if(finish_sweep&&!sweep_results_presented&&menu.page()==PostRacePage::results) {
                     require(!ui.vertices.empty()&&values.at("PlayerRow")=="1"&&values.at("Name1")==player_name,
