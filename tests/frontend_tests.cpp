@@ -1035,9 +1035,16 @@ int main(int argc,char** argv) {
             art.append_fps(1280,720,fps_history,fps_overlay);
             check(fps_overlay.additive.size()>ui_quads+93&&fps_overlay.vertices.size()==fps_overlay.additive.size()*4,
                 "frontend FPS overlay appends bars, guides, panel and resident font glyphs");
-            for(std::size_t i=ui_quads*4;i<fps_overlay.vertices.size();++i)
-                check(fps_overlay.vertices[i].py>=0&&fps_overlay.vertices[i].py<150,
-                    "frontend FPS overlay stays at the top of the screen");
+            const auto& panel_top=fps_overlay.vertices[ui_quads*4];
+            const auto& panel_bottom=fps_overlay.vertices[ui_quads*4+2];
+            check(panel_top.px>=960&&panel_top.py>=144&&panel_bottom.px<=1280&&panel_bottom.py<300,
+                "frontend FPS panel stays below the garage heading in the right margin");
+            for(std::size_t i=ui_quads*4+4;i<fps_overlay.vertices.size();++i) {
+                const auto& vertex=fps_overlay.vertices[i];
+                check(vertex.px>=panel_top.px&&vertex.px<=panel_bottom.px&&
+                      vertex.py>=panel_top.py&&vertex.py<=panel_bottom.py,
+                    "frontend FPS glyphs and graph fit inside their panel");
+            }
             // GPU-only loading must retain authored textures/font coordinates
             // and update selection without a CPU background or texture reload.
             {

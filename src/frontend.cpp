@@ -1389,13 +1389,14 @@ void FrontendArt::append_fps(unsigned width,unsigned height,const RaceFpsHistory
     history.format(label,sizeof label);
     if(frame.additive.size()+std::strlen(label)+history.count+kFpsGraphGuides.size()+1>kFrontendUiMaxQuads)return;
     const Canvas canvas{width,height,impl_->atlas,frame};
+    constexpr float panel_x=182.F,panel_y=-140.F,panel_width=126.F,panel_height=78.F;
     const auto white=impl_->textures.find(0xe2a5c626U);
     if(white!=impl_->textures.end()) {
         const auto rect=[&](float x,float y,float w,float h,std::array<unsigned,4> color) {
             quad(canvas,white->second,Transform{},x,y,w,h,{{0,0,1,1}},color);
         };
-        constexpr float left=-45.F,bottom=-157.F,graph_height=53.F;
-        rect(-60,-230,120,78,{{0,0,0,185}});
+        constexpr float left=panel_x+18.F,bottom=panel_y+73.F,graph_height=53.F;
+        rect(panel_x,panel_y,panel_width,panel_height,{{0,0,0,185}});
         for(double guide:kFpsGraphGuides)
             rect(left,bottom-float(guide/kFpsGraphMaxMs)*graph_height,90,1,{{100,100,100,255}});
         for(std::size_t i=0;i<history.count;++i) {
@@ -1407,7 +1408,10 @@ void FrontendArt::append_fps(unsigned width,unsigned height,const RaceFpsHistory
         }
     }
     Object text;text.justification=5;
-    Transform pose;pose.y=-218;
+    Transform pose;
+    pose.x=panel_x+panel_width*.5F;pose.y=panel_y+11.F;
+    const auto label_width=ui_text_width(label,impl_->small);
+    pose.a=pose.d=std::min(.8F,(panel_width-12.F)/std::max(label_width,1.F));
     impl_->text(canvas,text,pose,label,{{255,255,255,255}},8);
 }
 void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
