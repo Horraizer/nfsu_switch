@@ -23,6 +23,20 @@ inline std::string post_race_time(std::int32_t ticks,bool gap=false) {
     }
     return text.data();
 }
+// Native 49D4C0/49D5B0 leave the time empty for a final position
+// without a timed finish. Explicit retirement statuses keep their own text.
+inline const char* post_race_status_text(RacerStatus status) noexcept {
+    switch(status) {
+    case RacerStatus::knocked_out:return "Knocked Out";
+    case RacerStatus::blown_engine:return "Blown Engine";
+    case RacerStatus::totalled:return "Totaled";
+    case RacerStatus::out_of_time:return "Timeup";
+    default:return "--:--.--";
+    }
+}
+inline bool post_race_has_time(RacerStatus status,bool valid,std::int32_t ticks) noexcept {
+    return status==RacerStatus::normal_completion&&valid&&ticks>0;
+}
 // PostRaceStats49CEE0 circuit binding. Speed/distance are measured from this
 // port's completed fixed physics steps, not from render or wall-clock cadence.
 // This is a statistics adapter, not a claim of retail telemetry bit parity.
@@ -93,14 +107,12 @@ public:
         for(unsigned i=0;i<7;++i)out["DataName_"+std::to_string(i+1)]=labels[i];
         out["RacerName"]=name+" - "+car;
         out["RaceFinishedPosition"]=(r.position<10?"0":"")+std::to_string(r.position);
-        out["Data_1"]=r.finish_valid&&r.finish_ticks>0?format_race_ticks(r.finish_ticks):"--:--.--";
-        std::int32_t winner=r.finish_ticks,best=kRaceNoTime;
-        for(const auto& a:t.racers)if(a.finish_valid)winner=std::min(winner,a.finish_ticks);
-        //49D5B0 uses terminal reason text in the time-behind field.
-        if(r.status==RacerStatus::normal_completion)out["Data_2"]=r.finish_valid&&r.finish_ticks>0&&r.position!=1?
-            post_race_time(r.finish_ticks-winner,true):"--:--.--";
-        else out["Data_2"]=r.status==RacerStatus::knocked_out?"Knocked Out":r.status==RacerStatus::blown_engine?"Blown Engine":
-            r.status==RacerStatus::totalled?"Totaled":r.status==RacerStatus::out_of_time?"Timeup":"Finished";
+        const bool timed=post_race_has_time(r.status,r.finish_valid,r.finish_ticks);
+        out["Data_1"]=timed?format_race_ticks(r.finish_ticks):"--:--.--";
+        std::int32_t winner=kRaceNoTime,best=kRaceNoTime;
+        for(const auto& a:t.racers)
+            if(post_race_has_time(a.status,a.finish_valid,a.finish_ticks))winner=std::min(winner,a.finish_ticks);
+        out["Data_2"]=timed&&r.position!=1?post_race_time(r.finish_ticks-winner,true):post_race_status_text(r.status);
         if(session.is_drag()) {
             //49CC70 ->49D4C0/49D5B0/49DB30/49DE00/49DE80.
             out["DataName_3"]="TOP SPEED:";
@@ -190,12 +202,10 @@ inline PostRaceValues post_race_report(const RaceSession& session,PostRaceValues
             values["Lead"+key]=values["Time"+key];
         }else if(n<rows.size()) {
             const auto& r=rows[n];
-            const auto status=r.status==RacerStatus::blown_engine?"Blown Engine":
-                r.status==RacerStatus::totalled?"Totaled":
-                r.status==RacerStatus::knocked_out?"Knocked Out":r.status==RacerStatus::out_of_time?"Timeup":"Did Not Finish";
-            values["Time"+key]=r.total_valid&&r.status==RacerStatus::normal_completion?post_race_time(r.total_ticks):status;
+            const bool timed=post_race_has_time(r.status,r.total_valid,r.total_ticks);
+            values["Time"+key]=timed?post_race_time(r.total_ticks):post_race_status_text(r.status);
             values["Lead"+key]=values["Time"+key];
-            if(n && r.total_valid && !rows.empty() && rows[0].total_valid)
+            if(n&&timed&&post_race_has_time(rows[0].status,rows[0].total_valid,rows[0].total_ticks))
                 values["Lead"+key]=post_race_time(std::max(0,r.total_ticks-rows[0].total_ticks),true);
             if(r.best_lap_ticks!=kRaceNoTime && !session.is_drag())values["BestLap_"+key]=format_race_ticks(r.best_lap_ticks);
         }

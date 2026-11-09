@@ -40,14 +40,14 @@ def check(root,renderer,main):
     assert transition.count('run(root,')==3
     close=transition[transition.index('const auto close_career='):transition.index('const auto prepare_garage=')]
     assert close.index('frontend_renderer->close(')<close.index('frontend_renderer.reset();')<close.index('frontend_gpu_profile.reset();')
-    for start, call in (('}else if(accept&&row==Row::start)', 'do { result=run(root,'),
+    for start, call in (('}else if(accept&&row==Row::start)', 'result=run(root,'),
                         ('}else if(profile.page==CareerPage::briefing)', 'outcome=run(root,')):
         begin=transition.index(start)
         launch=transition[begin:transition.index(call,begin)]
         assert 'close_career();music.stop();' in launch
-    intro=transition[transition.index('do { intro_result=run(root,'):transition.index('while(intro_result==RaceReturn::restart && appletMainLoop())')]
+    intro=transition[transition.index('intro_result=run(root,'):transition.index('while(intro_result==RaceReturn::restart && appletMainLoop())')]
     assert 'selected_car,screen,pad,false,nullptr,0,&art,' in intro
-    assert 'false,profile.name);' in intro
+    assert 'false,profile.name,' in intro and '&music);' in intro
     assert main.index('std::unique_ptr<HandheldGpuProfile> frontend_gpu_profile;')<main.index('std::unique_ptr<DekoRenderer> frontend_renderer;')
     assert 'constexpr std::uint32_t menu_height=720;' in main
     assert 'art.atlas(),frontend_error,menu_height,profile_frame && !ab_minimal,active_trace,frontend_scene.draw_capacity())' in main

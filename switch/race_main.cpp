@@ -57,11 +57,14 @@ nfsu::RacePresentationOptions read_presentation_options(bool road_default) {
     options.road_reflections=road_default;
     for(const auto& path:{presentation_path,std::filesystem::path(presentation_path.string()+".bak")}) {
         std::ifstream file(path);
-        unsigned version,blur,car,road,metric;
+        unsigned version,blur,car,road,metric,height=0;
+        if(!(file>>version>>blur>>car>>road>>metric) ||
+           (version!=1 && version!=2) || blur>1 || car>1 || road>1 || metric>1)
+            continue;
+        if(version==2 && (!(file>>height) || (height!=0 && height!=540 && height!=720)))
+            continue;
         std::string extra;
-        if(file>>version>>blur>>car>>road>>metric && !(file>>extra) &&
-           version==1 && blur<=1 && car<=1 && road<=1 && metric<=1)
-            return {blur!=0,car!=0,road!=0,metric!=0};
+        if(!(file>>extra))return {blur!=0,car!=0,road!=0,metric!=0,height};
     }
     return options;
 }
@@ -73,8 +76,8 @@ bool write_presentation_options(const nfsu::RacePresentationOptions& options) {
     auto pending=presentation_path;
     pending+=".tmp";
     std::ofstream file(pending,std::ios::trunc);
-    file<<"1 "<<options.motion_blur<<' '<<options.low_car_reflections<<' '
-        <<options.road_reflections<<' '<<options.metric_speed<<'\n';
+    file<<"2 "<<options.motion_blur<<' '<<options.low_car_reflections<<' '
+        <<options.road_reflections<<' '<<options.metric_speed<<' '<<options.race_height<<'\n';
     file.close();
     if(!file)return false;
     if(std::filesystem::exists(presentation_path,error)) {
@@ -565,8 +568,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
           const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
           const nfsu::CarAssets& selected_car, Screen& screen, PadState& pad, bool free_drive = false,
           const nfsu::RaceCarDress* dress = nullptr, std::uint32_t event_number = 1,
-          const FrontendArt* post_art = nullptr, unsigned difficulty=1, unsigned* completed_place=nullptr, unsigned event_prize=0, unsigned previous_style=0, int* completed_style=nullptr, const CareerEventMedia* event_media=nullptr,float visual_reputation=0,const CareerCatalog* career_catalog=nullptr,unsigned previous_high_water=0,unsigned race_index=0,std::array<unsigned,4>* completed_places=nullptr,const CareerTournament* tournament=nullptr,bool nos_self_check=false,const std::string& player_name="YOU",CareerRaceReport* career_report=nullptr,const QuickRaceOptions* quick=nullptr,StartupJournal* sweep=nullptr,bool finish_sweep=false,const CareerProfile* career_profile=nullptr) {
+          const FrontendArt* post_art = nullptr, unsigned difficulty=1, unsigned* completed_place=nullptr, unsigned event_prize=0, unsigned previous_style=0, int* completed_style=nullptr, const CareerEventMedia* event_media=nullptr,float visual_reputation=0,const CareerCatalog* career_catalog=nullptr,unsigned previous_high_water=0,unsigned race_index=0,std::array<unsigned,4>* completed_places=nullptr,const CareerTournament* tournament=nullptr,bool nos_self_check=false,const std::string& player_name="YOU",CareerRaceReport* career_report=nullptr,const QuickRaceOptions* quick=nullptr,StartupJournal* sweep=nullptr,bool finish_sweep=false,const CareerProfile* career_profile=nullptr,audio::FrontendMusic* frontend_music=nullptr) {
     const bool wet_road_reflections=presentation.road_reflections;
+    if(!requested_height && !panel_mode)requested_height=presentation.race_height;
     if(career_report)*career_report={};
     if(completed_place)*completed_place=0;
     if(completed_style)*completed_style=0;
@@ -1642,7 +1646,6 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     if(post_art)flow_mark("race.terminal",flow_detail);
     if(post_art && !pause_exit && !profile_stats && !panel_mode && !free_drive && !intro_won &&
        failure.empty() && post_race_result_ready(player_result)) {
-        // Keep the live song through style counting and rewards.
         sound.set_suspended(false);
         try {
             FrontendArt results_art;
@@ -1697,20 +1700,35 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 if(!row.racer)human_statistic=unsigned(statistic_actors.size());
                 statistic_actors.push_back(unsigned(row.racer));
             }
-            PostRaceMenu menu(event_number!=0,event_number!=0 && race.session().style().total()!=0,
+            // Show the standings after an introductory loss as requested.
+            // The introductory victory takes its separate movie path above.
+            PostRaceMenu menu(true,event_number!=0 && race.session().style().total()!=0,
                 unsigned(rewards.size()),unsigned(statistic_actors.size()),human_statistic);
             if(resolved_tournament.event)menu.tournament(resolved_tournament.round<supported_tournament_row(event_number)->count);
             menu.animate();
+            // Retail changes from the race playlist to the frontend playlist
+            // for results. Reuse the same frontend player on return to the map.
+            bool frontend_audio=false;
+            if(frontend_music) {
+                sound.stop();
+                std::string music_error;
+                frontend_audio=frontend_music->start(root,music_error);
+                std::printf("RACE_POST_MUSIC playlist=frontend started=%u %s\n",unsigned(frontend_audio),music_error.c_str());
+            }
+            const auto post_sound=[&](audio::FrontendSound cue) {
+                if(frontend_audio)frontend_music->sound(cue);
+                else sound.frontend_sound(cue);
+            };
             const auto play_post_cue=[&](PostRaceCue cue) {
                 using audio::FrontendSound;
                 switch(cue) {
-                case PostRaceCue::up:sound.frontend_sound(FrontendSound::up);break;
-                case PostRaceCue::down:sound.frontend_sound(FrontendSound::down);break;
-                case PostRaceCue::left:sound.frontend_sound(FrontendSound::left);break;
-                case PostRaceCue::right:sound.frontend_sound(FrontendSound::right);break;
-                case PostRaceCue::select:sound.frontend_sound(FrontendSound::select);break;
-                case PostRaceCue::back:sound.frontend_sound(FrontendSound::back);break;
-                case PostRaceCue::dialog:sound.frontend_sound(FrontendSound::dialog);break;
+                case PostRaceCue::up:post_sound(FrontendSound::up);break;
+                case PostRaceCue::down:post_sound(FrontendSound::down);break;
+                case PostRaceCue::left:post_sound(FrontendSound::left);break;
+                case PostRaceCue::right:post_sound(FrontendSound::right);break;
+                case PostRaceCue::select:post_sound(FrontendSound::select);break;
+                case PostRaceCue::back:post_sound(FrontendSound::back);break;
+                case PostRaceCue::dialog:post_sound(FrontendSound::dialog);break;
                 default:break;
                 }
             };
@@ -1775,12 +1793,13 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     else if(action==PostRaceAction::quit_tournament)result=RaceReturn::quit_tournament;
                     std::snprintf(flow_detail,sizeof flow_detail,"action=%u page=%u",unsigned(action),unsigned(menu.page()));
                     flow_mark("post.action",flow_detail);
-                    // The original FE device survives panel changes. Our race
-                    // device is about to close: preserve the final click tail
-                    // while presenting the already resident last UI frame.
+                    // Leave frontend music running into the map, but let the
+                    // confirmation click finish before a retry can stop it.
                     const auto cue_deadline=armGetSystemTick()+armNsToTicks(1000000000ULL);
-                    while(sound.frontend_sound_active()&&armGetSystemTick()<cue_deadline&&appletMainLoop())
+                    while((frontend_audio?frontend_music->sound_active():sound.frontend_sound_active())&&
+                          armGetSystemTick()<cue_deadline&&appletMainLoop())
                         require(renderer.present_frontend(ui,error),error);
+                    if(frontend_audio)frontend_music->stop_speech();
                     break;
                 }
                 if(menu.page()==PostRacePage::reward) {
@@ -1816,7 +1835,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     const int voice=audio::post_race_speech(event_number,event_won);
                     if(voice>=0) {
                         std::string voice_error;
-                        const bool played=sound.post_race_voice(root,event_number,event_won,voice_error);
+                        const bool played=frontend_audio?frontend_music->speech(voice,voice_error):
+                            sound.post_race_voice(root,event_number,event_won,voice_error);
                         std::printf("RACE_POST_VOICE event=%u request=%d played=%u error=%s\n",event_number,voice,unsigned(played),voice_error.c_str());
                     }
                 }
@@ -2453,11 +2473,11 @@ int main(int argc, char** argv) {
                                     LoadingScreen intro_loading(screen,root,!profile_frame,screen.tips.prologue());
                                     load_post_race();
                                     RaceReturn intro_result;
-                                    do { intro_result=run(root,false,false,profile_frame,particles_enabled,sky,
+                                    do { music.stop();intro_result=run(root,false,false,profile_frame,particles_enabled,sky,
                                         false,glows,true,presentation,texture_filter,scene_height,
                                         gpu_boost,hud,false,fps_overlay,nullptr,handling_telemetry,steering,
                                         selected_car,screen,pad,false,nullptr,0,&art,1,nullptr,0,0,nullptr,nullptr,
-                                        0,nullptr,0,0,nullptr,nullptr,false,profile.name);
+                                        0,nullptr,0,0,nullptr,nullptr,false,profile.name,nullptr,nullptr,nullptr,false,nullptr,&music);
                                     } while(intro_result==RaceReturn::restart && appletMainLoop());
                                     if(intro_result==RaceReturn::intro_won) {
                                         auto next=profile;require(career.intro_won(next,frontend_error),frontend_error);store(next);
@@ -2763,12 +2783,12 @@ int main(int argc, char** argv) {
                                                             std::fflush(stdout);
                                                             if(!practice)load_post_race();
                                                             RaceReturn result;
-                                                            do { result=run(root,false,false,profile_frame,particles_enabled,sky,false,glows,true,presentation,texture_filter,scene_height,
+                                                            do { music.stop();result=run(root,false,false,profile_frame,particles_enabled,sky,false,glows,true,presentation,texture_filter,scene_height,
                                                                 gpu_boost,hud,false,fps_overlay,&setup.performance,handling_telemetry,steering,chosen,screen,pad,practice,&dress,course.event,
                                                                 &art,launch.difficulty,nullptr,0,0,nullptr,nullptr,setup.reputation,nullptr,0,course.round,
-                                                                nullptr,nullptr,false,active_profile?active_profile->name:"YOU",nullptr,&launch);
+                                                                nullptr,nullptr,false,active_profile?active_profile->name:"YOU",nullptr,&launch,nullptr,false,nullptr,&music);
                                                             }while(result==RaceReturn::restart&&appletMainLoop());
-                                                            change=true;
+                                                            career_music=music.playing();change=true;
                                                         }
                                                     }
                                                 }else if(prev!=next_key) {
@@ -2869,13 +2889,15 @@ int main(int argc, char** argv) {
                                                             const auto round=profile.tournament.event?profile.tournament.round:0;
                                                             do {
                                                                 CareerRaceReport career_report;
+                                                                music.stop();career_music=false;
                                                                 try {outcome=run(root,false,false,profile_frame,particles_enabled,sky,
                                                                     false,glows,true,presentation,texture_filter,scene_height,
                                                                     gpu_boost,hud,false,fps_overlay,&owned_setup.performance,handling_telemetry,steering,
                                                                     owned,screen,pad,false,&owned_dress,profile.selected_event,&art,profile.difficulty,&completed,
                                                                     career.media(profile.selected_event)->reward[profile.difficulty],profile.style_points,&style_earned,
                                                                     career.media(profile.selected_event),owned_setup.reputation,&career,profile.style_high_water,
-                                                                    round,&places,profile.tournament.event?&profile.tournament:nullptr,false,profile.name,&career_report,nullptr,nullptr,false,&profile);
+                                                                    round,&places,profile.tournament.event?&profile.tournament:nullptr,false,profile.name,&career_report,nullptr,nullptr,false,&profile,&music);
+                                                                    career_music=music.playing();
                                                                 }catch(...) {
                                                                     // A renderer/finish-continuation failure does not
                                                                     // cancel a result already fixed by race timing.
@@ -3006,7 +3028,7 @@ int main(int argc, char** argv) {
                             options_open=false;
                             music.sound(audio::FrontendSound::back);
                         }else if(input.up!=input.down) {
-                            option_row=(option_row+(input.up?3U:1U))%4U;
+                            option_row=(option_row+(input.up?4U:1U))%5U;
                             music.sound(input.up?audio::FrontendSound::up:audio::FrontendSound::down);
                         }else {
                             const bool left=down&(HidNpadButton_Left|HidNpadButton_StickLLeft);
@@ -3014,7 +3036,11 @@ int main(int argc, char** argv) {
                             if(left!=right || input.accept) {
                                 bool* values[]={&presentation.motion_blur,&presentation.low_car_reflections,
                                                 &presentation.road_reflections,&presentation.metric_speed};
-                                *values[option_row]=!*values[option_row];
+                                if(option_row==4) {
+                                    constexpr std::uint32_t heights[]={0,540,720};
+                                    const unsigned current=presentation.race_height==540?1U:presentation.race_height==720?2U:0U;
+                                    presentation.race_height=heights[(current+(left&&!right?2U:1U))%3U];
+                                }else *values[option_row]=!*values[option_row];
                                 option_notice=write_presentation_options(presentation)?"":"Could not save options to SD.";
                                 music.sound(left?audio::FrontendSound::left:audio::FrontendSound::right);
                             }

@@ -21,6 +21,7 @@ struct RacePresentationOptions {
     bool low_car_reflections=false;
     bool road_reflections=true;
     bool metric_speed=false;
+    std::uint32_t race_height=0; // Auto follows handheld/docked mode.
 };
 class FrontendMenu {
 public:
