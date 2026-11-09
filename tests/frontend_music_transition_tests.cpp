@@ -61,6 +61,16 @@ int main(int argc,char** argv){
             check(music.speech(kMagazineBriefingSpeech,error,unsigned(magazine_briefing_variant(102))),error.c_str());
             check(!music.speech(kMagazineBriefingSpeech,error,23)&&music.speech_drained(),"invalid named speech variant cannot keep a stale voice");
         }
+        {
+            FrontendMusic music;check(music.start(root,error,{},0),error.c_str());
+            const auto muted=pump(1024);played=submitted;
+            check(std::all_of(muted.begin(),muted.end(),[](auto v){return v==0;}),
+                "post-race frontend starts at the selected music volume");
+            music.set_music_percent(100);
+            const auto audible=pump(1024);
+            check(std::any_of(audible.begin(),audible.end(),[](auto v){return v!=0;}),
+                "restoring menu volume keeps the current frontend track playing");
+        }
         for(const auto cue:{FrontendSound::select,FrontendSound::back}){
             FrontendMusic music;check(music.start(root,error),error.c_str());
             pump(1024);played=submitted; // Prime the actual music fade.

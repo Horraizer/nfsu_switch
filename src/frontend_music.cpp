@@ -21,6 +21,7 @@ struct FrontendMusic::Impl {
     std::filesystem::path root;
     bool active=false;
     std::atomic<bool> ending{false},silenced{false};
+    std::atomic<unsigned> music_percent{100};
     std::uint64_t rendered_frames=0;
     std::atomic<std::uint64_t> drain_boundary{0};
     unsigned first=0,next=0;
@@ -38,9 +39,10 @@ struct FrontendMusic::Impl {
 FrontendMusic::FrontendMusic():impl_(std::make_unique<Impl>()) {}
 FrontendMusic::~FrontendMusic() { stop(); }
 bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
-    const std::function<bool()>& thread_setup) {
+    const std::function<bool()>& thread_setup,unsigned music_percent) {
     stop();
     auto& p=*impl_;
+    set_music_percent(music_percent);
     try {
         p.root=root;
         if(!p.sfx.load(root,error)) throw std::runtime_error(error);
@@ -80,6 +82,10 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
         if(!p.stream->error().empty()) throw std::runtime_error(p.stream->error());
         if(!p.output.start([&p](std::int16_t* pcm,std::size_t count) {
             p.stream->pop(pcm,count);
+            const int percent=int(p.music_percent.load());
+            if(percent!=100)
+                for(std::size_t sample=0;sample<count*2;++sample)
+                    pcm[sample]=std::int16_t(int(pcm[sample])*percent/100);
             const bool ending=p.ending.load();
             const bool effect=p.sfx.active()||p.speech.active();
             const bool audible_music=!p.fade.silent();
@@ -94,6 +100,9 @@ bool FrontendMusic::start(const std::filesystem::path& root,std::string& error,
         },error)) { p.stream->stop(); p.stream.reset(); return false; }
         p.active=true; error.clear(); return true;
     } catch(const std::exception& e) { error=e.what(); stop(); return false; }
+}
+void FrontendMusic::set_music_percent(unsigned percent) noexcept {
+    impl_->music_percent=std::min(100U,percent);
 }
 void FrontendMusic::begin_stop() {
     auto& p=*impl_;p.speech.stop();

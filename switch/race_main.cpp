@@ -1712,12 +1712,12 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             if(frontend_music) {
                 sound.stop();
                 std::string music_error;
-                frontend_audio=frontend_music->start(root,music_error);
+                frontend_audio=frontend_music->start(root,music_error,{},pause_menu.music());
                 std::printf("RACE_POST_MUSIC playlist=frontend started=%u %s\n",unsigned(frontend_audio),music_error.c_str());
             }
             const auto post_sound=[&](audio::FrontendSound cue) {
                 if(frontend_audio)frontend_music->sound(cue);
-                else sound.frontend_sound(cue);
+                else if(!frontend_music)sound.frontend_sound(cue);
             };
             const auto play_post_cue=[&](PostRaceCue cue) {
                 using audio::FrontendSound;
@@ -1796,7 +1796,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     // Leave frontend music running into the map, but let the
                     // confirmation click finish before a retry can stop it.
                     const auto cue_deadline=armGetSystemTick()+armNsToTicks(1000000000ULL);
-                    while((frontend_audio?frontend_music->sound_active():sound.frontend_sound_active())&&
+                    while((frontend_audio?frontend_music->sound_active():!frontend_music&&sound.frontend_sound_active())&&
                           armGetSystemTick()<cue_deadline&&appletMainLoop())
                         require(renderer.present_frontend(ui,error),error);
                     if(frontend_audio)frontend_music->stop_speech();
@@ -1833,7 +1833,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 }
                 if(first_post_frame&&menu.page()==PostRacePage::results) {
                     const int voice=audio::post_race_speech(event_number,event_won);
-                    if(voice>=0) {
+                    if(voice>=0&&(frontend_audio||!frontend_music)) {
                         std::string voice_error;
                         const bool played=frontend_audio?frontend_music->speech(voice,voice_error):
                             sound.post_race_voice(root,event_number,event_won,voice_error);
@@ -1847,6 +1847,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             }
             if(finish_sweep&&!sweep_results_continued)throw Cancel{};
         }catch(const std::exception& e){if(finish_sweep)throw;failure=std::string("post-race: ")+e.what();flow_mark("post.failed",e.what());}
+        if(frontend_music)frontend_music->set_music_percent(100);
     }
     std::string close_error;
     if (!renderer.close(close_error)) {

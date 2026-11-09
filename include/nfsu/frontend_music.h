@@ -20,7 +20,8 @@ public:
     FrontendMusic();
     ~FrontendMusic();
     bool start(const std::filesystem::path& root, std::string& error,
-        const std::function<bool()>& thread_setup = {});
+        const std::function<bool()>& thread_setup = {}, unsigned music_percent=100);
+    void set_music_percent(unsigned percent) noexcept;
     // The caller keeps servicing input/applet/presentation while the device
     // plays the fade and any original cue. stop() then releases the device.
     void begin_stop();
