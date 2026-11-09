@@ -64,7 +64,7 @@ public:
         const auto& t=session.timing();const auto& r=t.racers.at(actor);
         const auto& sample=samples_.at(actor);
         const auto& driver=actor?session.rival(actor-1):session;
-        const std::string name=actor?session.rival_name(actor-1):"YOU";
+        const std::string name=actor?session.rival_name(actor-1):session.player_name();
         const auto& positions_=sample.positions;const auto& scores_=sample.scores;
         const auto top_=sample.top,distance_=sample.distance,seconds_=sample.seconds;
         PostRaceValues out;
@@ -180,7 +180,7 @@ inline PostRaceValues post_race_report(const RaceSession& session,PostRaceValues
         const bool drift=session.is_drift();
         const unsigned actor=drift?session.drift_competition().standings()[n].actor:n<rows.size()?unsigned(rows[n].racer):4;
         values["Pos"+key]=actor<rows.size()||drift?std::to_string(n+1):"";
-        values["Name"+key]=actor==0?"YOU":drift?session.drift_competition().standings()[n].name:
+        values["Name"+key]=actor==0?session.player_name():drift?session.drift_competition().standings()[n].name:
             actor<=session.rival_count()?session.rival_name(actor-1):"";
         values["CarModel_"+key]=actor<car_labels.size()?car_labels[actor]:"";
         values["BestLap_"+key]="";
@@ -212,7 +212,7 @@ inline PostRaceValues post_race_report(const RaceSession& session,PostRaceValues
     values["CountingStylePoints"]=std::to_string(subtotal);
     const int multiplier=post_race_style_multiplier(visual_reputation);
     values["StyleMultiplier"]=std::to_string(multiplier);values["TotalPointsAnimate"]=std::to_string(subtotal*multiplier);
-    values["UserName"]="YOU";
+    values["UserName"]=session.player_name();
     values["CareerStyleBase"]=std::to_string(previous_style);
     values["RewardBlurbString"]="Congratulations!  You have "+std::to_string(prize)+" added to your Bank.";
     values["Victory_Title"]="Race Victory Reward";
@@ -228,7 +228,7 @@ inline void bind_post_race_tournament(PostRaceValues& values,const RaceSession& 
     }else {
         for(unsigned i=0;i<session.rival_count();++i)names.at(i+1)=session.rival_name(i);
     }
-    names[0]="YOU";
+    names[0]=session.player_name();
     values["Tournament"]="1";
     const auto order=tournament.order(),totals=tournament.totals();
     for(unsigned row=0;row<4;++row) {

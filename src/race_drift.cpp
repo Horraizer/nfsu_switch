@@ -8,7 +8,8 @@
 #include "nfsu/ai_powertrain.h"
 namespace nfsu {
 bool DriftCompetition::load(const std::filesystem::path& root,unsigned number,unsigned difficulty,
-                            unsigned grade,float performance,std::uint32_t seed,std::string& error) {
+                            unsigned grade,float performance,std::uint32_t seed,std::string& error,
+                            const std::string& player_name) {
     if(!is_supported_event(number) || difficulty>2 || grade>3 || !std::isfinite(performance)) {
         error="unsupported drift competition";return false;
     }
@@ -23,7 +24,7 @@ bool DriftCompetition::load(const std::filesystem::path& root,unsigned number,un
     const auto* raw=bytes.data()+event->offset;
     const float event_scale=scalar(raw+0x13C+4*difficulty);
     if(!std::isfinite(event_scale)||event_scale<0){error="invalid drift difficulty scalar";return false;}
-    DriftCompetition next;next.grade_=grade;next.standings_[0]={"YOU",0,0};
+    DriftCompetition next;next.grade_=grade;next.standings_[0]={player_name,0,0};
     std::array<unsigned,3> contexts{};
     for(unsigned i=0;i<3;++i) {
         const auto* p=raw+0xD4+i*0x1C;

@@ -9,7 +9,8 @@ struct DriftStanding { std::string name; float score=0; unsigned actor=0; };
 class DriftCompetition {
 public:
     bool load(const std::filesystem::path&,unsigned event,unsigned difficulty,
-              unsigned grade,float performance,std::uint32_t seed,std::string& error);
+              unsigned grade,float performance,std::uint32_t seed,std::string& error,
+              const std::string& player_name="YOU");
     void update(const RaceRouteTrack&,bool reverse,const float position[2],int highest_lap,float player_score);
     unsigned position() const noexcept;
     const std::array<DriftStanding,4>& standings() const {return standings_;}

@@ -51,7 +51,7 @@ public:
                         unsigned player_grid=1);
     bool set_intro_traffic(const std::vector<RaceTrafficSetup>&,std::string&);
     bool start(const std::filesystem::path& root, const TrackSlice& track, std::string& error,
-               TrackSliceLoadObserver* observer = nullptr);
+               TrackSliceLoadObserver* observer = nullptr, const std::string& player_name = {});
     bool simulate(const GamepadFrame& pad, std::string& error,
                   RaceSimulationProfile* profile=nullptr,TimingService* timer=nullptr);
     bool commit(std::string& error);

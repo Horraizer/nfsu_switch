@@ -187,6 +187,7 @@ int main(int argc,char** argv) {
         std::string error;
         const auto verify=[&](bool ok,unsigned line){if(!ok)throw std::runtime_error("line "+std::to_string(line)+": "+error);};
 #define check(...) verify((__VA_ARGS__),__LINE__)
+        const std::string player_name="WWW_[Racer]~";
         const auto verify_finish_sweep=[&](RaceRun& run,RaceGpuScene& scene,unsigned round) {
             RaceGpuFrame frame;
             check(scene.frame(run.session(),frame,error));
@@ -218,8 +219,10 @@ int main(int argc,char** argv) {
             }
             record();
             const std::array<std::string,4> labels{{"P","A","B","C"}};
-            auto values=post_race_report(run.session(),{},labels,0);
+            auto values=post_race_report(run.session(),RaceResultStatistics{}.values(run.session(),labels[0]),labels,0);
             check(values.at("PlayerRow")=="1"&&values.at("Time1")!="0:00.00");
+            check(values.at("Name1")==player_name&&values.at("UserName")==player_name&&
+                values.at("RacerName")==player_name+" - P");
             if(event) {
                 FrontendArt art,results;
                 check(art.load_startup(root,error)&&art.load_post_race(root,error)&&art.prepare_post_race(results,error));
@@ -234,7 +237,7 @@ int main(int argc,char** argv) {
                     for(unsigned i=0;i<round;++i)result.places[i]={{1,2,3,4}};
                     result.places[round]=places;
                     bind_post_race_tournament(values,run.session(),result,places,{{0,1,2,3}},labels);
-                    check(values.at("Name1")=="YOU"&&values.at("PlayerRow")=="1"&&
+                    check(values.at("Name1")==player_name&&values.at("PlayerRow")=="1"&&
                         !values.at("Name2").empty()&&!values.at("Name3").empty()&&!values.at("Name4").empty());
                     menu.tournament(next);
                 }
@@ -349,7 +352,11 @@ int main(int argc,char** argv) {
             scene.set_race_visuals(true);scene.set_wet_road_reflections(true);check(scene.set_original_draw_distance(true));
             scene.set_silhouette_shadows(silhouettes);
             check(scene.load(posix_file_system(),root,error,nullptr,nullptr,false,true,true,&drift_car,nullptr,event,true,round));
-            check(run.start(root,scene.track(),error));
+            check(run.start(root,scene.track(),error,nullptr,player_name));
+            const auto& drift_rows=run.session().drift_competition().standings();
+            check(std::any_of(drift_rows.begin(),drift_rows.end(),[&](const auto& row) {
+                return row.actor==0&&row.name==player_name;
+            }));
             if(finish_sweep){verify_finish_sweep(run,scene,round);return 0;}
             RaceHudAtlas hud;check(load_race_hud_atlas(root,hud,error,false,false,true,unsigned(selection.slot.track)));
             if(std::getenv("NFSU_CAREER_SCENE_CHECK"))verify_payload(scene,run,hud,selected_car,{},nullptr);
@@ -489,7 +496,8 @@ int main(int argc,char** argv) {
             check(start_camera.load_camera(posix_file_system(),root,start_scene,selection.region,start_clock,error));
             check(run.set_start_clock(start_clock.release,start_clock.go,error));
         }
-        check(run.start(root,track,error));
+        check(run.start(root,track,error,nullptr,player_name));
+        check(run.session().leaderboard_label(0)==player_name);
         if(start_scene_check) {
             check(run.session().start_cinematic());
             if(const char* tick=std::getenv("NFSU_CAREER_START_CAPTURE_TICK"))for(unsigned t=0;t<unsigned(std::stoul(tick));++t) {
@@ -554,6 +562,7 @@ int main(int argc,char** argv) {
         const bool knockout=selection.type==RaceType::lap_knockout;
         check(load_race_hud_atlas(root,hud,error,selection.type!=RaceType::drag,true,false,
             unsigned(selection.slot.track),knockout));
+        for(unsigned char c:player_name)check(hud.lap_fonts[0][c].width>0);
         if(knockout)for(unsigned char c:std::string_view("Youwereknockedout!"))
             check(hud.lap_fonts[1][c].width>0);
         if(selection.type==RaceType::drag)check(load_race_drag_hud(root,selected_car,run.session().spec().handling,hud,error));

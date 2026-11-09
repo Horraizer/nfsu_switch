@@ -175,7 +175,7 @@ bool RaceRun::prepare_metadata(const std::filesystem::path& root, std::string& e
     return read_metadata(root / "Frontend/FRONTB.LZC", root / "Global/GLOBALB.BUN", error, observer);
 }
 bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, std::string& error,
-                    TrackSliceLoadObserver* observer) {
+                    TrackSliceLoadObserver* observer, const std::string& player_name) {
     if (session_ || track.assets.verdict != AssetVerdict::complete) {
         error = "race requires a fresh session and a complete first-lap asset check"; return false;
     }
@@ -245,6 +245,7 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
     if(!player_hull_.points.empty())course_.start=player_grid_pose_;
     if(race_type_==RaceType::drag)course_.start.gearbox=VehicleGearbox::manual;
     session_ = std::make_unique<RaceSession>(course_,spec,race_type_==RaceType::drift?RaceSteering::recovered_predicate1:steering_,hull);
+    session_->set_player_name(player_name);
     // 47D680 resolves anchors on the selected CarTypeInfo, never a global
     // camera table belonging to a different model. Read one bounded record.
     CarAssets camera_car;

@@ -168,6 +168,8 @@ public:
     const RaceDrift& drift() const {return drift_;}
     const DriftCompetition& drift_competition() const {return drift_competition_;}
     bool is_drift() const {return spec_.drift_mode;}
+    void set_player_name(const std::string& name) { if(!name.empty())player_name_=name; }
+    const std::string& player_name() const { return player_name_; }
     std::string leaderboard_label(unsigned actor) const;
     RaceLeaderboardMode leaderboard_mode() const {return leaderboard_cycle_.shown;}
     bool leaderboard_ready() const {return gap_map_.valid;}
@@ -382,6 +384,7 @@ private:
     RaceGapMap gap_map_;
     RaceLeaderboardCycle leaderboard_cycle_;
     std::array<std::string,4> car_labels_;
+    std::string player_name_="YOU";
     std::array<RaceGapActor,4> gap_actors_{};
     void update_standings();
     RaceStyle style_;

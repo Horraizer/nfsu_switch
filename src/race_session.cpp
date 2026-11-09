@@ -157,7 +157,8 @@ bool RaceSession::prepare_leaderboard(const std::filesystem::path& root,const st
 }
 std::string RaceSession::leaderboard_label(unsigned actor) const {
     if(actor>rivals_.size())return {};
-    if(actor==0)return "YOU";
+    // 4A3930 fills the human name from the active profile for every display mode.
+    if(actor==0)return player_name_;
     if(!gap_map_.valid || leaderboard_cycle_.shown==RaceLeaderboardMode::names)return rival_name(actor-1);
     if(leaderboard_cycle_.shown==RaceLeaderboardMode::cars)return car_labels_[actor];
     if(timing_.racers[actor].status==RacerStatus::knocked_out)return "Knocked Out";
@@ -1540,7 +1541,7 @@ bool RaceSession::prepare_style(const std::filesystem::path& root,std::string& e
             error="drift performance setup refused";return false;
         }
         drift_class_=area>500?0U:area>390?1U:area>280?2U:3U;
-        if(!drift_competition_.load(root,event,spec_.drift_difficulty,drift_class_,area,0x60000000U,error))return false;
+        if(!drift_competition_.load(root,event,spec_.drift_difficulty,drift_class_,area,0x60000000U,error,player_name_))return false;
     }
     style_shortcuts_.assign(course_.track.zones.size(),false);
     return true;

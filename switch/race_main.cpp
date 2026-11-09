@@ -790,7 +790,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     progress.checkpoint("race course");
     sweep_mark("race.session");
     drag_mark("drag.session.before");
-    require(race.start(root,scene.track(),error,&progress),error);
+    require(race.start(root,scene.track(),error,&progress,player_name),error);
     drag_mark("drag.session.ready");
     if (race.session().spec().nitrous.installed) {
         const auto& nos=race.session().spec().nitrous;
@@ -1645,11 +1645,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             const bool tournament_win=resolved_tournament.event&&resolved_tournament.round==supported_tournament_row(event_number)->count&&resolved_tournament.order()[0]==0;
             const bool event_won=resolved_tournament.event?tournament_win:race.session().player_won();
             const unsigned prize=event_won?event_prize:0;
-            auto values=post_race_report(race.session(),result_stats.values(race.session(),race.car()),labels,prize,previous_style,visual_reputation);
+            auto values=post_race_report(race.session(),result_stats.values(race.session(),labels[0]),labels,prize,previous_style,visual_reputation);
             if(resolved_tournament.event)bind_post_race_tournament(values,race.session(),resolved_tournament,
                 configuration_places,configuration_to_actor,labels);
-            values["UserName"]=player_name;values["RacerName"]=player_name+" - "+labels[0];
-            for(unsigned row=1;row<=4;++row)if(values["Name"+std::to_string(row)]=="YOU")values["Name"+std::to_string(row)]=player_name;
             const auto career_rewards=career_catalog&&career_profile?
                 career_catalog->finish_rewards(*career_profile,event_won):CareerFinishRewards{};
             if(career_rewards.collect)values["CollectReward"]="1";
@@ -1737,7 +1735,6 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     const auto actor=statistic_actors.at(menu.racer());
                     auto details=result_stats.values(race.session(),labels[actor],actor);
                     if(!race.session().is_drift())details["RaceFinishedPosition"]="0"+std::to_string(menu.racer()+1);
-                    if(!actor)details["RacerName"]=player_name+" - "+labels[0];
                     for(auto it=values.begin();it!=values.end();) {
                         const auto& key=it->first;
                         if(key.rfind("Data",0)==0||key.rfind("LapNumber_",0)==0||key.rfind("AllLapTimes",0)==0||
@@ -2402,7 +2399,8 @@ int main(int argc, char** argv) {
                                     do { intro_result=run(root,false,false,profile_frame,particles_enabled,sky,
                                         false,glows,true,presentation,texture_filter,scene_height,
                                         gpu_boost,hud,false,fps_overlay,nullptr,handling_telemetry,steering,
-                                        selected_car,screen,pad,false,nullptr,0,&art);
+                                        selected_car,screen,pad,false,nullptr,0,&art,1,nullptr,0,0,nullptr,nullptr,
+                                        0,nullptr,0,0,nullptr,nullptr,false,profile.name);
                                     } while(intro_result==RaceReturn::restart && appletMainLoop());
                                     if(intro_result==RaceReturn::intro_won) {
                                         auto next=profile;require(career.intro_won(next,frontend_error),frontend_error);store(next);
@@ -2699,7 +2697,7 @@ int main(int argc, char** argv) {
                                                             do { result=run(root,false,false,profile_frame,particles_enabled,sky,false,glows,true,presentation,texture_filter,scene_height,
                                                                 gpu_boost,hud,false,fps_overlay,&setup.performance,handling_telemetry,steering,chosen,screen,pad,practice,&dress,course.event,
                                                                 &art,launch.difficulty,nullptr,0,0,nullptr,nullptr,setup.reputation,nullptr,0,course.round,
-                                                                nullptr,nullptr,false,"YOU",nullptr,&launch);
+                                                                nullptr,nullptr,false,active_profile?active_profile->name:"YOU",nullptr,&launch);
                                                             }while(result==RaceReturn::restart&&appletMainLoop());
                                                             change=true;
                                                         }

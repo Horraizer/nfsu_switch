@@ -198,6 +198,8 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
     // The full name alphabet uses the free bottom strip. This lies below
     // every turbo/NOS image and to the right of the lap backing.
     int pack_x=256,pack_y=400,row_height=0;
+    // Extra profile-name punctuation fits above the boost artwork, past the minimap.
+    int profile_x=840,profile_y=168,profile_row_height=0;
     for (unsigned f=0;f<3;++f) {
         RaceLapHudFont font;
         for (std::size_t at=0;at+8<=language.size();) {
@@ -235,6 +237,9 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
         // Comment_DATA uses the large font too; keep all earlier atlas UVs.
         if(f==1&&atlas.drift_ready)for(char c:std::string("GOOD DRIFTGREAT SUPERB!COLOSSAL!OUTRAGEOUS!INSANE DRIFT!!DRIFT KING!!"))
             if(glyphs.find(c)==std::string::npos)glyphs+=c;
+        const auto first_extra=glyphs.size();
+        if(f==0)for(char c='!';c<='~';++c)
+            if(glyphs.find(c)==std::string::npos)glyphs+=c;
         std::array<bool,128> packed{};
         for (const char* c=glyphs.c_str();*c;++c) {
             if(atlas.drift_ready){if(packed[unsigned(*c)])continue;packed[unsigned(*c)]=true;}
@@ -248,16 +253,20 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
             if (g.x+g.width>tw || g.y+g.height>th) { error="lap HUD glyph outside texture"; return false; }
             if (f==2) { out.x=kLcd.x+g.x-1; out.y=kLcd.y+g.y-1; continue; }
             const int w=g.width+2,h=g.height+2;
-            if (pack_x+w>kRaceHudAtlasWidth) { pack_x=256;pack_y+=row_height;row_height=0; }
-            if (pack_y+h>512) { error="lap HUD atlas capacity exceeded"; return false; }
-            out.x=pack_x;out.y=pack_y;
+            const bool extra=std::size_t(c-glyphs.c_str())>=first_extra;
+            int& column=extra?profile_x:pack_x;
+            int& row=extra?profile_y:pack_y;
+            int& height=extra?profile_row_height:row_height;
+            if (column+w>kRaceHudAtlasWidth) { column=extra?840:256;row+=height;height=0; }
+            if (row+h>(extra?258:512)) { error="lap HUD atlas capacity exceeded"; return false; }
+            out.x=column;out.y=row;
             for (int y=0;y<h;++y) for (int x=0;x<w;++x) {
                 const int sx=std::clamp(int(g.x)+x-1,0,int(tw)-1);
                 const int sy=std::clamp(int(g.y)+y-1,0,int(th)-1);
-                std::memcpy(atlas.rgba.data()+((pack_y+y)*kRaceHudAtlasWidth+pack_x+x)*4,
+                std::memcpy(atlas.rgba.data()+((out.y+y)*kRaceHudAtlasWidth+out.x+x)*4,
                             rgba.data()+(sy*tw+sx)*4,4);
             }
-            pack_x+=w;row_height=std::max(row_height,h);
+            column+=w;height=std::max(height,h);
         }
     }
     atlas.lap_ready=true;
@@ -542,9 +551,11 @@ void append_drift_hud(const RaceSession& session,const RaceHudAtlas& atlas,
         rect(frame,uv,(320+x-w*.5F)*scale,(240+y-h*.5F)*scale,w*scale,h*scale,color,alpha);
     };
     const auto text=[&](const char* value,unsigned font,float x,float y,float size,
-                        unsigned align,std::array<unsigned char,3> color,unsigned char alpha=254) {
+                        unsigned align,std::array<unsigned char,3> color,unsigned char alpha=254,
+                        float max_width=0) {
         float advance=0;for(const unsigned char* c=reinterpret_cast<const unsigned char*>(value);*c;++c)
             advance+=atlas.lap_fonts[font][*c<128?*c:'?'].advance;
+        if(max_width>0&&advance*size>max_width)size=max_width/advance;
         const float k=size*scale;
         x=(320+x)*scale-advance*k*((align&2)?1.F:(align&1)?.5F:0.F);y=(240+y)*scale;
         // FEng Sj vertical center/bottom use the font line height (4F48B0).
@@ -624,7 +635,7 @@ void append_drift_hud(const RaceSession& session,const RaceHudAtlas& atlas,
     for(const auto& row:session.drift_competition().standings()) {
         const float y=-150+float(rank++)*24;
         box(kLapWhite,242+right,y,156,22,row.actor?std::array<unsigned char,3>{{0,0,0}}:cyan,row.actor?180:128);
-        text(row.name.c_str(),0,170+right,y-10,.9F,0,blue);
+        text(row.name.c_str(),0,170+right,y-10,.9F,0,blue,254,row.actor?0.F:88.F);
         std::snprintf(value,sizeof value,"%d",int(row.score));
         text(value,0,314+right,y-10,.9F,2,blue);
     }
@@ -776,10 +787,12 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                  w*scale,h*scale,color,alpha);
         };
         const auto label=[&](const char* text,unsigned font,float x,float y,float size,
-                             bool align_right,std::array<unsigned char,3> color,unsigned char alpha=254) {
+                             bool align_right,std::array<unsigned char,3> color,unsigned char alpha=254,
+                             float max_width=0) {
             float advance=0;
             for(const unsigned char* c=reinterpret_cast<const unsigned char*>(text);*c;++c)
                 advance+=atlas.lap_fonts[font][*c<128?*c:'?'].advance;
+            if(max_width>0&&advance*size>max_width)size=max_width/advance;
             const float s=size*scale;
             x=right+(320+x)*scale-(align_right?advance*s:0);y=(240+y)*scale;
             for(const unsigned char* c=reinterpret_cast<const unsigned char*>(text);*c;++c) {
@@ -817,10 +830,8 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
             char rank[8];std::snprintf(rank,sizeof rank,"%u:",row+1);
             label(rank,0,134,-170+20*float(row)-(row?1:0),.9F,false,blue);
             const unsigned actor=standings.order[row];
-            // The port has no player-profile name yet. YOU is an explicit
-            // local identity, not a guessed name from the retail intro.
             const auto text=session.leaderboard_label(actor);
-            label(text.c_str(),0,284,-170+20*float(row),.9F,true,blue);
+            label(text.c_str(),0,284,-170+20*float(row),.9F,true,blue,254,actor?0.F:129.F);
         }
         if(session.style().ready()) {
             // HUD_SingleRace StylePointsGroup and its authored children.
