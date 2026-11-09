@@ -1675,6 +1675,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             // two seconds before it can request the results package.
             if(staged_finish) {
                 FrontendClock finish_clock;
+                finish_clock.sample(armTicksToNs(armGetSystemTick()));
                 constexpr double minimum_scene_seconds=2.0;
                 while(finish_scene_seconds<=minimum_scene_seconds && appletMainLoop()) {
                     padUpdate(&pad);
