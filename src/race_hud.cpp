@@ -550,11 +550,16 @@ void append_drift_hud(const RaceSession& session,const RaceHudAtlas& atlas,
                        std::array<unsigned char,3> color,unsigned char alpha) {
         rect(frame,uv,(320+x-w*.5F)*scale,(240+y-h*.5F)*scale,w*scale,h*scale,color,alpha);
     };
+    const auto text_advance=[&](const char* value,unsigned font) {
+        float advance=0;
+        for(const unsigned char* c=reinterpret_cast<const unsigned char*>(value);*c;++c)
+            advance+=atlas.lap_fonts[font][*c<128?*c:'?'].advance;
+        return advance;
+    };
     const auto text=[&](const char* value,unsigned font,float x,float y,float size,
                         unsigned align,std::array<unsigned char,3> color,unsigned char alpha=254,
                         float max_width=0) {
-        float advance=0;for(const unsigned char* c=reinterpret_cast<const unsigned char*>(value);*c;++c)
-            advance+=atlas.lap_fonts[font][*c<128?*c:'?'].advance;
+        const float advance=text_advance(value,font);
         if(max_width>0&&advance*size>max_width)size=max_width/advance;
         const float k=size*scale;
         x=(320+x)*scale-advance*k*((align&2)?1.F:(align&1)?.5F:0.F);y=(240+y)*scale;
@@ -635,9 +640,11 @@ void append_drift_hud(const RaceSession& session,const RaceHudAtlas& atlas,
     for(const auto& row:session.drift_competition().standings()) {
         const float y=-150+float(rank++)*24;
         box(kLapWhite,242+right,y,156,22,row.actor?std::array<unsigned char,3>{{0,0,0}}:cyan,row.actor?180:128);
-        text(row.name.c_str(),0,170+right,y-10,.9F,0,blue,254,row.actor?0.F:88.F);
         std::snprintf(value,sizeof value,"%d",int(row.score));
-        text(value,0,314+right,y-10,.9F,2,blue);
+        constexpr float name_left=170,score_right=314,row_scale=.9F;
+        const float name_width=std::min(88.F,score_right-name_left-text_advance(value,0)*row_scale-6.F);
+        text(row.name.c_str(),0,name_left+right,y-10,row_scale,0,blue,254,row.actor?0.F:name_width);
+        text(value,0,score_right+right,y-10,row_scale,2,blue);
     }
     box(kLapWhite,242+right,-36,156,20,cyan,128);
     box(kLapWhite,242+right,-12,156,20,cyan,128);
