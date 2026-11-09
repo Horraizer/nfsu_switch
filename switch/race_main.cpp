@@ -2938,10 +2938,10 @@ int main(int argc, char** argv) {
                                                 require(frontend_renderer->update(frontend_scene.commands(),frontend_error),frontend_error);
                                                 require(frontend_renderer->present_frontend(frontend_ui,frontend_error),frontend_error);
                                                 if(show_garage_fps) {
-                                                    const auto presented=armGetSystemTick();
+                                                    const auto garage_presented=armGetSystemTick();
                                                     if(garage_fps.previous_present)
-                                                        garage_fps.history.add(ms(presented-garage_fps.previous_present));
-                                                    garage_fps.previous_present=presented;
+                                                        garage_fps.history.add(ms(garage_presented-garage_fps.previous_present));
+                                                    garage_fps.previous_present=garage_presented;
                                                 }
                                             }
                                         }
