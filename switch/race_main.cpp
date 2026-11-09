@@ -726,7 +726,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     std::printf("PARTICLES %s\n",particles_enabled?"ON":"OFF");
     require(scene.set_sky(sky != "off"), "sky mode set after scene load");
     scene.set_wet_road_reflections(wet_road_reflections);
-    scene.set_low_car_reflections(presentation.low_car_reflections);
+    bool low_reflections_pending=presentation.low_car_reflections;
     scene.set_race_visuals(true);
     scene.set_silhouette_shadows(true);
     require(scene.set_original_draw_distance(true),"draw distance setup failed");
@@ -942,7 +942,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             const auto next_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
             if (next_height != scene_height) {
                 if(presentation.low_car_reflections) {
-                    scene.set_low_car_reflections(true);
+                    scene.set_low_car_reflections(false);
+                    low_reflections_pending=true;
                     require(scene.frame(race.session(),frame,error),error);
                 }
                 require(renderer.reconfigure_target(frame.commands,error,scene.draw_capacity(),
@@ -1308,6 +1309,12 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         if(sweep&&!presented)sweep_mark("race.first_frame_submit");
         require(renderer.present(error,ab_minimal?nullptr:&present,&scene_frame,
                                  hud_mode ? &hud_frame : nullptr),error);
+        // The first complete capture must be submitted before recording partial
+        // frames. A simulation tick may replace the frame prepared at load.
+        if(low_reflections_pending) {
+            scene.set_low_car_reflections(true);
+            low_reflections_pending=false;
+        }
         if(sweep) {
             if(!presented)sweep_mark("race.first_frame");
             const auto& timing=race.session().timing();

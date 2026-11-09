@@ -231,7 +231,7 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
         if (rgba.empty()) { error="lap HUD font texture absent"; return false; }
         atlas.lap_font_heights[f]=font.line_height;
         auto glyphs=std::string(needed[f])+(f==1 && atlas.drift_ready?"XTO SLOW!Wg.y":"")+
-            (f==1 && drag?"Gof!SiTotaledBlownEng":"");
+            (f==1 && drag?"Gof!SiTotaledBlownEngK":"");
         // Comment_DATA uses the large font too; keep all earlier atlas UVs.
         if(f==1&&atlas.drift_ready)for(char c:std::string("GOOD DRIFTGREAT SUPERB!COLOSSAL!OUTRAGEOUS!INSANE DRIFT!!DRIFT KING!!"))
             if(glyphs.find(c)==std::string::npos)glyphs+=c;

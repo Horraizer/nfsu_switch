@@ -197,6 +197,9 @@ int main(int argc,char** argv){try{
         }
         RaceHudAtlas hud;need(load_race_hud_atlas(root,hud,error,false,true,false,unsigned(grid.setup->race.track)),error);
         need(load_race_drag_hud(root,"CIVIC",run.session().spec().handling,hud,error),error);
+        for(unsigned char c:std::string_view("KM/H"))
+            need(hud.lap_fonts[1][c].width>0&&hud.lap_fonts[1][c].advance>0,
+                "metric drag speed label has all authored glyphs");
         need(hud.drag_failure_labels[0]=="Blown Engine"&&hud.drag_failure_labels[1]=="Totaled!",
              "original drag failure labels absent: ["+hud.drag_failure_labels[0]+"]["+hud.drag_failure_labels[1]+"]");
         for(const auto& label:hud.drag_failure_labels)for(unsigned char c:label)
