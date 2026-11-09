@@ -481,15 +481,23 @@ void decode_ast_segment(std::istream& input, const Segment& segment,
     std::uint64_t total = 0;
     std::uint32_t block_count = 0;
     std::array<XaState, 2> states{};
+    input.seekg(static_cast<std::streamoff>(pos));
+    if (!input) fail(pos, "stream read failed");
+    std::vector<Byte> block;
     while (pos < segment.end) {
-        const auto h = read_at(input, pos, 8, size);
-        const auto tag = block_tag(h);
-        const std::uint32_t n = u32(h, 4);
+        // Keep the file buffer sequential across blocks, including the header.
+        block.resize(8);
+        if (!input.read(reinterpret_cast<char*>(block.data()), 8))
+            fail(pos, "truncated input");
+        const auto tag = block_tag(block);
+        const std::uint32_t n = u32(block, 4);
         if (n < 8 || n > kMaxChunk || n > segment.end - pos)
             fail(pos, "bad segment chunk size");
         if (tag == kSCDl) {
             ++block_count;
-            const auto block = read_at(input, pos, n, size);
+            block.resize(n);
+            if (!input.read(reinterpret_cast<char*>(block.data() + 8), n - 8))
+                fail(pos, "stream read failed");
             const auto frames = u32(block, 8);
             if (!frames || frames > 1000000U || total + frames > segment.frames)
                 fail(pos, "bad block frame count");
@@ -537,6 +545,10 @@ void decode_ast_segment(std::istream& input, const Segment& segment,
             total += frames;
         } else if (tag != kSCHl && tag != kSCCl && tag != kSCEl) {
             fail(pos, "unexpected segment chunk");
+        } else {
+            const auto remaining = static_cast<std::streamsize>(n - 8);
+            input.ignore(remaining);
+            if (input.gcount() != remaining) fail(pos, "stream read failed");
         }
         pos += n;
     }
