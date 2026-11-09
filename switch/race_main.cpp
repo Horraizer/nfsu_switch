@@ -743,16 +743,17 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     drag_mark("drag.metadata.before");
     require(race.prepare_metadata(root,error,&progress),error);
     drag_mark("drag.scene.before");
+    const auto scene_variant=[] {
+        // 4216B0 advances the NIS playlist stream independently of driving.
+        static audio::TrafficAudioRandom random{std::uint32_t(armGetSystemTick()),0};
+        const auto value=random.state;
+        (void)random.integer(1);
+        return value;
+    };
     unsigned start_scene=0;
     if(intro_grid && event_number>0 && !drag_mode && !drift_mode) {
         require(select_road_start_scene(posix_file_system(),root,unsigned(intro_grid->actors.size()),
-            unsigned(intro_grid->setup->desired_player_grid),[](){
-                //47BD0D uses the world integer RNG for playlist selection.
-                // Keep a presentation stream across race recreation; the seed
-                // is port boot entropy and does not consume driving RNG state.
-                static audio::TrafficAudioRandom random{std::uint32_t(armGetSystemTick()),0};
-                const auto value=random.state;(void)random.integer(1);return value;
-            }(),start_scene,error),error);
+            unsigned(intro_grid->setup->desired_player_grid),scene_variant(),start_scene,error),error);
         require(scene.set_start_scene(start_scene,selected_race.region),"start crowd selection refused");
     }
     sweep_mark("race.scene");
@@ -905,7 +906,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     std::uint64_t previous_driving_present = 0;
     std::uint64_t last_heap_sample = 0, timed_heap_samples = 0;
     RaceHudFrame hud_frame;
-    double finish_seconds=0;bool finish_seen=false;
+    double finish_seconds=0,finish_delay=3;bool finish_seen=false;
     RaceFpsHistory fps_history;
     RaceDebugInput debug_input;
     RaceMinimapState minimap_state;
@@ -1099,7 +1100,10 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             RaceSimulationProfile sim_probe;
             const bool probe_tick=cpu_probe && !race_car_held(race.session().timing());
             if(drag_shift_trace)drag_shift_trace->before(race.session());
+            const bool crashing=race.session().crash_camera_event()!=0;
             require(race.simulate(input,error,probe_tick?&sim_probe:nullptr,probe_tick?&profile_clock:nullptr),error);
+            if(!finish_seen&&race.session().timing().outcome==RaceOutcome::finished)
+                finish_delay=crashing?6.:3.; // 42C2FB checks active stunt/crash modes6/7.
             if(drag_shift_trace)drag_shift_trace->after(race.session(),input.pads[0].buttons);
             result_stats.observe(race.session());
             if(probe_tick) {
@@ -1298,8 +1302,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                                     frame.commands.height,hud_frame);
         if(hud_mode && finished) {
             std::string_view message="Race Over";
-            if(race.session().is_drag()) {
-                const auto status=race.session().timing().racers[0].status;
+            const auto status=race.session().timing().racers[0].status;
+            if(status==RacerStatus::knocked_out)message="You were knocked out!"; // English C246A543, 4A7EF9.
+            else if(race.session().is_drag()) {
                 if(status==RacerStatus::blown_engine)message=hud_atlas.drag_failure_labels[0];
                 else if(status==RacerStatus::totalled)message=hud_atlas.drag_failure_labels[1];
             }
@@ -1529,7 +1534,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         if(spike_probe&&diagnostic_present_end)previous_tail_ms=ms(armGetSystemTick()-diagnostic_present_end);
         // Allow the authored finish banner to become visible before results.
         // This three-second port dwell is not an original results-camera port.
-        if (finished && (!hud_mode || panel_mode || replay_mode || ab_enabled || profile_stats || (finish_seconds>=3 && (!finish_driving||race.session().car().owner_speeds.magnitude<=1.F)))) break;
+        if (finished && (!hud_mode || panel_mode || replay_mode || ab_enabled || profile_stats || finish_seconds>finish_delay)) break;
     }
     } catch (const std::exception& e) {
         if(sweep)throw;
@@ -1625,6 +1630,11 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 results_art.atlas().width,results_art.atlas().height,(unsigned long)results_art.atlas().rgba.size());
             flow_mark("post.atlas",flow_detail);
             require(renderer.set_frontend_overlay(results_art.atlas(),error),error);
+            std::string finish_scene_error;
+            bool staged_finish=scene.load_finish_scene(posix_file_system(),root,race.session(),
+                selected_race.region,scene_variant(),finish_scene_error);
+            flow_mark(staged_finish?"post.scene":"post.scene_unavailable",finish_scene_error.c_str());
+            double finish_scene_seconds=0;
             std::array<std::string,4> models{{race.car(),race.car(),race.car(),race.car()}},labels;
             if(intro_grid) {
                 unsigned actor=1;
@@ -1764,6 +1774,19 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     values["RewardBlurbString"]=unlocked.empty()?"":unlocked.back();
                 }
                 results_art.record_post_race(frame.commands.width,frame.commands.height,menu,values,ui);
+                if(staged_finish) {
+                    scene.set_finish_scene_seconds(finish_scene_seconds);
+                    if(!scene.frame(race.session(),frame,finish_scene_error) ||
+                       !renderer.update(frame.commands,finish_scene_error)) {
+                        // Presentation assets must not discard a completed race.
+                        flow_mark("post.scene_unavailable",finish_scene_error.c_str());
+                        scene.clear_finish_scene();
+                        staged_finish=false;
+                        require(scene.frame(race.session(),frame,error),error);
+                        require(renderer.update(frame.commands,error),error);
+                    }
+                    finish_scene_seconds+=seconds;
+                }
                 require(renderer.present_frontend(ui,error),error);
                 if(finish_sweep&&!sweep_results_presented&&menu.page()==PostRacePage::results) {
                     require(!ui.vertices.empty()&&values.at("PlayerRow")=="1"&&values.at("Name1")==player_name,

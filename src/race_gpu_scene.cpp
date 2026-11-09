@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 
 namespace nfsu {
@@ -1038,16 +1039,41 @@ bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& ou
     entries = selected.size();
     return true;
 }
-bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const CameraFrame& basis,
+bool RaceGpuScene::load_finish_scene(FileSystemService& files,const std::filesystem::path& root,
+                                     const RaceSession& session,const std::string& region,
+                                     unsigned variant,std::string& error) {
+    if(!ready_||finish_scene_||session.rival_count()>finish_slots_.size()||
+       session.timing().outcome!=RaceOutcome::finished) {
+        error="ending NIS requires a loaded, finished race";return false;
+    }
+    auto next=std::make_unique<StartCrowd>();
+    unsigned id=0;
+    if(!select_race_finish_scene(files,root,unsigned(1+session.rival_count()),session.player_position(),
+                                 track_.track_number,variant,id,error) ||
+       !next->load_finish_camera(files,root,id,region,session.course(),error))return false;
+
+    // 47C160 keeps the human in slot zero and packs the remaining actors
+    // in result order, including entrants that have not crossed the line.
+    finish_slots_.fill(0);
+    unsigned slot=1;
+    for(const auto& row:session.result_rows())
+        if(row.racer && row.racer<=finish_slots_.size())finish_slots_[row.racer-1]=slot++;
+    for(unsigned i=0;i<session.rival_count();++i)
+        if(!finish_slots_[i])finish_slots_[i]=slot++;
+    finish_scene_=std::move(next);
+    finish_scene_seconds_=0;
+    return true;
+}
+bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const VehicleState& presented,const CameraFrame& basis,
                                       RecordedCommands& commands,std::string& error) {
-    const auto q=session.car().orientation;
+    const auto q=presented.orientation;
     const auto rotate=[&](Vec3 v){const Vec3 a{q.y*v.z-q.z*v.y,q.z*v.x-q.x*v.z,q.x*v.y-q.y*v.x};
         const Vec3 b{q.y*a.z-q.z*a.y,q.z*a.x-q.x*a.z,q.x*a.y-q.y*a.x};
         return Vec3{v.x+2*(q.w*a.x+b.x),v.y+2*(q.w*a.y+b.y),v.z+2*(q.w*a.z+b.z)};};
     const auto yup=[](Vec3 v){return Vec3{v.x,v.z,-v.y};};
     const auto& h=session.spec().handling;
     const auto com=rotate({h.centre_of_mass[0],h.centre_of_mass[1],h.centre_of_mass[2]});
-    const auto pos=session.car().position;
+    const auto pos=presented.position;
     const auto origin=yup({pos.x-com.x,pos.y-com.y,pos.z-com.z});
     HeadlightProjection light;
     if(!prepare_headlight_projection(headlight_texture_,origin,yup(rotate({1,0,0})),yup(rotate({0,0,1})),light,error))return false;
@@ -1145,6 +1171,13 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
     };
     VehicleState presented=session.car();auto presented_animation=session.animation();
     const bool start_car=crowd_.car(session,presented,&presented_animation);
+    if(finish_scene_&&!finish_scene_->finish_car(0,finish_scene_seconds_,session.spec(),presented,presented_animation)) {
+        error="ending NIS human pose unavailable";return false;
+    }
+    std::optional<std::array<VehicleState,3>> finish_rivals;
+    if(finish_scene_)finish_rivals.emplace();
+    const bool hide_player=session.camera().pov==2&&!session.crash_camera_event()&&
+        !session.start_cinematic()&&!start_car&&!finish_scene_;
     if (!drive_place_instances(base_, presented, session.spec(), car_.instances,
                                &presented_animation)) {
         error = "race car placement failed"; return false;
@@ -1208,14 +1241,26 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         auto& r=rivals_[i];bool active=true;
         CarShadowPlacement shadow_placement;
         if(!r.traffic) {
-            const auto& actor=session.rival(i);active=session.actor_visible(unsigned(i)+1);
-            if(!drive_place_instances(r.base,actor.car(),actor.spec(),r.scene.instances,&actor.animation())) {
+            const auto& actor=session.rival(i);active=finish_scene_||session.actor_visible(unsigned(i)+1);
+            const auto* car=&actor.car();
+            const auto* animation=&actor.animation();
+            CarAnimationState finish_animation;
+            if(finish_scene_) {
+                finish_animation=*animation;
+                auto& pose=finish_rivals->at(i);pose=*car;
+                if(!finish_scene_->finish_car(finish_slots_.at(i),finish_scene_seconds_,actor.spec(),pose,finish_animation)) {
+                    error="ending NIS rival pose unavailable";return false;
+                }
+                car=&pose;animation=&finish_animation;
+            }
+            if(!drive_place_instances(r.base,*car,actor.spec(),r.scene.instances,animation)) {
                 error="rival body placement failed";return false;
             }
-            if (active && r.shadow.texture.usable()) shadow_placement=place_car_shadow(r.shadow,actor);
-            r.service_brake=actor.light_service_brake();
+            if(active && r.shadow.texture.usable())shadow_placement=finish_scene_?
+                place_car_shadow(r.shadow,*car,actor.spec(),session.course().world):place_car_shadow(r.shadow,actor);
+            r.service_brake=finish_scene_?0:actor.light_service_brake();
         } else {
-            const auto& actor=session.traffic()->actors().at(i-session.rival_count());active=actor.active;r.service_brake=actor.animation.braking?1.F:0.F;
+            const auto& actor=session.traffic()->actors().at(i-session.rival_count());active=!finish_scene_&&actor.active;r.service_brake=actor.animation.braking?1.F:0.F;
             if(active) {
                 if(!drive_place_instances(r.base,actor.car,actor.setup.spec,r.scene.instances,&actor.animation)) {
                     error="traffic body placement failed";return false;
@@ -1253,14 +1298,15 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         if (!drive_render_camera(session.camera(), ChaseFovMode::retail,
                                  options.width, options.height, options.camera, error)) return false;
         crowd_.camera(session,options.camera,options.width,options.height);
+        if(finish_scene_&&!finish_scene_->finish_camera(finish_scene_seconds_,options.camera,options.width,options.height)) {
+            error="ending NIS camera pose unavailable";return false;
+        }
         options.camera.far_plane = far;
         CameraFrame basis;
         if (!make_camera_frame(options.camera, options.width, options.height, basis, error)) return false;
         if (shadow_silhouette_) {
             const VehicleVec3 eye{basis.eye.x,-basis.eye.z,basis.eye.y};
-            const bool player_visible = session.camera().pov != 2 || session.crash_camera_event() ||
-                                        session.start_cinematic() || start_car;
-            shadow_silhouette_->update(presented,session.spec(),session.course().world,eye,shadow_light_,player_visible,
+            shadow_silhouette_->update(presented,session.spec(),session.course().world,eye,shadow_light_,!hide_player,
                                        shadow_templates_.owning_draws().front());
             for (std::size_t i = 0; i < rivals_.size(); ++i) {
                 auto& visual = rivals_[i];
@@ -1270,7 +1316,8 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                     visual.silhouette->update(actor.car,actor.setup.spec,session.course().world,eye,shadow_light_,visual.active,draw);
                 } else {
                     const auto& actor = session.rival(i);
-                    visual.silhouette->update(actor.car(),actor.spec(),session.course().world,eye,shadow_light_,visual.active,draw);
+                    visual.silhouette->update(finish_scene_?finish_rivals->at(i):actor.car(),actor.spec(),
+                        session.course().world,eye,shadow_light_,visual.active,draw);
                 }
             }
         }
@@ -1281,7 +1328,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                 auto& draw=glow_selected_[glow_count_++];draw=glow_templates_[sprite.texture];
                 std::copy(std::begin(sprite.transform),std::end(sprite.transform),draw.placement.rows);
                 for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=sprite.rgba[c];
-                draw.material.alpha[0]=session.camera().pov==2&&!session.crash_camera_event()&&!session.start_cinematic()&&!start_car?0.F:float(sprite.rgba[3])/255;
+                draw.material.alpha[0]=hide_player?0.F:float(sprite.rgba[3])/255;
             }
             for(std::size_t i=0;i<lamps_.lights.size();++i) {
                 const auto& lamp=lamps_.lights[i];
@@ -1379,7 +1426,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
                     const auto& instance = car_.instances[draw.instance];
                     std::copy(std::begin(instance.transform),std::end(instance.transform),draw.placement.rows);
                     draw.material.alpha[3] = static_cast<float>(instance.lamp_mode);
-                    if(session.camera().pov==2 && !session.crash_camera_event() && !session.start_cinematic() && !start_car)
+                    if(hide_player)
                         std::fill(std::begin(draw.placement.rows),std::end(draw.placement.rows),0.F);
                 }
             }
@@ -1419,7 +1466,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
             }
             const auto visual_start = profile ? timer->now_us() : 0;
             if (profile) profile->road_reflections_ms = (visual_start-reflection_start)/1000.0;
-            if(race_visuals_ && !prepare_visual_frame(session,basis,out.commands,error))return false;
+            if(race_visuals_ && !prepare_visual_frame(session,presented,basis,out.commands,error))return false;
             if (profile) profile->race_visuals_ms = (timer->now_us()-visual_start)/1000.0;
             out.commands.source_ = this; out.commands.generation_ = generation_;
             stage(&RaceFrameProfile::combine_ms);
@@ -1438,7 +1485,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         stage(&RaceFrameProfile::list_ms);
         RecordedCommands car_commands;
         if (!record_car_commands(car_, options, {}, skin_source_, car_commands, error)) return false;
-        if(session.camera().pov==2 && !session.crash_camera_event() && !session.start_cinematic() && !start_car)
+        if(hide_player)
             for(auto& draw:car_commands.owning_draws())
                 std::fill(std::begin(draw.placement.rows),std::end(draw.placement.rows),0.F);
         if (particles_enabled_) {

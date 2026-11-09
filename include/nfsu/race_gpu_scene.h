@@ -106,6 +106,10 @@ public:
         if(start_scene_==scene && crowd_.actor_count()){clock=crowd_.clock();return true;}
         return crowd_.load_camera(fs,root,scene,region,clock,error);
     }
+    bool load_finish_scene(FileSystemService&,const std::filesystem::path&,const RaceSession&,
+                           const std::string& region,unsigned variant,std::string&);
+    void clear_finish_scene() {finish_scene_.reset();}
+    void set_finish_scene_seconds(double seconds) {finish_scene_seconds_=seconds;}
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);
@@ -126,6 +130,9 @@ private:
     DrawTextureAlias texture_alias(std::size_t i) const override {return texture_aliases_.at(i);}
 
     StartCrowd crowd_;
+    std::unique_ptr<StartCrowd> finish_scene_;
+    std::array<unsigned,3> finish_slots_{};
+    double finish_scene_seconds_=0;
     unsigned start_scene_=0;
     bool start_scenes_enabled_=true;std::string start_region_;
     bool race_visuals_=false;
@@ -135,7 +142,7 @@ private:
     TrackResidency no_zone_{TrackResidencyRule::no_zone, {}};
     RenderTexture headlight_texture_;
     std::size_t headlight_resource_=kNoHandle;
-    bool prepare_visual_frame(const RaceSession&, const CameraFrame&, RecordedCommands&, std::string&);
+    bool prepare_visual_frame(const RaceSession&, const VehicleState&, const CameraFrame&, RecordedCommands&, std::string&);
     WetRoadLamps lamps_;
     std::filesystem::path root_;
     bool lamps_loaded_ = false;

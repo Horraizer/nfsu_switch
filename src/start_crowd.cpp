@@ -166,11 +166,22 @@ std::vector<Pose> drift_car_motion(const std::filesystem::path& root,const std::
     }
     throw std::runtime_error("drift start car motion absent");
 }
-Matrix start_anchor(const VehicleTrackCourse& course) {
+Matrix start_anchor(const VehicleTrackCourse& course,bool finish=false) {
     const TrackMarker* marker=nullptr;
-    for(const auto& m:course.track.markers)if(m.name_hash==hash(course.route.reverse?"BackwardStartLine":"ForwardStartLine") && m.param==0){marker=&m;break;}
+    if(finish) {
+        const auto boundary=course.route.point_to_point?course.route.finish:course.route.start;
+        if(boundary>=0&&std::size_t(boundary)<course.route.boundaries.size()) {
+            const auto index=course.route.boundaries[std::size_t(boundary)].marker;
+            if(index>=0&&std::size_t(index)<course.track.markers.size())marker=&course.track.markers[std::size_t(index)];
+        }
+    }else {
+        const auto marker_hash=hash(course.route.reverse?"BackwardStartLine":"ForwardStartLine");
+        for(const auto& m:course.track.markers)if(m.name_hash==marker_hash && m.param==0){marker=&m;break;}
+    }
     need(marker!=nullptr,"start line marker absent");
-    const float angle=float(vehicle_track_heading(marker->angle)),cs=std::cos(angle),sn=std::sin(angle);
+    // 47CCEA applies the opposite quarter turn for an ending NIS.
+    const auto angle_word=std::uint16_t(marker->angle+(finish?0x8000:0));
+    const float angle=float(vehicle_track_heading(angle_word)),cs=std::cos(angle),sn=std::sin(angle);
     //47CAC0 supplies XY only;47CB50 initializes query Z to0 and asks440A40
     // for its ordered road height/normal. Marker Z is not a search window:
     //1102 time-trial starts lie outside the former +2/-8 column.
@@ -255,6 +266,9 @@ struct StartCrowd::Data {
     Matrix anchor{};bool anchored=false;
     std::uint32_t post_go_frames=0, release_frame=0, go_frame=0;
     std::vector<Pose> camera_poses,car_poses;
+    std::array<std::vector<Pose>,4> finish_cars;
+    std::array<std::vector<double>,4> finish_travel;
+    unsigned finish_loop_start=0,finish_loop_end=0;
     // Signed authored root travel, prepared once, sampled by the same clock.
     std::vector<double> car_travel;
     std::vector<std::size_t> camera_cuts;
@@ -277,10 +291,10 @@ unsigned road_start_playlist(unsigned racers,unsigned grid) {
     if(racers==3)return grid==3?4:grid==1?5:6;
     return grid==3?0:grid==1?1:grid==2?2:3;
 }
-bool select_road_start_scene(FileSystemService& fs,const std::filesystem::path& root,
-                            unsigned racers,unsigned grid,unsigned variant,unsigned& scene,std::string& error) {
+static bool select_scene_from_playlist(FileSystemService& fs,const std::filesystem::path& root,
+                                       unsigned list,unsigned variant,unsigned& scene,std::string& error) {
     try {
-        const auto list=road_start_playlist(racers,grid);const auto path=root/"Global/INGAMEB.BUN";
+        const auto path=root/"Global/INGAMEB.BUN";
         bool found=false;unsigned selected=0;
         for(const auto& c:file_chunks(fs,path))if(c.id==0x34036) {
             need(!found,"duplicate start playlist");const auto bytes=read_range(fs,path,c.at,std::size_t(c.end-c.at));const View b(bytes);
@@ -291,22 +305,75 @@ bool select_road_start_scene(FileSystemService& fs,const std::filesystem::path& 
         need(found,"start playlist absent");scene=selected;error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
+bool select_road_start_scene(FileSystemService& fs,const std::filesystem::path& root,
+                            unsigned racers,unsigned grid,unsigned variant,unsigned& scene,std::string& error) {
+    try {return select_scene_from_playlist(fs,root,road_start_playlist(racers,grid),variant,scene,error);}
+    catch(const std::exception& e) {error=e.what();return false;}
+}
+
+bool select_race_finish_scene(FileSystemService& fs,const std::filesystem::path& root,
+                              unsigned racers,unsigned place,unsigned track,
+                              unsigned variant,unsigned& scene,std::string& error) {
+    // 47BED0 and 68A7A0..68A7FA. Place means the race result, not
+    // the campaign objective or accumulated tournament position.
+    if(racers==1 || track==1104) {
+        scene=place==1?2322:racers==1?2326:2323;
+        error.clear();return true;
+    }
+    return select_scene_from_playlist(fs,root,place==1?10:11,variant,scene,error);
+}
+
 bool StartCrowd::load_camera(FileSystemService& fs,const std::filesystem::path& root,unsigned scene,
                              const std::string& region,RaceStartClock& clock,std::string& error) {
+    return load_camera_clip(fs,root,scene,region,clock,false,error);
+}
+
+bool StartCrowd::load_finish_camera(FileSystemService& fs,const std::filesystem::path& root,unsigned scene,
+                                    const std::string& region,const VehicleTrackCourse& course,std::string& error) {
+    try {
+        const auto anchor=start_anchor(course,true);
+        RaceStartClock unused;
+        if(!load_camera_clip(fs,root,scene,region,unused,true,error))return false;
+        data_->anchor=anchor;
+        data_->anchored=true;
+        return true;
+    }catch(const std::exception& e) {error=e.what();return false;}
+}
+
+bool StartCrowd::load_camera_clip(FileSystemService& fs,const std::filesystem::path& root,unsigned scene,
+                                  const std::string& region,RaceStartClock& clock,bool finish,std::string& error) {
     try {
         need(data_->actors.empty(),"start camera cannot replace crowd actors");
         need(region.size()==4 && std::all_of(region.begin(),region.end(),[](unsigned char c){return (c>='A'&&c<='Z')||(c>='0'&&c<='9');}),"start camera region");
         const auto path=root/("Tracks/STREAM"+region+".BUN");const auto parts=file_chunks(fs,path);
-        auto next=std::make_unique<Data>();RaceStartClock timing;std::vector<unsigned> hashes;bool found=false;
-        for(const auto& c:parts)if(c.id==0x34035 && c.end-c.at>=0x70) {
-            const auto bytes=read_range(fs,path,c.at,0x70);const View b(bytes);if(b.u32(4)!=scene)continue;
-            need(!found,"duplicate start camera scene");found=true;
-            timing={b.u32(0x6c),b.u32(0x68),b.u32(0x64)};
-            need(b.u32(0x60)==0 && timing.release && timing.go>timing.release && timing.end>=timing.go,"start camera timeline");
+        auto next=std::make_unique<Data>();RaceStartClock timing;std::vector<unsigned> hashes;
+        std::uint64_t scene_begin=0,scene_end=0;
+        const std::size_t header_size=finish?0x7c:0x70;
+        for(const auto& c:parts)if(c.id==0x34035) {
+            if(scene_begin && !scene_end)scene_end=c.at;
+            if(c.end-c.at<header_size)continue;
+            const auto bytes=read_range(fs,path,c.at,header_size);const View b(bytes);if(b.u32(4)!=scene)continue;
+            need(!scene_begin,"duplicate race camera scene");scene_begin=c.at;
+            if(finish) {
+                need(b.u32(0x60)==1,"ending NIS type");
+                next->finish_loop_start=b.u32(0x78);
+                next->finish_loop_end=b.u32(0x74);
+                need(next->finish_loop_start && next->finish_loop_end>=next->finish_loop_start,"ending NIS timeline");
+            }else {
+                timing={b.u32(0x6c),b.u32(0x68),b.u32(0x64)};
+                need(b.u32(0x60)==0 && timing.release && timing.go>timing.release && timing.end>=timing.go,"start camera timeline");
+            }
             const auto count=b.u32(8);need(count && count<=5,"start camera cut count");
             for(unsigned cut=0;cut<count;++cut)for(unsigned k=0;k<3;++k)hashes.push_back(b.u32(0x20+20*k+4*cut));
         }
-        need(found,"start camera scene absent");
+        need(scene_begin,"race camera scene absent");
+        std::array<std::array<unsigned,3>,4> car_hashes{};
+        auto wanted_hashes=hashes;
+        if(finish)for(unsigned i=0;i<car_hashes.size();++i) {
+            const auto name="ZPM_Car"+std::to_string(i+1);
+            car_hashes[i]={{hash(name+"_s"),hash(name+"_q"),hash(name+"_t")}};
+            wanted_hashes.insert(wanted_hashes.end(),car_hashes[i].begin(),car_hashes[i].end());
+        }
         Skeleton base;bool root_found=false;
         const auto common_path=root/"Global/INGAMEB.BUN";
         for(const auto& c:file_chunks(fs,common_path))if(c.id==0xe34009) {
@@ -316,14 +383,14 @@ bool StartCrowd::load_camera(FileSystemService& fs,const std::filesystem::path& 
         need(root_found && base.pose.size()==2,"start camera ROOT shape");
         std::vector<Bytes> banks;std::vector<Elf> elves;std::map<unsigned,std::pair<std::size_t,std::size_t>> clips;
         std::size_t resident=0;
-        for(const auto& c:parts)if(c.id==0xe34010) {
+        for(const auto& c:parts)if(c.id==0xe34010 && (!finish||(c.at>scene_begin&&(!scene_end||c.at<scene_end)))) {
             const auto at=(c.at+15)&~std::uint64_t(15);auto bytes=read_range(fs,path,at,std::size_t(c.end-at));Elf e{View(bytes)};
             std::vector<std::pair<unsigned,std::size_t>> wanted;
             for(const auto& symbol:e.symbols)if(symbol.first=="__AnimationBank:::bank") {
                 const auto n=e.data.u32(symbol.second+4),ptr=e.data.u32(symbol.second+12),names=e.data.u32(symbol.second+16);need(n<1024,"start camera bank size");
                 for(unsigned i=0;i<n;++i) {
                     const auto h=hash(e.data.text(e.data.u32(names+4*i)));
-                    if(std::find(hashes.begin(),hashes.end(),h)!=hashes.end())wanted.emplace_back(h,e.data.u32(ptr+4*i));
+                    if(std::find(wanted_hashes.begin(),wanted_hashes.end(),h)!=wanted_hashes.end())wanted.emplace_back(h,e.data.u32(ptr+4*i));
                 }
             }
             if(wanted.empty())continue;
@@ -343,6 +410,35 @@ bool StartCrowd::load_camera(FileSystemService& fs,const std::filesystem::path& 
                 next->camera_poses.push_back(pose[1]);
             }
             next->camera_cuts.push_back(next->camera_poses.size());
+        }
+        if(finish)for(unsigned i=0;i<car_hashes.size();++i) {
+            const auto translation=clips.find(car_hashes[i][2]);
+            need(translation!=clips.end(),"ending NIS car position absent");
+            const auto frames=elves[translation->second.first].data.word(translation->second.second+10);
+            need(frames && frames<=1024,"ending NIS car frame count");
+            auto& poses=next->finish_cars[i];
+            auto& travel=next->finish_travel[i];
+            poses.reserve(frames);travel.reserve(frames);
+            for(unsigned f=0;f<frames;++f) {
+                const Pose identity{{1,1,1,1,0,0,0,1,0,0,0,0}};
+                std::vector<Pose> pose(2,identity);
+                for(auto h:car_hashes[i]) {
+                    const auto clip=clips.find(h);
+                    if(clip==clips.end())continue;
+                    const auto [bank,at]=clip->second;
+                    const auto& e=elves[bank];
+                    const auto n=e.data.word(at+10);
+                    need(n && e.data.word(at+8)==1,"ending NIS car channel");
+                    channel(e.data,e.data.u32(at+12),std::min(f,unsigned(n)-1),pose);
+                }
+                poses.push_back(pose[1]);
+                double distance=0;
+                if(f) {
+                    const auto previous=pose_matrix(poses[f-1]),current=pose_matrix(poses[f]);
+                    for(unsigned k=0;k<3;++k)distance+=double(current[12+k]-previous[12+k])*previous[k];
+                }
+                travel.push_back(f?travel.back()+distance:0);
+            }
         }
         //47B290 flag20 holds the last sample when a clip ends before release.
         need(!next->camera_poses.empty(),"start camera has no samples");
@@ -639,7 +735,47 @@ bool StartCrowd::car(const RaceSession& session,VehicleState& out,CarAnimationSt
 }
 bool StartCrowd::camera(const RaceSession& session,OrbitCamera& out,unsigned width,unsigned height) const {
     if(!data_->anchored || data_->camera_poses.empty() || !session.start_cinematic())return false;
-    const double frame=std::max(0.0,double(session.start_scene_ticks())*30/kRaceTicksPerSecond);
+    return sample_camera(double(session.start_scene_ticks())*30/kRaceTicksPerSecond,out,width,height);
+}
+bool StartCrowd::finish_camera(double seconds,OrbitCamera& out,unsigned width,unsigned height) const {
+    if(!data_->anchored||!data_->finish_loop_end||!std::isfinite(seconds))return false;
+    double frame=std::max(0.0,seconds*30);
+    if(frame>=data_->finish_loop_end) {
+        const auto span=data_->finish_loop_end-data_->finish_loop_start;
+        frame=data_->finish_loop_start+(span?std::fmod(frame-data_->finish_loop_start,span):0);
+    }
+    return sample_camera(frame,out,width,height);
+}
+bool StartCrowd::finish_car(unsigned slot,double seconds,const VehicleSpec& spec,VehicleState& out,
+                             CarAnimationState& animation) const {
+    if(!data_->anchored||slot>=data_->finish_cars.size()||!std::isfinite(seconds))return false;
+    const auto& poses=data_->finish_cars[slot];
+    if(poses.empty())return false;
+    // 47C310 starts at half speed. Car pose and wheel travel hold at clip end.
+    const double frame=std::clamp(seconds*15,0.,double(poses.size()-1));
+    const auto a=std::size_t(frame),b=std::min(a+1,poses.size()-1);
+    const float fraction=float(frame-double(a));
+    Pose pose;
+    if(!eagl::blend_pose(poses[a],poses[b],fraction,pose))return false;
+    const auto m=multiply(pose_matrix(pose),data_->anchor);
+    const double heading=std::atan2(m[1],m[0]),s=std::sin(heading),c=std::cos(heading);
+    const auto& com=spec.handling.centre_of_mass;
+    out.position={m[12]+c*com[0]-s*com[1],m[13]+s*com[0]+c*com[1],m[14]+com[2]};
+    out.orientation={std::cos(heading*.5),0,0,std::sin(heading*.5)};
+    out.steer_angle=0;
+    out.velocity={};
+    animation.braking=false;
+    const auto& travel=data_->finish_travel[slot];
+    const double distance=travel[a]+fraction*(travel[b]-travel[a]);
+    for(unsigned w=0;w<kVehicleWheelCount;++w) {
+        out.wheels[w].compression=0;
+        const double radius=spec.handling.wheels[w].radius;
+        if(radius>0)animation.wheel_phase[w]=std::remainder(distance/radius,6.28318530717958647692);
+    }
+    return true;
+}
+bool StartCrowd::sample_camera(double frame,OrbitCamera& out,unsigned width,unsigned height) const {
+    frame=std::clamp(frame,0.,double(data_->camera_poses.size()-1));
     const auto a=std::min(std::size_t(frame),data_->camera_poses.size()-1);
     auto b=std::min(a+1,data_->camera_poses.size()-1);
     if(std::find(data_->camera_cuts.begin(),data_->camera_cuts.end(),b)!=data_->camera_cuts.end())b=a;

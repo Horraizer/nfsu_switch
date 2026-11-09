@@ -249,6 +249,29 @@ int main(int argc,char** argv) {
                 }
                 check(action==(next?PostRaceAction::next_race:PostRaceAction::leave));
             }
+            if(std::getenv("NFSU_CAREER_FINISH_SCENE")) {
+                SupportedRaceSelection selection;
+                check(supported_race_selection(event,round,selection));
+                auto& timing=const_cast<RaceTimingState&>(run.session().timing());
+                const auto before=timing.racers[0];
+                for(unsigned place:{1U,4U}) {
+                    timing.racers[0].position=int(place);
+                    const auto live_camera=frame.commands.frame.eye[0];
+                    check(scene.load_finish_scene(posix_file_system(),root,run.session(),selection.region,0,error));
+                    record();
+                    const auto ending_camera=frame.commands.frame;
+                    scene.set_finish_scene_seconds(2.);
+                    record();
+                    check(std::abs(ending_camera.eye[0]-frame.commands.frame.eye[0])+
+                          std::abs(ending_camera.eye[2]-frame.commands.frame.eye[2])>.01F);
+                    check(timing.racers[0].position==int(place)&&timing.racers[0].finish_ticks==before.finish_ticks);
+                    scene.clear_finish_scene();
+                    record();
+                    check(live_camera==frame.commands.frame.eye[0]);
+                    std::cout<<"PASS ending NIS command stream event="<<event<<" place="<<place<<'\n';
+                }
+                timing.racers[0]=before;
+            }
             std::cout<<"PASS career finish probe event="<<event<<'\n';
         };
         const auto verify_payload=[&](RaceGpuScene& scene,const RaceRun& run,const RaceHudAtlas& hud,

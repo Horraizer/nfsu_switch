@@ -151,6 +151,38 @@ int main(int argc,char** argv) {
     // Exercise the same lazy anchor path as production for every campaign
     // time trial. The race-only checks do not own the start presentation.
     const auto retail=std::filesystem::u8path(argv[1]);
+    for(unsigned reverse=0;reverse<2;++reverse) {
+        nfsu::VehicleTrackCourse road;
+        if(!nfsu::load_vehicle_track_course(retail/"Tracks/TRACKB1003.LZC",2,int(reverse),0,0,road,error)) {
+            std::cerr<<"FAIL: finish scene course "<<error<<"\n";return 1;
+        }
+        nfsu::RaceSession race(road);
+        if(!race.start(error)){std::cerr<<"FAIL: finish scene vehicle "<<error<<"\n";return 1;}
+        for(unsigned place:{1U,4U})for(unsigned variant=0;variant<3;++variant) {
+            nfsu::StartCrowd ending;
+            unsigned id=0;
+            if(!nfsu::select_race_finish_scene(files,retail,4,place,1003,variant,id,error)||
+               id!=2320+2*variant+(place!=1)||
+               !ending.load_finish_camera(files,retail,id,"L1RA",road,error)) {
+                std::cerr<<"FAIL: ending scene "<<id<<" place="<<place<<" "<<error<<"\n";return 1;
+            }
+            nfsu::OrbitCamera first,later;
+            if(!ending.finish_camera(0,first,1280,720)||!ending.finish_camera(1,later,1280,720)||
+               !nfsu::validate_camera(first,error)||!nfsu::validate_camera(later,error)||
+               std::abs(first.target.x-later.target.x)+std::abs(first.target.z-later.target.z)<.01) {
+                std::cerr<<"FAIL: ending camera motion "<<id<<" "<<error<<"\n";return 1;
+            }
+            for(unsigned slot=0;slot<4;++slot) {
+                auto car=race.car();auto animation=race.animation();
+                if(!ending.finish_car(slot,1,race.spec(),car,animation)||
+                   !std::isfinite(car.position.z)||
+                   std::hypot(car.position.x-road.start.ground.x,car.position.y-road.start.ground.y)>100) {
+                    std::cerr<<"FAIL: ending car pose "<<id<<" slot="<<slot<<"\n";return 1;
+                }
+            }
+            std::cout<<"PASS: ending scene "<<id<<" place="<<place<<" reverse="<<reverse<<"\n";
+        }
+    }
     std::vector<unsigned char> event_bytes;
     const auto events=nfsu::load_race_event_table(retail/"FrontEnd/FrontB.lzc",event_bytes);
     if(!events.ok()){std::cerr<<"FAIL: challenge catalog\n";return 1;}

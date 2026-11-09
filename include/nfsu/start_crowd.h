@@ -15,6 +15,9 @@ bool load_drift_start_pose(const std::filesystem::path&,const VehicleTrackCourse
 unsigned road_start_playlist(unsigned racers,unsigned grid);
 bool select_road_start_scene(FileSystemService&,const std::filesystem::path&,
                             unsigned racers,unsigned grid,unsigned variant,unsigned&,std::string&);
+bool select_race_finish_scene(FileSystemService&,const std::filesystem::path&,
+                              unsigned racers,unsigned place,unsigned track,
+                              unsigned variant,unsigned&,std::string&);
 struct RaceStartClock { unsigned release=0,go=0,end=0; };
 class StartCrowd {
 public:
@@ -24,6 +27,11 @@ public:
     RaceStartClock clock() const;
     bool load_camera(FileSystemService&,const std::filesystem::path&,unsigned scene,
                      const std::string& region,RaceStartClock&,std::string&);
+    bool load_finish_camera(FileSystemService&,const std::filesystem::path&,unsigned scene,
+                            const std::string& region,const VehicleTrackCourse&,
+                            std::string&);
+    bool finish_camera(double seconds,OrbitCamera&,unsigned width,unsigned height) const;
+    bool finish_car(unsigned slot,double seconds,const VehicleSpec&,VehicleState&,CarAnimationState&) const;
     const RecordedCommands& commands() const;
     void rebase(std::size_t);
     void frame(const RaceSession&);
@@ -34,6 +42,9 @@ public:
     std::size_t actor_count() const;
     std::uint64_t bytes() const;
 private:
+    bool load_camera_clip(FileSystemService&,const std::filesystem::path&,unsigned scene,
+                          const std::string& region,RaceStartClock&,bool finish,std::string&);
+    bool sample_camera(double frame,OrbitCamera&,unsigned width,unsigned height) const;
     struct Data;
     std::unique_ptr<Data> data_;
 };
