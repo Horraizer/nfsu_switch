@@ -1,4 +1,5 @@
 #include "nfsu/frontend.h"
+#include "nfsu/fps_history.h"
 #include "nfsu/frontend_scene.h"
 #include "nfsu/career_garage.h"
 #include "nfsu/frontend_motion.h"
@@ -9,7 +10,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <map>
 #include <functional>
@@ -1383,16 +1383,29 @@ void FrontendArt::record_ui(unsigned width,unsigned height,const FrontendMenu& m
     frame.vertices.reserve(kFrontendUiMaxQuads*4);frame.additive.reserve(kFrontendUiMaxQuads);
     impl_->draw(Canvas{width,height,impl_->atlas,frame},menu);
 }
-void FrontendArt::append_fps(unsigned width,unsigned height,const FrontendPresentationWindow& window,
+void FrontendArt::append_fps(unsigned width,unsigned height,const RaceFpsHistory& history,
                              FrontendUiFrame& frame)const {
-    char label[64]="FPS ...";
-    if(window.intervals)
-        std::snprintf(label,sizeof label,"%.1f FPS  %.1f ms",window.fps(),window.mean_ms());
-    if(frame.additive.size()+std::strlen(label)+1>kFrontendUiMaxQuads)return;
+    char label[64];
+    history.format(label,sizeof label);
+    if(frame.additive.size()+std::strlen(label)+history.count+kFpsGraphGuides.size()+1>kFrontendUiMaxQuads)return;
     const Canvas canvas{width,height,impl_->atlas,frame};
     const auto white=impl_->textures.find(0xe2a5c626U);
-    if(white!=impl_->textures.end())
-        quad(canvas,white->second,Transform{},-60,-230,120,24,{{0,0,1,1}},{{0,0,0,185}});
+    if(white!=impl_->textures.end()) {
+        const auto rect=[&](float x,float y,float w,float h,std::array<unsigned,4> color) {
+            quad(canvas,white->second,Transform{},x,y,w,h,{{0,0,1,1}},color);
+        };
+        constexpr float left=-45.F,bottom=-157.F,graph_height=53.F;
+        rect(-60,-230,120,78,{{0,0,0,185}});
+        for(double guide:kFpsGraphGuides)
+            rect(left,bottom-float(guide/kFpsGraphMaxMs)*graph_height,90,1,{{100,100,100,255}});
+        for(std::size_t i=0;i<history.count;++i) {
+            const double interval=history.intervals[i];
+            const float bar=float(std::min(interval/kFpsGraphMaxMs,1.0))*graph_height;
+            const auto color=interval>kFpsGraphLateMs?std::array<unsigned,4>{{255,80,60,255}}:
+                std::array<unsigned,4>{{80,230,120,255}};
+            rect(left+float(i),bottom-bar,.75F,bar,color);
+        }
+    }
     Object text;text.justification=5;
     Transform pose;pose.y=-218;
     impl_->text(canvas,text,pose,label,{{255,255,255,255}},8);

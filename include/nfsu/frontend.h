@@ -274,6 +274,7 @@ private:
 using PostRaceValues=std::map<std::string,std::string>;
 // Original MU_Main_PC object transforms, sprite art and proportional FNTF text.
 class CareerGarage;
+struct RaceFpsHistory;
 class FrontendArt {
 public:
     FrontendArt();
@@ -317,7 +318,7 @@ public:
     void draw_free_drive(ScreenImage,const CareerCatalog&,const CareerProfile&,unsigned selection,unsigned course,const std::string& notice,const QuickRaceOptions* options=nullptr,bool choose_mode=false)const;
     void record_free_drive(unsigned width,unsigned height,const CareerCatalog&,const CareerProfile&,
                            unsigned selection,unsigned course,const std::string& notice,FrontendUiFrame&,const QuickRaceOptions* options=nullptr,bool choose_mode=false)const;
-    void append_fps(unsigned width,unsigned height,const FrontendPresentationWindow&,FrontendUiFrame&)const;
+    void append_fps(unsigned width,unsigned height,const RaceFpsHistory&,FrontendUiFrame&)const;
     void advance(float seconds);
     void draw(ScreenImage image, const FrontendMenu& menu) const;
     void draw_overlay(ScreenImage image,const FrontendMenu& menu) const;

@@ -1069,19 +1069,6 @@ static void build_race_hud_geometry(const VehicleState& car,
     }
 }
 
-void RaceFpsHistory::add(double milliseconds) noexcept {
-    if (!std::isfinite(milliseconds) || milliseconds <= 0) return;
-    if (count == intervals.size()) {
-        std::move(intervals.begin()+1, intervals.end(), intervals.begin());
-        --count;
-    }
-    intervals[count++] = milliseconds;
-}
-double RaceFpsHistory::mean_ms() const noexcept {
-    double sum=0;
-    for (std::size_t i=0;i<count;++i) sum+=intervals[i];
-    return count ? sum/count : 0;
-}
 void append_race_fps_overlay(const RaceHudAtlas& atlas, const RaceFpsHistory& history,
                              unsigned width, unsigned height, RaceHudFrame& frame) noexcept {
     if (!atlas.lap_ready || !width || !height || !history.count) return;
@@ -1090,19 +1077,18 @@ void append_race_fps_overlay(const RaceHudAtlas& atlas, const RaceFpsHistory& hi
     if (frame.lap_first_quad==kRaceHudMaxQuads) frame.lap_first_quad=frame.quads;
     rect(frame,kLapWhite,x-6*scale,top-28*scale,230*scale,114*scale,{{0,0,0}},190);
     // 60 Hz / 30 Hz thresholds; bars clip at 66.7 ms, text retains full values.
-    for (const double ms : {1000.0/60,1000.0/30})
-        rect(frame,kLapWhite,x,bottom-float(ms/66.6666667)*80*scale,180*scale,scale,
+    for (const double ms : kFpsGraphGuides)
+        rect(frame,kLapWhite,x,bottom-float(ms/kFpsGraphMaxMs)*80*scale,180*scale,scale,
              {{100,100,100}},255);
     for (std::size_t i=0;i<history.count;++i) {
         const double ms=history.intervals[i];
-        const float h=float(std::min(ms/66.6666667,1.0))*80*scale;
-        const std::array<unsigned char,3> color=ms>25 ? std::array<unsigned char,3>{{255,80,60}} :
+        const float h=float(std::min(ms/kFpsGraphMaxMs,1.0))*80*scale;
+        const std::array<unsigned char,3> color=ms>kFpsGraphLateMs ? std::array<unsigned char,3>{{255,80,60}} :
                                                        std::array<unsigned char,3>{{80,230,120}};
         rect(frame,kLapWhite,x+float(i)*2*scale,bottom-h,1.5F*scale,h,color,255);
     }
     char text[80];
-    std::snprintf(text,sizeof text,"%.1f FPS  %.1f ms",1000/history.mean_ms(),
-                  history.intervals[history.count-1]);
+    history.format(text,sizeof text);
     float cursor=x;
     for (const char* c=text;*c;++c) {
         const auto& g=atlas.lap_fonts[0][unsigned(*c)];

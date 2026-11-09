@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nfsu/fps_history.h"
 #include "nfsu/race_session.h"
 #include "nfsu/race_lap_hud.h"
 #include "nfsu/track.h"
@@ -127,13 +128,6 @@ DriftHudAppearance sample_hud_animation(const std::vector<DriftHudAnimation>&,co
 DriftHudAppearance sample_drift_hud_animation(const RaceHudAtlas&,const char* object,
                                               const char* state,unsigned ticks) noexcept;
 
-// Completed presentation intervals, oldest to newest; no allocation/readback.
-struct RaceFpsHistory {
-    std::array<double,90> intervals{};
-    std::size_t count = 0;
-    void add(double milliseconds) noexcept;
-    double mean_ms() const noexcept;
-};
 void append_race_fps_overlay(const RaceHudAtlas& atlas, const RaceFpsHistory& history,
                              unsigned width, unsigned height, RaceHudFrame& frame) noexcept;
 

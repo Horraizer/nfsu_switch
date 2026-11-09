@@ -176,19 +176,29 @@ private:
     std::shared_ptr<const FrontendSceneEnvironment> environment_;
     std::shared_ptr<const FrontendSceneCarSource> car_source_;
 };
+struct GarageFpsDisplay {
+    RaceDebugInput chord;
+    RaceFpsHistory history;
+    std::uint64_t previous_present=0;
+    bool visible=false;
+
+    void reset() noexcept {history={};previous_present=0;}
+};
 class FrontendAppletClockHook {
 public:
-    explicit FrontendAppletClockHook(FrontendClock& clock,FrontendPresentationStats& stats):clock_(clock),stats_(stats) {
+    FrontendAppletClockHook(FrontendClock& clock,FrontendPresentationStats& stats,GarageFpsDisplay& garage_fps)
+        :clock_(clock),stats_(stats),garage_fps_(garage_fps) {
         appletHook(&cookie_,[](AppletHookType event,void* state) {
             if(event==AppletHookType_OnResume || event==AppletHookType_OnFocusState) {
                 auto& self=*static_cast<FrontendAppletClockHook*>(state);
-                self.clock_.resume();self.stats_.reset();
+                self.clock_.resume();self.stats_.reset();self.garage_fps_.reset();
             }
         },this);
     }
     ~FrontendAppletClockHook() {appletUnhook(&cookie_);}
 private:
-    FrontendClock& clock_;FrontendPresentationStats& stats_;AppletHookCookie cookie_{};
+    FrontendClock& clock_;FrontendPresentationStats& stats_;GarageFpsDisplay& garage_fps_;
+    AppletHookCookie cookie_{};
 };
 constexpr unsigned width = 1280, height = 720;
 double ms(std::uint64_t ticks) { return armTicksToNs(ticks)/1000000.0; }
@@ -2227,7 +2237,13 @@ int main(int argc, char** argv) {
                 };
                 open_frontend();
                 FrontendClock frontend_clock;
-                FrontendAppletClockHook frontend_clock_hook(frontend_clock,frontend_presentation_stats);
+                GarageFpsDisplay garage_fps;garage_fps.visible=fps_overlay;
+                FrontendAppletClockHook frontend_clock_hook(frontend_clock,frontend_presentation_stats,garage_fps);
+                const auto garage_fps_chord=[&] {
+                    const auto held=padGetButtons(&pad);
+                    return garage_fps.chord.update(padIsConnected(&pad),
+                        (held&HidNpadButton_StickL)!=0,(held&HidNpadButton_StickR)!=0);
+                };
                 FrontendMenu menu(true,true,true);
                 CareerInfoMenu statistics;
                 std::optional<CareerCatalog> statistics_catalog;
@@ -2327,7 +2343,6 @@ int main(int argc, char** argv) {
                 std::map<std::string,CareerRide> free_rides;
                 unsigned free_course=0;
                 QuickRaceOptions quick_options;
-                bool garage_fps_overlay=fps_overlay;
                 FrontendAction pending=FrontendAction::none;
                 const auto run_career_action=[&](FrontendAction action,const std::string* garage_car,
                         unsigned garage_tier,const std::function<void()>& lobby_poll) {
@@ -2515,9 +2530,6 @@ int main(int argc, char** argv) {
                                     };
                                     try {
                                         CareerMagazineRecipe magazine_recipe;
-                                        RaceDebugInput garage_debug_input;
-                                        FrontendPresentationStats garage_fps_stats;
-                                        FrontendPresentationWindow garage_fps_window;
                                         while(!leave && appletMainLoop()) {
                                             const auto movie=career.pending_movie(profile);
                                             if(!movie.empty()) {
@@ -2599,13 +2611,12 @@ int main(int argc, char** argv) {
                                             std::string notice;bool change=false,confirm=false,previous_negative=false,previous_positive=false,previous_color_up=false,previous_color_down=false;
                                             std::optional<CareerProfile> starter_purchase;
                                             bool starter_purchase_spoken=false;
-                                            garage_fps_stats.reset();
-                                            garage_fps_window={};
+                                            garage_fps.reset();
                                             while(!change && !leave && appletMainLoop()) {
                                                 if(lobby_poll)lobby_poll();
                                                 if(appletGetFocusState()!=AppletFocusState_InFocus) {
                                                     frontend_clock.resume();
-                                                    garage_fps_stats.reset();garage_fps_window={};
+                                                    garage_fps.reset();
                                                     continue;
                                                 }
                                                 if(magazine_voice>=0&&music.speech_drained()) {
@@ -2622,11 +2633,9 @@ int main(int argc, char** argv) {
                                                 }
                                                 padUpdate(&pad);
                                                 const bool in_garage=profile.page==CareerPage::garage||profile.page==CareerPage::unique_reward;
-                                                const auto held=padGetButtons(&pad);
-                                                if(garage_debug_input.update(padIsConnected(&pad),
-                                                        (held&HidNpadButton_StickL)!=0,(held&HidNpadButton_StickR)!=0) && in_garage) {
-                                                    garage_fps_overlay=!garage_fps_overlay;
-                                                    garage_fps_stats.reset();garage_fps_window={};
+                                                if(garage_fps_chord()&&in_garage) {
+                                                    garage_fps.visible=!garage_fps.visible;
+                                                    garage_fps.reset();
                                                 }
                                                 const auto pressed=starter_purchase?0:padGetButtonsDown(&pad);
                                                 const auto stick=starter_purchase?decltype(padGetStickPos(&pad,0)){}:padGetStickPos(&pad,0);
@@ -2924,12 +2933,16 @@ int main(int argc, char** argv) {
                                                 else if(profile.page==CareerPage::magazines)art.record_magazine(width,height,magazine_recipe,profile.magazine_covers[selection].car,frontend_ui);
                                                 else if(sandbox&&profile.page==CareerPage::menu)art.record_free_drive(width,height,career,profile,selection,free_course,notice,frontend_ui,&quick_options,choose_quick_mode);
                                                 else art.record_career(width,height,career,profile,selection,notice,frontend_ui,in_garage?&garage:nullptr);
-                                                const bool show_garage_fps=in_garage&&garage_fps_overlay;
-                                                if(show_garage_fps)art.append_fps(width,height,garage_fps_window,frontend_ui);
+                                                const bool show_garage_fps=in_garage&&garage_fps.visible;
+                                                if(show_garage_fps)art.append_fps(width,height,garage_fps.history,frontend_ui);
                                                 require(frontend_renderer->update(frontend_scene.commands(),frontend_error),frontend_error);
                                                 require(frontend_renderer->present_frontend(frontend_ui,frontend_error),frontend_error);
-                                                if(show_garage_fps)
-                                                    garage_fps_stats.sample(armTicksToNs(armGetSystemTick()),garage_fps_window);
+                                                if(show_garage_fps) {
+                                                    const auto presented=armGetSystemTick();
+                                                    if(garage_fps.previous_present)
+                                                        garage_fps.history.add(ms(presented-garage_fps.previous_present));
+                                                    garage_fps.previous_present=presented;
+                                                }
                                             }
                                         }
                                         music.stop();close_career();
@@ -2964,6 +2977,7 @@ int main(int argc, char** argv) {
                     if(appletGetFocusState()!=AppletFocusState_InFocus) {frontend_clock.resume();frontend_presentation_stats.reset();continue;}
                     const auto poll_begin=armGetSystemTick();
                     padUpdate(&pad); const auto down=padGetButtonsDown(&pad);
+                    garage_fps_chord();
                     const auto stick=padGetStickPos(&pad,0);
                     const bool up=stick.y>16000, below=stick.y<-16000;
                     FrontendInput input;

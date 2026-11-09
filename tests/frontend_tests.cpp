@@ -1,5 +1,6 @@
 #include "nfsu/frontend_glow_fast.h"
 #include "nfsu/frontend.h"
+#include "nfsu/fps_history.h"
 #include "nfsu/frontend_scene.h"
 #include "nfsu/track.h"
 #include "nfsu/stock_frame.h"
@@ -1029,11 +1030,13 @@ int main(int argc,char** argv) {
             FrontendUiFrame fps_overlay;
             art.record_ui(1280,720,menu,fps_overlay);
             const auto ui_quads=fps_overlay.additive.size();
-            art.append_fps(1280,720,{120,2000000000,17000000},fps_overlay);
-            check(fps_overlay.additive.size()>ui_quads+1&&fps_overlay.vertices.size()==fps_overlay.additive.size()*4,
-                "frontend FPS overlay appends resident font glyphs and a panel");
+            RaceFpsHistory fps_history;
+            for(unsigned i=0;i<90;++i)fps_history.add(i==89?50:1000.0/60);
+            art.append_fps(1280,720,fps_history,fps_overlay);
+            check(fps_overlay.additive.size()>ui_quads+93&&fps_overlay.vertices.size()==fps_overlay.additive.size()*4,
+                "frontend FPS overlay appends bars, guides, panel and resident font glyphs");
             for(std::size_t i=ui_quads*4;i<fps_overlay.vertices.size();++i)
-                check(fps_overlay.vertices[i].py>=0&&fps_overlay.vertices[i].py<72,
+                check(fps_overlay.vertices[i].py>=0&&fps_overlay.vertices[i].py<150,
                     "frontend FPS overlay stays at the top of the screen");
             // GPU-only loading must retain authored textures/font coordinates
             // and update selection without a CPU background or texture reload.
