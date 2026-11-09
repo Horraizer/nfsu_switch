@@ -1037,7 +1037,7 @@ int main(int argc,char** argv) {
                 "frontend FPS overlay appends bars, guides, panel and resident font glyphs");
             const auto& panel_top=fps_overlay.vertices[ui_quads*4];
             const auto& panel_bottom=fps_overlay.vertices[ui_quads*4+2];
-            check(panel_top.px>=960&&panel_top.py>=144&&panel_bottom.px<=1280&&panel_bottom.py<300,
+            check(panel_top.px>=960&&panel_top.py>=165&&panel_bottom.px<=1280&&panel_bottom.py<300,
                 "frontend FPS panel stays below the garage heading in the right margin");
             for(std::size_t i=ui_quads*4+4;i<fps_overlay.vertices.size();++i) {
                 const auto& vertex=fps_overlay.vertices[i];

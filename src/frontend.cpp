@@ -1389,7 +1389,7 @@ void FrontendArt::append_fps(unsigned width,unsigned height,const RaceFpsHistory
     history.format(label,sizeof label);
     if(frame.additive.size()+std::strlen(label)+history.count+kFpsGraphGuides.size()+1>kFrontendUiMaxQuads)return;
     const Canvas canvas{width,height,impl_->atlas,frame};
-    constexpr float panel_x=182.F,panel_y=-140.F,panel_width=126.F,panel_height=78.F;
+    constexpr float panel_x=182.F,panel_y=-128.F,panel_width=126.F,panel_height=78.F;
     const auto white=impl_->textures.find(0xe2a5c626U);
     if(white!=impl_->textures.end()) {
         const auto rect=[&](float x,float y,float w,float h,std::array<unsigned,4> color) {
