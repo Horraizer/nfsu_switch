@@ -38,8 +38,9 @@ def check(root,renderer,main):
         begin=transition.index(start)
         launch=transition[begin:transition.index(call,begin)]
         assert 'close_career();music.stop();' in launch
-    assert 'selected_car,screen,pad,false,nullptr,0,&art)' in transition
-    assert 'while(intro_result==RaceReturn::restart && appletMainLoop())' in transition
+    intro=transition[transition.index('do { intro_result=run(root,'):transition.index('while(intro_result==RaceReturn::restart && appletMainLoop())')]
+    assert 'selected_car,screen,pad,false,nullptr,0,&art,' in intro
+    assert 'false,profile.name);' in intro
     assert main.index('std::unique_ptr<HandheldGpuProfile> frontend_gpu_profile;')<main.index('std::unique_ptr<DekoRenderer> frontend_renderer;')
     assert 'constexpr std::uint32_t menu_height=720;' in main
     assert 'art.atlas(),frontend_error,menu_height,profile_frame && !ab_minimal,active_trace,frontend_scene.draw_capacity())' in main
