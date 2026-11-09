@@ -108,6 +108,7 @@ struct RaceHudFrame {
     RaceLapHudPanel lap{};
     DriftHudClock drift_clock;
     bool metric_speed=false;
+    bool shown_drift_notice=false;
     bool drag_lamp_selected=false;
     int drag_lamp=-1;
     std::int32_t drag_lamp_at=0;

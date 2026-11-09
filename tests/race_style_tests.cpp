@@ -1,4 +1,5 @@
 #include "nfsu/race_style.h"
+#include "nfsu/race_drift.h"
 #include <iostream>
 #include <stdexcept>
 #include <cmath>
@@ -28,7 +29,9 @@ int main(int argc,char** argv) {try {
             notices.cancel(11);notices.update(4201,.05F);
             check(notices.notice()&&notices.notice()->failed,"failed continuous notice renders its last publication");
             notices.update(4268,.05F);
-            check(bool(notices.notice())!=drift,"continuous notice retired after the drift display update");
+            check(notices.notice()&&notices.notice()->failed,"final continuous notice survives simulation catch-up");
+            notices.consume_drift_notice();
+            check(bool(notices.notice())!=drift,"only the displayed continuous drift notice retires");
             if(!drift) {
                 notices.update(8301,0.F);
                 check(notices.notice()&&notices.notice()->kind==11,"expired ordinary notice rendered on removal");
@@ -38,6 +41,24 @@ int main(int argc,char** argv) {try {
         }
     }
     RaceStyle score;std::string error;
+    {
+        RaceStyle zone;
+        const bool loaded=zone.load(argv[1],error,true);check(loaded,error.c_str());
+        RaceDrift drift;DriftDrivingSample input;
+        input.now=4000;input.seconds=1.F/60.F;input.reference_speed=50;input.bonus_wheels=4;
+        input.motion.speed=25;input.motion.slip=.6F;input.motion.yaw=.2F;input.motion.grade=3;
+        const auto tick=[&] {input.now+=67;input.motion.progress+=.001F;drift.update(zone,input);};
+        for(unsigned i=0;i<60;++i)tick();
+        check(zone.item(1).phase==0,"retail drift zone reached scoring phase");
+        input.bonus_wheels=0;input.motion.slip=0;
+        for(unsigned i=0;i<80&&zone.item(1).phase!=3;++i)tick();
+        check(zone.item(1).phase==3&&zone.item(1).total>0,"retail drift zone score banked");
+        tick();tick();
+        check(zone.notice()&&zone.notice()->kind==1&&zone.notice()->points==zone.item(1).total,
+              "retail drift zone final award reaches the HUD after two simulation ticks");
+        zone.consume_drift_notice();
+        check(!zone.notice()||zone.notice()->kind!=1,"retail drift zone final award is consumed after presentation");
+    }
     check(score.load(argv[1],error),error.c_str());
     check(score.rule(11).continuous&&score.rule(11).rate==100&&score.rule(11).minimum==50,"powerslide tuning");
     check(score.rule(17).multiplier_limit==3&&score.rule(13).count_limit==1,"multiplier and once tuning");

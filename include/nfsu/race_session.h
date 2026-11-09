@@ -165,6 +165,7 @@ public:
     bool prepare_leaderboard(const std::filesystem::path&,const std::string& player_car,std::string&);
     bool prepare_style(const std::filesystem::path&,std::string&,unsigned event=3);
     const RaceStyle& style() const {return style_;}
+    void consume_drift_notice() noexcept {style_.consume_drift_notice();}
     const RaceDrift& drift() const {return drift_;}
     const DriftCompetition& drift_competition() const {return drift_competition_;}
     bool is_drift() const {return spec_.drift_mode;}

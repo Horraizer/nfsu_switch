@@ -648,7 +648,33 @@ int main(int argc,char** argv) {
             art.draw_career({pixels.data(),1280,720,1280*4},catalog,p,0);
             art.record_career(1280,720,catalog,p,0,"",gpu);
             check(p.selected_event==2 && !gpu.vertices.empty(),"won circuit immediately renders next available event");
-            std::cout<<"PASS original first-event senders/speech, map neighbors, post-win map and real frontend submissions\n";return 0;
+            const auto same=[](const FrontendUiFrame& a,const FrontendUiFrame& b) {
+                return a.vertices.size()==b.vertices.size() && a.additive==b.additive &&
+                    std::memcmp(a.vertices.data(),b.vertices.data(),a.vertices.size()*sizeof(TrackVertex))==0;
+            };
+            const auto record=[&](unsigned row=0) {
+                FrontendUiFrame frame;art.record_career(1280,720,catalog,p,row,"",frame);
+                check(!frame.vertices.empty()&&frame.additive.size()<=kFrontendUiMaxQuads,"animated career frame remains bounded");
+                return frame;
+            };
+            const auto static_map=record();
+            p.selected_event=3;const auto static_map_next=record();p.selected_event=2;
+            p.page=CareerPage::menu;const auto static_menu=record(1);
+            art.advance(0.F);
+            p.page=CareerPage::map;const auto map_enter=record();
+            art.advance(.4F);check(same(record(),static_map)&&!same(map_enter,static_map),"map entry keys reach the authored endpoint");
+            p.selected_event=3;const auto moved=record();
+            art.advance(.25F);const auto moving=record();
+            art.advance(.25F);check(!same(moved,moving)&&!same(moving,static_map_next)&&same(record(),static_map_next),
+                "event scroller moves over the native half-second interval");
+            p.page=CareerPage::menu;const auto menu_enter=record();
+            art.advance(2.F);const auto menu_end=record();
+            check(!same(menu_enter,menu_end),"Underground rows animate on entry");
+            const auto menu_select=record(1);
+            art.advance(.25F);check(!same(menu_select,static_menu)&&same(record(1),static_menu),"old and new Underground highlights animate on selection");
+            p.page=CareerPage::map;const auto map_return=record();
+            art.advance(.4F);check(!same(map_return,record()),"map re-entry runs its original panel keys again");
+            std::cout<<"PASS original first-event senders/speech, map neighbors, career panel motion and real frontend submissions\n";return 0;
         }
         if(argc==4 && std::string(argv[3])=="drift") {
             FrontendArt art;

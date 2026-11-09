@@ -1031,14 +1031,26 @@ int main(int argc,char** argv) {
             {
                 RaceLoadingArt generic;
                 const bool generic_loaded=generic.load(root,error);check(generic_loaded,error.c_str());
-                std::vector<unsigned char> base(1280*720*4),shown(base.size()),cached(base.size());
-                generic.draw({base.data(),1280,720,1280*4},.4,false);
+                std::array<std::vector<unsigned char>,2> bases;
+                const std::array<std::pair<unsigned,unsigned>,2> sizes{{{1280,720},{854,480}}};
+                for(unsigned i=0;i<sizes.size();++i) {
+                    const auto [w,h]=sizes[i];
+                    bases[i].resize(std::size_t(w)*h*4);
+                    generic.draw({bases[i].data(),w,h,w*4},.4,false);
+                }
                 for(unsigned tip:{2U,3U,4U,5U,6U,7U,8U,9U,11U,14U,15U,16U,17U,18U,19U,20U}) {
                     RaceLoadingArt art;
                     const bool loaded=art.load(root,error,tip);check(loaded,error.c_str());
-                    art.draw({shown.data(),1280,720,1280*4},.4,false);
-                    art.draw({cached.data(),1280,720,1280*4},.4,true);
-                    check(shown!=base&&shown==cached,"native loading card contributes visible cached artwork");
+                    for(unsigned i=0;i<sizes.size();++i) {
+                        const auto [w,h]=sizes[i];
+                        const auto& base=bases[i];
+                        std::vector<unsigned char> shown(base.size()),cached(base.size());
+                        art.draw({shown.data(),w,h,w*4},.4,false);
+                        art.draw({cached.data(),w,h,w*4},.4,true);
+                        check(shown!=base&&shown==cached,"native loading card contributes visible cached artwork");
+                        const auto margin=std::size_t(w)*8*4;
+                        check(std::equal(shown.end()-margin,shown.end(),base.end()-margin),"loading captions stay above the lower viewport margin");
+                    }
                 }
             }
             FrontendArt gpu_art;

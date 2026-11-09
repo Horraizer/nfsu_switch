@@ -54,6 +54,7 @@ public:
     void update(std::int32_t now,float seconds) noexcept;
     int total() const noexcept;
     const RaceStyleNotice* notice() const noexcept;
+    void consume_drift_notice() noexcept;
     const DriftScorePublication& drift_publication() const noexcept {return drift_publication_;}
     const RaceStyleRule& rule(unsigned i) const {return rules_[i];}
     const RaceStyleItem& item(unsigned i) const {return items_[i];}
@@ -69,6 +70,7 @@ private:
     bool drift_=false;
     double accrue(unsigned,float) noexcept;
     void publish(unsigned,std::int32_t) noexcept;
+    void erase_notice(unsigned) noexcept;
 };
 // Inputs are published once per world frame, after timing. Contact admission
 // and ground queries belong to the session, not the point state machine.

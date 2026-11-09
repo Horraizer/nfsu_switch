@@ -561,10 +561,18 @@ int run(int argc, char** argv) {
         if (states.is_open()) states << session.timing().step << ' ' << sha256_hex(digest) << '\n';
         hashing.add(begin);
     };
+    const auto render=[&]() {
+        auto pixels=scene.render(session);
+        if(scene.hud_frame.shown_drift_notice) {
+            session.consume_drift_notice();
+            scene.hud_frame.shown_drift_notice=false;
+        }
+        return pixels;
+    };
     if (live) {
         require(run_race_window([&](const GamepadFrame& pad) {
             if (session.timing().outcome==RaceOutcome::running) tick(pad);
-        },[&]() { return scene.render(session); },error,smoke),error);
+        },render,error,smoke),error);
     } else {
         while (session.timing().outcome==RaceOutcome::running && session.timing().step<kRaceInputMaxTicks) {
             GamepadFrame pad;
@@ -576,7 +584,7 @@ int run(int argc, char** argv) {
             }
             tick(pad);
             if (frames.erase(session.timing().step)) {
-                const auto rgba=scene.render(session); FrameWriteResult result;
+                const auto rgba=render(); FrameWriteResult result;
                 const auto path=output/("frame-"+std::to_string(session.timing().step)+".tga");
                 require(write_rgba_tga(640,360,rgba,path,{},result),result.error);
                 std::ifstream in(path,std::ios::binary); const std::string bytes((std::istreambuf_iterator<char>(in)),{});

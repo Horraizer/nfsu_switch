@@ -58,6 +58,7 @@ public:
     bool skip_start_cinematic();
     bool arm_finish_probe(std::string& error);
     const RaceSession& session() const { return *session_; }
+    void consume_drift_notice() noexcept {session_->consume_drift_notice();}
     std::uint32_t* audio_world_random()noexcept{return intro_ai_.world_random();}
     const std::string& car() const noexcept { return car_; }
     const std::string& step_line() const { return step_line_; }

@@ -1321,6 +1321,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         if(sweep&&!presented)sweep_mark("race.first_frame_submit");
         require(renderer.present(error,ab_minimal?nullptr:&present,&scene_frame,
                                  hud_mode ? &hud_frame : nullptr),error);
+        if(hud_mode&&hud_frame.shown_drift_notice)race.consume_drift_notice();
         // The first complete capture must be submitted before recording partial
         // frames. A simulation tick may replace the frame prepared at load.
         if(low_reflections_pending) {
@@ -2742,7 +2743,8 @@ int main(int argc, char** argv) {
                                                         }
                                                     }
                                                 }else if(prev!=next_key) {
-                                                    confirm=false;notice.clear();music.sound(prev?audio::FrontendSound::up:audio::FrontendSound::down);
+                                                    confirm=false;notice.clear();
+                                                    if(profile.page!=CareerPage::map)music.sound(prev?audio::FrontendSound::up:audio::FrontendSound::down);
                                                     if((profile.page==CareerPage::garage||profile.page==CareerPage::unique_reward)){
                                                         if(garage.page()==GaragePage::colors)garage.move_color(prev?-1:1,0);
                                                         else garage.move(prev?-1:1);
@@ -2761,7 +2763,12 @@ int main(int argc, char** argv) {
                                                         const auto events=career.available(profile);
                                                         const auto found=std::find(events.begin(),events.end(),profile.selected_event);
                                                         const auto at=static_cast<std::size_t>(found-events.begin());
-                                                        if(!events.empty()) {auto next=profile;next.tournament={};next.selected_event=events[(at+(prev?events.size()-1:1))%events.size()];store(next);change=true;}
+                                                        const bool can_move=at<events.size()&&(prev?at>0:at+1<events.size());
+                                                        if(can_move) {
+                                                            auto next=profile;next.tournament={};next.selected_event=events[prev?at-1:at+1];
+                                                            store(next);change=true;
+                                                            music.sound(prev?audio::FrontendSound::left:audio::FrontendSound::right);
+                                                        }
                                                     }
                                                 }else if((pressed&(HidNpadButton_ZL|HidNpadButton_ZR))&&
                                                          profile.page==CareerPage::garage&&garage.page()==GaragePage::vinyl_layers) {

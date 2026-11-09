@@ -138,12 +138,11 @@ void RaceStyle::update(std::int32_t now,float seconds) noexcept {
     if(count_) {
         unsigned at=0;while(at<count_ && notices_[at].continuous)++at;if(at==count_)at=0;
         auto& n=notices_[at];if(!n.started){n.started=true;n.shown=now;}
-        // 4A83C0 formats the selected notice before unlinking it. Drift
-        // removes a selected continuous notice on that same display update.
-        if((drift_&&n.continuous)||elapsed(now,n.shown)>(count_>1?.5:1.)) {
+        // A continuous drift notice stays queued until a HUD frame shows
+        // it. Simulation catch-up can update the queue several times first.
+        if(!(drift_&&n.continuous)&&elapsed(now,n.shown)>(count_>1?.5:1.)) {
             retired_notice_=n;
-            for(unsigned j=at+1;j<count_;++j)notices_[j-1]=notices_[j];
-            --count_;
+            erase_notice(at);
         }
     }
 }
@@ -155,6 +154,16 @@ const RaceStyleNotice* RaceStyle::notice() const noexcept {
     if(!count_)return nullptr;
     for(unsigned i=0;i<count_;++i)if(!notices_[i].continuous)return &notices_[i];
     return &notices_[0];
+}
+void RaceStyle::erase_notice(unsigned at) noexcept {
+    for(unsigned j=at+1;j<count_;++j)notices_[j-1]=notices_[j];
+    --count_;
+}
+void RaceStyle::consume_drift_notice() noexcept {
+    // 4A83C0 unlinks the continuous item after its display update. If a
+    // discrete notice is selected, no continuous item was displayed.
+    const auto* shown=notice();
+    if(drift_&&shown&&shown->continuous)erase_notice(unsigned(shown-notices_.data()));
 }
 float race_drafting_pair(const std::array<float,3>& p,const std::array<float,3>& v,
                          float speed,const std::array<float,3>& follower) noexcept {

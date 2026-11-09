@@ -341,41 +341,44 @@ void read_ui_font(const std::vector<unsigned char>& bytes,const char* name,RaceL
     }throw std::runtime_error("original menu font absent");
 }
 std::string career_language(const std::vector<unsigned char>&,unsigned,const std::string&);
+float ui_text_width(std::string_view value,const RaceLapHudFont& font) {
+    float width=0;unsigned previous=0;
+    for(unsigned char code:value)for(const auto& g:font.glyphs)if(g.code==code) {
+        for(const auto& k:g.kerning)if(k.previous==previous)width+=float(k.adjustment);
+        width+=float(g.advance);previous=code;break;
+    }
+    return width;
+}
+std::vector<std::string> wrap_ui_text(const std::string& value,const RaceLapHudFont& font,float width) {
+    std::vector<std::string> lines;
+    std::string line,word;
+    const auto emit=[&]() {if(!word.empty()) {
+        const auto trial=line.empty()?word:line+" "+word;
+        if(!line.empty()&&ui_text_width(trial,font)>width){lines.push_back(line);line=word;}
+        else line=trial;
+        word.clear();
+    }};
+    for(char c:value) {
+        if(c==' '||c=='\n'){emit();if(c=='\n'){lines.push_back(line);line.clear();}}
+        else word+=c;
+    }
+    emit();if(!line.empty())lines.push_back(line);
+    return lines;
+}
 void draw_ui_text(Canvas target,const Object& o,const Transform& m,const std::string& value,
                   std::array<unsigned,4> color,const RaceLapHudFont& font,const Image& image) {
     if(o.wrap_width) {
-        const auto measure=[&](const std::string& line) {
-            float width=0;unsigned previous=0;
-            for(unsigned char code:line)for(const auto& g:font.glyphs)if(g.code==code) {
-                for(const auto& k:g.kerning)if(k.previous==previous)width+=float(k.adjustment);
-                width+=float(g.advance);previous=code;break;
-            }
-            return width;
-        };
-        std::vector<std::string> lines;std::string line,word;
-        const auto emit=[&]() {if(!word.empty()) {
-            const auto trial=line.empty()?word:line+" "+word;
-            if(!line.empty()&&measure(trial)>o.wrap_width){lines.push_back(line);line=word;}
-            else line=trial;
-            word.clear();
-        }};
-        for(char c:value) {
-            if(c==' '||c=='\n'){emit();if(c=='\n'){lines.push_back(line);line.clear();}}
-            else word+=c;
-        }
-        emit();if(!line.empty())lines.push_back(line);
         auto plain=o;plain.wrap_width=0;auto pose=m;
-        for(const auto& l:lines){draw_ui_text(target,plain,pose,l,color,font,image);pose.x+=m.c*font.line_height;pose.y+=m.d*font.line_height;}
+        for(const auto& l:wrap_ui_text(value,font,float(o.wrap_width))) {
+            draw_ui_text(target,plain,pose,l,color,font,image);
+            pose.x+=m.c*font.line_height;pose.y+=m.d*font.line_height;
+        }
         return;
     }
-    float width=0;unsigned previous=0;
-    for(unsigned char code:value) for(const auto& g:font.glyphs) if(g.code==code) {
-        for(const auto& k:g.kerning) if(k.previous==previous) width+=float(k.adjustment);
-        width+=float(g.advance);previous=code;break;
-    }
+    const float width=ui_text_width(value,font);
     float x=o.justification&1?-width/2:o.justification&2?-width:0;
     const float y=o.justification&4?-font.line_height/2:o.justification&8?-font.line_height:0;
-    previous=0;
+    unsigned previous=0;
     for(unsigned char code:value) for(const auto& g:font.glyphs) if(g.code==code) {
         for(const auto& k:g.kerning) if(k.previous==previous) x+=float(k.adjustment);
         const float tw=float(image.width),th=float(image.height);
@@ -537,9 +540,6 @@ bool RaceLoadingArt::load(const std::filesystem::path& root,std::string& error,u
                 out.tip_lines[0].text="Left Stick: Steer   ZR: Accelerate   ZL: Brake   B: Handbrake\nA: Nitrous   X: Camera   R3: Look Back   +: Pause";
                 out.tip_lines[1].text=career_language(language,tip->text,"");
             }
-            // Keep the authored centered baselines and readable side margins
-            // in the 720p viewport, including the longer English sentences.
-            for(auto& line:out.tip_lines)line.wrap_width=std::min(line.wrap_width,220U);
             out.tip_ready=true;
         }
         out.ready=true;error.clear();return true;
@@ -563,8 +563,38 @@ void RaceLoadingArt::draw(ScreenImage image,double seconds,bool cached)const {
                 const auto m=combine(group,o,false);
                 quad(Canvas{base},p.tip_texture,m,-o.w/2,-o.h/2,o.w,o.h,o.uv,o.color);
             }
-            for(const auto& o:p.tip_lines)if(!o.text.empty())
-                draw_ui_text(Canvas{base},o,combine(group,o,false),o.text,o.color,p.tip_font,p.tip_font_image);
+            // Keep both original messages in a single bounded caption band.
+            // Wrapping either message cannot write into the other or below
+            // the viewport, including when the loading framebuffer is scaled.
+            const auto& font=p.tip_font;
+            auto label=p.tip_lines[0];label.justification=1;label.wrap_width=0;
+            auto pose=combine(group,label,false);
+            pose.x=0;
+            constexpr float left_to_right=580.F,top=146.F,bottom=224.F,paragraph_gap=3.F;
+            const auto first=wrap_ui_text(p.tip_lines[0].text,font,left_to_right/std::abs(pose.a));
+            const auto second=wrap_ui_text(p.tip_lines[1].text,font,left_to_right/std::abs(pose.a));
+            float glyph_top=0,glyph_bottom=font.line_height;
+            for(const auto& glyph:font.glyphs) {
+                glyph_top=std::min(glyph_top,float(glyph.bearing_y));
+                glyph_bottom=std::max(glyph_bottom,float(glyph.bearing_y+glyph.height));
+            }
+            const float row_height=glyph_bottom-glyph_top+1.F;
+            const float gap=first.empty()||second.empty()?0.F:paragraph_gap;
+            if(!first.empty()||!second.empty()) {
+                const float fit=std::min(1.F,(bottom-top-gap)/
+                    (std::abs(pose.d)*row_height*float(first.size()+second.size())));
+                pose.a*=fit;pose.d*=fit;
+                pose.y=top-glyph_top*pose.d;
+                for(const auto& line:first) {
+                    draw_ui_text(Canvas{base},label,pose,line,p.tip_lines[0].color,font,p.tip_font_image);
+                    pose.y+=row_height*pose.d;
+                }
+                pose.y+=gap;
+                for(const auto& line:second) {
+                    draw_ui_text(Canvas{base},label,pose,line,p.tip_lines[1].color,font,p.tip_font_image);
+                    pose.y+=row_height*pose.d;
+                }
+            }
         }
     };
     // Loading polls can be much more frequent than frames. Rasterize the two
@@ -611,6 +641,34 @@ struct FrontendArt::Impl {
     mutable std::uint64_t post_started=0;
     std::vector<unsigned> style_thresholds;
     std::array<std::vector<Object>,5> career_objects;
+    std::array<std::map<unsigned,std::vector<unsigned char>>,2> career_panel_scripts;
+    struct CareerPanel {
+        unsigned page=~0U,selection=0;
+        std::uint64_t entered=0,changed=0;
+        std::array<std::uint64_t,6> row_changed{};
+        // 4F8370 creates a half-second scroller. 593EC0 retains its
+        // current position and normalized tangent when retargeted.
+        struct Scroller {
+            float x=0,velocity=0,target=0,source=0,tangent=0,a=0,b=0,t=1;
+            bool ready=false;
+            void select(float next) {
+                if(!ready){x=target=next;ready=true;return;}
+                if(next==target)return;
+                target=next;source=x;tangent=velocity;t=0;
+                const float delta=target-source;
+                a=tangent-2*delta;
+                b=3*delta-2*tangent;
+            }
+            void advance(float seconds) {
+                if(t>=1)return;
+                t+=seconds/.5F;
+                if(t>=1){x=target;velocity=0;return;}
+                x=((t*a+b)*t+tangent)*t+source;
+                velocity=(2*b+3*t*a)*t+tangent;
+            }
+        } scroller;
+    };
+    mutable CareerPanel career_panel;
     std::array<DialogArt,6> dialogs;
     mutable unsigned info_revision=~0U;mutable std::uint64_t info_started=0;
     void draw_dialog(Canvas,unsigned,const PostRaceValues&,unsigned,unsigned,unsigned fade_out=~0U)const;
@@ -1315,6 +1373,7 @@ void FrontendArt::advance(float seconds) {
             impl_->start_named_state(object,"Init",0);
     }
     impl_->temporal=true;impl_->ui_ticks+=static_cast<unsigned>(double(seconds)*1200);
+    if(impl_->career_panel.page==1)impl_->career_panel.scroller.advance(seconds);
     impl_->chyron_ticks+=double(seconds)*4000;
 }
 const FrontendUiAtlas& FrontendArt::atlas() const {return impl_->atlas;}
@@ -1374,7 +1433,7 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
             if(options_selected) label="> OPTIONS";
             if(o.name=="Description") label=selected==FrontendAction::underground?"Begin your Underground career":
                 selected==FrontendAction::free_drive?"Set up a race or explore a track in Free Run.":
-                selected==FrontendAction::statistics?"View your racing statistics.":
+                selected==FrontendAction::statistics?"View your career statistics":
                 selected==FrontendAction::options?"Change display options.":"Host or join a race over your local network.";
             if((underground || free || statistics) && !p.temporal) {
                 const bool current=(underground&&selected==FrontendAction::underground)||

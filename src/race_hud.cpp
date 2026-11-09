@@ -678,7 +678,9 @@ void append_drift_hud(const RaceSession& session,const RaceHudAtlas& atlas,
         const int base=int(notice->points/notice->multiplier);
         if(notice->multiplier>1)std::snprintf(value,sizeof value,loss?"%dx%d":"%+dx%d",base,notice->multiplier);
         else std::snprintf(value,sizeof value,loss?"%d":"%+d",base);
+        const auto before=frame.quads;
         text(value,1,282+right,-28,.95F,2,color,loss?255:200);
+        frame.shown_drift_notice=notice->continuous&&frame.quads>before;
     }
     if(const unsigned kind=drift.comment(now);kind&&(!clock.comment_hidden||drift.comment_started()>clock.comment_hidden_at)) {
         const auto& o=atlas.drift_comment;
@@ -947,6 +949,7 @@ static void build_race_hud_geometry(const VehicleState& car,
                                     std::uint32_t width,std::uint32_t height,RaceHudFrame& frame,
                                     const RaceHudAtlas* metric_atlas) noexcept {
     frame.metric_speed=metric_atlas!=nullptr;
+    frame.shown_drift_notice=false;
     frame.quads = 0;
     frame.atlas_height=kRaceHudAtlasSize;
     frame.lap_first_quad = kRaceHudMaxQuads;

@@ -23,8 +23,12 @@ std::string career_language(const std::vector<unsigned char>& bytes,unsigned has
     }
     return fallback;
 }
+constexpr const char* underground_rows[]={"MapScreen","Customize","UGRanking","Magazines","STATISTICS","SAVE"};
+constexpr const char* underground_highlights[]={"HighlightGroup06","HighlightGroup01","HighlightGroup02","HighlightGroup03","HighlightGroup04","HighlightGroup05"};
+
 std::vector<Object> career_objects(const std::vector<unsigned char>& front,std::size_t offset,
-                                   const std::vector<unsigned char>& language,std::string& error,bool animated=false) {
+                                   const std::vector<unsigned char>& language,std::string& error,bool animated=false,
+                                   std::map<unsigned,std::vector<unsigned char>>* panel_scripts=nullptr) {
     std::vector<Object> result;std::vector<unsigned char> fng;std::size_t used=0;
     if(offset+16>front.size() || !jdlz_decompress(front.data()+offset,dword(front.data()+offset+12),
         1024*1024,fng,used,error))throw std::runtime_error("career FNG decompression failed");
@@ -39,6 +43,7 @@ std::vector<Object> career_objects(const std::vector<unsigned char>& front,std::
         // Its three-dimensional flip track is outside the retained 2D subset.
         if(o.name!="Select_arrow_right")post_state(o,fng.data()+pos+16+n,outer-n-8,"Init");
         const auto* script=fng.data()+pos+16+n;const auto length=outer-n-8;
+        if(panel_scripts&&length)panel_scripts->emplace(o.id,std::vector<unsigned char>(script,script+length));
         if(animated||o.name=="Unlocked_Icon")load_ui_loops(script,length,o);
         if(o.name=="LAPSNUMBER")post_state(o,script,length,"intro");
         if(o.name=="Description")post_state(o,script,length,"FadeIn");
@@ -117,7 +122,9 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
             throw std::runtime_error("career FNG identity mismatch");
         std::array<std::vector<Object>,5> pages;
         const std::size_t offsets[]={0xbbdb0c,0xbc228c,0xbca10c,0xb7018c,0xbc368c};
-        for(unsigned i=0;i<5;++i)pages[i]=career_objects(front,offsets[i],language,error);
+        decltype(impl_->career_panel_scripts) panel_scripts;
+        for(unsigned i=0;i<5;++i)pages[i]=career_objects(front,offsets[i],language,error,false,
+            i==1||i==2?&panel_scripts[i-1]:nullptr);
         auto common=career_objects(front,0xb6dc0c,language,error,true);
         auto browser=career_objects(front,0xbd388c,language,error);
         auto scroller=career_objects(front,0xbd468c,language,error);
@@ -275,6 +282,7 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
         Impl packed;packed.textures=std::move(textures);packed.pack_atlas(true);
         impl_->garage_pages=std::move(garage_pages);
         impl_->career_objects=std::move(pages);impl_->garage_common=std::move(common);
+        impl_->career_panel_scripts=std::move(panel_scripts);impl_->career_panel={};
         impl_->career_browser=std::move(browser);impl_->career_scroller=std::move(scroller);
         impl_->career_sprint=std::move(sprint);impl_->career_backgrounds=std::move(backgrounds);impl_->career_titles=std::move(titles);impl_->career_descriptions=std::move(descriptions);impl_->career_track_names=std::move(track_names);
         impl_->textures=std::move(packed.textures);impl_->atlas=std::move(packed.atlas);impl_->career_maps=std::move(maps);
@@ -287,6 +295,20 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
                                    unsigned selection,const std::string& notice,bool controls,const CareerGarage* garage)const {
     ++sample_generation;
     const unsigned page=career_page_index(profile.page);
+    if(controls&&temporal) {
+        const auto row=selection%6;
+        if(career_panel.page!=page) {
+            career_panel={};
+            career_panel.page=page;career_panel.selection=row;
+            career_panel.entered=career_panel.changed=ui_ticks;
+            career_panel.row_changed.fill(~std::uint64_t(0));
+        }else if(page==2&&career_panel.selection!=row) {
+            career_panel.row_changed[career_panel.selection]=ui_ticks;
+            career_panel.row_changed[row]=ui_ticks;
+            career_panel.selection=row;
+            career_panel.changed=ui_ticks;
+        }
+    }
     if(page==4){auto background=profile;background.page=CareerPage::map;draw_career(image,catalog,background,selection,{},false);}
     const GarageArt* garage_art=page==3&&garage?&garage_pages.at(garage->fng()):nullptr;
     auto objects=garage_art?garage_art->objects:career_objects[page];
@@ -297,14 +319,51 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
     // Resolve selection before hierarchical transforms, so child quads inherit
     // the selected original group rather than its invisible UnHighLight state.
     if(page==2) {
-        const char* names[]={"MapScreen","Customize","UGRanking","Magazines","STATISTICS","SAVE"};
-        const char* groups[]={"HighlightGroup06","HighlightGroup01","HighlightGroup02","HighlightGroup03","HighlightGroup04","HighlightGroup05"};
-        for(auto& o:objects)if(o.name==names[selection%6]||o.name==groups[selection%6]) {
+        for(auto& o:objects)if(o.name==underground_rows[selection%6]||o.name==underground_highlights[selection%6]) {
             const auto high=std::find_if(objects.begin(),objects.end(),[&](const auto& h){return h.name==o.name+"/selected";});
             if(high!=objects.end()){auto name=o.name;o=*high;o.name=std::move(name);}
         }
     }
     objects.erase(std::remove_if(objects.begin(),objects.end(),[](const auto& o){return o.name.find("/selected")!=std::string::npos;}),objects.end());
+    if(controls&&temporal&&(page==1||page==2)) {
+        const auto entered=ui_ticks-career_panel.entered;
+        const auto changed=ui_ticks-career_panel.changed;
+        const auto& scripts=career_panel_scripts[page-1];
+        for(auto& o:objects) {
+            const auto found=scripts.find(o.id);
+            if(found==scripts.end())continue;
+            const auto& script=found->second;
+            const auto state=[&](const char* name,std::uint64_t tick) {
+                post_state(o,script.data(),script.size(),name,unsigned(tick));
+            };
+            if(page==1) {
+                // Moving to another event only rebinds the map data (4C4C60).
+                // The entry strips and the two title objects have separate keys.
+                if(entered<400)state(o.name=="LAPSNUMBER"||o.name=="Message_Blurb"?"intro":"Init",entered);
+                continue;
+            }
+            if(o.name=="Description") {
+                if(changed<240)state("FadeIn",changed);
+                continue;
+            }
+            unsigned row=0;
+            for(;row<std::size(underground_rows);++row)
+                if(o.name==underground_rows[row]||o.name==underground_highlights[row])break;
+            const bool group=o.name.rfind("HighlightGroup",0)==0;
+            if(row<std::size(underground_rows)) {
+                const auto start=career_panel.row_changed[row];
+                const bool selected=row==career_panel.selection;
+                // The FNG sends Button_Highlight/UnHighlight to each row and
+                // its matching group. Every outgoing group keeps its own clock.
+                if(start!=~std::uint64_t(0)) {
+                    if(ui_ticks-start<(group?200U:20U))
+                        state(selected?"HighLight":"UnHighLight",ui_ticks-start);
+                }else if(group) {
+                    if(selected&&entered<200)state("HighLight",entered);
+                }else if(entered<700)state("Init",entered);
+            }else if(entered<2000)state("Init",entered);
+        }
+    }
     if(garage_art) {
         const auto thumb=std::find_if(objects.begin(),objects.end(),[](const auto& o){return o.name=="master_thumb";});
         if(thumb!=objects.end())for(auto& o:objects)
@@ -681,11 +740,16 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
         const auto master=std::find_if(objects.begin(),objects.end(),[](const Object& o){return o.name=="master_thumb";});
         const auto selected=std::find(available.begin(),available.end(),profile.selected_event);
         if(master==objects.end()||selected==available.end())throw std::runtime_error("career scroller selection/template absent");
-        //4F8730 advances by each original thumb's unscaled width.4F8960
-        //centers the selected offset;4F8B80 keeps centers within[-200,200],
-        //scales by1-abs(x)/320 and cubes that factor for opacity.
+        // 4F8960 snaps on opening. 4F8910 retargets the half-second
+        // controller on a move. 4F8B80 scales/culls the moving thumbnails.
+        const float target=-float(selected-available.begin())*master->w;
+        float offset=target;
+        if(controls&&temporal) {
+            career_panel.scroller.select(target);
+            offset=career_panel.scroller.x;
+        }
         for(std::size_t i=0;i<available.size();++i) {
-            const float x=float(int(i)-int(selected-available.begin()))*master->w;
+            const float x=float(i)*master->w+offset;
             if(x< -200.F||x>200.F)continue;
             const auto* item=find_race_event(catalog.events(),available[i]);if(!item)continue;
             const char* icon=item->type==2?"MODE_ICON_SPRINT":item->type==1?"MODE_ICON_DRAG":item->type==3?"MODE_ICON_DRIFT":item->type==5?"MODE_ICON_LAP_KNOCKOUT":"MODE_ICON_CIRCUIT";
@@ -900,6 +964,7 @@ void FrontendArt::Impl::draw_magazine(Canvas image,const CareerMagazineRecipe& r
 
 void FrontendArt::record_magazine(unsigned width,unsigned height,const CareerMagazineRecipe& recipe,
                                  const std::string& car,FrontendUiFrame& frame)const{
+    impl_->career_panel.page=~0U;
     frame.vertices.clear();frame.additive.clear();frame.background_quads=0;
     Canvas image{width,height,impl_->atlas,frame};
     impl_->draw_magazine(image,recipe,car,true);frame.background_quads=frame.additive.size();
