@@ -59,14 +59,15 @@ nfsu::RacePresentationOptions read_presentation_options(bool road_default) {
     options.road_reflections=road_default;
     for(const auto& path:{presentation_path,std::filesystem::path(presentation_path.string()+".bak")}) {
         std::ifstream file(path);
-        unsigned version,blur,car,road,metric,height=0;
+        unsigned version,blur,car,road,metric,height=0,logs=0;
         if(!(file>>version>>blur>>car>>road>>metric) ||
-           (version!=1 && version!=2) || blur>1 || car>1 || road>1 || metric>1)
+           version<1 || version>3 || blur>1 || car>1 || road>1 || metric>1)
             continue;
-        if(version==2 && (!(file>>height) || (height!=0 && height!=540 && height!=720)))
+        if(version>=2 && (!(file>>height) || (height!=0 && height!=540 && height!=720)))
             continue;
+        if(version==3 && (!(file>>logs) || logs>1))continue;
         std::string extra;
-        if(!(file>>extra))return {blur!=0,car!=0,road!=0,metric!=0,height};
+        if(!(file>>extra))return {blur!=0,car!=0,road!=0,metric!=0,height,logs!=0};
     }
     return options;
 }
@@ -78,8 +79,9 @@ bool write_presentation_options(const nfsu::RacePresentationOptions& options) {
     auto pending=presentation_path;
     pending+=".tmp";
     std::ofstream file(pending,std::ios::trunc);
-    file<<"2 "<<options.motion_blur<<' '<<options.low_car_reflections<<' '
-        <<options.road_reflections<<' '<<options.metric_speed<<' '<<options.race_height<<'\n';
+    file<<"3 "<<options.motion_blur<<' '<<options.low_car_reflections<<' '
+        <<options.road_reflections<<' '<<options.metric_speed<<' '<<options.race_height<<' '
+        <<options.diagnostic_logs<<'\n';
     file.close();
     if(!file)return false;
     if(std::filesystem::exists(presentation_path,error)) {
@@ -584,7 +586,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
 
     // Boundary-only SD evidence survives a lost nxlink stream. No frame writes.
     StartupJournal flow_journal;bool flow_journal_open=false;
-    if(post_art && !free_drive && !quick && !sweep) {
+    if(presentation.diagnostic_logs && post_art && !free_drive && !quick && !sweep) {
         for(unsigned attempt=0;attempt<10000;++attempt) {
             char path[96];std::snprintf(path,sizeof path,"sdmc:/nfsu-career-flow-%04u.log",attempt);
             if(flow_journal.open(path)){flow_journal_open=true;break;}
@@ -604,8 +606,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         }
     };
     char flow_detail[384];
-    std::snprintf(flow_detail,sizeof flow_detail,"build=%s event=%lu profile=%u panel=%u free=%u",
-        NFSU_RACE_BUILD_TAG,(unsigned long)event_number,unsigned(profile_frame),unsigned(panel_mode),unsigned(free_drive));
+    std::snprintf(flow_detail,sizeof flow_detail,"build=%s event=%lu round=%u profile=%u panel=%u free=%u",
+        NFSU_RACE_BUILD_TAG,(unsigned long)event_number,race_index+1,unsigned(profile_frame),unsigned(panel_mode),unsigned(free_drive));
     if(post_art)flow_mark("race.enter",flow_detail);
     selected_car_label = (dress?"CUSTOM ":tuned?"TUNED ":"STOCK ") + selected_car.car_type_name;
     car_shading_label=car_shading ? "ON static" : "OFF";
@@ -1594,6 +1596,12 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     const auto audio_stats=sound.stats();
     std::printf("SWITCH_MUSIC mode=race missing_frames=%llu buffered_frames=%zu\n",
         static_cast<unsigned long long>(audio_stats.ring_underruns),audio_stats.ring_fill);
+    if(flow_journal_open) {
+        std::snprintf(flow_detail,sizeof flow_detail,"missing_frames=%llu buffered_frames=%zu empty_queue=%llu",
+            static_cast<unsigned long long>(audio_stats.ring_underruns),audio_stats.ring_fill,
+            static_cast<unsigned long long>(audio_stats.output_late));
+        flow_mark("race.audio",flow_detail);
+    }
     const auto measured_clocks=read_clocks();
     std::printf("RUN_STATS build=%s event=%lu height=%lu unpause_resets=%u CPU_HZ=%lu CPU_OK=%u GPU_HZ=%lu GPU_OK=%u EMC_HZ=%lu EMC_OK=%u\n",
         NFSU_RACE_BUILD_TAG,(unsigned long)event_number,(unsigned long)scene_height,unpause_resets,
@@ -1649,7 +1657,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     const bool intro_won=event_number==0 && failure.empty() && player_result.finish_valid && player_result.position==1;
     RaceReturn result=pause_exit?pause_return:intro_won?RaceReturn::intro_won:RaceReturn::menu;
     bool post_shown=false;
-    std::snprintf(flow_detail,sizeof flow_detail,"finished=%u status=%u place=%u won=%u failure=%u post=%u profile=%u panel=%u free=%u intro=%u",
+    std::snprintf(flow_detail,sizeof flow_detail,"outcome=%s pause_exit=%u finished=%u status=%u place=%u won=%u failure=%u post=%u profile=%u panel=%u free=%u intro=%u",
+        race_outcome_name(race.session().timing().outcome),unsigned(pause_exit),
         unsigned(player_result.finish_valid),unsigned(player_result.status),race.session().player_position(),unsigned(race.session().player_won()),unsigned(!failure.empty()),
         unsigned(post_art!=nullptr),unsigned(bool(profile_stats)),unsigned(panel_mode),unsigned(free_drive),unsigned(intro_won));
     if(post_art)flow_mark("race.terminal",flow_detail);
@@ -1910,6 +1919,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     }
     std::string close_error;
     if (!renderer.close(close_error)) {
+        if(post_art)flow_mark("race.close_failed",close_error.c_str());
         if (!failure.empty()) failure += " | ";
         failure += "renderer close: " + close_error;
     }
@@ -3088,7 +3098,7 @@ int main(int argc, char** argv) {
                             options_open=false;
                             music.sound(audio::FrontendSound::back);
                         }else if(input.up!=input.down) {
-                            option_row=(option_row+(input.up?4U:1U))%5U;
+                            option_row=(option_row+(input.up?5U:1U))%6U;
                             music.sound(input.up?audio::FrontendSound::up:audio::FrontendSound::down);
                         }else {
                             const bool left=down&(HidNpadButton_Left|HidNpadButton_StickLLeft);
@@ -3100,7 +3110,8 @@ int main(int argc, char** argv) {
                                     constexpr std::uint32_t heights[]={0,540,720};
                                     const unsigned current=presentation.race_height==540?1U:presentation.race_height==720?2U:0U;
                                     presentation.race_height=heights[(current+(left&&!right?2U:1U))%3U];
-                                }else *values[option_row]=!*values[option_row];
+                                }else if(option_row==5) presentation.diagnostic_logs=!presentation.diagnostic_logs;
+                                else *values[option_row]=!*values[option_row];
                                 option_notice=write_presentation_options(presentation)?"":"Could not save options to SD.";
                                 music.sound(left?audio::FrontendSound::left:audio::FrontendSound::right);
                             }
@@ -3149,7 +3160,7 @@ int main(int argc, char** argv) {
                         require(frontend_renderer->close(frontend_error),frontend_error);
                         frontend_renderer.reset();frontend_gpu_profile.reset();
                         try {
-                            run_switch_lan(root,pad,free_rides,[&](const std::string& car,unsigned tier,
+                            run_switch_lan(root,pad,presentation.diagnostic_logs,free_rides,[&](const std::string& car,unsigned tier,
                                                                  const std::function<void()>& poll) {
                                 run_career_action(FrontendAction::free_drive,&car,tier,poll);
                             });

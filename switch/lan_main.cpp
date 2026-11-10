@@ -180,10 +180,10 @@ void room_lobby(PadState& pad,LanScreen& screen,LanLink& link,bool host,
     }
     throw RoomExit{};
 }
-void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::string ip,
+void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::string ip,bool write_logs,
              const std::map<std::string,CareerRide>& rides,const LanGarageEditor& edit){
     StartupJournal journal;char path[96]{};
-    for(unsigned i=0;i<10000;++i){
+    for(unsigned i=0;write_logs&&i<10000;++i){
         std::snprintf(path,sizeof path,"sdmc:/nfsu-lan-runtime-%04u.log",i);
         if(journal.open(path)){diagnostic_journal=&journal;break;}
         if(errno!=EEXIST)break;
@@ -322,9 +322,9 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
 }
 }
 
-void run_switch_lan(const std::string& root,PadState& pad,
+void run_switch_lan(const std::string& root,PadState& pad,bool write_logs,
                     const std::map<std::string,CareerRide>& rides,const LanGarageEditor& edit){
-    run_lan(root,pad,false,false,{},rides,edit);
+    run_lan(root,pad,false,false,{},write_logs,rides,edit);
 }
 
 #ifdef NFSU_LAN_STANDALONE
@@ -342,7 +342,7 @@ int main(int argc,char** argv){
     LanSocket bootstrap;std::string error;
     const int log=__nxlink_host.s_addr&&bootstrap.open(0,error)?nxlinkStdio():-1;
     PadState pad;padConfigureInput(1,HidNpadStyleSet_NpadStandard);padInitializeDefault(&pad);
-    run_lan(root,pad,selected,host,ip,{},{});
+    run_lan(root,pad,selected,host,ip,true,{},{});
     if(log>=0)::close(log);
     return 0;
 }

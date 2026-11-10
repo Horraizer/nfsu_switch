@@ -69,14 +69,17 @@ void FrontendArt::decode_profiles(const std::vector<unsigned char>& image,const 
 }
 void FrontendArt::Impl::draw_dialog(Canvas canvas,unsigned page,const PostRaceValues& values,unsigned selected,unsigned tick,unsigned fade_out)const {
     const auto& art=dialogs.at(page);auto objects=art.objects;
-    const bool extra_option=page==0&&values.count("OptionName_5");
-    if(extra_option) {
+    const bool extra_options=page==0&&values.count("OptionName_6");
+    if(extra_options) {
         for(const std::string prefix:{"OptionName_","Button_"}) {
             const auto last=std::find_if(objects.begin(),objects.end(),[&](const auto& object){return object.name==prefix+"4";});
             if(last==objects.end())continue;
-            auto option=*last;
-            option.name=prefix+"5";
-            objects.push_back(std::move(option));
+            const auto prototype=*last;
+            for(unsigned row=5;row<=6;++row) {
+                auto option=prototype;
+                option.name=prefix+std::to_string(row);
+                objects.push_back(std::move(option));
+            }
         }
     }
     for(auto& o:objects) {
@@ -85,22 +88,25 @@ void FrontendArt::Impl::draw_dialog(Canvas canvas,unsigned page,const PostRaceVa
         if(page==5&&o.name=="TYPE GROUP")post_state(o,script.data(),script.size(),"FadeIn",tick);
         if(fade_out!=~0U)post_state(o,script.data(),script.size(),"FadeOut",fade_out);
         bool button=false,high=false;
-        for(unsigned n=1;n<=(page==2?8:page==1||page==3?2:extra_option?5:4);++n) {
+        for(unsigned n=1;n<=(page==2?8:page==1||page==3?2:extra_options?6:4);++n) {
             const auto number=std::to_string(n),zero=std::string(n<10?"0":"")+number;
             if(o.name=="Button_"+number||o.name=="OptionName_"+number||o.name=="button"+number||o.name=="Savehilight_"+zero) {button=true;high=selected==n-1;}
         }
         if(button) {post_state(o,script.data(),script.size(),"UnHighlight");post_state(o,script.data(),script.size(),"Unhighlight");
             if(high){post_state(o,script.data(),script.size(),"Highlight");post_state(o,script.data(),script.size(),"HighLight");}}
     }
-    if(extra_option) {
+    if(extra_options) {
+        constexpr float scale=3.F/5.F;
         for(const std::string prefix:{"OptionName_","Button_"}) {
             const auto first=std::find_if(objects.begin(),objects.end(),[&](const auto& object){return object.name==prefix+"1";});
             const auto last=std::find_if(objects.begin(),objects.end(),[&](const auto& object){return object.name==prefix+"4";});
             if(first==objects.end()||last==objects.end())continue;
             const float top=first->y,bottom=last->y;
             for(auto& object:objects)if(object.name.rfind(prefix,0)==0) {
-                object.y=object.name==prefix+"5"?bottom:top+(object.y-top)*.75F;
-                if(prefix=="Button_")object.h*=.75F;
+                if(object.name==prefix+"5")object.y=top+(bottom-top)*4.F/5.F;
+                else if(object.name==prefix+"6")object.y=bottom;
+                else object.y=top+(object.y-top)*scale;
+                if(prefix=="Button_")object.h*=scale;
             }
         }
     }
@@ -197,6 +203,7 @@ void FrontendArt::record_options(unsigned width,unsigned height,const RacePresen
         {"OptionName_4",options.metric_speed?"Speed Units   KM/H":"Speed Units   MPH"},
         {"OptionName_5",options.race_height==540?"Race Resolution   540p":
                         options.race_height==720?"Race Resolution   720p":"Race Resolution   AUTO"},
+        {"OptionName_6",options.diagnostic_logs?"Diagnostic Logs   ON":"Diagnostic Logs   OFF"},
         {"Controls","Left / Right: Adjust   B: Back"},{"Notice",notice}};
     impl_->draw_dialog(Canvas{width,height,impl_->atlas,frame},0,values,selected,600);
 }
