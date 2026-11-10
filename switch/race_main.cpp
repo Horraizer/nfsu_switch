@@ -1072,8 +1072,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         sound.set_suspended(paused);
         const bool driving_before = !paused && !just_unpaused && running &&
             race.session().timing().stage == RaceStage::racing;
-        const bool finish_driving=!replay_mode&&!ab_enabled&&(race.session().rival_count()>0||race.session().is_drift())&&
-            race.session().timing().outcome==RaceOutcome::finished;
+        const bool can_finish_drive=!replay_mode&&!ab_enabled&&(race.session().rival_count()>0||race.session().is_drift());
+        const bool finish_driving=can_finish_drive&&race.session().timing().outcome==RaceOutcome::finished;
         if (!paused && !just_unpaused && (running||finish_driving)) clock.add(elapsed); else clock.reset();
         double simulation = 0, residency = 0, record = 0, upload = 0;
         std::array<double,8> simulation_ticks{};
@@ -1129,7 +1129,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             if(!finish_seen&&race.session().timing().outcome==RaceOutcome::finished) {
                 // 42C2FB starts the finish hold on the world clock.
                 finish_world_start=race.session().timing().step_ticks;
-                finish_delay_ticks=(crashing?6:3)*kRaceTicksPerSecond;
+                finish_delay_ticks=(crashing&&can_finish_drive?6:3)*kRaceTicksPerSecond;
             }
             if(drag_shift_trace)drag_shift_trace->after(race.session(),input.pads[0].buttons);
             result_stats.observe(race.session());
