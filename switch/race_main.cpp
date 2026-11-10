@@ -927,7 +927,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     std::uint64_t previous_driving_present = 0;
     std::uint64_t last_heap_sample = 0, timed_heap_samples = 0;
     RaceHudFrame hud_frame;
-    double finish_seconds=0,finish_delay=3;bool finish_seen=false;
+    double finish_seconds=0;bool finish_seen=false;
+    std::int32_t finish_world_start=0,finish_delay_ticks=3*kRaceTicksPerSecond;
     RaceFpsHistory fps_history;
     RaceDebugInput debug_input;
     RaceMinimapState minimap_state;
@@ -1123,8 +1124,11 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             if(drag_shift_trace)drag_shift_trace->before(race.session());
             const bool crashing=race.session().crash_camera_event()!=0;
             require(race.simulate(input,error,probe_tick?&sim_probe:nullptr,probe_tick?&profile_clock:nullptr),error);
-            if(!finish_seen&&race.session().timing().outcome==RaceOutcome::finished)
-                finish_delay=crashing?6.:3.; // 42C2FB checks active stunt/crash modes6/7.
+            if(!finish_seen&&race.session().timing().outcome==RaceOutcome::finished) {
+                // 42C2FB starts the finish hold on the world clock.
+                finish_world_start=race.session().timing().step_ticks;
+                finish_delay_ticks=(crashing?6:3)*kRaceTicksPerSecond;
+            }
             if(drag_shift_trace)drag_shift_trace->after(race.session(),input.pads[0].buttons);
             result_stats.observe(race.session());
             if(probe_tick) {
@@ -1554,9 +1558,12 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             }
         }
         if(spike_probe&&diagnostic_present_end)previous_tail_ms=ms(armGetSystemTick()-diagnostic_present_end);
-        // Allow the authored finish banner to become visible before results.
-        // This three-second port dwell is not an original results-camera port.
-        if (finished && (!hud_mode || panel_mode || replay_mode || ab_enabled || profile_stats || finish_seconds>finish_delay)) break;
+        // Terminal modes without a post-finish simulation still have a
+        // running presentation clock for the banner.
+        const bool finish_hold_over=finish_driving?
+            race.session().timing().step_ticks-finish_world_start>finish_delay_ticks:
+            finish_seconds>double(finish_delay_ticks)/kRaceTicksPerSecond;
+        if(finished&&(!hud_mode||panel_mode||replay_mode||ab_enabled||profile_stats||finish_hold_over))break;
     }
     } catch (const std::exception& e) {
         if(sweep)throw;
