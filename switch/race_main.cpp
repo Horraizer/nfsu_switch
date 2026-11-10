@@ -47,6 +47,8 @@
 #include <fstream>
 #include <memory>
 #include <atomic>
+#include <chrono>
+#include <future>
 #include <stdexcept>
 
 namespace {
@@ -1667,15 +1669,34 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             flow_mark(staged_finish?"post.scene":"post.scene_unavailable",finish_scene_error.c_str());
             bool frontend_audio=false;
             bool tried_frontend_audio=false;
-            const auto start_results_music=[&] {
-                if(!frontend_music||tried_frontend_audio||!sound.finish_music_drained())return false;
+            std::future<bool> starting_frontend_audio;
+            const auto update_results_music=[&] {
+                if(starting_frontend_audio.valid()) {
+                    if(starting_frontend_audio.wait_for(std::chrono::seconds(0))==std::future_status::ready)
+                        frontend_audio=starting_frontend_audio.get();
+                    return;
+                }
+                if(!frontend_music||tried_frontend_audio||!sound.finish_music_drained())return;
                 tried_frontend_audio=true;
-                sound.stop();
-                std::string music_error;
-                frontend_audio=frontend_music->start(root,music_error,{},pause_menu.music());
-                std::printf("RACE_POST_MUSIC playlist=frontend started=%u scene=%u %s\n",
-                    unsigned(frontend_audio),unsigned(staged_finish),music_error.c_str());
-                return true;
+                const auto volume=pause_menu.music();
+                const bool in_scene=staged_finish;
+                try {
+                    starting_frontend_audio=std::async(std::launch::async,[&,volume,in_scene] {
+                        try {
+                            sound.stop();
+                            std::string music_error;
+                            const bool playing=frontend_music->start(root,music_error,{},volume);
+                            std::printf("RACE_POST_MUSIC playlist=frontend started=%u scene=%u %s\n",
+                                unsigned(playing),unsigned(in_scene),music_error.c_str());
+                            return playing;
+                        } catch(const std::exception& e) {
+                            std::printf("RACE_POST_MUSIC playlist=frontend started=0 %s\n",e.what());
+                            return false;
+                        }
+                    });
+                } catch(const std::system_error& e) {
+                    std::printf("RACE_POST_MUSIC playlist=frontend started=0 %s\n",e.what());
+                }
             };
             double finish_scene_seconds=0;
             const auto record_finish_scene=[&] {
@@ -1705,11 +1726,10 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     if(!record_finish_scene())break;
                     require(renderer.present(error),error);
                     finish_scene_seconds+=double(finish_clock.sample(armTicksToNs(armGetSystemTick())))/1000000000.0;
-                    // Asset/audio setup time must not jump the NIS ahead.
-                    if(start_results_music())finish_clock.sample(armTicksToNs(armGetSystemTick()));
+                    update_results_music();
                 }
             }
-            start_results_music();
+            update_results_music();
             std::array<std::string,4> models{{race.car(),race.car(),race.car(),race.car()}},labels;
             if(intro_grid) {
                 unsigned actor=1;
@@ -1785,7 +1805,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             while(appletMainLoop()) {
                 // A delayed device cursor can reach the boundary after the
                 // results appear. Keep drawing and try the same handoff here.
-                if(start_results_music())post_clock.resume();
+                update_results_music();
                 padUpdate(&pad);const auto down=padGetButtonsDown(&pad);
                 FrontendInput input;
                 input.up=down&(HidNpadButton_Up|HidNpadButton_StickLUp);
@@ -1842,8 +1862,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     // confirmation click finish before a retry can stop it.
                     const auto cue_deadline=armGetSystemTick()+armNsToTicks(1000000000ULL);
                     while(armGetSystemTick()<cue_deadline&&appletMainLoop()) {
-                        start_results_music();
-                        const bool audio_pending=frontend_music&&!tried_frontend_audio;
+                        update_results_music();
+                        const bool audio_pending=starting_frontend_audio.valid()||(frontend_music&&!tried_frontend_audio);
                         const bool cue_playing=frontend_audio?frontend_music->sound_active():
                             !frontend_music&&sound.frontend_sound_active();
                         if(!audio_pending&&!cue_playing)break;
