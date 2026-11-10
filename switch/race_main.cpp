@@ -1668,13 +1668,14 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             bool frontend_audio=false;
             bool tried_frontend_audio=false;
             const auto start_results_music=[&] {
-                if(!frontend_music||tried_frontend_audio)return;
+                if(!frontend_music||tried_frontend_audio||!sound.finish_music_drained())return false;
                 tried_frontend_audio=true;
                 sound.stop();
                 std::string music_error;
                 frontend_audio=frontend_music->start(root,music_error,{},pause_menu.music());
                 std::printf("RACE_POST_MUSIC playlist=frontend started=%u scene=%u %s\n",
                     unsigned(frontend_audio),unsigned(staged_finish),music_error.c_str());
+                return true;
             };
             double finish_scene_seconds=0;
             const auto record_finish_scene=[&] {
@@ -1691,10 +1692,10 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             };
             // 422ED1 selects the ending NIS, then 422FE9 waits at least
             // two seconds before it can request the results package.
+            // Audio state 8 fades the race song and selects the frontend mask
+            // during the ending NIS, before the results package is requested.
+            if(frontend_music)sound.fade_music_for_finish();
             if(staged_finish) {
-                // Audio state 8 fades the race song and selects the frontend mask
-                // during the ending NIS, before the results package is requested.
-                if(frontend_music)sound.fade_music_for_finish();
                 FrontendClock finish_clock;
                 finish_clock.sample(armTicksToNs(armGetSystemTick()));
                 constexpr double minimum_scene_seconds=2.0;
@@ -1704,11 +1705,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     if(!record_finish_scene())break;
                     require(renderer.present(error),error);
                     finish_scene_seconds+=double(finish_clock.sample(armTicksToNs(armGetSystemTick())))/1000000000.0;
-                    if(frontend_music&&!tried_frontend_audio&&sound.finish_music_drained()) {
-                        start_results_music();
-                        // Asset/audio setup time must not jump the NIS ahead.
-                        finish_clock.sample(armTicksToNs(armGetSystemTick()));
-                    }
+                    // Asset/audio setup time must not jump the NIS ahead.
+                    if(start_results_music())finish_clock.sample(armTicksToNs(armGetSystemTick()));
                 }
             }
             start_results_music();
@@ -1779,12 +1777,15 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             FrontendUiFrame ui;
             bool sweep_results_presented=false,sweep_results_continued=false;
             const auto post_started=finish_sweep?armGetSystemTick():0;
-            auto previous_post_page=PostRacePage::menu;bool first_post_frame=true;
+            auto previous_post_page=PostRacePage::menu;bool first_post_frame=true,post_voice_pending=true;
             flow_mark("post.begin","original results flow");
             padUpdate(&pad); // Consume finish-frame button edges before menu input.
             post_shown=true;
             std::printf("RACE_POST menu=original stats=%s restart=full_session\n",race.session().is_drag()?"drag":race.session().is_drift()?"drift":"circuit");
             while(appletMainLoop()) {
+                // A delayed device cursor can reach the boundary after the
+                // results appear. Keep drawing and try the same handoff here.
+                if(start_results_music())post_clock.resume();
                 padUpdate(&pad);const auto down=padGetButtonsDown(&pad);
                 FrontendInput input;
                 input.up=down&(HidNpadButton_Up|HidNpadButton_StickLUp);
@@ -1840,9 +1841,14 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     // Leave frontend music running into the map, but let the
                     // confirmation click finish before a retry can stop it.
                     const auto cue_deadline=armGetSystemTick()+armNsToTicks(1000000000ULL);
-                    while((frontend_audio?frontend_music->sound_active():!frontend_music&&sound.frontend_sound_active())&&
-                          armGetSystemTick()<cue_deadline&&appletMainLoop())
+                    while(armGetSystemTick()<cue_deadline&&appletMainLoop()) {
+                        start_results_music();
+                        const bool audio_pending=frontend_music&&!tried_frontend_audio;
+                        const bool cue_playing=frontend_audio?frontend_music->sound_active():
+                            !frontend_music&&sound.frontend_sound_active();
+                        if(!audio_pending&&!cue_playing)break;
                         require(renderer.present_frontend(ui,error),error);
+                    }
                     if(frontend_audio)frontend_music->stop_speech();
                     break;
                 }
@@ -1863,9 +1869,10 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     sweep_mark("post.results",format("player_row=1 vertices=%zu",ui.vertices.size()).c_str());
                     sweep_results_presented=true;
                 }
-                if(first_post_frame&&menu.page()==PostRacePage::results) {
+                if(post_voice_pending&&menu.page()==PostRacePage::results&&(frontend_audio||!frontend_music)) {
+                    post_voice_pending=false;
                     const int voice=audio::post_race_speech(event_number,event_won);
-                    if(voice>=0&&(frontend_audio||!frontend_music)) {
+                    if(voice>=0) {
                         std::string voice_error;
                         const bool played=frontend_audio?frontend_music->speech(voice,voice_error):
                             sound.post_race_voice(root,event_number,event_won,voice_error);
