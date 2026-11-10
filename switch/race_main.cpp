@@ -59,15 +59,15 @@ nfsu::RacePresentationOptions read_presentation_options(bool road_default) {
     options.road_reflections=road_default;
     for(const auto& path:{presentation_path,std::filesystem::path(presentation_path.string()+".bak")}) {
         std::ifstream file(path);
-        unsigned version,blur,car,road,metric,height=0,logs=0;
+        unsigned version,blur,car,road,metric,height=0;
         if(!(file>>version>>blur>>car>>road>>metric) ||
            version<1 || version>3 || blur>1 || car>1 || road>1 || metric>1)
             continue;
         if(version>=2 && (!(file>>height) || (height!=0 && height!=540 && height!=720)))
             continue;
-        if(version==3 && (!(file>>logs) || logs>1))continue;
-        std::string extra;
-        if(!(file>>extra))return {blur!=0,car!=0,road!=0,metric!=0,height,logs!=0};
+        std::string logs,extra;
+        if(version==3 && (!(file>>logs) || (logs!="0"&&logs!="1")))continue;
+        if(!(file>>extra))return {blur!=0,car!=0,road!=0,metric!=0,height,logs=="1"};
     }
     return options;
 }
