@@ -193,7 +193,7 @@ bool RaceCrashCamera::update(std::int32_t tick,std::uint64_t frame,bool allowed,
     if(sampled&&event_==6&&((car.collision_state==1&&crash_age>3.F)||
         (car.collision_state!=1&&float(tick)*.00025F>flight_deadline_))) {
         stop();
-        if(allowed&&intensity_&&(!last_valid_[1]||age(tick,last_[1])>=5.F)) {
+        if(intensity_&&(!last_valid_[1]||age(tick,last_[1])>=5.F)) {
             float ground=0;shot_.alternate[2]=std::max(shot_.alternate[2],float(car.position.z));
             if(world.ground(shot_.alternate,ground)&&shot_.alternate[2]<ground)shot_.alternate[2]=ground+1.F;
             shot_.start_progress=progress;

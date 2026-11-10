@@ -90,8 +90,10 @@ int main(){
     camera.reset();camera.contact(35,true,4000,true,c,0,road,world);
     check(camera.update(4100,1,false,c,stock_240sx_handling(),0,0,road,world,{},view,true)&&camera.event()==6,
         "finishing retains an airborne shot already active at the line");
+    check(camera.update(16001,5,false,c,stock_240sx_handling(),0,0,road,world,{},view,true)&&camera.event()==7,
+        "the original driving phase of the finish hold permits the follow-up shot");
     auto grounded=c;grounded.published_support=4;
-    check(!camera.update(6001,2,false,grounded,stock_240sx_handling(),0,0,road,world,{},view,true)&&camera.event()==0,
+    check(!camera.update(16002,6,false,grounded,stock_240sx_handling(),0,0,road,world,{},view,true)&&camera.event()==0,
         "landing during the finish hold still restores the ordinary view immediately");
     camera.reset();
     camera.contact(35,true,4000,true,c,0,road,world);

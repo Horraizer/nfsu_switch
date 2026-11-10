@@ -922,8 +922,8 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     if(crash_source_) {
         const bool allowed=timing_.stage==RaceStage::racing&&timing_.outcome==RaceOutcome::running&&!spec_.drift_mode;
         // 42C2FB extends the finish hold when a roadside shot is active.
-        // Keep that shot until its own return conditions, without starting
-        // another shot after the result has been recorded.
+        // 42DA40 still permits the follow-up while the world is in the
+        // driving phase of that hold. Only new airborne admission is closed.
         const bool finishing=timing_.outcome==RaceOutcome::finished&&crash_camera_.event()!=0;
         ChaseCameraView cinematic;
         if(crash_camera_.update(timing_.step_ticks,timing_.step-1,allowed,car(),spec_.handling,float(animation_.wheel_phase[0]),
