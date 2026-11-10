@@ -349,6 +349,8 @@ bool prepare_race_car_frame(StockFrameInputs& inputs, const std::filesystem::pat
                            bool car_shading = false);
 
 // render_scene over the prepared scene, into frame.frame and frame.stats.
+bool load_car_crash_windows(const StockFrameInputs&,const StockFrame&,
+                            CarCrashWindows&,std::string&);
 bool render_stock_frame(StockFrame& frame, const RenderOptions& options, std::string& error);
 
 // The frame encoded exactly as write_frame_tga encodes it before writing:

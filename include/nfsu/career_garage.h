@@ -27,7 +27,7 @@ public:
     bool edit_vinyl_colors(const CareerCatalog&,const CareerProfile&,std::string& error);
     bool reorder_vinyl(int,const CareerCatalog&,CareerProfile&);
     void toggle_decal_color(const CareerCatalog&,const CareerProfile&);
-    bool white_decal()const{return state_.white_decal;}
+    bool white_decal()const;
     unsigned color_channel()const{return state_.channel;}
     unsigned color_channels()const{return state_.channels;}
     void change_finish(int direction,const CareerCatalog&,const CareerProfile&);
@@ -57,7 +57,11 @@ public:
     CareerProfile preview(const CareerProfile&)const;
     CareerProfile preview(const CareerProfile&,unsigned index)const;
 private:
-    struct State {GaragePage page=GaragePage::root;unsigned selection=0,slot=0,group=0,field=0,layout=0,channel=0,channels=1,preview=0;bool white_decal=false;};
+    struct State {
+        GaragePage page=GaragePage::root;
+        unsigned selection=0,slot=0,group=0,field=0,layout=0,channel=0,channels=1,preview=0;
+        std::vector<std::uint32_t> black_decals;
+    };
     State state_;
     std::vector<CareerProfile> trade_previews_;
     std::array<std::uint32_t,4> draft_colors_{};

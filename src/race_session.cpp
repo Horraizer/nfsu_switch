@@ -24,7 +24,7 @@ bool RaceSession::set_traffic(const std::filesystem::path& root,const std::vecto
     std::unique_ptr<RaceTraffic> next;
     if(!setup.empty()) {
         next=std::make_unique<RaceTraffic>();
-        if(!next->load(root,course_,setup,error,density,random,drag_))return false;
+        if(!next->load(root,course_,setup,error,density,random?random:&contact_seed_,drag_))return false;
     }
     auto props=std::make_unique<RaceProps>();
     if(!props->load(root,error,course_.name))return false;
@@ -34,6 +34,8 @@ bool RaceSession::set_traffic(const std::filesystem::path& root,const std::vecto
     contact_traffic_epochs_.resize(setup.size());
     near_pass_cache_.resize(3+setup.size());
     if(!prepare_world_motion(root,error))return false;
+    contact_seed_=0x60000000U;
+    world_random_=random;
     props_=std::move(props);traffic_=std::move(next);return true;
 }
 
@@ -341,6 +343,7 @@ bool RaceSession::start(std::string& error,const VehiclePose* pose,float countdo
     crash_camera_.reset();frame_seconds_=kDriveFrameSeconds;steering_seconds_=shift_seconds_=visual_frames_=0;
     prop_contacts_={};
     if (started_) { error = "race session is one-shot"; return false; }
+    crash_windows_damaged_=false;
     if (!controls_.configure(drag_?default_drag_controls_config():default_drive_controls_config(),spec_.nitrous.installed,error)) return false;
     if (spec_.nitrous.installed &&
         !nitrous_resource_.initialize(spec_.nitrous.capacity_seconds,spec_.nitrous.count)) {
@@ -1202,7 +1205,8 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
     };
     std::vector<Job> jobs(world_contact_pairs_.size());unsigned serial=0;
     const auto enqueue=[&](unsigned k) {
-        auto& pair=world_contact_pairs_[k];const auto& a=bodies[pair.a];auto& j=jobs[k];j.valid=false;
+        auto& pair=world_contact_pairs_[k];const auto& a=bodies[pair.a];
+        auto& queued=jobs[k];Job j;j.repetitions=queued.repetitions;
         if(j.repetitions>=2)return true;
         if(a.prop&&a.prop->expired)return true;
         ++work_.pair_candidates;
@@ -1251,7 +1255,14 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                 a.history,b.history,j.car,&pair.query,kind(b),kind(a)))return false;
             j.valid=j.car.admitted;j.remaining=j.car.remaining;
         }
-        j.serial=serial++;return true;
+        // 468060 inserts each admitted job, including a second query of the
+        // same pair. Only its first-in-queue candidate can run: resolving it
+        // invalidates every other pending job involving either moving body.
+        if(j.valid) {
+            j.serial=serial++;
+            if(!queued.valid||j.remaining>queued.remaining)queued=j;
+        }
+        return true;
     };
     for(unsigned k=0;k<jobs.size();++k)if(!enqueue(k)){error="world contact query refused";started_=false;return false;}
     // 420380 shares one response budget across car, polygon and prop jobs.
@@ -1271,7 +1282,8 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
             if(activated)contact_component_interval_=0;
         }
         const auto published_a=*bodies[a].state;
-        RaceContactContext context{pair.record,contact_seed_,tick};RacePairContact contact;bool ok=false;
+        auto& world_seed=world_random_?*world_random_:contact_seed_;
+        RaceContactContext context{pair.record,world_seed,tick};RacePairContact contact;bool ok=false;
         context.drag=drag_;
         context.physical_selectors={{a<4?(actors[a]->ai_physics_?3U:1U):3U,
             b<4?(actors[b]->ai_physics_?3U:1U):3U}};
@@ -1381,9 +1393,9 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                     if(crash_source_) {
                         const auto& j=contact.impulse;
                         const float magnitude=std::min(50.F,float(vehicle_sqrt((j[0]*j[0]+j[1]*j[1])+j[2]*j[2])));
+                        // 4663A0 only admits two kind0 cars for the roadside shot.
                         crash_camera_.contact(magnitude,before.collision_state==0&&car().collision_state==1,tick,
-                            timing_.stage==RaceStage::racing&&timing_.outcome==RaceOutcome::running&&!spec_.drift_mode,
-                            car(),progress().coordinate.fraction*100.F,*crash_source_,camera_world_);
+                            false,before,progress().coordinate.fraction*100.F,*crash_source_,camera_world_);
                     }
                     if(contacts.count<contacts.pairs.size()) {
                         auto& observation=contacts.pairs[contacts.count++];
@@ -1450,9 +1462,14 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                     const auto& before=a==0?published_a:published_b;
                     const auto& j=contact.impulse;
                     const float magnitude=std::min(50.F,float(vehicle_sqrt((j[0]*j[0]+j[1]*j[1])+j[2]*j[2])));
-                    crash_camera_.contact(magnitude,before.collision_state==0&&car().collision_state==1,tick,
+                    // 42C4B0 and 42C6D0 read the published actor transform and
+                    // velocity inside 465D00, before either body continues.
+                    if(crash_camera_.contact(magnitude,before.collision_state==0&&car().collision_state==1,tick,
                         timing_.stage==RaceStage::racing&&timing_.outcome==RaceOutcome::running&&!spec_.drift_mode,
-                        car(),progress().coordinate.fraction*100.F,*crash_source_,camera_world_);
+                        before,progress().coordinate.fraction*100.F,*crash_source_,camera_world_)) {
+                        // 466300 calls 58DBE0 only after the collision shot is accepted.
+                        crash_windows_damaged_=true;
+                    }
                 }
                 if(style_.ready()&&!spec_.drift_mode&&timing_.stage==RaceStage::racing&&
                    timing_.outcome==RaceOutcome::running&&
@@ -1497,9 +1514,12 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         jobs.resize(world_contact_pairs_.size());
         for(unsigned k=0;k<jobs.size();++k) {
             const auto& p=world_contact_pairs_[k];
+            const auto affected=[&](unsigned id){return id<body_limit&&(p.a==id||(!p.track()&&p.b==id));};
+            // 46AC90 removes the old jobs once, before either new query.
+            if(affected(a)||affected(b))jobs[k].valid=false;
             //420660 iterates the affected-body list inside the pair loop.
             //A pair touching both actors is queried twice, retaining its cache.
-            for(unsigned id:{a,b})if(id<body_limit&&(p.a==id||(!p.track()&&p.b==id)))
+            for(unsigned id:{a,b})if(affected(id))
                 if(!enqueue(k)){error="world contact requery refused";started_=false;return false;}
         }
     }

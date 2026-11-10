@@ -48,6 +48,23 @@ void native_cases(){
         ++index;
     }
 }
+void fixed_prop_separation(){
+    using namespace nfsu;
+    const auto setup=spec();const auto box=race_contact_box(cube());
+    VehicleState fixed,prop;fixed.orientation=prop.orientation={1,0,0,0};
+    prop.position={1.5,.4,0};
+    RaceContactJob stationary,fast;
+    const auto search=[&](RaceContactJob& result){
+        return search_race_contact(fixed,setup,box,prop,setup,box,race_contact_pose(fixed),
+            race_contact_pose(prop),result,nullptr,RaceContactPartner::prop,RaceContactPartner::fixed_world);
+    };
+    check(search(stationary),"fixed object and stationary prop contact search");
+    prop.velocity={-40,0,0};
+    check(search(fast),"fixed object and fast prop contact search");
+    check(stationary.admitted&&fast.admitted&&stationary.correction.y>0&&
+          fast.correction.x==stationary.correction.x&&fast.correction.y==stationary.correction.y,
+          "a fixed object uses centre separation independent of a prop's speed");
+}
 }
 namespace nfsu {
 struct RaceWorldContactProbe {
@@ -119,7 +136,7 @@ struct RaceWorldContactProbe {
 };
 }
 int main(int argc,char** argv){
-    native_cases();std::string error;
+    native_cases();fixed_prop_separation();std::string error;
     for(double d:{-1.,1.})for(bool ghost:{false,true})
         check(nfsu::RaceWorldContactProbe::run(d,ghost,error),error.empty()?"shared kind4 queue including recovering car":error.c_str());
     for(double d:{-1.,1.})check(nfsu::RaceWorldContactProbe::props(d,error),

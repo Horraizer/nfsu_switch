@@ -642,6 +642,15 @@ static bool prepare_stock_frame_impl(
             }
         }
 
+        if (request.pass == CarDrawPass::front_end) {
+            // CarRenderInfo at 56A901 binds DRIVER to the binary-alpha
+            // DRIVER_MALE texture instead of drawing the translucent card.
+            for (auto& mesh : frame.car_geometry.meshes) {
+                std::replace(mesh.texture_hashes.begin(), mesh.texture_hashes.end(),
+                             0x5799E60BU, 0xA244D489U);
+            }
+        }
+
         // The runtime lamp-name resolution (issue #315): every loaded
         // texture source is parsed by now, so the resting-state rewrite
         // below sees exactly the hashes the decode will find.
@@ -993,6 +1002,30 @@ bool prepare_race_car_frame(StockFrameInputs& inputs, const fs::path& root,
     // need not overlap geometry decoding; re-read it at skin composition.
     std::vector<unsigned char>().swap(inputs.vinyls.bytes);
     return prepare_stock_frame_impl(inputs, request, skin, frame, error, &inputs, root, car_shading);
+}
+
+bool load_car_crash_windows(const StockFrameInputs& inputs,const StockFrame& frame,
+                            CarCrashWindows& windows,std::string& error) {
+    // 58DBE0 saturates the damage channels; 56CA60 uses index 3.
+    const std::vector<std::uint32_t> wanted{0x0A155547U,0x89984A59U};
+    if(frame.shared_sets.empty()) { error="missing global car texture pack"; return false; }
+    const auto& global=frame.shared_sets.front();
+    RenderTextureSource source;
+    source.bytes=&inputs.file(StockFrameFile::global_bun).bytes;
+    source.wanted=&wanted;
+    source.complete=global.complete;
+    for(const auto& pack:global.packs)source.packs.push_back(&pack);
+    RenderTextureSet decoded;
+    if(!decode_render_texture_sources({source},{},decoded,error))return false;
+    CarCrashWindows prepared;
+    for(std::size_t i=0;i<wanted.size();++i) {
+        const auto found=std::find_if(decoded.textures.begin(),decoded.textures.end(),
+            [&](const RenderTexture& texture){return texture.hash==wanted[i]&&texture.usable();});
+        if(found==decoded.textures.end()) { error="crash window texture unavailable"; return false; }
+        prepared[i]=std::move(*found);
+    }
+    windows=std::move(prepared);
+    return true;
 }
 
 bool render_stock_frame(StockFrame& frame, const RenderOptions& options, std::string& error) {

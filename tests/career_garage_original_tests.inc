@@ -13,11 +13,26 @@ void verify_original_garage(const std::filesystem::path& root,const nfsu::Career
     p.page=CareerPage::garage;p.customization_seen=true;p.bank=1000000;
     const auto introductory=p;
     const auto enter=[&]{if(!menu.accept(catalog,p,purchased,error))throw std::runtime_error(error);};
-    const auto category=[&](unsigned at){menu.reset(catalog,p);enter();menu.move(int(at));enter();};
+    const auto category=[&](unsigned at){
+        menu.reset(catalog,p);enter();
+        check(menu.fng()==0xb7e48c,"native Visual submenu uses MU_GaragePartsChooseVisual");
+        menu.move(int(at));enter();
+    };
     for(unsigned at:{0U,2U,3U,4U}) {
         category(at);
         for(unsigned i=0;i<menu.entries().size();++i){menu.move(int(i)-int(menu.selected()));check(menu.focus_slot()==0,"category hover keeps whole-car camera");}
     }
+    category(5);enter();
+    check(menu.entries().size()==5&&menu.entries()[0].available&&menu.entries()[1].available&&
+        !menu.entries()[3].available,"career exposes locked body vinyls alongside both normal groups");
+    enter();
+    const auto locked_family=std::find_if(menu.entries().begin(),menu.entries().end(),
+        [](const auto& family){return !family.available;});
+    check(menu.entries().size()==9&&locked_family!=menu.entries().end(),
+        "career retains unavailable side families in original order");
+    menu.move(int(locked_family-menu.entries().begin()));
+    check(!menu.accept(catalog,p,purchased,error)&&menu.page()==GaragePage::vinyl_types&&!purchased,
+        "locked family cannot open the design browser");
     category(0);enter();check(menu.focus_slot()==1,"accept front bumper starts its camera transition");
     check(!menu.back(catalog,p)&&menu.focus_slot()==0,"leaving parts restores whole-car camera");
     menu.move(1);check(menu.focus_slot()==0,"highlight rear bumper does not turn camera");enter();check(menu.focus_slot()==2,"enter rear bumper turns camera");
@@ -225,14 +240,19 @@ void verify_original_garage(const std::filesystem::path& root,const nfsu::Career
     enter();check(menu.page()==GaragePage::decals_brands&&menu.slot()==67,"windshield opens the sponsor selector");
     check(menu.entries().size()>1,"retail sponsor records");
     menu.move(1);
-    const auto black=menu.entries()[menu.selected()].part;
+    const auto white=menu.entries()[menu.selected()].part;
+    check(menu.white_decal(),"native sponsor starts white");
     const auto sponsor=menu.entries()[menu.selected()].value;
     menu.toggle_decal_color(catalog,p);
-    check(menu.entries()[menu.selected()].value==sponsor&&menu.entries()[menu.selected()].part!=black,
+    const auto black=menu.entries()[menu.selected()].part;
+    check(menu.entries()[menu.selected()].value==sponsor&&black!=white&&!menu.white_decal(),
         "brand color switches in place");
-    const auto white=menu.entries()[menu.selected()].part;
-    check(menu.preview(p).ride.installed[67]==white&&!p.ride.installed[67],"hover previews a decal before purchase");
-    enter();enter();check(purchased&&p.ride.installed[67]==white,"sponsor selector commits the chosen color");
+    menu.move(-1);menu.move(1);
+    check(menu.entries()[menu.selected()].part==black&&!menu.white_decal(),"returning to the brand retains its color");
+    check(menu.preview(p).ride.installed[67]==black&&!p.ride.installed[67],"hover previews a decal before purchase");
+    enter();enter();check(purchased&&p.ride.installed[67]==black,"sponsor selector commits the chosen color");
+    category(4);enter();
+    check(menu.entries()[menu.selected()].part==black&&!menu.white_decal(),"reopening uses the installed sponsor color");
     category(4);menu.move(2);enter();
     check(menu.page()==GaragePage::decals_slots&&menu.entries().size()==6&&
         menu.entries()[0].icon==bin_hash("DECAL_LEFTDOOR_SLOT1"),"stock door goes directly to six positions");

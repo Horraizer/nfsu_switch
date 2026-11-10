@@ -116,6 +116,7 @@ public:
     ~RaceSession();
     bool set_crash_camera(const CrashCameraRoadSource*,unsigned intensity,unsigned track,std::string&);
     unsigned crash_camera_event()const noexcept{return crash_camera_.event();}
+    bool crash_windows_damaged() const noexcept { return crash_windows_damaged_; }
     float next_world_frame_seconds()const noexcept;
     bool crash_camera_enabled()const noexcept{return crash_source_!=nullptr;}
     double world_frame_seconds()const noexcept{return frame_seconds_;}
@@ -380,6 +381,8 @@ private:
         std::vector<RaceQueuedContact>* trace=nullptr);
     std::vector<std::uint64_t> contact_traffic_epochs_;
     std::uint32_t contact_seed_=12345;
+    std::uint32_t* world_random_=nullptr;
+    bool crash_windows_damaged_=false;
     float contact_component_interval_=0;
     RaceStandings standings_;
     RaceGapMap gap_map_;

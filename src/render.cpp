@@ -1558,7 +1558,11 @@ bool render_scene(
         // prepared_triangle_ranges reports from ever disagreeing.
         const std::size_t copy_first = copies.first[draw.mesh];
         const std::uint64_t copy_count = copies.copies(draw.mesh);
-        const RenderTexture* const base_texture = raster.texture;
+        const RenderTexture* base_texture = raster.texture;
+        if(base_texture&&options.crash_windows) {
+            for(std::size_t i=0;i<kIntactCrashWindowHashes.size();++i)
+                if(draw.texture_hash==kIntactCrashWindowHashes[i])base_texture=&(*options.crash_windows)[i];
+        }
         for (std::uint64_t c = 0; c < copy_count; ++c) {
             const std::size_t copy =
                 instanced ? copies.order[copy_first + static_cast<std::size_t>(c)]

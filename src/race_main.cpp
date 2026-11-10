@@ -118,6 +118,7 @@ public:
     TrackDrawList list;
     StockFrameInputs car_inputs;
     StockFrame car;
+    CarCrashWindows crash_windows;
     RaceHudAtlas hud_atlas;
     // One HUD frame across ticks: the needle state 0x00427C38 slews only
     // when the caller keeps it, one build per tick as the original's car
@@ -136,7 +137,7 @@ public:
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
     explicit RaceScene(const TrackStreamTable& t, bool effects) : particles_enabled(effects), table(t) {}
-    void load_car(const fs::path& root, const fs::path& texture, const CarAssets& selection) {
+    void load_car(const fs::path& root,const fs::path& texture,const CarAssets& selection,bool crash_damage) {
         std::string error;
         require(load_race_hud_atlas(root,hud_atlas,error,false,false,track_number==1301),error);
         if (!read_car_frame_inputs(root,selection,car_inputs,tuned,error))
@@ -145,6 +146,7 @@ public:
                 tuned ? tuned_240sx_request() : stock_car_request(selection.car_type_name),
                 tuned ? tuned_240sx_skin() : stock_car_skin(selection.car_type_name),
                 car,error,car_shading),error);
+        if(crash_damage)require(load_car_crash_windows(car_inputs,car,crash_windows,error),error);
         require(prepare_car_shadow(selection.car_type_name,car_inputs,car.car_pack,shadow,error),error);
         require(prepare_car_shadow_bounds(car_inputs,car,shadow,error),error);
         if(track_number==1301)require(crowd.load(posix_file_system(),root,error,kFirstDriftStartScene,1301),error);
@@ -263,6 +265,7 @@ public:
         require(render_car_shadow(shadow,shadow_pose,track_options,background,stats,error),error);
         require(drive_place_instances(base,presented,session.spec(),car.scene.instances,
                                       &session.animation()),"car placement failed");
+        if(session.crash_windows_damaged())options.crash_windows=&crash_windows;
         require(render_stock_frame(car,options,error),error);
         require(!tuned || car.stats.triangles_fallback == 0,
                 "tuned race car has fallback triangles");
@@ -441,7 +444,7 @@ int run(int argc, char** argv) {
     scene.wet_road_reflections=wet_road_reflections;
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
-    scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track),selected_car);
+    scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track),selected_car,live&&event_number!=3);
     if (wet_road_reflections) require(load_wet_road_lamps(root, course.world, scene.lamps, error, slot.track),error);
     Sha256 sequence; const std::string version="NFSU_RACE_STATE 1\n";
     sequence.update(version.data(),version.size());

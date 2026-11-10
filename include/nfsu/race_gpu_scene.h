@@ -79,6 +79,7 @@ public:
     }
     std::size_t draw_capacity() const { return original_draw_distance_ ? kDekoPreparedDrawCapacity : kTrackSliceDrawLimit; }
     void set_race_visuals(bool enabled) { if(!ready_)race_visuals_=enabled; }
+    void set_crash_windows(bool enabled) { if(!ready_)crash_windows_enabled_=enabled; }
     void set_silhouette_shadows(bool enabled) { if (!ready_) silhouette_shadows_ = enabled; }
     void set_low_car_reflections(bool enabled) noexcept {
         low_car_reflections_=enabled;
@@ -140,6 +141,11 @@ private:
     TrackZoneReport visibility_zones_;
     std::vector<TrackResidency> zone_residency_;
     TrackResidency no_zone_{TrackResidencyRule::no_zone, {}};
+    bool crash_windows_enabled_=false;
+    CarCrashWindows crash_windows_;
+    UploadTable crash_window_uploads_;
+    std::array<std::size_t,2> crash_window_aliases_{{kNoHandle,kNoHandle}};
+    std::size_t crash_window_resource_=kNoHandle;
     RenderTexture headlight_texture_;
     std::size_t headlight_resource_=kNoHandle;
     bool prepare_visual_frame(const RaceSession&, const VehicleState&, const CameraFrame&, RecordedCommands&, std::string&);

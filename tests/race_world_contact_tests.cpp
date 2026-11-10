@@ -4,6 +4,7 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <cmath>
 namespace nfsu {
 struct RaceWorldContactProbe {
 static int run(const char* root) {
@@ -74,8 +75,20 @@ static int run(const char* root) {
   if(found==grid.traffic.end()){std::cerr<<"native contact fixture model absent: "<<name;return 19;}
   selected.push_back(&*found);
  }
- for(const auto& expected:pins){
- const float wall=expected.wall;const unsigned index=expected.actor-1;
+ // Same pose/speed inputs for original 420380 and the port world queue.
+ struct TrafficCrash {std::uint32_t seed,after;double y,vy,bvx,vx,vz,pitch,traffic_vx,traffic_pitch;};
+ const TrafficCrash crash_cases[]{
+  {808147100U,3358020166U,0.7,0.0,-45.0,-2.398158311843872,1.7855316400527954,-2.117387533187866,2.3981547355651855,1.9662234783172607},
+  {728455324U,3357639238U,0.7,0.0,-45.0,-2.398158311843872,1.7855316400527954,-2.117387533187866,2.3981547355651855,-2.185351610183716},
+  {808147100U,426599326U,0.3,0.0,4.0,22.680089950561523,1.3608112335205078,-1.7356265783309937,26.316696166992188,1.597713589668274},
+  {808147100U,426599326U,1.4,7.0,4.0,22.85784339904785,4.622661113739014,-3.843904733657837,26.638349533081055,0.7406395077705383},
+ };
+ for(const auto& expected:pins)for(unsigned variant=0;variant<2+std::size(crash_cases);++variant){
+ const bool mixed=variant==1,strong_traffic=variant>=2;
+ const auto& crash=crash_cases[strong_traffic?variant-2:0];
+ if(mixed&&(expected.wall>=0||expected.actor!=1||expected.floor||expected.reverse))continue;
+ if(strong_traffic&&(expected.wall>=0||expected.actor!=4||expected.floor||expected.reverse))continue;
+ const float wall=strong_traffic?-8.F:expected.wall;const unsigned index=expected.actor-1;
  auto& rival=*selected[index];
  // Verify the actual loaded runtime producer before response/continuation.
  // Never replace a port input with the native answer to hide a setup mismatch.
@@ -109,6 +122,9 @@ static int run(const char* root) {
  a.position={};b.position={4*sign,.7,.2};a.orientation={};b.orientation={};
  a.rigid_body_ready=b.rigid_body_ready=false;a.aero={};a.aero_ready=true;
  a.alternate_yaw_active=b.alternate_yaw_active=false;a.velocity={30*sign,0,0};b.velocity={-10*sign,0,0};
+ if(strong_traffic){
+  a.velocity={45,crash.vy,0};b.velocity={crash.bvx,0,0};b.position={3.8,crash.y,.2};
+ }
  if(expected.floor) {
   // Same initialized neutral/native ordinary-grip inputs as the native
   // grounded fixture. This does not assert original reset or race policy.
@@ -127,6 +143,9 @@ static int run(const char* root) {
  a.simulation_seconds=b.simulation_seconds=double(1.F/60.F);
  std::array<RaceContactPose,4> history{};history[0]=race_contact_pose(a);history[1]=race_contact_pose(b);
  history[0].time=history[1].time=0;history[0].position.x=-.5*sign;history[1].position.x=double(float((4.+1./6)*sign));
+ if(strong_traffic){
+  history[0].position={-.75,-crash.vy/60,0};history[1].position.x=3.8-crash.bvx/60;
+ }
  if(!world.vehicle_.start(a)||!other.vehicle_.start(b))return 7;
  world.vehicle_.defer_body_contacts(true);other.vehicle_.defer_body_contacts(true);
  const VehicleState* opposite=nullptr;
@@ -142,10 +161,116 @@ static int run(const char* root) {
   t.previous_pose=history[1];t.previous_valid=true;opposite=&t.car;
  } else opposite=&other.car();
  other.vehicle_.last_input_.road_steering=true;other.vehicle_.last_input_.road_angle_word_valid=true;
- world.timing_.now_ticks=1084227584;world.started_=other.started_=true;
+ world.timing_.now_ticks=1084227584;other.started_=true;
  if(traffic)world.rivals_.clear();
+ struct CrashRoad final:CrashCameraRoadSource {
+  mutable VehicleVec3 position{},velocity{};
+  bool prepare(const VehicleState& car,float,AiRoadChain& chain,int& category)const override {
+   position=car.position;velocity=car.velocity;category=0;chain={};chain.count=12;
+   for(unsigned i=0;i<chain.count;++i) {
+    auto& p=chain.cells[i];p.distance=float(i)*10.F;
+    p.point.position[0]=float(position.x)-1.F+p.distance;p.point.position[1]=float(position.y);
+    p.point.forward[0]=1;p.point.height=float(position.z);
+    p.point.unknown_24=p.point.unknown_28=10;p.lower[0]=-10;p.upper[0]=10;
+   }
+   return true;
+  }
+  bool progress_at(const AiDriverPoint&,float& progress)const override {progress=90;return true;}
+ } crash_road;
+ auto live_seed=crash.seed;
+ if(strong_traffic) {
+  world.world_random_=&live_seed;
+  if(!world.set_crash_camera(&crash_road,kCrashCameraDefaultIntensity,1003,error))return 22;
+  world.timing_.stage=RaceStage::racing;world.timing_.outcome=RaceOutcome::running;
+ }
+ world.started_=true;
+ if(mixed) {
+  VehicleHull hull;
+  for(float x:{-.5F,.5F})for(float y:{-.5F,.5F})for(float z:{-.5F,.5F})
+   hull.points.push_back({x,y,z});
+  RaceProp prop;prop.spec=stock_240sx_vehicle_spec();prop.spec.handling.centre_of_mass={};
+  prop.spec.handling.mass=.1F;prop.spec.handling.inertia={.02F,.02F,.02F};
+  prop.points=hull.points;prop.box=race_contact_box(hull);
+  prop.bounds=race_track_body_bounds(prop.spec,prop.box);
+  prop.state.position={-.5,-1.28,0};prop.state.velocity={0,16,0};prop.state.orientation={1,0,0,0};
+  prop.state.simulation_seconds=a.simulation_seconds;
+  vehicle_import_rigid(prop.spec.handling,prop.state);
+  prop.history=race_contact_pose(prop.state);prop.history.time=0;prop.history.position.y-=16.F/60;
+  prop.body_id=10;prop.world_slot=0;prop.awake=prop.moved=true;
+  world.props_=std::make_unique<RaceProps>();
+  world.props_->objects_.push_back(std::move(prop));world.props_->world_frame_ready_=true;
+  world.world_shape_ids_.assign(1,true);
+ }
  std::array<std::uint64_t,4> resets{};std::vector<RaceQueuedContact> trace;
  if(!world.resolve_world_contacts(history,resets,error,nullptr,nullptr,&trace)){std::cerr<<error;return 8;}
+ if(strong_traffic) {
+  const auto& hit_car=world.car();
+  const auto& sedan=world.traffic_->actors()[0];
+  // Original 420380, same retail cars and authored pose, 007F arithmetic.
+  // 42C4B0 is a supplied boundary in the native witness; the port supplies
+  // a 110 m test strip to exercise camera admission as well as the solver.
+  if(hit_car.collision_state!=1||sedan.car.collision_state!=1||
+     world.crash_camera_event()!=6||!world.crash_windows_damaged()||!sedan.crash_stop||
+     crash_road.position.x!=a.position.x||crash_road.velocity.x!=a.velocity.x||
+     std::abs(hit_car.velocity.x-crash.vx)>.005||
+     std::abs(hit_car.velocity.z-crash.vz)>.005||
+     std::abs(hit_car.angular_velocity.y-crash.pitch)>.005||
+     std::abs(sedan.car.velocity.x-crash.traffic_vx)>.005||
+     std::abs(sedan.car.angular_velocity.y-crash.traffic_pitch)>.005||
+     live_seed!=crash.after||world.contact_seed_!=12345U) {
+   std::cerr<<"traffic contact did not publish the original crash boundary"
+            <<" state "<<hit_car.collision_state<<'/'<<sedan.car.collision_state
+            <<" camera "<<world.crash_camera_event()<<" published "<<crash_road.velocity.x
+            <<" hit vx/vz "<<hit_car.velocity.x<<'/'<<hit_car.velocity.z
+            <<" pitch "<<hit_car.angular_velocity.y<<" traffic vx/pitch "<<sedan.car.velocity.x<<'/'<<sedan.car.angular_velocity.y<<'\n';
+   ++failures;
+  }
+  // Keep the wheels supported and remove the record, as required by 42A530.
+  world.vehicle_.state_.published_support=4;
+  world.vehicle_.publish_contact_count(1,480000);
+  world.vehicle_.publish_contact_count(0,480000);
+  world.vehicle_.publish_contact_count(0,480399);
+  if(world.car().collision_state!=1){std::cerr<<"early crash recovery\n";++failures;}
+  world.vehicle_.publish_contact_count(0,480401);
+  if(world.car().collision_state!=0||!world.crash_windows_damaged()){
+   std::cerr<<"crash recovery or persistent window damage mismatch\n";++failures;
+  }
+  continue;
+ }
+ if(mixed) {
+  const auto none=std::numeric_limits<std::size_t>::max();
+  std::array<std::size_t,3> physical{{none,none,none}},audio{{none,none,none}};
+  for(std::size_t i=0;i<trace.size();++i) {
+   const auto& hit=trace[i];
+   if(hit.a!=0&&hit.b!=0)continue;
+   if(hit.polygon!=none)physical[0]=std::min(physical[0],i);
+   else if(hit.a==1||hit.b==1)physical[1]=std::min(physical[1],i);
+   else if(hit.prop==0)physical[2]=std::min(physical[2],i);
+  }
+  const auto& road=world.track_telemetry_.back();
+  const auto& cars=world.pair_contacts();
+  const auto& props=world.prop_contacts();
+  if(road.audio_contact_count)audio[0]=road.audio_contacts[0].audio_order;
+  for(std::size_t i=0;i<cars.count;++i) {
+   const auto& pair=cars.pairs[i];
+   if((pair.first==0&&pair.second==1)||(pair.first==1&&pair.second==0))
+    audio[1]=std::min(audio[1],std::size_t(pair.audio_order));
+  }
+  if(props.count)audio[2]=props.hits[0].audio_order;
+  bool valid=true;
+  for(unsigned a=0;a<3;++a) {
+   valid&=physical[a]!=none&&audio[a]!=none&&audio[a]!=0;
+   for(unsigned b=a+1;b<3;++b)
+    valid&=audio[a]!=audio[b]&&(physical[a]<physical[b])==(audio[a]<audio[b]);
+  }
+  if(!valid){
+   std::cerr<<"mixed player collision or audio order mismatch\n";
+   for(const auto& hit:trace)
+    std::cerr<<"mixed job "<<hit.a<<' '<<hit.b<<" t="<<hit.remaining<<'\n';
+   ++failures;
+  }
+  continue;
+ }
  if(trace.size()!=expected.count){std::cerr<<"queue size "<<expected.actor<<" "<<wall<<"\n";++failures;
  for(const auto& q:trace)std::cerr<<"actual job "<<q.a<<" "<<q.b<<" "<<std::setprecision(17)<<q.remaining<<" point "<<q.point.x<<","<<q.point.y<<","<<q.point.z<<" position "<<q.position[0].x<<","<<q.position[0].y<<","<<q.position[0].z<<" velocity "<<q.velocity[0].x<<","<<q.velocity[0].y<<","<<q.velocity[0].z<<"\n";
  continue;}
@@ -199,6 +324,13 @@ static int run(const char* root) {
   if(!world.traffic_->advance(racers,2,error,480000,1.F/60.F,{},shapes)){std::cerr<<error;return 18;}
   if(world.traffic_->actors()[0].car.collision_state!=0){
    std::cerr<<"traffic recovery used component age instead of world clock\n";++failures;
+  }
+  actor.crash_stop=false;actor.target_speed=2;
+  actor.car.collision_body_flag=1;actor.car.owner_speeds.magnitude=.5F;
+  for(auto& wheel:actor.car.wheels)wheel.contact=true;
+  if(!world.traffic_->prepare_frame(racers,3,error,480067,1.F/60.F,{},shapes)){std::cerr<<error;return 23;}
+  if(!actor.crash_stop||actor.driver.pedals.throttle!=0||actor.driver.pedals.brake!=1){
+   std::cerr<<"blocked traffic did not brake with a live contact and positive speed target\n";++failures;
   }
  }
  }

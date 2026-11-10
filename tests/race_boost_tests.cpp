@@ -9,6 +9,13 @@
 #include <iomanip>
 #include <stdexcept>
 #include <cstring>
+namespace nfsu {
+struct RaceWorldContactProbe {
+    static void damage_windows(const RaceSession& session,bool damaged) {
+        const_cast<RaceSession&>(session).crash_windows_damaged_=damaged;
+    }
+};
+}
 using namespace nfsu;
 void check(bool ok,const std::string& label) { if(!ok)throw std::runtime_error(label); }
 // Mirror the prepared dynamic tail invariants enforced by deko_renderer
@@ -21,6 +28,7 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
     for(const unsigned event:{1U,8U}) {
         std::cout<<"event="<<event<<" loading actual package\n";
         RaceGpuScene gpu;gpu.set_race_visuals(true);gpu.set_wet_road_reflections(true);
+        gpu.set_crash_windows(event==1);
         check(gpu.set_original_draw_distance(true),"original distance selection");
         check(gpu.load(posix_file_system(),root,error,nullptr,nullptr,false,true,true,
                        &dress.car,&dress.dress,event,true),error);
@@ -31,6 +39,33 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
         RaceGpuFrame first;check(gpu.frame(run.session(),first,error),error);
         check(validate_recorded_commands(first.commands,error),error);
         const auto* package=first.commands.package_identity();
+        if(event==1) {
+            const auto verify_windows=[&](const RecordedCommands& commands,bool damaged) {
+                const auto& resources=commands.resource_table().resources;
+                unsigned seen=0;
+                for(std::size_t i=0;i<commands.texture_alias_count();++i) {
+                    const auto alias=commands.texture_alias(i);
+                    const auto hash=resources.at(alias.resource).texture_hash;
+                    for(std::size_t layer=0;layer<kIntactCrashWindowHashes.size();++layer) {
+                        if(hash!=kIntactCrashWindowHashes[layer])continue;
+                        const std::uint32_t damaged_hashes[]{0x0A155547U,0x89984A59U};
+                        check(resources.at(alias.frame).texture_hash==(damaged?damaged_hashes[layer]:hash),
+                              "retail crash glass alias");
+                        ++seen;
+                    }
+                }
+                check(seen>0,"prepared race package exposes window alias");
+            };
+            verify_windows(first.commands,false);
+            RaceWorldContactProbe::damage_windows(run.session(),true);
+            check(gpu.frame(run.session(),first,error),error);
+            check(validate_recorded_commands(first.commands,error)&&first.commands.package_identity()==package,
+                  "crash glass keeps prepared package identity");
+            verify_windows(first.commands,true);
+            RaceWorldContactProbe::damage_windows(run.session(),false);
+            check(gpu.frame(run.session(),first,error),error);
+            verify_windows(first.commands,false);
+        }
         const auto width=first.commands.width,height=first.commands.height;
         unsigned char clear[4];std::copy(std::begin(first.commands.clear_color),std::end(first.commands.clear_color),clear);
         std::vector<const RecordedDraw*> dynamic;

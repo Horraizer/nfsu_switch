@@ -316,6 +316,10 @@ bool RaceTraffic::prepare_frame(const std::array<const VehicleState*,4>& racers,
             a.motion.heading=std::atan2(axis[1],axis[0]);
             a.motion.speed=float(a.car.velocity.x*axis[0]+a.car.velocity.y*axis[1]);
         }
+        // 583DA0 also stops a blocked traffic car with a live contact and
+        // a nonzero driver target, even if no individual pair crossed 30.
+        if(a.car.collision_body_flag>0&&a.car.owner_speeds.magnitude<1.F&&a.target_speed>1.F)
+            a.crash_stop=true;
         bool full=false;
         if(!ai_traffic_full_update(std::uint32_t(tick),slot,count,full)){error="traffic scheduler refused";return false;}
         if(full&&!a.crash_stop) {

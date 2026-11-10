@@ -636,6 +636,11 @@ int main(int argc,char** argv) {
             skyline_request.installed_parts=installed;skyline_request.pass=CarDrawPass::front_end;
             auto skyline_skin=stock_car_skin("SKYLINE");skyline_skin.selection=skin;
             check(prepare_stock_frame(skyline_inputs,skyline_request,skyline_skin,skyline,error,true),error.c_str());
+            const auto driver_draw=std::find_if(skyline.scene.draws.begin(),skyline.scene.draws.end(),
+                [](const auto& draw){return draw.drawable&&draw.texture_hash==0xA244D489U;});
+            check(driver_draw!=skyline.scene.draws.end()&&driver_draw->binding==BindingKind::resolved&&
+                render_alpha_test_enabled(skyline.scene.textures.at(driver_draw->texture).alpha_test_mode),
+                "frontend driver uses the original cutout");
             const auto original_materials=skyline.scene.draws;
             check(bind_frontend_skyline_runtime_skin(skyline,skyline_request,error),error.c_str());
             check(original_materials.size()==skyline.scene.draws.size(),"texture-only FE rebind preserves material groups");

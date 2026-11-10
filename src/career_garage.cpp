@@ -180,10 +180,21 @@ bool CareerGarage::reorder_vinyl(int direction,const CareerCatalog& c,CareerProf
     // Native4E3320 swaps RideInfo slots without moving735DEC's layer focus.
     build(c,p);return true;
 }
+bool CareerGarage::white_decal()const {
+    if(entries_.empty())return true;
+    const auto& black=state_.black_decals;
+    return std::find(black.begin(),black.end(),entries_[selected()].value)==black.end();
+}
 void CareerGarage::toggle_decal_color(const CareerCatalog& c,const CareerProfile& p) {
-    if(state_.page!=GaragePage::decals_brands||confirm_)return;
-    const auto brand=entries_.empty()?0U:entries_[selected()].value;
-    state_.white_decal=!state_.white_decal;build(c,p);
+    if(state_.page!=GaragePage::decals_brands||confirm_||entries_.empty())return;
+    const auto brand=entries_[selected()].value;
+    if(!brand)return;
+    // Original 511BF0/512690 retain the selected color on each sponsor.
+    auto& black=state_.black_decals;
+    const auto color=std::find(black.begin(),black.end(),brand);
+    if(color==black.end())black.push_back(brand);
+    else black.erase(color);
+    build(c,p);
     for(unsigned i=0;i<entries_.size();++i)if(entries_[i].value==brand){state_.selection=i;break;}
 }
 bool CareerGarage::back(const CareerCatalog& c,const CareerProfile& p) {
@@ -204,7 +215,10 @@ void CareerGarage::open_page(State next,const CareerCatalog& c,const CareerProfi
     if(state_.page==GaragePage::colors)color_cells_.fill(0);
     if(state_.page==GaragePage::decals_brands&&p.ride.installed[state_.slot]&&
        std::none_of(entries_.begin(),entries_.end(),[](const auto& e){return e.installed;})) {
-        state_.white_decal=true;build(c,p);
+        if(const auto* part=c.tuning().find_part(p.car,state_.slot,p.ride.installed[state_.slot])) {
+            state_.black_decals.push_back(part->hash_0c);
+            build(c,p);
+        }
     }
     if(state_.page==GaragePage::rim_sizes) {
         const auto chosen=std::find_if(entries_.begin(),entries_.end(),[&](const auto& e){return e.part==state_.field;});
@@ -343,7 +357,7 @@ std::size_t CareerGarage::fng()const {
     switch(state_.page) {
     case GaragePage::root:return 0xb7018c;
     case GaragePage::trade_in:return 0xbbe50c;
-    case GaragePage::visual:return 0xb7100c;
+    case GaragePage::visual:return 0xb7e48c; // MU_GaragePartsChooseVisual
     case GaragePage::body:return 0xb7fc8c;
     case GaragePage::accessories:return 0xc0060c;
     case GaragePage::unique_performance:return 0xbcf70c;
@@ -462,7 +476,7 @@ void CareerGarage::build(const CareerCatalog& c,const CareerProfile& p) {
         title_="VINYL LAYERS";for(unsigned i=0;i<4;++i){add(("Layer "+std::to_string(i+1)).c_str(),"VISUAL_PART_VINYL",34-i);}break;
     case GaragePage::vinyl_groups:case GaragePage::vinyl_types: {
         // Native4E40D0/4E4C40: group, then normal/hood family, then design.
-        // Career omits families with no available/owned design.
+        // Career lists locked families; Customize Ride filters them out.
         const auto available=[&](unsigned type) {
             return std::any_of(db.records.begin(),db.records.end(),[&](const auto& part) {
                 return part.slot==31&&vinyl_in_family(part,type)&&t.find_part(p.car,state_.slot,part.part_name_hash)==&part&&
@@ -475,15 +489,22 @@ void CareerGarage::build(const CareerCatalog& c,const CareerProfile& p) {
             const char* names[]={"Side","Hood","Manufacturer","Body","Unique"};
             const char* icons[]={"VINYL_GROUP_MANUFACTURAR_NAME","VINYL_GROUP_MANUFACTURAR_HOOD_LOGO","VINYL_GROUP_MANUFACTURAR_LOGO","VINYL_GROUP_BODY_VINYL","VINYL_GROUP_UNIQUES"};
             for(unsigned i=0;i<5;++i) {
-                const bool present=i==0?std::any_of(std::begin(normal),std::end(normal),available):
+                const bool unlocked=i==0?std::any_of(std::begin(normal),std::end(normal),available):
                     i==1?std::any_of(std::begin(hood),std::end(hood),available):available(i==2?16:i==3?17:15);
-                if(present){add(names[i],"",i);entries_.back().icon=bin_hash(icons[i]);}
+                if(c.free_drive()&&!unlocked)continue;
+                add(names[i],"",i);
+                entries_.back().icon=bin_hash(icons[i]);
+                entries_.back().available=i<2||unlocked;
             }
         }else {
             title_="VINYL";
             for(auto type:state_.group==0?std::vector<unsigned>(std::begin(normal),std::end(normal)):
-                std::vector<unsigned>(std::begin(hood),std::end(hood)))if(available(type)) {
-                add(vinyl_groups[type],"",type);entries_.back().icon=career_vinyl_icon(type);
+                std::vector<unsigned>(std::begin(hood),std::end(hood))) {
+                const bool unlocked=available(type);
+                if(c.free_drive()&&!unlocked)continue;
+                add(vinyl_groups[type],"",type);
+                entries_.back().icon=career_vinyl_icon(type);
+                entries_.back().available=unlocked;
             }
         }
         break;
@@ -511,8 +532,11 @@ void CareerGarage::build(const CareerCatalog& c,const CareerProfile& p) {
             // 511B00/511B70 pair each sponsor's black and white records.
             auto key=part.hash_0c;
             const bool extreme=key==bin_hash("EXTREMEDIMENSION");
-            const char* suffix=state_.white_decal?"_WHITE_DECAL":"_BLACK_DECAL";
-            if(extreme)key=bin_hash(state_.white_decal?"EXTRDIMENSION_WHITE_DECAL":"EXTRDIMENSION_BLACK_DECAL");
+            // Native sponsor starts at color0, which takes the white record at +18.
+            const auto& black=state_.black_decals;
+            const bool white=std::find(black.begin(),black.end(),key)==black.end();
+            const char* suffix=white?"_WHITE_DECAL":"_BLACK_DECAL";
+            if(extreme)key=bin_hash(white?"EXTRDIMENSION_WHITE_DECAL":"EXTRDIMENSION_BLACK_DECAL");
             else for(const char* letter=suffix;*letter;++letter)key=key*33+static_cast<unsigned char>(*letter);
             if(key!=part.part_name_hash)continue;
             const auto icon=career_decal_brand_icon(part.hash_0c);
@@ -735,6 +759,7 @@ bool CareerGarage::accept(const CareerCatalog& c,CareerProfile& p,bool& purchase
         if(p.ride.installed[e.value]){dialog_=GarageDialog::vinyl_layer;dialog_selection_=0;return true;}
         next.page=GaragePage::vinyl_groups;next.slot=e.value;break;
     case GaragePage::vinyl_groups: {
+        if(!e.available){error="This category is locked";return false;}
         bool any=false,unique=false;
         for(unsigned layer=31;layer<=34;++layer)if(const auto hash=p.ride.installed[layer]) {
             any=true;const auto* part=c.tuning().find_part(p.car,layer,hash);
@@ -749,7 +774,9 @@ bool CareerGarage::accept(const CareerCatalog& c,CareerProfile& p,bool& purchase
         next.page=e.value<2?GaragePage::vinyl_types:GaragePage::parts;
         next.group=e.value<2?e.value:e.value==2?16:e.value==3?17:15;break;
     }
-    case GaragePage::vinyl_types:next.page=GaragePage::parts;next.group=e.value;break;
+    case GaragePage::vinyl_types:
+        if(!e.available){error="This category is locked";return false;}
+        next.page=GaragePage::parts;next.group=e.value;break;
     case GaragePage::decals_zones: {
         const auto zone=e.value;
         const auto wide=decal_widebody(c.tuning(),p);

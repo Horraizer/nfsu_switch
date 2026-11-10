@@ -42,7 +42,7 @@ public:
     unsigned event() const noexcept {return event_;}
     float scale(float real_dt) const noexcept;
     void begin_frame(float real_dt) noexcept;
-    void contact(float magnitude,bool entering,std::int32_t tick,bool allowed,
+    bool contact(float magnitude,bool entering,std::int32_t tick,bool allowed,
                  const VehicleState&,float progress,const CrashCameraRoadSource&,
                  const CrashCameraWorld&);
     bool update(std::int32_t tick,std::uint64_t frame,bool allowed,const VehicleState&,

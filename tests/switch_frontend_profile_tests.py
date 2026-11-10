@@ -28,7 +28,11 @@ def check(root,renderer,main):
     assert 'consume_frontend_query(slot);' in renderer
     assert 'frontend_query_pending[slot]=frontend && frontend_profile_passes;' in renderer
     startup=main[main.index('const auto intro=play_original_intro('):main.index('const auto run_career_action=[&]')]
-    assert startup.index('show_startup_splash();')<startup.index('while(!choose_profile(true))')
+    splash=startup[startup.index('const auto show_startup_splash='):startup.index('show_startup_splash(true);')]
+    assert splash.index('screen.startup_splash(art);')<splash.index('music.start(')<splash.index('padGetButtonsDown(&pad)')
+    assert startup.count('music.start(')==1 and 'if(start_music)' in splash
+    assert startup.index('show_startup_splash(true);')<startup.index('while(!choose_profile(true))')
+    assert startup.index('while(!choose_profile(true))')<startup.index('show_startup_splash(false);')
     assert startup.index('while(!choose_profile(true))')<startup.index('trace("profile.after")')
     assert startup.index('trace("profile.after")')<startup.index('FrontendAction pending=FrontendAction::none;')
     assert 'refresh_profile()' not in startup

@@ -752,6 +752,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     scene.set_wet_road_reflections(wet_road_reflections);
     bool low_reflections_pending=presentation.low_car_reflections;
     scene.set_race_visuals(true);
+    scene.set_crash_windows(selected_race.type!=RaceType::drift&&selected_race.type!=RaceType::drag);
     scene.set_silhouette_shadows(true);
     require(scene.set_original_draw_distance(true),"draw distance setup failed");
     // Point-to-point finishes can coast beyond the permanent race footprint.
@@ -2265,10 +2266,17 @@ int main(int argc, char** argv) {
                 trace("art.load.before");
                 require(art.load_startup(root,frontend_error,true),frontend_error);
                 frontend_loading.finish();
-                const auto show_startup_splash=[&] {
+                audio::FrontendMusic music;
+                std::string startup_music_error;
+                const auto show_startup_splash=[&](bool start_music) {
                     trace("splash.before");
                     screen.startup_splash(art);
                     padUpdate(&pad);
+                    if(start_music) {
+                        trace("music.start.before");
+                        music.start(root,startup_music_error);
+                        trace("music.start.after");
+                    }
                     while(appletMainLoop()) {
                         if(appletGetFocusState()==AppletFocusState_InFocus) {
                             padUpdate(&pad);
@@ -2283,7 +2291,7 @@ int main(int argc, char** argv) {
                     }
                     throw Cancel{};
                 };
-                show_startup_splash();
+                show_startup_splash(true);
                 bool post_race_loaded=false;
                 const auto load_post_race=[&] {
                     if(post_race_loaded)return;
@@ -2343,7 +2351,6 @@ int main(int argc, char** argv) {
                 bool options_open=false;
                 unsigned option_row=0;
                 std::string option_notice;
-                audio::FrontendMusic music;
                 std::uint32_t career_hints=0;
                 const auto play_career_hint=[&](int group) {
                     const auto bit=1U<<unsigned(group-62);
@@ -2353,9 +2360,7 @@ int main(int argc, char** argv) {
                     if(!music.speech(group,speech_error))
                         std::fprintf(stderr,"CAREER hint %d failed: %s\n",group,speech_error.c_str());
                 };
-                trace("music.start.before");
-                if(!music.start(root,frontend_error)) menu.notice("MUSIC: "+frontend_error);
-                trace("music.start.after");
+                if(!startup_music_error.empty())menu.notice("MUSIC: "+startup_music_error);
                 if (intro.outcome==IntroOutcome::error) {
                     std::printf("INTRO ERROR: %s\n",intro.error.c_str());
                     menu.notice(std::string("INTRO: ")+intro.error);
@@ -2420,7 +2425,7 @@ int main(int argc, char** argv) {
                     if(!appletMainLoop())throw Cancel{};
                     require(frontend_renderer->close(frontend_error),frontend_error);
                     frontend_renderer.reset();frontend_gpu_profile.reset();
-                    show_startup_splash();
+                    show_startup_splash(false);
                     open_frontend();
                     frontend_clock.resume();
                 }

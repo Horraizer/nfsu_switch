@@ -519,10 +519,11 @@ bool search_race_contact(const VehicleState& sa,const VehicleSpec& as,const Race
     VehicleVec3 correction{};
     if(query.distance<=double(.0001F)) {
         auto direction=separation_direction(a.position,b.position);
-        // 46B260 uses the car's published velocity against a Smokeable at speed.
-        if(partner==RaceContactPartner::prop||partner==RaceContactPartner::pinned_prop||
-           own==RaceContactPartner::prop||own==RaceContactPartner::pinned_prop) {
-            const auto v=narrow(own!=RaceContactPartner::car?mul(sb.velocity,-1):sa.velocity);
+        // 46B260 reads the other body's velocity when either body is a Smokeable.
+        const bool a_prop=own==RaceContactPartner::prop||own==RaceContactPartner::pinned_prop;
+        const bool b_prop=partner==RaceContactPartner::prop||partner==RaceContactPartner::pinned_prop;
+        if(a_prop||b_prop) {
+            const auto v=narrow(a_prop?mul(sb.velocity,-1):sa.velocity);
             const auto speed=vehicle_sqrt((v[0]*v[0]+v[1]*v[1])+v[2]*v[2]);
             if(speed>=27.77777862548828F)direction=separation_direction({},wide(v));
         }

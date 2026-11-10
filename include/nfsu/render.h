@@ -276,6 +276,9 @@ struct HeadlightProjection {
 std::array<CameraFrame,6> car_environment_cameras(const CameraFrame& primary,
                                                 const Vec3& body_origin);
 class Frame;
+// Original 56CA60 uses a separate replacement table for each window layer.
+constexpr std::array<std::uint32_t,2> kIntactCrashWindowHashes{{0x834B8017U,0xECBB8329U}};
+using CarCrashWindows = std::array<RenderTexture,2>;
 struct RenderOptions {
     std::int32_t world_ticks=0; // Original world clock; zero keeps static diagnostics unchanged.
     TextureFilterMode texture_filter = TextureFilterMode::legacy;
@@ -286,6 +289,7 @@ struct RenderOptions {
     std::size_t frontend_floor_mesh = kNoHandle;
     const Frame* frontend_cube = nullptr; // borrowed diagnostic capture
     const Frame* car_cube = nullptr; // six borrowed 128x128 race environment faces
+    const CarCrashWindows* crash_windows = nullptr;
     const WetRoadLamps* wet_lamps = nullptr;
     const HeadlightProjection* headlight = nullptr;
     std::uint32_t width = 1280;

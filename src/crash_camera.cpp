@@ -163,11 +163,11 @@ bool RaceCrashCamera::request(std::int32_t tick,float progress,const VehicleStat
     if(!source.progress_at(shot.end_point,shot.end_progress))return false;
     shot_=shot;last_[0]=tick;last_valid_[0]=true;event_=6;remaining_=8.F;++activations;return true;
 }
-void RaceCrashCamera::contact(float magnitude,bool entering,std::int32_t tick,bool allowed,
+bool RaceCrashCamera::contact(float magnitude,bool entering,std::int32_t tick,bool allowed,
     const VehicleState& car,float progress,const CrashCameraRoadSource& source,const CrashCameraWorld& world) {
-    if(!entering||magnitude<30.F)return;
+    if(!entering||magnitude<30.F)return false;
     crash_tick_=tick;crash_valid_=true;
-    if(allowed&&magnitude>=35.F)request(tick,progress,car,source,world);
+    return allowed&&magnitude>=35.F&&request(tick,progress,car,source,world);
 }
 bool RaceCrashCamera::update(std::int32_t tick,std::uint64_t frame,bool allowed,
     const VehicleState& car,const VehicleHandling& h,float wheel_phase,float progress,const CrashCameraRoadSource& source,

@@ -344,8 +344,8 @@ int main(int argc,char** argv) {
                 if(category==4) {
                     auto hood=menu;hood.move(6);enter(hood);capture(hood,"decal-sizes");
                     auto door=menu;door.move(2);enter(door);capture(door,"decal-slots");
-                    enter(door);door.move(1);capture(door,"decal-brands");
-                    door.toggle_decal_color(catalog,p);capture(door,"decal-white");
+                    enter(door);door.move(1);capture(door,"decal-white");
+                    door.toggle_decal_color(catalog,p);capture(door,"decal-black");
                     enter(menu);capture(menu,"window-brands");
                 }
                 if(category==5) {enter(menu);capture(menu,"vinyl-groups");enter(menu);capture(menu,"vinyl-types");enter(menu);capture(menu,"vinyl-designs");}

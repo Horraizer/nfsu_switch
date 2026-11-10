@@ -374,13 +374,35 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
             light_sprites_.resize(original_car_glow_count(glow_anchors_));
             exhaust_anchors_ = collect_car_exhaust_anchors(stock);
         }
+        if(crash_windows_enabled_) {
+            if(!load_car_crash_windows(inputs,stock,crash_windows_,error))return false;
+            for(const auto& texture:crash_windows_) {
+                TextureUploadShape shape;
+                if(!check_texture_upload_format(TextureUploadFormat::rgba8,texture.width,texture.height,
+                    texture.rgba.size(),shape,error,texture.mip_count))return false;
+                UploadResource upload;
+                upload.kind=UploadResourceKind::texture;
+                upload.memory=UploadMemory::image;
+                upload.name="crash window "+std::to_string(texture.hash);
+                upload.data=texture.rgba.data();upload.bytes=shape.bytes;
+                upload.alignment=kTextureStagingAlignment;
+                upload.element_bytes=shape.texel_bytes;upload.elements=shape.bytes/shape.texel_bytes;
+                upload.texture_hash=texture.hash;upload.texture=shape;
+                crash_window_uploads_.resources.push_back(std::move(upload));
+                auto& totals=crash_window_uploads_.totals;
+                ++totals.resources;++totals.textures;
+                totals.texture_bytes+=shape.bytes;
+                totals.largest_texture_bytes=std::max(totals.largest_texture_bytes,shape.bytes);
+            }
+        }
         if (loading) loading->checkpoint("car prepared");
         skin_source_ = stock.skin_binding.source;
         car_ = std::move(stock.scene); base_ = car_.instances;
         UploadTable table;
         if (!build_car_upload_table(car_, skin_source_, table, error)) return false;
         car_bytes_ = table.totals.vertex_bytes + table.totals.index_bytes + table.totals.texture_bytes +
-            2 * base_.size() * sizeof(PreparedInstance) + neon_asset_.ground.texture.rgba.capacity();
+            2 * base_.size() * sizeof(PreparedInstance) + neon_asset_.ground.texture.rgba.capacity() +
+            crash_window_uploads_.totals.texture_bytes;
     }
     if (loading) loading->checkpoint("car source released");
     if (!load_track_slice(files, root, track_, error, observer, loading, event_number, world_mips,race_index,
@@ -766,7 +788,7 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     const auto offset = track_templates_.owning_uploads().resources.size();
     if (shadow_silhouette_) shadow_ramp_resource_ += offset;
     if (offset + shadow_templates_.owning_uploads().resources.size() +
-        car_templates_.owning_uploads().resources.size() > resource_limit()) {
+        car_templates_.owning_uploads().resources.size() + crash_window_uploads_.resources.size() > resource_limit()) {
         error = "prepared resource namespace exceeds capacity"; return false;
     }
     // Move the track table and rebase the car definitions in place. Copying
@@ -777,6 +799,19 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     const auto car_offset = combined_uploads_.resources.size();
     append_car_resources(combined_uploads_, car_templates_.owning_uploads());
     for (auto& draw : car_templates_.owning_draws()) rebase_car_draw(draw, car_offset);
+    if(crash_windows_enabled_) {
+        crash_window_resource_=combined_uploads_.resources.size();
+        for(std::size_t r=car_offset;r<crash_window_resource_;++r) {
+            const auto& upload=combined_uploads_.resources[r];
+            if(upload.kind!=UploadResourceKind::texture)continue;
+            for(std::size_t i=0;i<kIntactCrashWindowHashes.size();++i) {
+                if(upload.texture_hash!=kIntactCrashWindowHashes[i])continue;
+                crash_window_aliases_[i]=texture_aliases_.size();
+                texture_aliases_.push_back({r,r});
+            }
+        }
+        append_car_resources(combined_uploads_,crash_window_uploads_);
+    }
     track_templates_.owning_uploads() = {}; shadow_templates_.owning_uploads() = {}; car_templates_.owning_uploads() = {};
     for(std::size_t a=0;a<track_.animations.size();++a) {
         AnimatedTexture bound;bound.animation=a;bound.first=texture_aliases_.size();
@@ -1144,6 +1179,11 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         out.commands.frontend_cube_draws=std::move(cube_draws);
     if (!ready_) { error = "race scene is not loaded"; return false; }
     crowd_.frame(session);
+    for(std::size_t i=0;i<crash_window_aliases_.size();++i) {
+        if(crash_window_aliases_[i]==kNoHandle)continue;
+        auto& alias=texture_aliases_[crash_window_aliases_[i]];
+        alias.frame=session.crash_windows_damaged()?crash_window_resource_+i:alias.resource;
+    }
     for(const auto& a:animated_textures_) {
         const auto phase=texture_animation_phase(track_.animations[a.animation],std::uint32_t(session.world_visual_frame()));
         for(std::size_t i=0;i<a.frames.size();++i)texture_aliases_[a.first+i].frame=a.frames[(i+phase)%a.frames.size()];
@@ -1533,6 +1573,7 @@ bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::str
         for (const auto& draw : shadow_commands.owning_draws()) result.triangles += draw.index_count/3;
         append_shadow_commands(track_commands, shadow_commands);
         if (!combine_race_commands(std::move(track_commands), car_commands, result.commands, error,resource_limit())) return false;
+        if(crash_windows_enabled_)append_car_resources(result.commands.owning_uploads(),crash_window_uploads_);
         if (glows_enabled_) {
             auto& uploads = result.commands.owning_uploads();
             if (uploads.resources.size() != glow_first_resource_) {

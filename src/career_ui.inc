@@ -129,7 +129,7 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
         auto browser=career_objects(front,0xbd388c,language,error);
         auto scroller=career_objects(front,0xbd468c,language,error);
         std::map<std::size_t,Impl::GarageArt> garage_pages;
-        const std::size_t garage_offsets[]={0xb7018c,0xb7100c,0xb7fc8c,0xc0060c,0xb80a8c,0xb8180c,0xbbe50c,
+        const std::size_t garage_offsets[]={0xb7018c,0xb7e48c,0xb7fc8c,0xc0060c,0xb80a8c,0xb8180c,0xbbe50c,
             0xb72f8c,0xb73c0c,0xb74c0c,0xb75b8c,0xbe4c0c,0xb7b18c,0xb7750c,0xb7680c,0xb7a40c,0xb7828c,0xbfb88c,0xbfc50c,0xbfd18c,0xbfde0c,0xbff68c,0xb71e0c,0xbcf70c,0xbd0d0c,0x21cd8c};
         auto textures=impl_->textures;
         const auto add=[&](const std::string& name) {
@@ -364,13 +364,6 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
             }else if(entered<2000)state("Init",entered);
         }
     }
-    if(garage_art) {
-        const auto thumb=std::find_if(objects.begin(),objects.end(),[](const auto& o){return o.name=="master_thumb";});
-        if(thumb!=objects.end())for(auto& o:objects)
-            if(o.name=="GarageMenuHeading"||o.name=="GarageCategoryHeading") {
-                o.x=thumb->x;o.y=thumb->y+thumb->h*.5F+2;o.justification=1;
-            }
-    }
     if(objects.empty())return;
     const auto white=textures.find(0xe2a5c626U);if(white==textures.end())return;
     const auto find_parent=[](const std::vector<Object>& list,unsigned id)->const Object* {
@@ -443,6 +436,26 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
         std::stable_sort(order.begin(),order.end(),[&](auto a,auto b){return pose(pose,list,list[a],0).z>pose(pose,list,list[b],0).z;});
         for(auto index:order) {
             const auto& o=list[index];if(o.type==5)continue;
+            if(page==3&&layer==0&&garage&&o.name=="master_thumb") {
+                // Clone thumbnails at the authored depth so lock art and
+                // category text in the same FNG can render over them.
+                for(unsigned i=0;i<garage->entries().size();++i) {
+                    const float x=float(int(i)-int(garage->selected()))*o.w;
+                    if(x< -200||x>200)continue;
+                    const auto& entry=garage->entries()[i];
+                    auto tex=textures.find(entry.icon);
+                    if(tex==textures.end())tex=textures.find(bin_hash("GENERICPLACEHOLDER"));
+                    if(tex==textures.end())continue;
+                    auto m=pose(pose,list,o,0);m.x+=x;
+                    const float factor=1.F-std::abs(x)*.0031250000465661287F;
+                    auto tint=color(color,list,o,0);
+                    tint[3]=unsigned(float(tint[3])*factor*factor*factor);
+                    if(!entry.available){tint[0]/=2;tint[1]/=2;tint[2]/=2;}
+                    const float w=o.w*factor,h=o.h*factor;
+                    quad(image,tex->second,m,-w/2,-h/2,w,h,o.uv,tint);
+                }
+                continue;
+            }
             if(o.name.find("tag")!=std::string::npos || o.name.rfind("mouse_",0)==0 || o.name=="DisplayMenuBar" ||
                o.name.rfind("ConduitMd",0)==0 || o.name.rfind("Help",0)==0 || (o.name.rfind("font_arial",0)==0 && !(page==1 && o.name=="font_arial")) ||
                o.name=="thumb" || o.name=="car_thumb" || o.name.rfind("thumb(",0)==0 || o.name=="master_thumb")continue;
@@ -566,17 +579,15 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
             if(o.name=="Description")value=selection==0?"Choose your next race":selection==1?"Customize your ride":"";
             if(garage&&page==3) {
                 const auto& entries=garage->entries();const auto* item=entries.empty()?nullptr:&entries[garage->selected()];
-                if(o.name=="GarageCategoryHeading"||o.name=="GarageMenuHeading"||o.name=="PartsCategoryHeading"||
+                if(o.name=="GarageCategoryHeading"||o.name=="VisualCategoryHeading"||o.name=="PartsCategoryHeading"||
                    o.name=="PerfCategoryHeading"||o.name=="PartsHeading"||o.name=="PerformanceHeading"||
                    o.name=="BrandHeading"||o.name=="StyleHeading"||o.name=="RimHeading"||
                    o.name=="GaragePaintModMenuHeading"||o.name=="GarageVinylMenuHeading"||
                    o.name=="GarageDecalsHeading"||o.name=="AccessoryCategoryHeading")value=item?item->name:"";
-                if(o.name=="DecalColorText"&&garage->page()==GaragePage::decals_brands)
-                    value=garage->white_decal()?"X: White":"X: Black";
+                if(o.name=="DecalColorText")value=""; // 5127C3 hides the authored placeholder.
                 if(o.name.rfind("ModeTitle",0)==0)value=garage->title();
                 if(o.name=="JunkmanUpgradeName"||o.name=="UniqueType")value=item?item->name:"";
                 if(o.name=="PartsPrice")value=item?(item->installed?"INSTALLED":item->owned?"OWNED":!item->available?"LOCKED":"Cost: "+std::to_string(item->price)):"";
-                if(o.name=="Cash")value="Bank: "+std::to_string(profile.bank);
                 if(o.name=="CarName")value=display_profile.car;
                 if(o.name=="TradeInCost")value=item?std::string(item->trade_cost<0?"Trade In Credit: ":"Trade In Cost: ")+std::to_string(std::abs(item->trade_cost)):"";
                 if(o.name=="PlayerName")value=profile.name;
@@ -697,19 +708,6 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
         }
     }
     if(page==3&&garage) {
-        const auto master=std::find_if(objects.begin(),objects.end(),[](const auto& o){return o.name=="master_thumb";});
-        if(master!=objects.end())for(unsigned i=0;i<garage->entries().size();++i) {
-            const float x=float(int(i)-int(garage->selected()))*master->w;if(x< -200||x>200)continue;
-            const auto& e=garage->entries()[i];auto tex=textures.find(e.icon);
-            if(tex==textures.end())tex=textures.find(bin_hash("GENERICPLACEHOLDER"));
-            if(tex==textures.end())continue;
-            auto m=pose(pose,objects,*master,0);m.x+=x;
-            const float factor=1.F-std::abs(x)*.0031250000465661287F;
-            auto tint=color(color,objects,*master,0);tint[3]=unsigned(float(tint[3])*factor*factor*factor);
-            if(!e.available){tint[0]/=2;tint[1]/=2;tint[2]/=2;}
-            const float w=master->w*factor,h=master->h*factor;
-            quad(image,tex->second,m,-w/2,-h/2,w,h,master->uv,tint);
-        }
         if(garage->dialog()!=GarageDialog::none||garage->confirming()) {
             auto dialog=garage_pages.at(0x21cd8c);
             const auto kind=garage->dialog();
@@ -760,7 +758,22 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
             quad(image,tex,m,-width/2,-height/2,width,height,master->uv,tint);
         }
     }
-    if(controls)label(-290,216,.65F,garage&&garage->dialog()!=GarageDialog::none?"Left / Right: select    A: accept    B: cancel":page==4?"Left / Right: difficulty     A: start     B: race map":page==0?"Left / Right: car     A: buy     B: back":page==1?"Left / Right: event     A: briefing     B: Underground menu":page==2?"Up / Down: select     A: open     B: main menu":(garage&&garage->page()==GaragePage::colors?"D-pad: preview color   L / R: finish   A: select   B: back":garage&&garage->page()==GaragePage::vinyl_layers?"Left / Right: layer   ZL / ZR: reorder   X: color   A: select   B: back":"L/R: browse   Right stick: view   A: select   B: back"),{{205,235,240,255}},true);
+    if(controls) {
+        const std::string help=garage&&garage->dialog()!=GarageDialog::none?"L/R: Select   A: Accept   B: Cancel":
+            page==4?"Left / Right: difficulty     A: start     B: race map":
+            page==0?"Left / Right: car     A: buy     B: back":
+            page==1?"Left / Right: event     A: briefing     B: Underground menu":
+            page==2?"Up / Down: select     A: open     B: main menu":
+            garage&&garage->page()==GaragePage::colors?"D-pad: Color   L/R: Finish   A: Select   B: Back":
+            garage&&garage->page()==GaragePage::vinyl_layers?"L/R: Layer   ZL/ZR: Reorder   X: Color   A/B: Select/Back":
+            garage&&garage->page()==GaragePage::decals_brands&&garage->selected()!=0?
+                (garage->white_decal()?"L/R: Browse   X: Black Decal   A/B: Select/Back":
+                                       "L/R: Browse   X: White Decal   A/B: Select/Back"):
+            "L/R: Browse   R Stick: View   A: Select   B: Back";
+        // Switch help must fit before the stock footer's profile and car fields.
+        const float scale=page==3?std::min(.65F,215.F/ui_text_width(help,small)):.65F;
+        label(-290,216,scale,help,{{205,235,240,255}},true);
+    }
     if(!notice.empty())label(-290,192,.62F,notice,{{255,224,140,255}},true);
 }
 void FrontendArt::draw_career(ScreenImage image,const CareerCatalog& catalog,const CareerProfile& profile,

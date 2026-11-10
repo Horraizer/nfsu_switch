@@ -35,8 +35,9 @@ and Unique/manufacturer-part gates.
   CurrentColor sample arrows stay fixed. Locked cells retain the preceding
   valid car preview. L/R cycles earned finishes; browsing previews without A.
 - Vinyl selection follows layer, group, family where applicable, then design.
-  Fully unavailable groups/families are omitted in career. X on an installed
-  layer opens its remappable color channels. A advances channels and confirms
+  Career shows unavailable families and special groups with the authored
+  lock. Customize Ride filters unavailable entries. X on an installed layer
+  opens its remappable color channels. A advances channels and confirms
   their purchase together; B cancels drafts without changing the saved ride.
 - Body vinyls use current-car compatibility and the shared original style
   flag. Group/family/layer thumbnails use original sprites and native order.
