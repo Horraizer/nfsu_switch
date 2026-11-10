@@ -136,7 +136,7 @@ private:
 class AstStreamer {
 public:
     // Keep decoded music ahead of SD stalls without adding to the mixer queue.
-    explicit AstStreamer(std::size_t capacity_frames = 32768);
+    explicit AstStreamer(std::size_t capacity_frames = 65536);
     ~AstStreamer();
     AstStreamer(const AstStreamer&) = delete;
     AstStreamer& operator=(const AstStreamer&) = delete;
