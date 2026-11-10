@@ -1704,7 +1704,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     if(!record_finish_scene())break;
                     require(renderer.present(error),error);
                     finish_scene_seconds+=double(finish_clock.sample(armTicksToNs(armGetSystemTick())))/1000000000.0;
-                    if(frontend_music&&!tried_frontend_audio&&finish_scene_seconds>=1.0) {
+                    if(frontend_music&&!tried_frontend_audio&&sound.finish_music_drained()) {
                         start_results_music();
                         // Asset/audio setup time must not jump the NIS ahead.
                         finish_clock.sample(armTicksToNs(armGetSystemTick()));

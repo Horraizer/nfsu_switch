@@ -137,6 +137,20 @@ int main(int argc,char** argv){
                 check(std::any_of(pcm.begin(),pcm.end(),[](auto v){return v!=0;}),"selected original race music reaches device");
                 check(race.stats().ring_underruns==0,"music comparison uses decoded PCM without underflow");
                 if(bank==1)opening=pcm;else check(opening!=pcm,"next race actually decodes different song PCM");
+                if(bank==2) {
+                    race.fade_music_for_finish();
+                    const auto fade_boundary=submitted+kOutputRate;
+                    for(unsigned block=0;block<47;++block) {
+                        while(race.stats().ring_fill<1024&&std::chrono::steady_clock::now()<deadline)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        pump(1024);
+                    }
+                    check(!race.finish_music_drained(),"rendered fade is still queued at the device");
+                    played=fade_boundary-1;
+                    check(!race.finish_music_drained(),"the final fade frame has not played");
+                    played=fade_boundary;
+                    check(race.finish_music_drained(),"played fade boundary permits the menu handoff");
+                }
                 race.stop();race.stop();check(!render,"repeated race cleanup does not advance playlist twice");
             }
         }
