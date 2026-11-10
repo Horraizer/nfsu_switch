@@ -78,10 +78,23 @@ int main(){
     c.published_support=0;
     camera.contact(50,true,23999,true,c,0,road,world);check(camera.event()==0,"five-second cooldown rejects just below boundary");
     camera.contact(50,true,24000,true,c,0,road,world);check(camera.event()==6,"five-second cooldown equality accepts");
-    check(camera.update(35999,0,true,c,stock_240sx_handling(),0,20,road,world,{},view)&&camera.event()==6,"last tick below converted three-second threshold retains first shot");
-    check(camera.update(36000,1,true,c,stock_240sx_handling(),0,20,road,world,{},view)&&camera.event()==7,"converted three-second threshold starts original second shot");
+    auto falling=c;falling.position.z=12;falling.velocity.z=-1;
+    check(camera.update(35999,5,true,falling,stock_240sx_handling(),0,20,road,world,{},view)&&camera.event()==6,
+        "sample below converted three-second threshold retains first shot");
+    check(camera.update(36000,6,true,c,stock_240sx_handling(),0,20,road,world,{},view)&&camera.event()==6,
+        "an unsampled frame cannot switch to the second shot");
+    check(camera.update(36400,13,true,c,stock_240sx_handling(),0,20,road,world,{},view)&&camera.event()==7,
+        "next sampled frame above threshold starts the second shot");
+    check(view.eye.z==12,"second shot retains the falling car height sampled during the first shot");
     check(!camera.update(36002,2,false,c,stock_240sx_handling(),0,20,road,world,{},view)&&camera.event()==0,"finish or disabled mode restores ordinary view immediately");
     camera.reset();camera.contact(35,true,4000,true,c,0,road,world);
+    check(camera.update(4100,1,false,c,stock_240sx_handling(),0,0,road,world,{},view,true)&&camera.event()==6,
+        "finishing retains an airborne shot already active at the line");
+    auto grounded=c;grounded.published_support=4;
+    check(!camera.update(6001,2,false,grounded,stock_240sx_handling(),0,0,road,world,{},view,true)&&camera.event()==0,
+        "landing during the finish hold still restores the ordinary view immediately");
+    camera.reset();
+    camera.contact(35,true,4000,true,c,0,road,world);
     camera.begin_frame(8.F);check(camera.event()==6,"timeout equality preserves event");
     check(camera.scale(.001F)==1,"expiring frame uses unscaled world dt");
     camera.begin_frame(.001F);check(camera.event()==0,"timeout callback clears shot");

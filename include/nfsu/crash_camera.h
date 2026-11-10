@@ -47,7 +47,7 @@ public:
                  const CrashCameraWorld&);
     bool update(std::int32_t tick,std::uint64_t frame,bool allowed,const VehicleState&,
                 const VehicleHandling&,float wheel_phase,float progress,const CrashCameraRoadSource&,
-                const CrashCameraWorld&,const ChaseCameraView&,ChaseCameraView&);
+                const CrashCameraWorld&,const ChaseCameraView&,ChaseCameraView&,bool finishing=false);
     std::uint64_t activations=0,returns=0;
 private:
     bool request(std::int32_t tick,float progress,const VehicleState&,

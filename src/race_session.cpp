@@ -921,9 +921,13 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     visual_frames_+=frame_seconds_/kDriveFrameSeconds;
     if(crash_source_) {
         const bool allowed=timing_.stage==RaceStage::racing&&timing_.outcome==RaceOutcome::running&&!spec_.drift_mode;
+        // 42C2FB extends the finish hold when a roadside shot is active.
+        // Keep that shot until its own return conditions, without starting
+        // another shot after the result has been recorded.
+        const bool finishing=timing_.outcome==RaceOutcome::finished&&crash_camera_.event()!=0;
         ChaseCameraView cinematic;
         if(crash_camera_.update(timing_.step_ticks,timing_.step-1,allowed,car(),spec_.handling,float(animation_.wheel_phase[0]),
-            progress().coordinate.fraction*100.F,*crash_source_,camera_world_,view_,cinematic))view_=cinematic;
+            progress().coordinate.fraction*100.F,*crash_source_,camera_world_,view_,cinematic,finishing))view_=cinematic;
     }
     if(presentation_==RacePresentation::player) {
         const bool rear=controls_.frame_state().look_back;

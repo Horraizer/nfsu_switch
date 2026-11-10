@@ -291,6 +291,7 @@ public:
                unsigned traffic_count = 16,std::uint32_t prop_materials = 1);
     void on_tick(const RaceAudioSnapshot& snapshot,std::uint32_t* world_random=nullptr);
     void set_suspended(bool suspended) noexcept;
+    void fade_music_for_finish() noexcept;
     void frontend_sound(FrontendSound);
     bool frontend_sound_active();
     bool post_race_voice(const std::filesystem::path&,unsigned event,bool won,std::string& error);

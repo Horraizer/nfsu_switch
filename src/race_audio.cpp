@@ -800,6 +800,8 @@ struct RaceAudioService::Impl {
     std::string note;
     OutputFade fade;
     OutputFade music_fade;
+    std::atomic<bool> fading_finish_music{false};
+    std::uint32_t finish_music_frames=kOutputRate;
 
     Impl() { mixer.set_peak_limiter(true); }
 
@@ -813,14 +815,23 @@ struct RaceAudioService::Impl {
         std::size_t offset = 0;
         while (offset < frames) {
             const auto count = std::min<std::size_t>(1024, frames - offset);
-            // Finish stops car effects through on_tick; the song continues through results.
-            const bool ending = false;
-            const bool stream_ready = has_music &&
-                (!ending || !music_fade.silent()) &&
+            const bool ending = fading_finish_music.load(std::memory_order_relaxed);
+            const bool stream_ready = has_music && finish_music_frames &&
                 (!stream.finished() || stream.ring().size());
             if (stream_ready) {
                 music_frames.fetch_add(stream.pop(music.data(), count),std::memory_order_relaxed);
-                music_fade.apply(music.data(), count, ending);
+                music_fade.apply(music.data(), count, false);
+                // 53C150 lowers the active music voice to zero over 1000 ms.
+                if(ending) {
+                    for(std::size_t frame=0;frame<count;++frame) {
+                        if(finish_music_frames) --finish_music_frames;
+                        const auto gain=static_cast<std::int32_t>(finish_music_frames);
+                        for(unsigned channel=0;channel<2;++channel) {
+                            auto& sample=music[frame*2+channel];
+                            sample=std::int16_t(std::int32_t(sample)*gain/std::int32_t(kOutputRate));
+                        }
+                    }
+                }
                 // Preserve the race music's existing master; apply only the
                 //original speech envelope's ratio while the post voice plays.
                 post_voice_duck.apply(music.data(),count,post_voice.active(),true);
@@ -975,6 +986,9 @@ bool RaceAudioService::start(const std::filesystem::path& root,
         p.note = diagnostic;
         return false;
     }
+    p.fading_finish_music=false;
+    p.finish_music_frames=kOutputRate;
+    p.music_fade=OutputFade{};
     if (progress) progress("audio output");
     std::string device_error;
     if (!p.output.start([&p](std::int16_t* pcm, std::size_t frames) {
@@ -1157,6 +1171,10 @@ bool RaceAudioService::post_race_voice(const std::filesystem::path& root,unsigne
     if(!impl_->active){error="race audio device is not active";return false;}
     return impl_->post_voice.play(root,post_race_speech(event,won),error);
 }
+void RaceAudioService::fade_music_for_finish() noexcept {
+    impl_->fading_finish_music.store(true,std::memory_order_relaxed);
+}
+
 void RaceAudioService::set_suspended(bool suspended) noexcept {
     impl_->suspended = suspended;
 }

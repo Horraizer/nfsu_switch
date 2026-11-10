@@ -1658,6 +1658,17 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             bool staged_finish=scene.load_finish_scene(posix_file_system(),root,race.session(),
                 selected_race.region,scene_variant(),finish_scene_error);
             flow_mark(staged_finish?"post.scene":"post.scene_unavailable",finish_scene_error.c_str());
+            bool frontend_audio=false;
+            bool tried_frontend_audio=false;
+            const auto start_results_music=[&] {
+                if(!frontend_music||tried_frontend_audio)return;
+                tried_frontend_audio=true;
+                sound.stop();
+                std::string music_error;
+                frontend_audio=frontend_music->start(root,music_error,{},pause_menu.music());
+                std::printf("RACE_POST_MUSIC playlist=frontend started=%u scene=%u %s\n",
+                    unsigned(frontend_audio),unsigned(staged_finish),music_error.c_str());
+            };
             double finish_scene_seconds=0;
             const auto record_finish_scene=[&] {
                 scene.set_finish_scene_seconds(finish_scene_seconds);
@@ -1674,6 +1685,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             // 422ED1 selects the ending NIS, then 422FE9 waits at least
             // two seconds before it can request the results package.
             if(staged_finish) {
+                // Audio state 8 fades the race song and selects the frontend mask
+                // during the ending NIS, before the results package is requested.
+                if(frontend_music)sound.fade_music_for_finish();
                 FrontendClock finish_clock;
                 finish_clock.sample(armTicksToNs(armGetSystemTick()));
                 constexpr double minimum_scene_seconds=2.0;
@@ -1683,8 +1697,14 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     if(!record_finish_scene())break;
                     require(renderer.present(error),error);
                     finish_scene_seconds+=double(finish_clock.sample(armTicksToNs(armGetSystemTick())))/1000000000.0;
+                    if(frontend_music&&!tried_frontend_audio&&finish_scene_seconds>=1.0) {
+                        start_results_music();
+                        // Asset/audio setup time must not jump the NIS ahead.
+                        finish_clock.sample(armTicksToNs(armGetSystemTick()));
+                    }
                 }
             }
+            start_results_music();
             std::array<std::string,4> models{{race.car(),race.car(),race.car(),race.car()}},labels;
             if(intro_grid) {
                 unsigned actor=1;
@@ -1732,15 +1752,6 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 unsigned(rewards.size()),unsigned(statistic_actors.size()),human_statistic);
             if(resolved_tournament.event)menu.tournament(resolved_tournament.round<supported_tournament_row(event_number)->count);
             menu.animate();
-            // Keep race audio on the ending shot. At the results boundary
-            // reuse the same frontend player that continues on the map.
-            bool frontend_audio=false;
-            if(frontend_music) {
-                sound.stop();
-                std::string music_error;
-                frontend_audio=frontend_music->start(root,music_error,{},pause_menu.music());
-                std::printf("RACE_POST_MUSIC playlist=frontend started=%u %s\n",unsigned(frontend_audio),music_error.c_str());
-            }
             const auto post_sound=[&](audio::FrontendSound cue) {
                 if(frontend_audio)frontend_music->sound(cue);
                 else if(!frontend_music)sound.frontend_sound(cue);

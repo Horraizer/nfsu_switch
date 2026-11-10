@@ -171,12 +171,15 @@ void RaceCrashCamera::contact(float magnitude,bool entering,std::int32_t tick,bo
 }
 bool RaceCrashCamera::update(std::int32_t tick,std::uint64_t frame,bool allowed,
     const VehicleState& car,const VehicleHandling& h,float wheel_phase,float progress,const CrashCameraRoadSource& source,
-    const CrashCameraWorld& world,const ChaseCameraView& normal,ChaseCameraView& view) {
-    if(!allowed){stop();return false;}
+    const CrashCameraWorld& world,const ChaseCameraView& normal,ChaseCameraView& view,bool finishing) {
+    if(!allowed&&!finishing){stop();return false;}
     const float crash_age=crash_valid_?age(tick,crash_tick_):0;
     if(event_&&((car.collision_state==1&&car.published_support==4&&crash_age>.5F)||
         (car.collision_state!=1&&car.published_support>0)))stop();
-    if(((frame+3)&7)==0&&!event_&&intensity_&&car.published_support==0&&
+    // The normal return above is evaluated every frame. 426C6E gates
+    // both airborne admission and the transition to the second shot.
+    const bool sampled=((frame+3)&7)==0;
+    if(sampled&&allowed&&!event_&&intensity_&&car.published_support==0&&
         car.owner_speeds.magnitude>curve(intensity_,50,5)) {
         CrashCameraFlight flight;
         if(crash_camera_predict(car,h,curve(intensity_,4,.5F),world,flight,wheel_phase)) {
@@ -185,10 +188,12 @@ bool RaceCrashCamera::update(std::int32_t tick,std::uint64_t frame,bool allowed,
                 request(tick,progress,car,source,world);
         }
     }
-    if(event_==6&&((car.collision_state==1&&crash_age>3.F)||
+    if(sampled&&event_==6&&car.velocity.z<0)
+        shot_.alternate[2]=std::max(shot_.alternate[2],float(car.position.z));
+    if(sampled&&event_==6&&((car.collision_state==1&&crash_age>3.F)||
         (car.collision_state!=1&&float(tick)*.00025F>flight_deadline_))) {
         stop();
-        if(intensity_&&(!last_valid_[1]||age(tick,last_[1])>=5.F)) {
+        if(allowed&&intensity_&&(!last_valid_[1]||age(tick,last_[1])>=5.F)) {
             float ground=0;shot_.alternate[2]=std::max(shot_.alternate[2],float(car.position.z));
             if(world.ground(shot_.alternate,ground)&&shot_.alternate[2]<ground)shot_.alternate[2]=ground+1.F;
             shot_.start_progress=progress;
