@@ -630,7 +630,7 @@ public:
                        const RaceContactBox&,RacePairContact&,
                        const RaceContactPose* previous=nullptr,const RaceContactPose* other_previous=nullptr,RaceContactContext* context=nullptr,
               const RaceContactJob* prepared=nullptr,bool self_is_b=false,bool other_fixed_world=false);
-    void publish_contact_count(unsigned count,std::uint32_t tick) noexcept;
+    void publish_contact_count(unsigned count) noexcept;
     void publish_world_acceleration(const VehicleVec3& before,float world_dt) noexcept;
     // RaceSession owns one shared end-of-frame queue for cars and polygons.
     // Grid placement and standalone diagnostics retain their local solver.

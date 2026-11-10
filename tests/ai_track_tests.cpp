@@ -226,12 +226,14 @@ int main() {
         VehicleState state;state.published_support=4;
         VehicleTrackSession counted(model,course);
         check(counted.start(state),"contact count publication fixture");
-        counted.publish_contact_count(2,4000);
-        check(counted.state().collision_body_flag==2&&counted.state().collision_state==2,
-              "active records drive the original state2 transition");
-        counted.publish_contact_count(0,5200);
-        check(counted.state().collision_body_flag==0&&counted.state().collision_state==0,
-              "expired records release grounded state2");
+        counted.publish_contact_count(2);
+        check(counted.state().collision_body_flag==2&&counted.state().collision_state==0,
+              "record publication leaves collision state for the outer physics call");
+        check(counted.step(input,telemetry)&&counted.state().collision_state==2,
+              "outer physics enters state2 with an active record");
+        counted.publish_contact_count(0);
+        check(counted.state().collision_body_flag==0&&counted.state().collision_state==2,
+              "record retirement does not advance the outer physics state");
     }
     {VehicleState first;auto spec=model.spec();spec.handling.centre_of_mass={.25F,0,.28F};
 #include "hull_support_native.inc"

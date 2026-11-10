@@ -470,7 +470,9 @@ void update_car_collision_state(std::uint32_t& state,float& support_since,
     if(state==2) {if(body_flag==0&&grounded_wheels==4)state=0;return;}
     if(state!=1) return;
     if(body_flag!=0||grounded_wheels!=4) {support_since=0;return;}
-    if(support_since==0) support_since=float(now_seconds);
-    else if(double(now_seconds)-support_since>=double(0.10000000149011612F)) state=0;
+    // 42A579 rounds world seconds before 42A58B subtracts actor+4CC.
+    const float now=static_cast<float>(now_seconds);
+    if(support_since==0) support_since=now;
+    else if(now-support_since>=0.10000000149011612F) state=0;
 }
 }

@@ -1373,13 +1373,10 @@ void VehicleTrackSession::publish_world_acceleration(const VehicleVec3& before,f
     player_publish_owner_acceleration(state_.owner_motion,before,state_.velocity,dt);
 }
 
-void VehicleTrackSession::publish_contact_count(unsigned count,std::uint32_t tick) noexcept {
-    // The fixed race pool has at most9 other cars; this signed field is the
-    // original body+1C record count, not a severity or a permanent crash flag.
+void VehicleTrackSession::publish_contact_count(unsigned count) noexcept {
+    // 420720 retires records after the queue. 4264D9 consumes the resulting
+    // body+1C count at the next outer physics call, including a resumed call.
     state_.collision_body_flag=static_cast<std::int8_t>(count);
-    update_car_collision_state(state_.collision_state,state_.collision_support_since,
-        state_.published_support,state_.collision_body_flag,
-        double(static_cast<std::int32_t>(tick))*double(.00025F));
 }
 
 bool VehicleTrackSession::refresh_contact(VehicleState& sampled,const VehicleState* published_actor,float interval) {

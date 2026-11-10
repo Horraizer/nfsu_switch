@@ -225,15 +225,22 @@ static int run(const char* root) {
             <<" pitch "<<hit_car.angular_velocity.y<<" traffic vx/pitch "<<sedan.car.velocity.x<<'/'<<sedan.car.angular_velocity.y<<'\n';
    ++failures;
   }
-  // Keep the wheels supported and remove the record, as required by 42A530.
-  world.vehicle_.state_.published_support=4;
-  world.vehicle_.publish_contact_count(1,480000);
-  world.vehicle_.publish_contact_count(0,480000);
-  world.vehicle_.publish_contact_count(0,480399);
-  if(world.car().collision_state!=1){std::cerr<<"early crash recovery\n";++failures;}
-  world.vehicle_.publish_contact_count(0,480401);
-  if(world.car().collision_state!=0||!world.crash_windows_damaged()){
-   std::cerr<<"crash recovery or persistent window damage mismatch\n";++failures;
+  // Original 42A530 on a supplied recovery timeline, after the real queued
+  // impact above. Retiring the record must not begin the support timer.
+  auto& car=world.vehicle_;
+  auto input=car.last_input_;input.throttle=1;input.world_clock_valid=true;
+  VehicleTrackTelemetry recovery;
+  const auto step=[&](std::int32_t tick,unsigned support) {
+   car.state_.published_support=support;input.world_clock=tick;
+   return car.step(input,recovery,0,kVehicleStepSeconds,true,1,true);
+  };
+  car.publish_contact_count(0);
+  if(car.state_.collision_support_since!=0||
+     !step(119900,4)||car.state_.collision_support_since==0||
+     !step(119950,3)||car.state_.collision_support_since!=0||
+     !step(120000,4)||!step(120399,4)||car.state_.collision_state!=1||
+     !step(120400,4)||car.state_.collision_state!=0||!world.crash_windows_damaged()) {
+   std::cerr<<"original crash recovery timeline or persistent window damage mismatch\n";++failures;
   }
   continue;
  }

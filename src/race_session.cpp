@@ -1543,12 +1543,10 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
     }
     if(props_)for(auto& p:props_->objects_)if(p.body_id>=0)p.terrain_contact=!p.ground_contacts.empty();
     for(unsigned i=0;i<=rivals_.size();++i)
-        actors[i]->vehicle_.publish_contact_count(contact_counts[i],tick);
+        actors[i]->vehicle_.publish_contact_count(contact_counts[i]);
     if(traffic_)for(unsigned i=0;i<traffic_->contact_actors().size();++i) {
         auto& t=traffic_->contact_actors()[i];if(!t.active)continue;
         t.car.collision_body_flag=static_cast<std::int8_t>(contact_counts[4+i]);
-        update_car_collision_state(t.car.collision_state,t.car.collision_support_since,
-            t.car.published_support,t.car.collision_body_flag,double(static_cast<std::int32_t>(tick))*double(.00025F));
     }
     pair_frame_=contacts;
     return true;
