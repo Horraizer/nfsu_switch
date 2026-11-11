@@ -18,7 +18,7 @@ int main(int argc,char** argv){try {
     for(const auto& a:grid.actors) {
         if(a.config.role==Event0Role::opponent) {
             contexts[rivals.size()]=a.config.selected_context;
-            rivals.push_back({a.placement_spec,a.pose,a.hull,a.config.event_label,a.assets.car_type_name,a.config.ai_mode});
+            rivals.push_back({a.placement_spec,a.pose,a.hull,a.config.event_label,a.assets.car_type_name,a.config.ai_mode,a.config.config_id});
         }else player=&a;
     }
     need(player&&rivals.size()==3,"three rivals absent");
@@ -31,6 +31,16 @@ int main(int argc,char** argv){try {
     need(run.set_intro_traffic(traffic,error),error);
     need(run.set_steering(RaceSteering::recovered_predicate1,error),error);
     need(run.start(root,track,error),error);
+    if(event==8) {
+        const std::array<std::int16_t,3> retail_roads{{1,25,24}};
+        unsigned rival=0;
+        for(const auto& actor:grid.actors)if(actor.config.role==Event0Role::opponent) {
+            need(run.session().rival_actor_id(rival)==actor.config.config_id,"rival recovery uses authored actor identity");
+            need(run.session().rival_start_road(rival)==retail_roads[rival],
+                "rival starts on its authored road");
+            ++rival;
+        }
+    }
     // A separate read-only planner probes the published driver contract on
     // moving production actors. It never feeds controls back into RaceRun.
     IntroAiPlanner publication;

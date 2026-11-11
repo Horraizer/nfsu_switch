@@ -720,7 +720,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         std::array<int,3> contexts{};
         for(const auto& actor:intro_grid->actors)if(actor.config.role==Event0Role::opponent) {
             contexts[rivals.size()]=actor.config.selected_context;
-            rivals.push_back({actor.placement_spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode});
+            rivals.push_back({actor.placement_spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode,actor.config.config_id});
         }
         const auto& player=*std::find_if(intro_grid->actors.begin(),intro_grid->actors.end(),[](const auto& a){return a.config.role==Event0Role::human;});
         require(race.set_intro_grid(player.pose,player.hull,rivals,contexts,error,player.config.final_grid),error);
@@ -853,7 +853,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     RaceHudAtlas hud_atlas;
     if (hud_mode && !panel_mode)
         require(load_race_hud_atlas(root,hud_atlas,error,!drift_mode&&!drag_mode,
-            race.session().spec().nitrous.installed,drift_mode,race.track_number(),
+            !drag_mode&&race_hud_uses_boost_atlas(race.session().spec()),drift_mode,race.track_number(),
             selected_race.type==RaceType::lap_knockout),error);
     if(drag_mode) {
         drag_mark("drag.hud.before");

@@ -99,6 +99,7 @@ private:
     float catchup_weight_=0;
     float rival_throttle_cap_=1;
     unsigned catchup_traffic_selector_=0;
+    float traffic_grid_spacing_=0,traffic_grid_clearance_=0;
     std::int32_t time_limit_ticks_=0;
     std::string car_ = "240SX";
     RaceSteering steering_ = RaceSteering::baseline;

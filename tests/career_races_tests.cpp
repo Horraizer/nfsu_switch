@@ -443,7 +443,7 @@ int main(int argc,char** argv) {
             }
             if(a.config.role==Event0Role::opponent) {
                 contexts[rivals.size()]=a.config.selected_context;
-                rivals.push_back({a.placement_spec,a.pose,a.hull,a.config.event_label,a.config.visual.car,a.config.ai_mode});
+                rivals.push_back({a.placement_spec,a.pose,a.hull,a.config.event_label,a.config.visual.car,a.config.ai_mode,a.config.config_id});
             }
         }
         if(rivals.size()+1!=grid.setup->racer_count)throw std::runtime_error("authored rival count differs");

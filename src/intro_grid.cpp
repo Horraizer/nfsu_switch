@@ -341,7 +341,7 @@ bool prepare_intro_race(IntroGrid& grid,RaceSession& session,std::string& error)
         // Traffic keeps its selected stock setup; adaptive tuning applies to racers.
         auto spec=actor.placement_spec;
         spec.nitrous={};
-        setup.push_back({spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode});
+        setup.push_back({spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode,actor.config.config_id});
     } else if(actor.config.role==Event0Role::human)player_grid=actor.config.final_grid;
     return session.set_rivals(setup,error,RacePresentation::none,player_grid);
 }

@@ -1,7 +1,7 @@
-# Getting started with v0.2-lan-r7
+# Getting started with v0.2-r42
 
-This is an experimental prerelease. For the older 0.1 package and its original
-scope, use [RELEASE_0_1](RELEASE_0_1.md) and the v0.1 source tag.
+This is an experimental prerelease. Download it from the
+[v0.2-r42 release page](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r42).
 
 ## Required game edition
 
@@ -29,7 +29,7 @@ list is insufficient for the current menu, tuned Skyline, movies and audio.
 
 1. Open Homebrew Menu in **full-memory application mode** (title takeover).
    Album/applet mode does not provide the memory this build needs.
-2. Download `nfsu-switch-v0.2-lan-r7-sd.zip` and extract its contents at the
+2. Download `nfsu-switch-v0.2-r42-sd.zip` and extract its contents at the
    top level of the SD card. Alternatively, put the standalone NRO under
    `sdmc:/switch/nfsu-switch/`. The NRO filename is not the game-data folder.
 3. From your own PC1.4 USA installation, copy these complete directories to
@@ -56,7 +56,7 @@ list is insufficient for the current menu, tuned Skyline, movies and audio.
 
    Avoid accidental nesting such as `nfsu/nfsu/Cars` or putting game data
    under `switch/nfsu-switch/nfsu`.
-5. Launch NFSU_switch LAN r7. Select Go Underground, Quick Race or Multiplayer.
+5. Launch `NFSU_switch.nro` from Homebrew Menu. Select Go Underground, Quick Race or Multiplayer.
    Free Run is practice inside the standalone race setup. Keep existing saves;
    the release archive contains no profile files and does not reset progress.
 
@@ -96,6 +96,15 @@ Turbo is an automatic performance upgrade, not a separate boost button.
 The chosen car/tier determines installed nitrous and performance parts.
 Use the original-style screens for purchases, rewards and profile selection.
 
+## Race display settings
+
+In Options, cycle Race Resolution through Auto, 540p and 720p. The selection
+persists across restarts. For a 60 FPS target in handheld mode, start with
+540p at stock clocks. The project owner recommends 720p with a GPU overclock
+for the same target. Frame rate can vary by race and scene. Motion blur, road
+reflections and MPH/km/h are also configurable. Enable diagnostic logging
+under Options when collecting an SD log.
+
 ## Two-player LAN
 
 Both consoles need this build and their own local PC data copy, on the same
@@ -112,22 +121,22 @@ hardware comparison. Do not mix old and new protocol versions.
 
 ## Known limits
 
-- r7's latest garage changes have PC and packaging checks, not final console
-  visual/input acceptance. This exact paired LAN build is still experimental.
+- The r42 artifact has desktop and packaging validation. Its console visual,
+  input and paired LAN validation is pending.
 - Full campaign records and automated start/finish checks do not establish
   a flawless 8-10-hour playthrough, original AI/physics/audio parity or locked 60 FPS.
 - Remaining drift HUD, collision/traffic/audio and some frontend behavior
   continue to be matched against original data/code.
 - Missing `English.bin`, an incomplete data tree, a wrong regional asset set
   or applet-mode memory can prevent startup/loading. Check the displayed error.
-- For a crash, preserve its SD/Netloader log and report `garage-flow-r7`.
+- For a crash, preserve any SD/Netloader log and report `drag-grid-r42`.
 
 ## Build from source
 
 ```sh
 git clone https://github.com/Horraizer/nfsu_switch.git
 cd nfsu_switch
-git checkout v0.2-lan-r7
+git checkout v0.2-r42
 ```
 
 Install devkitPro switch-dev: devkitA64, libnx, deko3d, uam, switch-tools,
@@ -138,7 +147,7 @@ standalone Python3.12 (the exercised version) in a configured devkitPro/MSYS2 or
 export DEVKITPRO=/opt/devkitpro
 cmake -S . -B build-switch -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=cmake/switch-toolchain.cmake \
-  -DCMAKE_BUILD_TYPE=Release -DNFSU_RACE_BUILD_TAG=garage-flow-r7 \
+  -DCMAKE_BUILD_TYPE=Release -DNFSU_RACE_BUILD_TAG=drag-grid-r42 \
   -DNFSU_RACE_FXAA=ON -DNFSU_RACE_MSAA2=OFF -DNFSU_RACE_MSAA8=OFF \
   -DNFSU_RACE_FPS_OVERLAY=OFF -DNFSU_SWITCH_DEKO_DEBUG=OFF
 cmake --build build-switch --target nfsu_switch_race_nro
@@ -147,9 +156,8 @@ ctest --test-dir build-switch --output-on-failure \
 ```
 
 Output: `build-switch/switch/nfsu_switch_race.nro`. Offline shader compilation
-and RomFS embedding are part of the target. This produces default build
-metadata; the uploaded NRO has a custom LAN r7 title, with identical runtime
-source. A different SDK can produce a different binary.
+and RomFS embedding are part of the target. The downloaded NRO uses the project icon and standard runtime metadata.
+A different SDK can produce a different binary.
 
 For desktop tools and all retail checks, first install the exercised Python
 packages into the standalone interpreter CMake will use:
@@ -181,7 +189,7 @@ Desktop tools do not substitute for Switch GPU/runtime acceptance.
 With the target console's Netloader open:
 
 ```sh
-nxlink -a SWITCH_IP -s nfsu-switch-v0.2-lan-r7.nro
+nxlink -a SWITCH_IP -s NFSU_switch.nro
 ```
 
 Only the NRO is transferred; keep the game data on SD. For two consoles, both

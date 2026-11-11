@@ -80,7 +80,7 @@ void verify_bonus_cars(const std::filesystem::path& root,const std::filesystem::
         for(const auto& actor:grid.actors) {
             if(actor.config.role==Event0Role::human){player=&actor;continue;}
             contexts[rivals.size()]=actor.config.selected_context;
-            rivals.push_back({actor.placement_spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode});
+            rivals.push_back({actor.placement_spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode,actor.config.config_id});
         }
         check(player&&run.set_intro_grid(player->pose,player->hull,rivals,contexts,error,player->config.final_grid),"bonus runtime grid");
         grid.course={};

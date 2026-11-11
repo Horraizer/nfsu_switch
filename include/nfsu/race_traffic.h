@@ -62,10 +62,13 @@ public:
     bool advance(const std::array<const VehicleState*,4>&,std::uint64_t,std::string&,std::int32_t world_clock=-1,float dt=1.F/60.F,
                  const std::array<bool,4>& ghosts={},
                  const std::array<const RaceContactBox*,4>& racer_shapes={});
+    bool stage_drag_grid(const std::array<const VehicleState*,4>&,
+                         const std::array<const RaceContactBox*,4>&,
+                         float spacing,float clearance,std::int32_t clock,std::string&);
     //420B40 prepares every controller/driver before420310 integrates bodies.
     bool prepare_frame(const std::array<const VehicleState*,4>&,std::uint64_t,std::string&,
                        std::int32_t,float,const std::array<bool,4>&,
-                       const std::array<const RaceContactBox*,4>&);
+                       const std::array<const RaceContactBox*,4>&,bool grid_held=false);
     bool advance_body(unsigned,std::string&);
     void finish_frame();
     // Original583E80 selects the rigid mover on contact.583DA0 separately
@@ -107,7 +110,8 @@ private:
     std::array<unsigned,kRaceTrafficCapacity> prepared_actors_{};
     unsigned prepared_count_=0;
     std::array<bool,kRaceTrafficCapacity> advanced_actors_{};
-    bool frame_prepared_=false;
+    bool frame_prepared_=false,drag_grid_staged_=false;
+    bool activate(unsigned,AiRoadCursor,unsigned,std::uint32_t,bool,std::string&);
     bool spawn(unsigned,const std::array<const VehicleState*,4>&,std::uint64_t,std::string&);
     bool prepare_world(std::string&);
     bool plan(unsigned,std::uint32_t,std::string&);

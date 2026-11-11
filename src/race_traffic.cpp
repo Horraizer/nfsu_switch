@@ -14,6 +14,21 @@ constexpr double tau=6.2831853071795864769;
 float distance2(const VehicleVec3& a,const VehicleVec3& b) {
     return float((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y));
 }
+float path_difference(float left,float right,const TrackPathSpline& spline) {
+    float value=left-right;const float length=spline.path_length;
+    //443D60 wraps only closed tracks, once, with strict half-span tests.
+    if(!spline.open) {
+        if(value<length*-.5F)value+=length;
+        else if(value>length*.5F)value-=length;
+    }
+    return value;
+}
+std::uint32_t traffic_random(std::uint32_t& seed) {
+    const auto sample=seed;
+    const auto x=seed^0x1d872b41U,y=(x>>5)^x;
+    seed=(y<<27)^y^x;
+    return sample;
+}
 AiDriverPoint lane_point(const RoutePoint& p,unsigned lane) {
     const auto* direction=lane<6?p.forward:p.backward;
     const float offset=p.lane_offset[lane];
@@ -142,6 +157,92 @@ bool RaceTraffic::world_prediction(unsigned index,const AiPathActorSnapshot& act
     }
     return ai_traffic_world_prediction(actor,a.driver_path,outside,a.action_owner.current.kind,tick,horizon,out);
 }
+bool RaceTraffic::activate(unsigned index,AiRoadCursor cursor,unsigned lane,std::uint32_t tick,
+                           bool staged,std::string& error) {
+    auto& a=actors_[index];
+    const auto& authored=(lane>=6?backward_lines_:lines_).find(cursor.route)->points[cursor.point];
+    const auto point=lane_point(authored,lane%6);
+    a.cursor=cursor;a.lane=lane;a.road={};a.road.selected=true;a.road.road=cursor;
+    a.road.category=11+int(lane%6);a.road_policy={};a.published_path={};a.driver_path={};a.maneuver={};
+    a.action_owner={};a.action_records={};a.action_speed={};a.next_action_handle=1;
+    a.actor_override_enabled=false;a.actor_override={};a.coordinate={};a.ended=false;
+    const float initial_speed=float(authored.speed[11+lane%6]);
+    a.target_speed=staged?initial_speed:std::min(24.58650016784668F,initial_speed);
+    const auto* forward=authored.forward;
+    a.motion={point[0],point[1],float(std::atan2(forward[1],forward[0])),a.target_speed};
+    // Recycled bodies must not inherit impact compression/rest/contact caches.
+    VehiclePose pose;
+    if(!models_[index]->reset(a.car,pose)){error="traffic spawn model refused";return false;}
+    a.driver={};a.animation={};a.impacted=false;a.crash_stop=false;
+    a.pair_history={};a.active=true;a.registration=spawns+1;
+    if(!publish(a,point[2],0,false)||!prepare_world(error)||!plan(index,tick,error)) {
+        if(error.empty())error="traffic spawn controller refused";
+        return false;
+    }
+    if(!a.active)return true;
+    // Original 5992BC supplies the authored lane speed to the constructor.
+    if(!staged)a.motion.speed=a.target_speed;
+    if(!publish(a,point[2],0)||!impact_sessions_[index]->start(a.car)){
+        error="traffic spawn publication refused";return false;
+    }
+    a.previous_valid=false;++a.activations;++spawns;return true;
+}
+
+bool RaceTraffic::stage_drag_grid(const std::array<const VehicleState*,4>& racers,
+                                 const std::array<const RaceContactBox*,4>& shapes,
+                                 float spacing,float clearance,std::int32_t clock,std::string& error) {
+    if(!drag_||drag_grid_staged_||!racers[0]||!std::isfinite(spacing)||spacing<=0||
+       !std::isfinite(clearance)||clearance<0||course_->route.start<0) {
+        error="invalid drag traffic grid";return false;
+    }
+    racers_=racers;racer_shapes_=shapes;world_clock_=clock;
+    if(!prepare_world(error))return false;
+    const auto& race=course_->route;
+    const auto& spline=race.spline;
+    const auto progress=[&](float raw){return race.reverse?spline.path_length-raw:raw;};
+    const float start=race.boundaries.at(unsigned(race.start)).percent*.01F*spline.path_length;
+    auto& random=world_random_?*world_random_:rng_;
+    const auto unit=[&](){return float(traffic_random(random)%0x7fffffffU)*4.656612873077393e-10F;};
+    std::array<float,kRaceTrafficCapacity> placed{};
+    for(unsigned index=0;index<actors_.size();++index) {
+        // 5991A0 tries one authored spacing interval per retry, starting at
+        // traffic config ID minus 50 (the index in this pool).
+        for(unsigned attempt=0;attempt<100;++attempt) {
+            const bool forward=(unit()<.5F)!=race.reverse;
+            const auto candidate=ai_traffic_drag_grid_point(lines_,spline,race.reverse,
+                float(index+attempt)*spacing,forward);
+            if(candidate.route<0)continue;
+            const auto& route=*lines_.find(candidate.route);
+            int lane=-1;
+            for(bool direction:{forward,!forward}) {
+                const unsigned first=direction?0:6;
+                for(unsigned k=0;k<10&&lane<0;++k) {
+                    const auto draw=traffic_random(random)%600000U;
+                    if(route.lane_enabled[first+draw/100000U])lane=int(first+draw/100000U);
+                }
+                for(unsigned k=0;k<6&&lane<0;++k)
+                    if(route.lane_enabled[first+k])lane=int(first+k);
+                if(lane>=0)break;
+            }
+            if(lane<0)continue;
+            const float position=progress(route.points[candidate.point].path_distance);
+            if(std::abs(path_difference(position,start,spline))<clearance)continue;
+            bool blocked=false;
+            for(unsigned i=0;i<index;++i)if(actors_[i].active&&
+                ai_traffic_spawn_gap_blocked(path_difference(position,placed[i],spline),spacing,true))blocked=true;
+            for(unsigned i=0;i<racers.size();++i)if(racers[i]&&
+                ai_traffic_spawn_gap_blocked(path_difference(position,progress(world_nodes_[i].progress),spline),spacing,false))blocked=true;
+            if(blocked)continue;
+            if(!activate(index,candidate,unsigned(lane),std::uint32_t(clock),true,error))return false;
+            if(!actors_[index].active)continue;
+            placed[index]=position;
+            break;
+        }
+    }
+    drag_grid_staged_=true;
+    return true;
+}
+
 bool RaceTraffic::spawn(unsigned index,const std::array<const VehicleState*,4>& racers,std::uint64_t tick,std::string& error) {
     auto& a=actors_[index];const auto& player=*racers[0];
     auto& random=world_random_?*world_random_:rng_;
@@ -153,13 +254,7 @@ bool RaceTraffic::spawn(unsigned index,const std::array<const VehicleState*,4>& 
     update_track_path_coordinate(course_->route.spline,track,coordinate,reference);
     const float raw_progress=course_->route.reverse?course_->route.spline.path_length-coordinate.distance:coordinate.distance;
     const auto difference=[&](float left,float right) {
-        float value=left-right;const float length=course_->route.spline.path_length;
-        //443D60 wraps only closed tracks, once, with strict half-span tests.
-        if(!course_->route.spline.open) {
-            if(value<length*-.5F)value+=length;
-            else if(value>length*.5F)value-=length;
-        }
-        return value;
+        return path_difference(left,right,course_->route.spline);
     };
     bool stopped=false;
     for(const auto& other:actors_)if(other.active&&other.car.owner_speeds.magnitude<1&&
@@ -168,8 +263,7 @@ bool RaceTraffic::spawn(unsigned index,const std::array<const VehicleState*,4>& 
     if(!ai_traffic_spawn_spacing(zone,density_,stopped,random,spacing))return false;
     // Port admission uses authored roads only. No nearest-spline teleporting.
     // Original ordinary teleporter uses a250..500m horizon and one pool slot/s.
-    const auto sample=random%0x7fffffffU;const auto x=random^0x1d872b41U;
-    const auto y=(x>>5)^x;random=(y<<27)^y^x;
+    const auto sample=traffic_random(random)%0x7fffffffU;
     const unsigned start=sample%lines_.routes.size();
     for(unsigned ri=0;ri<lines_.routes.size();++ri) {
         const auto& route=lines_.routes[(start+ri)%lines_.routes.size()];
@@ -197,28 +291,9 @@ bool RaceTraffic::spawn(unsigned index,const std::array<const VehicleState*,4>& 
                 for(const auto& other:actors_)if(other.active&&
                     ai_traffic_spawn_gap_blocked(difference(route.points[pi].path_distance,other.progress),spacing,true))clear=false;
                 if(!clear)continue;
-                a.cursor=cursor;a.lane=lane;a.road={};a.road.selected=true;a.road.road=cursor;
-                a.road.category=11+int(lane%6);a.road_policy={};a.published_path={};a.driver_path={};a.maneuver={};
-                a.action_owner={};a.action_records={};a.action_speed={};a.next_action_handle=1;
-                a.actor_override_enabled=false;a.actor_override={};a.coordinate={};a.ended=false;
-                a.target_speed=std::min(24.58650016784668F,float(authored.speed[11+lane%6]));
-                const auto* forward=authored.forward;
-                a.motion={point[0],point[1],float(std::atan2(forward[1],forward[0])),a.target_speed};
-                // Recycled bodies must not inherit impact compression/rest/contact caches.
-                VehiclePose pose;
-                if(!models_[index]->reset(a.car,pose)){error="traffic spawn model refused";return false;}
-                a.driver={};a.animation={};a.impacted=false;a.crash_stop=false;
-                a.pair_history={};a.active=true;a.registration=spawns+1;
-                if(!publish(a,point[2],0,false)||!prepare_world(error)||!plan(index,std::uint32_t(world_clock_>=0?world_clock_:tick*4000/60),error)) {
-                    if(error.empty())error="traffic spawn controller refused";
+                if(!activate(index,cursor,lane,std::uint32_t(world_clock_>=0?world_clock_:tick*4000/60),false,error))
                     return false;
-                }
-                if(!a.active)continue;
-                a.motion.speed=a.target_speed;
-                if(!publish(a,point[2],0)||!impact_sessions_[index]->start(a.car)){
-                    error="traffic spawn publication refused";return false;
-                }
-                a.previous_valid=false;++a.activations;++spawns;return true;
+                if(a.active)return true;
             }
         }
     }
@@ -284,7 +359,7 @@ bool RaceTraffic::continue_contact(unsigned index,double seconds,std::string& er
     }
     return true;
 }
-bool RaceTraffic::prepare_frame(const std::array<const VehicleState*,4>& racers,std::uint64_t tick,std::string& error,std::int32_t world_clock,float dt,const std::array<bool,4>& ghosts,const std::array<const RaceContactBox*,4>& racer_shapes) {
+bool RaceTraffic::prepare_frame(const std::array<const VehicleState*,4>& racers,std::uint64_t tick,std::string& error,std::int32_t world_clock,float dt,const std::array<bool,4>& ghosts,const std::array<const RaceContactBox*,4>& racer_shapes,bool grid_held) {
     if(!std::isfinite(dt)||dt<=0||dt>.1F){error="invalid traffic frame interval";return false;}
     if(frame_prepared_){error="traffic frame already prepared";return false;}
     frame_seconds_=dt;world_clock_=world_clock;
@@ -295,7 +370,9 @@ bool RaceTraffic::prepare_frame(const std::array<const VehicleState*,4>& racers,
         error="traffic intersection phase refused";return false;
     }
     for(auto& a:actors_){a.previous_pose=race_contact_pose(a.car);a.previous_valid=a.active;}
-    if(tick%60==0) {
+    // Preserve the drag factory's staged field through the countdown.
+    // The live recycler still uses the existing port adapter after GO.
+    if(tick%60==0&&(!drag_grid_staged_||!grid_held)) {
         auto& a=actors_[recycle_];bool near=false;
         for(const auto* r:racers)if(r&&distance2(a.car.position,r->position)<250.F*250.F)near=true;
         if(a.active&&!near&&!retire(recycle_,error))return false;

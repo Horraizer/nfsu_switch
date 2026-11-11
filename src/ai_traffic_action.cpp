@@ -1,6 +1,7 @@
 #include "nfsu/ai_traffic_action.h"
 #include <cstring>
 #include <cmath>
+#include <algorithm>
 
 namespace nfsu {
 bool ai_traffic_spawn_point_allowed(const std::array<std::uint8_t,4>& flags,bool forward) noexcept {
@@ -8,6 +9,43 @@ bool ai_traffic_spawn_point_allowed(const std::array<std::uint8_t,4>& flags,bool
 }
 bool ai_traffic_drag_spawn_margin(unsigned point,unsigned count,bool forward) noexcept {
     return forward ? count>10 && point<count-10 : point>=10;
+}
+AiRoadCursor ai_traffic_drag_grid_point(const RacingLineTrack& roads,const TrackPathSpline& spline,
+                                      bool reverse,float target,bool forward) noexcept {
+    AiRoadCursor result{-1,0};
+    if(!std::isfinite(target)||target<0||!std::isfinite(spline.path_length)||spline.path_length<=0)return result;
+    float best=999999.F;
+    const unsigned first=forward?0:6;
+    for(int id=0;id<99;++id) {
+        const auto* road=roads.find(std::int16_t(id));
+        if(!road||std::none_of(road->lane_enabled.begin()+first,road->lane_enabled.begin()+first+6,
+                              [](bool enabled){return enabled;}))continue;
+        const unsigned count=unsigned(road->points.size());
+        float nearest=999999.F;
+        unsigned selected=count;
+        float selected_progress=0;
+        for(unsigned i=0;i<count;) {
+            const float raw=road->points[i].path_distance;
+            float progress=reverse?spline.path_length-raw:raw;
+            if(!spline.open) {
+                const float half=.5F*spline.path_length;
+                if(progress<-half)progress+=spline.path_length;
+                else if(progress>half)progress-=spline.path_length;
+            }
+            const float delta=progress-target;
+            if(progress>0&&delta>=0&&delta<nearest) {
+                nearest=delta;selected=i;selected_progress=progress;
+            }
+            // 442917 advances faster across points far beyond the target.
+            const float skip=std::clamp(-2.F-std::trunc(delta*-.0416666679084301F),0.F,float(count));
+            i+=1+unsigned(skip);
+        }
+        if(selected==count||selected_progress>=best||
+           !ai_traffic_spawn_point_allowed(road->points[selected].unknown_84,forward)||
+           !ai_traffic_drag_spawn_margin(selected,count,forward))continue;
+        best=selected_progress;result={std::int16_t(id),std::uint16_t(selected)};
+    }
+    return result;
 }
 bool ai_traffic_spawn_spacing(const TrackPathZone* zone,unsigned selector,
                               bool stopped,std::uint32_t& random,float& spacing) noexcept {

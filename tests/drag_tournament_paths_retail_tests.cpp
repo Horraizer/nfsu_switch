@@ -3,6 +3,7 @@
 #include "nfsu/posix_file_system.h"
 #include "nfsu/arg_path.h"
 #include "nfsu/ai_traffic_action.h"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -24,7 +25,7 @@ int main(int argc,char** argv) {try {
             require(rivals.size()<3,"unexpected rival count");
             contexts[rivals.size()]=actor.config.selected_context;
             rivals.push_back({actor.placement_spec,actor.pose,actor.hull,actor.config.event_label,
-                actor.assets.car_type_name,actor.config.ai_mode});
+                actor.assets.car_type_name,actor.config.ai_mode,actor.config.config_id});
         }else human=&actor;
     }
     require(human&&rivals.size()==3,"missing authored drag grid");
@@ -39,6 +40,14 @@ int main(int argc,char** argv) {try {
     TrackSlice track;
     require(load_track_slice(posix_file_system(),root,track,error,nullptr,nullptr,9,false,round),error);
     require(run.start(root,track,error),error);
+    const bool check_grid=traffic_enabled&&round==0;
+    const auto active_count=[](const RaceTraffic& owner) {
+        const auto& cars=owner.actors();
+        return std::count_if(cars.begin(),cars.end(),[](const RaceTrafficActor& car){return car.active;});
+    };
+    const auto initial_count=check_grid?active_count(*run.session().traffic()):0;
+    if(check_grid)require(initial_count>1,"drag traffic must already be placed before the first countdown frame");
+    bool checked_go=false;
     std::vector<unsigned char> road_image;RacingLineTrack roads;
     const auto raw_road=load_race_route_track(root/"Tracks"/grid.course.name,road_image);
     require(raw_road.ok()&&parse_racing_line_image(road_image.data(),road_image.size(),{},roads),
@@ -51,6 +60,10 @@ int main(int argc,char** argv) {try {
         GamepadFrame pad;pad.pads[0].connected=true;
         require(run.simulate(pad,error),error);
         const auto& race=run.session();completed=true;
+        if(check_grid&&!checked_go&&race.timing().stage==RaceStage::racing) {
+            require(active_count(*race.traffic())==initial_count,"drag grid traffic was removed during countdown");
+            checked_go=true;
+        }
         if(traffic_enabled&&race.traffic()) {
             const auto& cars=race.traffic()->actors();
             for(std::size_t i=0;i<cars.size();++i)if(cars[i].active&&admitted_epochs[i]!=cars[i].activations) {
@@ -94,6 +107,7 @@ int main(int argc,char** argv) {try {
         if(completed)break;
     }
     require(completed,"not all rivals reached the finish");
+    require(!check_grid||checked_go,"drag traffic grid check never reached GO");
     if(traffic_enabled) {
         require(run.session().traffic()&&run.session().traffic()->spawns>0,"traffic regression spawned no cars");
         require(staged_traffic&&staged_motion,"native traffic must spawn and move before GO");

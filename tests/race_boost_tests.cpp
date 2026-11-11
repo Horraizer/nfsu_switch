@@ -239,6 +239,26 @@ int main(int argc,char** argv) { try {
                   std::abs(a[2].px-1191.3352F)<.001F && std::abs(a[2].py-654.3342F)<.001F,
                   "N2O uses original 64x64 SAT relative to gauge needle");
         }
+        VehicleUpgradeLevels turbo_only;turbo_only.induction=1;
+        VehicleSpec civic;
+        check(load_race_vehicle_spec(global,"CIVIC",turbo_only,civic,error),error);
+        check(!civic.nitrous.installed,"Civic turbo-only witness must have no NOS");
+        RaceHudAtlas civic_atlas;
+        check(load_race_hud_atlas(argv[1],civic_atlas,error,true,race_hud_uses_boost_atlas(civic)),error);
+        check(civic_atlas.boost_ready,"Civic turbo without NOS must load boost artwork");
+        RaceSession civic_race(course,civic);
+        check(civic_race.start(error),error);
+        for(unsigned width:{960U,1280U}) {
+            RaceHudFrame frame;
+            build_race_hud_frame(civic_race,civic_atlas,width,width*9/16,frame);
+            bool needle=false;
+            for(unsigned q=0;q<frame.quads;++q) {
+                const auto& v=frame.vertices[q*4];
+                if(std::abs(v.u*kRaceHudAtlasWidth-704.F)<.01F &&
+                   std::abs(v.v*civic_atlas.height-270.F)<.01F)needle=true;
+            }
+            check(needle,"turbo needle must be drawn for Civic without NOS");
+        }
         std::cout<<"Skyline capacity="<<after.nitrous.capacity_seconds<<" s count="<<after.nitrous.count
                  <<" rate="<<after.nitrous.rate<<" turbo max="<<*std::max_element(after.induction.begin(),after.induction.end())<<'\n';
     }

@@ -88,6 +88,8 @@ struct RaceRivalSetup {
     std::string name;
     std::string car_type{};
     unsigned ai_mode=1; // Original configuration736, independent of difficulty735.
+    int actor_id=-1; // Original config identity, independent of the grid slot.
+    std::int16_t start_road=-1;
 };
 struct RaceDriverWallContact {bool active=false,recent_strong=false;};
 
@@ -156,6 +158,7 @@ public:
                             const std::array<float,3>& low_slip,std::string& error,
                             unsigned player_grid = 1);
     bool set_traffic(const std::filesystem::path&,const std::vector<RaceTrafficSetup>&,std::string&,unsigned density=1,std::uint32_t* random=nullptr);
+    bool stage_drag_traffic(float spacing,float clearance,std::string& error);
     const RaceProps* props() const {return props_.get();}
     const VehiclePropContactFrame& prop_contacts() const {return prop_contacts_;}
     const RaceTraffic* traffic() const {return traffic_.get();}
@@ -237,6 +240,11 @@ public:
     const AiDriverForwardState& rival_driver(std::size_t i) const {return original_drivers_.at(i);}
     const std::string& rival_name(std::size_t i) const {return rival_setup_.at(i).name;}
     unsigned rival_ai_mode(std::size_t i) const {return rival_setup_.at(i).ai_mode;}
+    int rival_actor_id(std::size_t i) const {
+        const int authored=rival_setup_.at(i).actor_id;
+        return authored>=0?authored:100+int(i);
+    }
+    std::int16_t rival_start_road(std::size_t i) const {return rival_setup_.at(i).start_road;}
     std::uint64_t pair_impulses() const {return pair_impulses_;}
     // Last completed port pair-solver batch. Geometry/impulses are explicit
     // adapter outputs, not original contact-list strength or callback parity.

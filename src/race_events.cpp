@@ -3,6 +3,7 @@
 #include "nfsu/texture.h"
 
 #include <algorithm>
+#include <cstring>
 #include <exception>
 #include <fstream>
 #include <locale>
@@ -393,6 +394,18 @@ TrackInfoTable parse_track_info_table(
         decoded.number = read_s16(record + kTrackInfoNumberOffset);
         decoded.number_copy = read_s16(record + kTrackInfoNumberCopyOffset);
         decoded.mode_mask = read_u32(record + kTrackInfoModeMaskOffset);
+        // 435DCF selects a signed road ID by direction and grid position.
+        for(unsigned j=0;j<decoded.rival_start_roads.size();++j)
+            decoded.rival_start_roads[j]=read_s16(record+0xA8+2*j);
+        // 5991A0 uses the spacing; 59AA60 skips the exclusion for a flagged direction.
+        for(unsigned direction=0;direction<2;++direction) {
+            auto bits=read_u32(record+0xD4+4*direction);
+            std::memcpy(&decoded.traffic_start_spacing[direction],&bits,4);
+            if(!record[0xC8+direction]) {
+                bits=read_u32(record+0xCC+4*direction);
+                std::memcpy(&decoded.traffic_start_clearance[direction],&bits,4);
+            }
+        }
         for(unsigned j=0;j<decoded.traffic_pool.size();++j)
             decoded.traffic_pool[j]=static_cast<std::int8_t>(record[0xC0+j]);
 

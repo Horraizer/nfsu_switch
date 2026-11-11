@@ -214,7 +214,7 @@ bool load_race_drag_hud(const std::filesystem::path& root,const std::string& car
 void append_race_drag_hud(const RaceSession& session,const RaceHudAtlas& atlas,unsigned width,unsigned height,RaceHudFrame& frame) noexcept {
     const float scale=std::min(width/1280.F,height/720.F)*5.F/3.F;
     const float ox=float(width)*.5F,oy=float(height)*.5F;
-    const bool turbo=*std::max_element(session.spec().induction.begin(),session.spec().induction.end())>0;
+    const bool turbo=has_turbo(session.spec());
     const auto& nitrous=session.nitrous();
     const auto& car=session.car();const auto now=session.timing().now_ticks;
     if(frame.drag_gear!=car.gear) {

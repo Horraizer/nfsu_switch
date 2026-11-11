@@ -53,7 +53,7 @@ int main(int argc,char** argv){try{
     std::array<int,3> contexts{};std::array<const VehicleHull*,4> hulls{};
     for(const auto& a:grid.actors){
         if(a.config.role==Event0Role::opponent){const auto i=rivals.size();contexts[i]=a.config.selected_context;hulls[i]=&a.hull;
-            rivals.push_back({a.placement_spec,a.pose,a.hull,a.config.event_label,a.assets.car_type_name,a.config.ai_mode});}
+            rivals.push_back({a.placement_spec,a.pose,a.hull,a.config.event_label,a.assets.car_type_name,a.config.ai_mode,a.config.config_id});}
         else{human=&a;hulls[3]=&a.hull;}
     }
     need(human&&rivals.size()==3,"retail drag grid incomplete");

@@ -167,7 +167,7 @@ void verify_quick_race(const std::filesystem::path& root) {
                 const bool neon_expected=neon_part!=kNoCarPart&&actor.frame->parts.records.at(neon_part).upgrade_level!=0;
                 checked_neons+=unsigned(neon_expected);
                 check(bool(actor.neon)==neon_expected&&(!actor.neon||actor.neon->enabled),"native-selected quick neon prepared");
-                rivals.push_back({actor.placement_spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode});
+                rivals.push_back({actor.placement_spec,actor.pose,actor.hull,actor.config.event_label,actor.config.visual.car,actor.config.ai_mode,actor.config.config_id});
             }
             check(player&&run.set_intro_grid(player->pose,player->hull,rivals,contexts,error,player->config.final_grid),name+" runtime grid");
             grid.course={};

@@ -155,6 +155,8 @@ double race_hud_needle_rotation(double rpm, double max_rpm) noexcept;
 // Original4A13A0 chooses drag300..60 or ordinary30..219 before4A1460.
 float race_hud_turbo_rotation(float pressure,bool drag) noexcept;
 
+bool race_hud_uses_boost_atlas(const VehicleSpec& spec) noexcept;
+
 bool load_race_hud_atlas(const std::filesystem::path& root,
                          RaceHudAtlas& atlas, std::string& error, bool first_track_map = false,
                          bool boost = false, bool drift = false, unsigned map_track = 0,

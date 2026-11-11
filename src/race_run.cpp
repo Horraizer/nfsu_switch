@@ -163,6 +163,19 @@ bool RaceRun::read_metadata(const std::filesystem::path& front, const std::files
         laps_ = quick_race_ ? static_cast<std::int8_t>(quick_race_laps(*quick_race_)) :
             free_drive_ ? 0 : race.slot.laps;
         direction_ = race.slot.direction;
+        if(event_number_==9&&race_index_==0&&!quick_race_) {
+            traffic_grid_spacing_=race.track.traffic_start_spacing[unsigned(direction_)];
+            traffic_grid_clearance_=race.track.traffic_start_clearance[unsigned(direction_)];
+            if(!std::isfinite(traffic_grid_spacing_)||traffic_grid_spacing_<=0) {
+                error="authored drag traffic grid spacing unavailable";return false;
+            }
+        }
+        // 435D30 stores grid positions 3, 1, 2, 4 in each direction's table.
+        constexpr unsigned road_index_for_grid[]={1,2,0,3};
+        for(unsigned i=0;i<rivals_.size();++i) {
+            const unsigned grid=i+1+(i+1>=player_grid_);
+            rivals_[i].start_road=race.track.rival_start_roads[4*unsigned(direction_)+road_index_for_grid[grid-1]];
+        }
         lap_skip_ = free_drive_ ? 0 : race.track.lap_skip;
     }
     if (observer) observer->checkpoint("race metadata released");
@@ -323,9 +336,11 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
         if(!supported_race_selection(event_number_,race_index_,selection)||
            !load_drift_start_pose(root,course_,start,error,selection.region))return false;
     }
-    const auto started = session_->start(error,drift_start?&start:nullptr,countdown,cinematic);
+    if(!session_->start(error,drift_start?&start:nullptr,countdown,cinematic))return false;
+    if(traffic_grid_spacing_>0&&!session_->stage_drag_traffic(traffic_grid_spacing_,traffic_grid_clearance_,error))
+        return false;
     if (observer) observer->checkpoint("race session started");
-    return started;
+    return true;
 }
 bool RaceRun::apply(const TrackResidencyStep& step, std::string& error) {
     for (auto r : step.releases) { resident_.erase(r); ++releases_; }

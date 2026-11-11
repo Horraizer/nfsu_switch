@@ -349,6 +349,10 @@ void glyph_quad(RaceHudFrame& frame, const HudGlyph& letter, float x, float y,
          letter.width*scale,letter.height*scale,tint);
 }
 
+bool has_turbo(const VehicleSpec& spec) noexcept {
+    return std::any_of(spec.induction.begin(),spec.induction.end(),[](float value){return value>0.F;});
+}
+
 } // namespace
 
 RaceHudDial select_race_hud_dial(double max_rpm, double redline_rpm) noexcept {
@@ -379,6 +383,10 @@ double race_hud_needle_rotation(double rpm, double max_rpm) noexcept {
     if (max_rpm >= 10000.0) return 45.0 + 180.0*t;
     if (max_rpm >= 9000.0) return 50.0 + 160.0*t;
     return 44.0 + 171.0*t;
+}
+
+bool race_hud_uses_boost_atlas(const VehicleSpec& spec) noexcept {
+    return spec.nitrous.installed||has_turbo(spec);
 }
 
 bool load_race_hud_atlas(const std::filesystem::path& root,
@@ -729,7 +737,7 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
         frame.quads=0;frame.lap_first_quad=0;frame.atlas_height=atlas.height;
         append_race_drag_hud(session,atlas,width,height,frame);return;
     }
-    const bool turbo=*std::max_element(session.spec().induction.begin(),session.spec().induction.end())>0;
+    const bool turbo=has_turbo(session.spec());
     append_race_boost_hud(atlas,session.nitrous(),turbo,session.turbo_pressure(),width,height,frame,
                           session.spec().nitrous.count);
     if (!atlas.lap_ready || !width || !height) return;

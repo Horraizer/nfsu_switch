@@ -5,9 +5,10 @@ An experimental native Nintendo Switch port / engine reimplementation of
 The engine and deko3d renderer are rebuilt in C++; the Windows executable
 is not run on the console.
 
-**[LAN r7 prerelease](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-lan-r7)** |
+**[Current r42 prerelease](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r42)** |
+**[LAN r7 archive](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-lan-r7)** |
 **[Install, controls and build](docs/GETTING_STARTED.md)** |
-**[r7 changes and limits](docs/RELEASE_0_2_LAN_R7.md)** |
+**[r42 changes and limits](docs/RELEASE_0_2_R42.md)** |
 **[Historical 0.1 release](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.1)**
 
 ## Bring your own game
@@ -31,19 +32,20 @@ not supported inputs. See the installation guide for the required SD layout.
 - Experimental two-player router LAN room: create/join, race settings,
   all playable cars, shared Stock/Street/Pro/Extreme performance tier,
   and each player's appearance garage. See [LAN_MULTIPLAYER](docs/LAN_MULTIPLAYER.md).
-- r7 restores original vinyl replacement dialogs, Unique/hood restrictions,
-  and keeps the correct layer and color cursor when editing or cancelling.
+- Display settings include 540p/720p race rendering, motion blur, road
+  reflections, and MPH/km/h. Diagnostic file logging is opt-in.
+- r42 includes updated race endings, garage presentation, traffic impact
+  recovery, turbo HUD, and startup traffic staging for the first drag of
+  career tournament 9.
 
 These are implemented paths, not a claim that every original behavior is
 finished. Campaign startup/finish automation does not replace a full driven
 campaign. Handheld play is the priority; frame-time drops and remaining
 physics, AI, traffic, audio and interface differences need further work.
 
-**LAN r7 is a prerelease.** Recent garage changes passed PC checks and Switch
-packaging checks; this exact artifact still needs console garage acceptance
-and paired LAN timing/handling checks. It is not an independently reviewed
-or hardware-accepted stable release. The existing 0.1 release and the owner's
-local 0.2 build are unchanged.
+**r42 is a development prerelease.** This exact build passed desktop tests
+with retail data and Switch packaging checks. Console validation of the r42
+artifact and paired LAN handling is pending.
 
 ## Progress images
 
@@ -62,7 +64,7 @@ The [getting-started guide](docs/GETTING_STARTED.md) covers Switch packaging,
 PC tests and Netloader. The SDK build compiles shaders offline and embeds
 them in the NRO. A source build with another SDK needs its own hardware check.
 
-For issues, include the build tag `garage-flow-r7`, handheld/docked mode,
+For issues, include the build tag `drag-grid-r42`, handheld/docked mode,
 console model, event/course, reproduction steps and available logs or video.
 Do not attach retail data, disc images, executables, saves or credentials.
 

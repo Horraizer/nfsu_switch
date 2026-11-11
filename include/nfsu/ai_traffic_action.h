@@ -9,6 +9,9 @@ namespace nfsu {
 bool ai_traffic_spawn_point_allowed(const std::array<std::uint8_t,4>& flags,bool forward) noexcept;
 //599C40: callers supply a valid point index; leave ten points ahead.
 bool ai_traffic_drag_spawn_margin(unsigned point,unsigned count,bool forward) noexcept;
+// 599B20 / 442820 with the startup caller's zero reference progress.
+AiRoadCursor ai_traffic_drag_grid_point(const RacingLineTrack&,const TrackPathSpline&,
+                                      bool reverse,float target,bool forward) noexcept;
 //59B3E0/59B670/59B6A0: selector1..3 chooses the zone's min/max pair.
 //Absent zone or a nearby stopped car suppresses the draw, returning99999.
 bool ai_traffic_spawn_spacing(const TrackPathZone*,unsigned,bool,std::uint32_t&,float&) noexcept;

@@ -314,6 +314,23 @@ public:
             //458CC0 before new context decisions; current retail6B753C=10.
             // Without expiry the eighth consumed junction exhausts the cache.
             if(!ai_road_expire(events,raw_progress,race.course().route.spline.path_length,!race.course().route.point_to_point,!direction_,10,policies[i]))return false;
+            if(!frames&&i<rival_count_) {
+                const auto start_road=race.rival_start_road(i);
+                if(start_road>=0) {
+                    const auto* route=lines.find(start_road);
+                    if(!route||route->points.empty())return false;
+                    // 435D30 asks 442690 for the closest point on the authored
+                    // road with neither heading nor traffic permission tests.
+                    const auto distance=[&](const RoutePoint& p) {
+                        const float x=a.position[0]-p.position[0],y=a.position[1]-p.position[1];
+                        return x*x+y*y;
+                    };
+                    const auto point=std::min_element(route->points.begin(),route->points.end(),
+                        [&](const RoutePoint& x,const RoutePoint& y){return distance(x)<distance(y);});
+                    contexts[i].road={start_road,std::uint16_t(point-route->points.begin())};
+                    contexts[i].selected=true;
+                }
+            }
             bool human_drag_rebuild=!frames;
             bool human_bootstrap=false;
             if(drag_&&i==3) {
@@ -506,9 +523,8 @@ public:
                 if(!route||context.road.point>=route->points.size())return false;
                 const auto& road=route->points[context.road.point];auto& stored=recovery[i];
                 AiRecoveryInput recover;recover.tick=std::uint32_t(race.timing().now_ticks);
-                // Event0 setup assigns the ordered retail rival slots IDs 100..102.
                 const auto start_tick=timing.race_start_valid?std::uint32_t(timing.race_start_ticks):recover.tick;
-                recover.race_time_hold=ai_recovery_race_hold(recover.tick,start_tick,100+int(i),
+                recover.race_time_hold=ai_recovery_race_hold(recover.tick,start_tick,race.rival_actor_id(i),
                     int(track_number_),drag_);
                 recover.road=&road;
                 recover.supported=race.rival(i).car().published_support>=3;

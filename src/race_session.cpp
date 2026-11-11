@@ -39,6 +39,18 @@ bool RaceSession::set_traffic(const std::filesystem::path& root,const std::vecto
     props_=std::move(props);traffic_=std::move(next);return true;
 }
 
+bool RaceSession::stage_drag_traffic(float spacing,float clearance,std::string& error) {
+    if(!started_||!drag_||timing_.step) {error="drag traffic staging requires the start grid";return false;}
+    if(!traffic_)return true;
+    std::array<const VehicleState*,4> racers{{&car()}};
+    std::array<const RaceContactBox*,4> shapes{{&contact_box_}};
+    for(unsigned i=0;i<rivals_.size();++i) {
+        racers[i+1]=&rivals_[i]->car();
+        shapes[i+1]=&rivals_[i]->contact_box_;
+    }
+    return traffic_->stage_drag_grid(racers,shapes,spacing,clearance,timing_.now_ticks,error);
+}
+
 namespace {
 void u32(std::vector<std::uint8_t>& out, std::uint32_t value) {
     for (unsigned k = 0; k < 4; ++k) out.push_back(static_cast<std::uint8_t>(value >> (8*k)));
@@ -592,7 +604,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                 ghosts[i]=racers[i]&&timing_.racers.at(i).permanent_ghost;
             std::array<const RaceContactBox*,4> shapes{{&contact_box_}};
             for(unsigned i=0;i<rivals_.size();++i)shapes[i+1]=&rivals_[i]->contact_box_;
-            if(!traffic_->prepare_frame(racers,timing_.step,error,timing_.now_ticks,world_dt,ghosts,shapes)){started_=false;return false;}
+            if(!traffic_->prepare_frame(racers,timing_.step,error,timing_.now_ticks,world_dt,ghosts,shapes,held_grid)){started_=false;return false;}
             if(profile)profile->traffic_motion=(timer->now_us()-begin)/1000.0;
         }
     }
