@@ -1,8 +1,12 @@
 #pragma once
 #include "nfsu/vehicle_tuning.h"
+#include "nfsu/chase_camera.h"
 #include <filesystem>
 
 namespace nfsu {
+struct CarAssets;
+bool load_race_camera_table(const std::filesystem::path& global, const CarAssets& car,
+                            ChaseCameraTable& table, std::string& error);
 //4B5F79 event+148 ->78A40C;422523/6B7C20 -> driver+1FC.
 // Independent of the selected difficulty and of the event's drift AI scalar.
 bool race_rival_throttle_cap(unsigned selector,float& cap) noexcept;

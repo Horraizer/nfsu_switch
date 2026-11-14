@@ -340,20 +340,28 @@ std::vector<unsigned> CareerCatalog::quick_courses(QuickRaceMode mode)const {
     return courses;
 }
 bool CareerCatalog::load_free_drive(const std::filesystem::path& root,std::string& error) {
-    CareerCatalog next;if(!next.load(root,error))return false;
+    CareerCatalog next;
+    if(!next.load(root,error)||!next.enable_free_drive(root,error))return false;
+    *this=std::move(next);
+    return true;
+}
+bool CareerCatalog::enable_free_drive(const std::filesystem::path& root,std::string& error) {
+    if(!events_.ok()||events_.records.empty())return refuse(error,"free driving needs a loaded career catalog");
+    std::vector<CareerCar> starters;
+    std::vector<FreeDriveCourse> courses;
     std::vector<unsigned char> global,language;std::vector<RaceTableIssue> issues;
     if(!load_race_image(root/"Global/GLOBALB.BUN",global,issues)||
        !load_race_image(root/"Languages/English.bin",language,issues))return refuse(error,"free driving catalog inputs unavailable");
     const auto types=parse_car_type_table(global.data(),global.size());
     const auto tracks=parse_track_info_table(global.data(),global.size());
     if(!types.ok()||!tracks.ok())return refuse(error,"quick race car or track table invalid");
-    next.starters_.clear();CareerRatingBounds bounds;
+    CareerRatingBounds bounds;
     for(const auto& car:types.records)if(car.class_id==0)bounds.add(global.data()+car.offset+0x110);
     for(const auto& name:playable_car_names(types)) {
         CarAssets car;if(!resolve_car_assets(types,name,car,error))return false;
         CareerCar entry{name,car.brand_name,0,{}};
         if(!career_stock_ratings(global.data()+car.record_offset,bounds,entry.performance))return refuse(error,"free driving stock ratings unavailable");
-        next.starters_.push_back(std::move(entry));
+        starters.push_back(std::move(entry));
     }
     const auto label=[&](int track) {
         const auto key=bin_hash("TRACK_NAME_"+std::to_string(track));
@@ -366,20 +374,23 @@ bool CareerCatalog::load_free_drive(const std::filesystem::path& root,std::strin
         }
         return std::string{};
     };
-    for(const auto& e:next.events_.records)if(e.number>0&&e.number<=kCareerLastEvent) {
+    for(const auto& e:events_.records)if(e.number>0&&e.number<=kCareerLastEvent) {
         for(unsigned round=0;round<e.races.size();++round) {
             SupportedRaceSelection selection;if(!supported_race_selection(e.number,round,selection))continue;
             const auto& slot=selection.slot;
-            if(std::any_of(next.free_courses_.begin(),next.free_courses_.end(),[&](const auto& c){return c.track==slot.track&&c.direction==slot.direction;}))continue;
+            if(std::any_of(courses.begin(),courses.end(),[&](const auto& c){return c.track==slot.track&&c.direction==slot.direction;}))continue;
             auto name=label(slot.track);if(name.empty())return refuse(error,"free driving original track label absent");
             const auto* info=find_track_info(tracks,slot.track);
             if(!info)return refuse(error,"quick race track metadata absent");
-            next.free_courses_.push_back({e.number,round,slot.track,slot.direction,selection.type,std::move(name),info->mode_mask});
+            courses.push_back({e.number,round,slot.track,slot.direction,selection.type,std::move(name),info->mode_mask});
         }
     }
-    std::stable_sort(next.free_courses_.begin(),next.free_courses_.end(),[](const auto& a,const auto& b){return a.track!=b.track?a.track<b.track:a.direction<b.direction;});
-    if(next.free_courses_.empty()||next.starters_.empty())return refuse(error,"free driving selection is empty");
-    next.free_drive_=true;*this=std::move(next);error.clear();return true;
+    std::stable_sort(courses.begin(),courses.end(),[](const auto& a,const auto& b){return a.track!=b.track?a.track<b.track:a.direction<b.direction;});
+    if(courses.empty()||starters.empty())return refuse(error,"free driving selection is empty");
+    starters_=std::move(starters);
+    free_courses_=std::move(courses);
+    free_drive_=true;
+    error.clear();return true;
 }
 bool CareerCatalog::free_profile(const std::string& car,CareerProfile& p,std::string& error)const {
     if(!free_drive_||std::none_of(starters_.begin(),starters_.end(),[&](const auto& c){return c.name==car;}))return refuse(error,"free driving car unavailable");

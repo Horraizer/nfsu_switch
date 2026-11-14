@@ -397,18 +397,11 @@ Read at `0x00575A1C` with the level from levels `+0x04`. Entries at `+0x840`,
 | `+0x44` | `+0x128`, `+0x158` | added to wheels 0 and 1 (`0x00575A4A`, `0x00575A53`) |
 | `+0x48` | `+0x188`, `+0x1B8` | added to wheels 2 and 3 (`0x00575A5C`, `0x00575A67`) |
 
-All RECOVERED. The two strut blocks have the layout
-[`VEHICLE.md`](VEHICLE.md) gives, including the eighth float at block `+0x1C`
-that it leaves unnamed. That float is **unknown**: no reader of it was traced,
-and round 1 of this document was wrong to call it a copy of the bump limit at
-`+0x14` (review finding F1). The two are equal in 139 of this table's 210
-blocks and in 21 of the 35 records' stock blocks, and differ in the rest - the
-Golf's stock rear block at `+0x2A0` holds 0.15 at `+0x14` and 0.05 at `+0x1C`,
-and its level 3 rear block holds 0.11 and 0.05. The 240SX is one of the
-records where the two agree, which is why a fixture built from that car alone
-could not tell them apart; `nfsu_probe vehicle-tuning` now prints how many of
-each record's six blocks agree, and its total over the file, so a claim of
-that shape is checkable across every car with one command.
+The two strut blocks include a physical bump limit at `+0x14` and a
+wheel-display compression limit at `+0x1C`. Original 478B20 reads the latter
+after calculating the physical travel. The Golf's stock rear block is one
+example where the display limit is lower. `nfsu_probe vehicle-tuning` prints
+how many of each record's six blocks have matching limits.
 
 The spring rates never fall with the level, and rise strictly in all 20
 racers; every traffic entry is 100 kN/m at all three levels, so the round 1
@@ -651,7 +644,7 @@ document copies no digest it prints.
 | applying the items alone | the mass scale starting from 1.0, the drive-split override, and the three item curves in their order with curve C also landing in `+0x334` |
 | the level gate | 0 to 3 accepted, -1, 4 and 7 refused with the output untouched, a short or null record refused, and a malformed table refused by `apply` with the decoder's own issue |
 | the derived gear count | `test_derived_gear_rule` pins the recovered rule over nine cases, including a negative ratio and a NaN, which the equality stop counts, and a zero before a positive ratio, which ends the walk, and fails if a "greater than zero" reading would give the same answers; `test_gear_count_rule` drives synthetic one- to six-speed entries end to end |
-| strut `+0x1C` | `test_strut_unknown_1c` gives every block a `+0x1C` different from its bump limit and requires the decoder, the round trip, the encoder's byte runs and the apply path to carry it on its own, at every level |
+| strut `+0x1C` | `test_strut_visual_limit` verifies that decode, encode, tuning application and runtime handling carry the visual limit independently from the bump limit at every level |
 | the engine tables' ratios | `test_engine_table_ratios` holds the 240SX figures this document used to quote: the three levels as fractions of its stock torque curve, the two tables' equal torque deltas, the engine braking deltas not following that fraction, and table B alone raising the rev limits |
 
 ## What wiring it into the model would change

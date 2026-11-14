@@ -126,7 +126,7 @@ IntroResult play_original_intro(const std::string& root,const IntroPoll& poll,co
 IntroResult play_underground_prologue(const std::string& root,const IntroPoll& poll,const IntroPresent& present) {
     // Original MU_UG_NewCareerFMV replaces the authored placeholder "carsel"
     // with this event0 string. It is separate from the boot e3_title movie.
-    constexpr const char* movie[]={"01_DAY.mad"};
+    constexpr const char* movie[]={kUndergroundPrologueMovie};
     return play_sequence(root,movie,1,poll,present);
 }
 IntroResult play_underground_epilogue(const std::string& root,const IntroPoll& poll,const IntroPresent& present) {

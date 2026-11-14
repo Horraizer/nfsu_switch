@@ -139,6 +139,10 @@ underlying accumulator is integer-valued.
 Relevant original functions are `0x436230` (trigger/update), `0x4361B0`
 (accrual), `0x436940` (event tick) and `0x43E310` (drift producer tick).
 
+Once the racer is marked finished, `0x43E310` skips the drift producers.
+The finish handler calls `0x436B70` to bank qualified chains and cancel
+unqualified chains, then calls `0x436940` with zero elapsed time.
+
 ## 5. Combo multiplier
 
 Function `0x43E790` controls the displayed multiplier, up to X5. It is not

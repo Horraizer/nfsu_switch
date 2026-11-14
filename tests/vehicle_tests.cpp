@@ -355,10 +355,10 @@ void test_record_source() {
     }
     check(bytes.size() == nfsu::kVehicle240sxRecordBytes,
           "the built-in table reproduces " + std::to_string(bytes.size()) + " record bytes");
-    check(runs == 22 && first == 0x110 && last == 0x39B,
+    check(runs == 20 && first == 0x110 && last == 0x39B,
           "in " + std::to_string(runs) + " runs from byte " + std::to_string(first) +
               " to byte " + std::to_string(last) +
-              ", expected 22 runs from 272 (+0x110) to 923 (+0x39B)");
+              ", expected 20 runs from 272 (+0x110) to 923 (+0x39B)");
     const std::string hash = nfsu::sha256_hex(nfsu::sha256(bytes.data(), bytes.size()));
     check(hash == nfsu::kVehicle240sxRecordBytesSha256,
           "the built-in 240SX table rebuilds the retail record's bytes: " + hash);

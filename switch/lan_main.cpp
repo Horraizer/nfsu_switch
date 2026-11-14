@@ -118,6 +118,201 @@ LanRide chosen_ride(const std::string& car,const std::map<std::string,CareerRide
     if(installed!=rides.end())result.installed=installed->second.installed;
     return result;
 }
+using LocalPads=std::array<PadState,2>;
+u64 local_buttons(const PadState& pad,u64 buttons) {
+    const auto style=padGetStyleSet(&pad);
+    const bool left=style==HidNpadStyleTag_NpadJoyLeft;
+    if(!left&&style!=HidNpadStyleTag_NpadJoyRight)return buttons;
+    const auto has=[buttons](u64 bit){return (buttons&bit)!=0;};
+    u64 out=0;
+    if(has(left?HidNpadButton_Down:HidNpadButton_X))out|=HidNpadButton_A;
+    if(has(left?HidNpadButton_Left:HidNpadButton_A))out|=HidNpadButton_B;
+    if(has(left?HidNpadButton_Right:HidNpadButton_Y))out|=HidNpadButton_X;
+    if(has(left?HidNpadButton_Up:HidNpadButton_B))out|=HidNpadButton_Y;
+    if(has(HidNpadButton_AnySR))out|=HidNpadButton_ZR;
+    if(has(HidNpadButton_AnySL))out|=HidNpadButton_ZL;
+    if(has(HidNpadButton_Plus|HidNpadButton_Minus))out|=HidNpadButton_Plus;
+    if(has(HidNpadButton_StickL|HidNpadButton_StickR))out|=HidNpadButton_StickR;
+    const u64 up=left?HidNpadButton_StickLUp:HidNpadButton_StickRUp;
+    const u64 down=left?HidNpadButton_StickLDown:HidNpadButton_StickRDown;
+    const u64 right=left?HidNpadButton_StickLRight:HidNpadButton_StickRRight;
+    const u64 leftward=left?HidNpadButton_StickLLeft:HidNpadButton_StickRLeft;
+    if(has(left?right:leftward))out|=HidNpadButton_Up;
+    if(has(left?leftward:right))out|=HidNpadButton_Down;
+    if(has(left?down:up))out|=HidNpadButton_Right;
+    if(has(left?up:down))out|=HidNpadButton_Left;
+    return out;
+}
+GamepadState sample_local(const PadState& pad) {
+    auto input=sample(pad);
+    input.buttons=gamepad_buttons_from_npad(local_buttons(pad,padGetButtons(&pad)));
+    const auto style=padGetStyleSet(&pad);
+    if(style==HidNpadStyleTag_NpadJoyLeft||style==HidNpadStyleTag_NpadJoyRight) {
+        const auto steer=style==HidNpadStyleTag_NpadJoyLeft?
+            std::clamp(-input.axes[1],kAxisMin,kAxisMax):input.axes[3];
+        // Navigation uses folded stick directions. In the race preserve
+        // the stick's analogue range and keep the absent right stick neutral.
+        input.buttons&=~(gamepad_button_bit(GamepadButton::dpad_left)|gamepad_button_bit(GamepadButton::dpad_right)|
+                          gamepad_button_bit(GamepadButton::dpad_up)|gamepad_button_bit(GamepadButton::dpad_down));
+        input.axes[0]=steer;
+        input.axes[1]=input.axes[2]=input.axes[3]=0;
+    }
+    return input;
+}
+bool choose_local_controllers(LocalPads& pads) {
+    padConfigureInput(2,HidNpadStyleSet_NpadStandard);
+    HidLaControllerSupportArg settings{};
+    hidLaCreateControllerSupportArg(&settings);
+    settings.hdr.player_count_min=2;
+    settings.hdr.player_count_max=2;
+    HidLaControllerSupportResultInfo result{};
+    if(R_FAILED(hidLaShowControllerSupport(&result,&settings))||result.player_count!=2)return false;
+    padInitialize(&pads[0],HidNpadIdType_No1);
+    padInitialize(&pads[1],HidNpadIdType_No2);
+    for(auto& pad:pads)padUpdate(&pad);
+    return true;
+}
+
+bool local_lobby(const std::string& root,LocalPads& pads,LanScreen& screen,
+                 const std::map<std::string,CareerRide>& rides,LanRaceOptions& options,
+                 FreeDriveCourse& course,std::string& error) {
+    CareerCatalog catalog;
+    std::vector<std::string> cars;
+    if(!catalog.load_free_drive(root,error)||!load_lan_car_names(root,cars,error))return false;
+    const std::array<QuickRaceMode,2> modes{{QuickRaceMode::circuit,QuickRaceMode::sprint}};
+    std::array<std::vector<unsigned>,2> courses{{catalog.quick_courses(modes[0]),catalog.quick_courses(modes[1])}};
+    require(!courses[0].empty()&&!courses[1].empty()&&!cars.empty(),"Quick Race roster unavailable");
+    unsigned row=0,mode=0,track=0,laps=2,tier=0;
+    std::array<unsigned,2> car_indices{{0,unsigned(cars.size()>1)}};
+    const auto label=[&](unsigned i,const std::string& line){return std::string(row==i?"> ":"  ")+line;};
+    const auto cycle=[](unsigned value,unsigned count,int direction){
+        return (value+(direction>0?1:count-1))%count;
+    };
+    while(appletMainLoop()) {
+        for(auto& pad:pads)padUpdate(&pad);
+        if(!padIsConnected(&pads[0])||!padIsConnected(&pads[1])) {
+            screen.close();
+            if(!choose_local_controllers(pads))throw RoomExit{};
+            continue;
+        }
+        const auto buttons=local_buttons(pads[0],padGetButtonsDown(&pads[0]));
+        if(buttons&HidNpadButton_B)throw RoomExit{};
+        if((buttons&HidNpadButton_Plus)||(row==6&&(buttons&HidNpadButton_A))) {
+            options.laps=std::uint8_t(mode==0?laps:1);
+            options.tier=std::uint8_t(tier);
+            for(unsigned i=0;i<2;++i)options.rides[i]=chosen_ride(cars[car_indices[i]],rides);
+            course=catalog.free_courses().at(courses[mode].at(track));
+            return true;
+        }
+        if(buttons&HidNpadButton_Up)row=cycle(row,7,-1);
+        if(buttons&HidNpadButton_Down)row=cycle(row,7,1);
+        const auto adjust=[&](unsigned player){
+            const auto down=local_buttons(pads[player],padGetButtonsDown(&pads[player]));
+            return (down&HidNpadButton_Right)?1:(down&HidNpadButton_Left)?-1:0;
+        };
+        const int change=adjust(0);
+        if(change)switch(row) {
+        case 0: mode=cycle(mode,2,change);track=0;break;
+        case 1: track=cycle(track,unsigned(courses[mode].size()),change);break;
+        case 2: if(mode==0)laps=1+cycle(laps-1,6,change);break;
+        case 3: tier=cycle(tier,4,change);break;
+        case 4: car_indices[0]=cycle(car_indices[0],unsigned(cars.size()),change);break;
+        case 5: car_indices[1]=cycle(car_indices[1],unsigned(cars.size()),change);break;
+        default:break;
+        }
+        if(const int change_p2=adjust(1))
+            car_indices[1]=cycle(car_indices[1],unsigned(cars.size()),change_p2);
+        const auto& selected=catalog.free_courses().at(courses[mode].at(track));
+        screen.show({"QUICK RACE / SPLIT SCREEN","",
+            label(0,quick_race_mode_name(modes[mode])),label(1,selected.name),
+            label(2,"Laps: "+std::to_string(mode==0?laps:1)),
+            label(3,std::string("Performance: ")+kLanPerformance[tier]),
+            label(4,"Player 1: "+cars[car_indices[0]]),label(5,"Player 2: "+cars[car_indices[1]]),
+            label(6,"Start race"),"","Left/Right: Change   +: Start   B: Back"});
+    }
+    throw RoomExit{};
+}
+
+void run_local(const std::string& root,bool metric_speed,const std::map<std::string,CareerRide>& rides) {
+    LanScreen screen;
+    struct RestorePads {~RestorePads(){padConfigureInput(1,HidNpadStyleSet_NpadStandard);}} restore;
+    try {
+        LocalPads pads{};
+        if(!choose_local_controllers(pads))return;
+        LanRaceOptions options;FreeDriveCourse course;
+        std::string error;
+        require(local_lobby(root,pads,screen,rides,options,course,error),error);
+        screen.show({"QUICK RACE / SPLIT SCREEN","","Loading "+course.name+"..."});
+        LanRaceWorld world;
+        require(world.load_local(root,course.event,course.round,options,error),error);
+        std::array<LanRaceView,2> views;
+        for(unsigned i=0;i<views.size();++i) {
+            require(views[i].open(world.session(),world.cameras(i),i,error,&world.host_hull()),error);
+            require(views[i].apply(world.snapshot(),1./60,error),error);
+        }
+        LanScene scene;RaceGpuFrame frame;RaceHudFrame hud;
+        require(scene.load_local(root,course.event,course.round,options,world.models(),error),error);
+        require(scene.split_frame(world.session(),views[0],0,frame,hud,error,metric_speed),error);
+        screen.close();
+        DekoRenderer renderer;
+        require(renderer.open_split(frame.commands,scene.atlas(),scene.draw_capacity(),error),error);
+
+        audio::RaceAudioService sound;
+        std::string audio_note;
+        const auto levels=lan_performance_levels(options.tier);
+        const auto& induction=world.session().rival(0).spec().induction;
+        const std::vector<audio::RaceRemoteEngineBinding> other{{world.models()[1],levels.engine_a,
+            levels.induction,std::any_of(induction.begin(),induction.end(),[](float value){return value>0;})}};
+        const auto audio_core=svcGetCurrentProcessorNumber()==2?1:2;
+        sound.start(root,audio_note,{},[audio_core]{
+            return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),audio_core,1U<<audio_core))&&
+                R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(),0x30));
+        },true,world.models()[0],levels.engine_a,levels.nitrous,levels.tyres,other,levels.induction,0,0);
+
+        std::array<bool,2> next_camera{};
+        std::array<GamepadFrame,2> input{};
+        auto last=micros();std::uint64_t debt=0;
+        const DekoRenderer::SplitViewSource render_view=[&](unsigned player,const RecordedCommands*& commands,
+                                                           const RaceHudFrame*& view_hud,std::string& frame_error){
+            if(!scene.split_frame(world.session(),views[player],player,frame,hud,frame_error,metric_speed))return false;
+            commands=&frame.commands;view_hud=&hud;return true;
+        };
+        while(appletMainLoop()) {
+            for(auto& pad:pads)padUpdate(&pad);
+            const auto buttons=local_buttons(pads[0],padGetButtonsDown(&pads[0]))|
+                local_buttons(pads[1],padGetButtonsDown(&pads[1]));
+            if(buttons&HidNpadButton_Plus)break;
+            if(!padIsConnected(&pads[0])||!padIsConnected(&pads[1])) {
+                sound.set_suspended(true);
+                if(!choose_local_controllers(pads))break;
+                sound.set_suspended(false);
+                last=micros();debt=0;continue;
+            }
+            const auto now=micros();
+            debt+=std::min<std::uint64_t>(now-last,133333)*60;
+            const double dt=std::clamp(double(now-last)*1e-6,.001,.1);
+            last=now;
+            for(unsigned i=0;i<pads.size();++i) {
+                input[i].pads[0]=sample_local(pads[i]);
+                next_camera[i]=(local_buttons(pads[i],padGetButtonsDown(&pads[i]))&HidNpadButton_X)!=0;
+            }
+            while(debt>=1000000) {
+                debt-=1000000;
+                if(world.session().timing().outcome!=RaceOutcome::running)continue;
+                require(world.advance(input,error),error);
+                sound.on_tick(audio::race_audio_snapshot(world.session()));
+            }
+            const auto state=world.snapshot();
+            for(unsigned i=0;i<views.size();++i)
+                require(views[i].apply(state,dt,error,(input[i].pads[0].buttons&gamepad_button_bit(GamepadButton::stick_right))!=0,next_camera[i]),error);
+            require(renderer.present_split(render_view,error),error);
+        }
+        sound.stop();
+        require(renderer.close(error),error);
+    } catch(const RoomExit&) {
+        return;
+    }
+}
 void room_lobby(PadState& pad,LanScreen& screen,LanLink& link,bool host,
                 const std::vector<std::string>& cars,const std::map<std::string,CareerRide>& rides,
                 const LanGarageEditor& edit){
@@ -325,6 +520,22 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
 void run_switch_lan(const std::string& root,PadState& pad,bool write_logs,
                     const std::map<std::string,CareerRide>& rides,const LanGarageEditor& edit){
     run_lan(root,pad,false,false,{},write_logs,rides,edit);
+}
+
+void run_switch_multiplayer(const std::string& root,PadState& pad,bool write_logs,bool metric_speed,
+                            const std::map<std::string,CareerRide>& rides,const LanGarageEditor& edit) {
+    LanScreen screen;
+    while(appletMainLoop()) {
+        padUpdate(&pad);const auto buttons=padGetButtonsDown(&pad);
+        if(buttons&(HidNpadButton_B|HidNpadButton_Plus))return;
+        if(buttons&HidNpadButton_A) {
+            screen.close();run_local(root,metric_speed,rides);return;
+        }
+        if(buttons&HidNpadButton_X) {
+            screen.close();run_switch_lan(root,pad,write_logs,rides,edit);return;
+        }
+        screen.show({"MULTIPLAYER","","A: Quick Race / Split Screen","X: LAN","B: Back"});
+    }
 }
 
 #ifdef NFSU_LAN_STANDALONE

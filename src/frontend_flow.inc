@@ -30,22 +30,42 @@ void FrontendArt::decode_startup_splash(const std::vector<unsigned char>& front,
         const auto& script=art.scripts.at(object.id);
         post_state(object,script.data(),script.size(),"Init");
         if(object.name=="LS_Splash_PC")p.splash_picture=std::move(object);
-        else if(object.name=="mouse_click")p.splash_prompt=std::move(object);
+        else if(object.name=="mouse_click") {
+            p.splash_prompt=std::move(object);
+            p.splash_prompt_script=script;
+        }
     }
     if(p.splash_picture.type!=1||p.splash_prompt.type!=2||
        !texture(front,bin_hash("LS_SPLASH_PC"),p.startup_splash,error))
         throw std::runtime_error("original startup splash artwork absent");
 }
-void FrontendArt::draw_startup_splash(ScreenImage image)const {
+unsigned FrontendArt::startup_prompt_alpha(unsigned tick)const {
+    const auto& p=*impl_;
+    auto prompt=p.splash_prompt;
+    constexpr unsigned appear_duration=4800;
+    const auto& script=p.splash_prompt_script;
+    if(tick<appear_duration)
+        post_state(prompt,script.data(),script.size(),"appear",tick);
+    else
+        post_state(prompt,script.data(),script.size(),"pulse",tick==~0U?0U:tick-appear_duration);
+    return prompt.color[3];
+}
+
+void FrontendArt::draw_startup_splash(ScreenImage image,unsigned tick)const {
     const auto& p=*impl_;
     fill_screen_rect(image,0,0,image.width,image.height,{0,0,0,255});
     const auto& picture=p.splash_picture;
     quad(Canvas{image},p.startup_splash,combine({},picture,false),
         -picture.w/2,-picture.h/2,picture.w,picture.h,picture.uv,picture.color);
-    const auto& prompt=p.splash_prompt;
-    p.text(Canvas{image},prompt,combine({},prompt,true),"Press A or + to continue",prompt.color,0);
+    auto prompt=p.splash_prompt;
+    prompt.color[3]=startup_prompt_alpha(tick);
+    if(prompt.color[3])
+        p.text(Canvas{image},prompt,combine({},prompt,true),"Press A or + to continue",prompt.color,0);
 }
-void FrontendArt::release_startup_splash() {impl_->startup_splash={};}
+void FrontendArt::release_startup_splash() {
+    impl_->startup_splash={};
+    impl_->splash_prompt_script={};
+}
 
 bool FrontendArt::load_profile_pages(const std::filesystem::path& root,std::string& error) {
     try {

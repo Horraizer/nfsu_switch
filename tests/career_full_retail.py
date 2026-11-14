@@ -8,7 +8,9 @@ from world_body_trace import jdlz,chunks
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     for key in ('root','app','work'):ap.add_argument('--'+key,type=Path,required=True)
-    ap.add_argument('--finish-sweep',action='store_true')
+    mode=ap.add_mutually_exclusive_group()
+    mode.add_argument('--finish-sweep',action='store_true')
+    mode.add_argument('--critical-finish',action='store_true')
     a=ap.parse_args();a.work.mkdir(parents=True,exist_ok=True)
     out=Path(tempfile.mkdtemp(prefix='career-full-',dir=a.work))
     front=jdlz((a.root/'FrontEnd/FrontB.lzc').read_bytes())
@@ -26,15 +28,25 @@ def main():
     manifest=subprocess.run([str(a.app.resolve()),str(a.root),'--sweep-manifest'],
         check=True,capture_output=True,text=True,timeout=30).stdout
     assert [tuple(map(int,line.split())) for line in manifest.splitlines()]==[(0,0)]+sorted(stages)
+    finish=a.finish_sweep or a.critical_finish
     def run(stage,large_start=False):
         event,round_index=stage;env=os.environ.copy()
         env.update(NFSU_CAREER_TEST_ROUND=str(round_index),NFSU_CAREER_SCENE_CHECK='1',NFSU_CAREER_START_SCENE_CHECK='1',NFSU_CAREER_TEST_CAR='CIVIC',NFSU_CAREER_TEST_DIFFICULTY='0')
         env.update(NFSU_CAREER_SHADOW_SILHOUETTE='1')
         env.pop('NFSU_CAREER_TEST_LEVELS',None);env.pop('NFSU_CAREER_TEST_START_SCENE',None)
-        if a.finish_sweep:
+        for key in ('NFSU_CAREER_FINISH_SWEEP','NFSU_CAREER_FINISH_SCENE','NFSU_CAREER_UNDERGROUND_ENTRY'):
+            env.pop(key,None)
+        if finish:
             env.update(NFSU_CAREER_FINISH_SWEEP='1',NFSU_CAREER_TEST_DIFFICULTY='1')
             if event==0:
                 env['NFSU_CAREER_TEST_CAR']='INTEGRA';env.pop('NFSU_CAREER_START_SCENE_CHECK')
+        entry_check=a.critical_finish and event==0
+        if entry_check:
+            destination=os.path.relpath(out/'underground-entry',Path.cwd())
+            assert destination.isascii()
+            env['NFSU_CAREER_UNDERGROUND_ENTRY']=destination
+        if a.critical_finish and event in (2,6):
+            env['NFSU_CAREER_FINISH_SCENE']='1'
         if large_start:env.update(NFSU_CAREER_TEST_LEVELS='weight=0,suspension=0,engine-a=1,induction=0,nitrous=0,engine-b=0,gearbox=1,tyres=1,grip=0,aero-a=1,aero-b=1',NFSU_CAREER_TEST_START_SCENE='2318',NFSU_CAREER_TEST_DIFFICULTY='1')
         command=[str(a.app.resolve()),str(a.root),str(event),'360']
         try:
@@ -43,18 +55,34 @@ def main():
         except subprocess.TimeoutExpired as e:data=e.stdout or b'';code=None
         log=out/('event-'+str(event)+'-round-'+str(round_index)+('-large-start' if large_start else '')+'.log');log.write_bytes(data)
         text=data.decode('utf-8',errors='replace')
-        marker='PASS career finish probe' if a.finish_sweep else 'PASS career'
+        marker='PASS career finish probe' if finish else 'PASS career'
         good=code==0 and marker in text and not any(v in text for v in ('FAIL','ERROR','error:'))
+        if entry_check:good=good and 'PASS Underground PC entry and UG0 GO+2' in text
         row=dict(event=event,round=round_index,large_start=large_start,command=command,exit=code,passed=good,log=log.name,sha256=hashlib.sha256(data).hexdigest())
         print('PASS' if good else 'FAIL','event',event,'round',round_index,flush=True)
         if not good:print(text[-2000:].encode('ascii',errors='backslashreplace').decode('ascii'),flush=True)
         return row
-    if a.finish_sweep:stages=[(0,0)]+stages
+    if a.critical_finish:
+        # Intro, first sprint, all rounds of the first Circuit and Drag tournaments.
+        stages=[(0,0),(2,0)]+[stage for stage in stages if stage[0] in (6,9)]
+    elif a.finish_sweep:stages=[(0,0)]+stages
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:rows=list(pool.map(run,stages))
-    if not a.finish_sweep:rows.append(run((8,0),True))
+    if not finish:rows.append(run((8,0),True))
+    if a.critical_finish:
+        save_path=out/'saves'
+        save_path.mkdir()
+        # The native file-system interface takes ASCII paths.
+        destination=os.path.relpath(save_path,Path.cwd())
+        assert destination.isascii()
+        saved=subprocess.run([str(a.app.resolve()),str(a.root),'--finish-save-sweep',destination],
+            capture_output=True,text=True,timeout=90)
+        (out/'finish-save.log').write_text(saved.stdout+saved.stderr,encoding='ascii',errors='backslashreplace')
+        print(saved.stdout+saved.stderr,end='',flush=True)
+        assert saved.returncode==0 and 'PASS loss reloads tournament round two' in saved.stdout
+        assert f'PASS career finish save cases={len(manifest.splitlines())}' in saved.stdout
     (out/'results.json').write_text(json.dumps(rows,indent=2)+'\n',encoding='ascii')
     passed=all(r['passed'] for r in rows)
-    print('PASS' if passed else 'FAIL','full career finish probe' if a.finish_sweep else 'full career production stages',
+    print('PASS' if passed else 'FAIL','full career finish probe' if finish else 'full career production stages',
         len(rows),'failures',sum(not r['passed'] for r in rows),flush=True)
     return 0 if passed else 1
 if __name__=='__main__':raise SystemExit(main())

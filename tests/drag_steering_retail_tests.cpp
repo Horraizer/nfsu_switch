@@ -62,6 +62,8 @@ int main(int argc,char** argv){try{
     need(run.set_intro_grid(human->pose,human->hull,rivals,contexts,error),error);
     TrackSlice track;need(load_track_slice(posix_file_system(),root,track,error,nullptr,nullptr,event,false,round),error);
     need(run.start(root,track,error),error);
+    for(unsigned i=0;i<3;++i)
+        need(run.session().rival(i).physical_selector()==1,"drag rivals use selector1 at the start");
     IntroAiPlanner planner;
     need(planner.load(root,contexts,hulls,true,unsigned(grid.setup->race.track),grid.setup->race.direction,true),"drag planner initialization failed");
     RaceRivalPlans plans;need(planner.plan(run.session(),plans,1),"drag planner refused real grid");
@@ -157,6 +159,7 @@ int main(int argc,char** argv){try{
         timing.go_ticks=timing.race_start_ticks=timing.now_ticks;
         GamepadFrame pad;pad.pads[0].connected=true;pad.pads[0].axes[0]=side?32767:-32767;
         need(moving.simulate(pad,error),error);
+        for(unsigned i=0;i<3;++i)need(session.rival(i).physical_selector()==1,"drag rivals retain selector1 after GO");
         angles[side]=static_cast<std::int16_t>(moving.session().physics_telemetry()[0].model.steering_word);
         std::cout<<"DRAG_STEERING side="<<side<<" angle="<<angles[side]<<std::endl;
         need(moving.commit(error),error);

@@ -1450,17 +1450,99 @@ void test_native_race_camera() {
         check(camera.set_pov(int(row[1])),"native cycle input supported");
         camera.next_pov(row[0]!=0);check(camera.pov()==int(row[2]),"original42E020 ordinary/drift camera cycle");
     }
-    for(const auto& row:kNativeRaceProjection) {
+    const auto check_projection=[](const auto& rows, nfsu::ChaseFovMode mode,
+                                   const char* label) {
+      for(const auto& row:rows) {
         nfsu::ChaseCameraView view;view.fov=std::uint16_t(row[0]);
         nfsu::OrbitCamera camera;std::string error;nfsu::CameraFrame frame;
         float fx,fy;std::memcpy(&fx,&row[3],4);std::memcpy(&fy,&row[4],4);
-        check(nfsu::drive_render_camera(view,nfsu::ChaseFovMode::retail,row[1],row[2],camera,error) &&
+        check(nfsu::drive_render_camera(view,mode,row[1],row[2],camera,error) &&
               nfsu::make_camera_frame(camera,row[1],row[2],frame,error) &&
               near(frame.focal_x,fx,2e-6) && near(frame.focal_y,-double(fy),2e-6),
-              "original40DD00 primary race projection focal scales");
+              label);
+      }
+    };
+    check_projection(kNativeRaceProjection,nfsu::ChaseFovMode::retail,
+                     "original 40DD00 primary race projection");
+    // The PC hook supplies the vertical focal. Its independent horizontal
+    // operand stretches the live picture, especially when the camera cuts.
+    const auto check_live_projection=[](unsigned fov,unsigned width,unsigned height,double expected_y) {
+        nfsu::ChaseCameraView view;view.fov=std::uint16_t(fov);
+        nfsu::OrbitCamera camera;std::string error;nfsu::CameraFrame frame;
+        check(nfsu::drive_render_camera(view,nfsu::ChaseFovMode::retail_widescreen,width,height,camera,error) &&
+              nfsu::make_camera_frame(camera,width,height,frame,error) &&
+              (expected_y==0.0 || near(frame.focal_y,expected_y,2e-6)) &&
+              near(frame.focal_x*width,frame.focal_y*height,2e-6),
+              "live race projection preserves vertical framing and square pixels");
+    };
+    for(const auto& row:kNativeRaceWidescreenProjection) {
+        float fy;std::memcpy(&fy,&row[4],4);
+        check_live_projection(row[0],row[1],row[2],-double(fy));
+    }
+    // 20 degrees is the first roadside crash shot, and the alternate shot
+    // narrows the lens. Verify both at each supported driving resolution.
+    for(const unsigned fov:{3640U,2229U}) {
+        check_live_projection(fov,1280,720,0.0);
+        check_live_projection(fov,960,540,0.0);
     }
 }
 
+void test_native_race_chase() {
+    nfsu::ChaseCamera chase, control;
+    nfsu::ChaseCameraOpenWorld world;
+    nfsu::ChaseCameraSubject subject;
+    nfsu::ChaseCameraView view, reference;
+    chase.use_retail_race_mover();
+    control.use_retail_race_mover();
+    check(chase.set_pov(0) && chase.reset(subject,world,view) && chase.set_pov(1),
+          "race mover starts a far-to-near transition");
+    std::size_t sample=0;
+    for (unsigned frame=0;frame<=kNativeRaceEyeResponse[std::size(kNativeRaceEyeResponse)-1][0];++frame) {
+        check(chase.update(subject,1./60.,world,view),"race chase update");
+        if (frame!=kNativeRaceEyeResponse[sample][0]) continue;
+        float expected;
+        std::memcpy(&expected,&kNativeRaceEyeResponse[sample][1],sizeof(expected));
+        check(near(view.eye.x,expected,2e-5) && view.pov==1 && near(view.forward.x,1,1e-9),
+              "593D40 native eye position during stationary POV transition");
+        ++sample;
+    }
+
+    nfsu::ChaseCamera accelerating;
+    nfsu::ChaseCameraSubject moving;
+    accelerating.use_retail_race_mover();
+    moving.velocity = {20, 0, 0};
+    moving.centre_of_mass = {.2, 0, .26};
+    check(accelerating.set_pov(1) && accelerating.reset(moving, world, view),
+          "native acceleration test starts at the near chase anchor");
+    std::size_t step_sample = 0;
+    for (unsigned frame = 0; frame < 180; ++frame) {
+        moving.origin.x = (frame / 60.) * 20.;
+        moving.centre_of_mass.x = moving.origin.x + .2;
+        moving.acceleration.x = frame >= 20 ? 4. : 0.;
+        check(accelerating.update(moving, 1. / 60., world, view), "accelerating race chase update");
+        const auto& expected = kNativeRaceAcceleration[step_sample];
+        if (frame != expected[0]) continue;
+        float x;
+        std::memcpy(&x, &expected[1], sizeof(x));
+        check(near(view.eye.x, x, 2e-5), "48BCB0 native eye position across acceleration step");
+        ++step_sample;
+    }
+
+    check(chase.set_pov(2) && chase.update(subject,1./60.,world,view) &&
+          view.fov==16384 && view.pov==2 && view.eye.x>0,
+          "bumper cut snaps to the forward body anchor");
+    check(chase.set_pov(0) && chase.update(subject,1./60.,world,view) &&
+          view.fov==13020 && view.pov==0 && view.eye.x<-5,
+          "return from bumper snaps to the chase anchor");
+    check(control.set_pov(0) && control.reset(subject,world,reference),
+          "rear view control starts from the same anchor");
+    check(chase.update(subject,1./60.,world,view,true) && view.forward.x<0 && view.eye.x>5 &&
+          control.update(subject,1./60.,world,reference),
+          "hold look-back presents a view in front of the car");
+    check(chase.update(subject,1./60.,world,view) && control.update(subject,1./60.,world,reference) &&
+          near(view.eye.x,reference.eye.x,1e-6) && near(view.forward.x,reference.forward.x,1e-9),
+          "look-back release restores the advancing chase pose");
+}
 void test_native_camera_surge() {
     const auto real=[](unsigned bits){float f;std::memcpy(&f,&bits,4);return f;};
     nfsu::ChaseCamera camera;nfsu::ChaseCameraOpenWorld world;
@@ -1489,7 +1571,9 @@ void test_native_camera_surge() {
 }
 
 void test_car_animation() {
-    const nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
+    nfsu::VehicleSpec spec = nfsu::stock_240sx_vehicle_spec();
+    spec.handling.struts[1].bump_limit = 0.13F;
+    spec.handling.struts[1].visual_limit = 0.05F;
     nfsu::VehicleState state;
     state.position = {spec.handling.centre_of_mass[0],
                       spec.handling.centre_of_mass[1],
@@ -1509,7 +1593,11 @@ void test_car_animation() {
             base[i].animation_pivot[2] = 0.1F;
         }
         state.wheels[w].compression = 0.05 * (w + 1);
+        spec.handling.wheels[w].vertical = 0.1F;
     }
+    state.wheels[2].compression = spec.handling.struts[1].bump_limit;
+    state.wheels[3].compression = -0.1;
+    spec.handling.wheels[2].vertical = spec.handling.wheels[3].vertical = 0.135F;
     base[8].part_slot = 13;
     base[9].part_slot = 14;
     nfsu::CarAnimationState visual;
@@ -1527,6 +1615,11 @@ void test_car_animation() {
     check(near(placed[4].transform[14], 0.15, 1e-6) &&
               placed[8].lamp_mode == 1 && placed[9].lamp_mode == 3,
           "brake follows suspension and braking lights the rear lamp");
+    check(near(placed[2].transform[14], 0.185, 1e-6) &&
+              near(placed[6].transform[14], 0.185, 1e-6) &&
+              near(placed[3].transform[14], 0.035, 1e-6) &&
+              state.wheels[2].compression == spec.handling.struts[1].bump_limit,
+          "rear wheel and brake use the tuned mount, visible bump limit and droop");
     visual.braking = false;
     check(nfsu::drive_place_instances(base, state, spec, placed, &visual) &&
               placed[8].lamp_mode == 1 && placed[9].lamp_mode == 2,
@@ -1577,6 +1670,7 @@ int main(int argc, char** argv) {
     test_car_animation();
     test_native_camera_surge();
     test_native_race_camera();
+    test_native_race_chase();
     test_session();
     if (g_failures != 0) {
         std::cerr << g_failures << " test failure(s)\n";

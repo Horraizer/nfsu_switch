@@ -104,6 +104,7 @@ bool within(const fs::path& path, const fs::path& root) {
 class RaceScene {
 public:
     RaceParticles particles;
+    RaceParticleTextures particle_textures;
     bool particles_enabled = true;
     TrackStreamFiles files;
     std::uint32_t track_number = 1003;
@@ -136,8 +137,10 @@ public:
     bool car_shading = false;
     std::uint64_t loads = 0, releases = 0, bytes_read = 0;
     Cost io_cost, prepare_cost, render_cost;
+    ChaseFovMode camera_projection = ChaseFovMode::retail;
     explicit RaceScene(const TrackStreamTable& t, bool effects) : particles_enabled(effects), table(t) {}
-    void load_car(const fs::path& root,const fs::path& texture,const CarAssets& selection,bool crash_damage) {
+    void load_car(const fs::path& root,const fs::path& texture,const CarAssets& selection,
+                  bool crash_damage,const std::vector<unsigned char>& track_image) {
         std::string error;
         require(load_race_hud_atlas(root,hud_atlas,error,false,false,track_number==1301),error);
         if (!read_car_frame_inputs(root,selection,car_inputs,tuned,error))
@@ -157,6 +160,12 @@ public:
         for (std::size_t i=0;i<paths.size();++i) {
             texture_packs[i] = load_texture_pack_set(paths[i],texture_bytes[i]);
             require(texture_packs[i].complete,"track texture source is incomplete: "+utf8_text(paths[i]));
+        }
+        if (particles_enabled) {
+            require(particles.load_presets(texture_bytes[2],error),error);
+            require(particles.load_environment(track_image,error),error);
+            require(decode_race_particle_textures(texture_bytes[1],texture_packs[1],particle_textures,error,
+                    particles.environment_emitter_count()!=0),error);
         }
     }
     void apply(const TrackResidencyStep& step) {
@@ -251,8 +260,12 @@ public:
         options.material_state = MaterialStateMode::retail;
         options.texture_filter=texture_filter;
         options.car_shading=car_shading;
-        require(drive_render_camera(session.camera(),ChaseFovMode::retail,640,360,options.camera,error),error);
-        crowd.frame(session);crowd.camera(session,options.camera,options.width,options.height);
+        require(drive_render_camera(session.camera(),camera_projection,640,360,options.camera,error),error);
+        crowd.frame(session);
+        if(crowd.camera(session,options.camera,options.width,options.height) &&
+           camera_projection==ChaseFovMode::retail_widescreen)
+            options.camera.focal_x_override =
+                options.camera.focal_y_override * double(options.height) / double(options.width);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
         track_options.sky = true;
@@ -260,11 +273,13 @@ public:
         track_options.wet_lamps = wet_road_reflections ? &lamps : nullptr;
         track_options.material_state = MaterialStateMode::retail;
         require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
-        VehicleState presented=session.car();const bool start_car=crowd.car(session,presented);
+        VehicleState presented=session.car();
+        auto presented_animation=session.animation();
+        const bool start_car=crowd.car(session,presented,&presented_animation);
         const auto shadow_pose = place_car_shadow(shadow,presented,session.spec(),session.course().world);
         require(render_car_shadow(shadow,shadow_pose,track_options,background,stats,error),error);
         require(drive_place_instances(base,presented,session.spec(),car.scene.instances,
-                                      &session.animation()),"car placement failed");
+                                      &presented_animation),"car placement failed");
         if(session.crash_windows_damaged())options.crash_windows=&crash_windows;
         require(render_stock_frame(car,options,error),error);
         require(!tuned || car.stats.triangles_fallback == 0,
@@ -282,7 +297,7 @@ public:
         require(crowd.render(options,composed,stats,error),error);
         std::vector<unsigned char> rgba = composed.rgba();
         if (particles_enabled)
-            require(draw_race_particles(rgba,options,particles,error,&background,&car.frame),error);
+            require(draw_race_particles(rgba,options,particles,error,&background,&car.frame,&particle_textures),error);
         composite_race_hud(hud_atlas,hud_frame,rgba.data(),640,360,640*4);
         render_cost.add(begin); return rgba;
     }
@@ -436,6 +451,7 @@ int run(int argc, char** argv) {
     TrackResidencySession residency; std::vector<TrackResidencyStep> startup;
     require(residency.start(table,zones,slot.track,costs,options,startup,error),error);
     RaceScene scene(table,particles_enabled); scene.tuned=tuned;
+    if(live) scene.camera_projection=ChaseFovMode::retail_widescreen;
     scene.track_number=static_cast<std::uint32_t>(slot.track);
     scene.files.stream=root/"Tracks"/track_stream_file_name(*info);
     scene.glows = glows;
@@ -444,7 +460,7 @@ int run(int argc, char** argv) {
     scene.wet_road_reflections=wet_road_reflections;
     scene.files.pack=root/"Tracks"/track_stream_pack_file_name(*info);
     scene.files.has_pack=fs::exists(scene.files.pack);
-    scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track),selected_car,live&&event_number!=3);
+    scene.load_car(root,root/"Tracks"/track_texture_file_name(slot.track),selected_car,live&&event_number!=3,image);
     if (wet_road_reflections) require(load_wet_road_lamps(root, course.world, scene.lamps, error, slot.track),error);
     Sha256 sequence; const std::string version="NFSU_RACE_STATE 1\n";
     sequence.update(version.data(),version.size());
@@ -464,6 +480,10 @@ int run(int argc, char** argv) {
     HandlingTelemetryLog handling_log(handling_telemetry ? stdout : nullptr);
     if (steering_seen || handling_telemetry) std::cout << "steering " << race_steering_name(steering) << '\n';
     RaceSession session(course,spec,event_number==3?RaceSteering::recovered_predicate1:steering);
+    ChaseCameraTable camera_table;
+    require(load_race_camera_table(root/"Global/GLOBALB.BUN",selected_car,camera_table,error),error);
+    require(session.set_camera_table(camera_table,error),error);
+    if(live)session.use_retail_race_camera();
     RaceCrashRoad crash_road;
     if(live&&event_number!=3) {
         require(crash_road.load(root,slot.track,slot.direction,course,spec.handling,nullptr,error),error);

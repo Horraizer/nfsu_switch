@@ -492,7 +492,15 @@ void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,un
     constexpr std::array<std::array<float,2>,7> backing{{{{0,-631.707946777F}},{{60,-505.366333008F}},{{100,-546.939941406F}},{{140,-505.369995117F}},{{180,-589.322509766F}},{{220,0}},{{300,0}}}};
     const float scale=std::min(width/1280.F,height/720.F)*5.F/3.F;
     const float bw=650+sample(backing);
-    if(frame.lap_first_quad==kRaceHudMaxQuads)frame.lap_first_quad=frame.quads;
+    // Keep the complete finish message when the ordinary HUD fills the frame.
+    std::size_t required=1;
+    for(const unsigned char c:message) {
+        const auto& glyph=atlas.lap_fonts[1][c];
+        if(c&&glyph.width&&glyph.height)++required;
+    }
+    if(required>kRaceHudMaxQuads)return;
+    frame.quads=std::min<std::size_t>(frame.quads,kRaceHudMaxQuads-required);
+    frame.lap_first_quad=std::min(frame.lap_first_quad,frame.quads);
     rect(frame,kLapWhite,float(width)*.5F+(1.24171447754F-bw*.5F)*scale,
         (244-65)*scale,bw*scale,130*scale,{{0,0,0}},250);
     const float size=(.75F+sample(sizes))*scale;
@@ -793,7 +801,7 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
         }
     }
     // 0x40BEF0 applies a half-texel inset before world.efx linear sampling.
-    if(session.rival_count()) {
+    if(session.rival_count()||session.is_time_trial()) {
         // HUD_SingleRace.fng: POSITION group, LBData/LeaderText and their
         // separate backings. Preserve original 640x480 offsets and fonts,
         // anchored to the right edge on the port's widescreen canvas.
@@ -819,36 +827,38 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                 x+=g.advance*s;
             }
         };
-        box(kLapBacking,165,-192,265,64,{{0,0,0}},214);
-        // PositionBacking's authored SAT matrix rotates the corner by pi.
-        auto* v=frame.vertices.data()+(frame.quads-1)*4;
-        for(unsigned i=0;i<4;++i) {
-            v[i].u=float(2*kLapBacking.x+kLapBacking.w)/kRaceHudAtlasWidth-v[i].u;
-            v[i].v=float(2*kLapBacking.y+kLapBacking.h)/kRaceHudAtlasSize-v[i].v;
-        }
-        const auto& standings=session.standings();
-        for(unsigned row=0;row<standings.count;++row) {
-            // SetPlayerColor: BGRA base(-63,56,-24,255) + key(255,72,24,0).
-            const std::array<unsigned char,3> color=standings.order[row]==0?
-                std::array<unsigned char,3>{{0,126,190}}:std::array<unsigned char,3>{{0,0,0}};
-            box(kLapWhite,220,-160+20*float(row),137.923553F,18,color,254);
-            box(kLapWhite,139,-160+20*float(row),20.5F,18,{{0,0,0}},254);
-        }
-        constexpr std::array<unsigned char,3> blue{{148,188,254}},dark_blue{{0,126,190}};
-        char position[8],total[8];
-        std::snprintf(position,sizeof position,"%u",session.player_position());
-        std::snprintf(total,sizeof total,"/%u",standings.count);
-        const char* ordinal=session.player_position()==1?"st":session.player_position()==2?"nd":
-                            session.player_position()==3?"rd":"th";
-        label(position,2,204,-220,1,true,blue);
-        label(ordinal,1,209,-221,.5F,false,blue);
-        label(total,1,205,-202,.5F,false,dark_blue);
-        for(unsigned row=0;row<standings.count;++row) {
-            char rank[8];std::snprintf(rank,sizeof rank,"%u:",row+1);
-            label(rank,0,134,-170+20*float(row)-(row?1:0),.9F,false,blue);
-            const unsigned actor=standings.order[row];
-            const auto text=session.leaderboard_label(actor);
-            label(text.c_str(),0,284,-170+20*float(row),.9F,true,blue,254,actor?0.F:129.F);
+        if(session.rival_count()) {
+            box(kLapBacking,165,-192,265,64,{{0,0,0}},214);
+            // PositionBacking's authored SAT matrix rotates the corner by pi.
+            auto* v=frame.vertices.data()+(frame.quads-1)*4;
+            for(unsigned i=0;i<4;++i) {
+                v[i].u=float(2*kLapBacking.x+kLapBacking.w)/kRaceHudAtlasWidth-v[i].u;
+                v[i].v=float(2*kLapBacking.y+kLapBacking.h)/kRaceHudAtlasSize-v[i].v;
+            }
+            const auto& standings=session.standings();
+            for(unsigned row=0;row<standings.count;++row) {
+                // SetPlayerColor: BGRA base(-63,56,-24,255) + key(255,72,24,0).
+                const std::array<unsigned char,3> color=standings.order[row]==0?
+                    std::array<unsigned char,3>{{0,126,190}}:std::array<unsigned char,3>{{0,0,0}};
+                box(kLapWhite,220,-160+20*float(row),137.923553F,18,color,254);
+                box(kLapWhite,139,-160+20*float(row),20.5F,18,{{0,0,0}},254);
+            }
+            constexpr std::array<unsigned char,3> blue{{148,188,254}},dark_blue{{0,126,190}};
+            char position[8],total[8];
+            std::snprintf(position,sizeof position,"%u",session.player_position());
+            std::snprintf(total,sizeof total,"/%u",standings.count);
+            const char* ordinal=session.player_position()==1?"st":session.player_position()==2?"nd":
+                                session.player_position()==3?"rd":"th";
+            label(position,2,204,-220,1,true,blue);
+            label(ordinal,1,209,-221,.5F,false,blue);
+            label(total,1,205,-202,.5F,false,dark_blue);
+            for(unsigned row=0;row<standings.count;++row) {
+                char rank[8];std::snprintf(rank,sizeof rank,"%u:",row+1);
+                label(rank,0,134,-170+20*float(row)-(row?1:0),.9F,false,blue);
+                const unsigned actor=standings.order[row];
+                const auto text=session.leaderboard_label(actor);
+                label(text.c_str(),0,284,-170+20*float(row),.9F,true,blue,254,actor?0.F:129.F);
+            }
         }
         if(session.style().ready()) {
             // HUD_SingleRace StylePointsGroup and its authored children.

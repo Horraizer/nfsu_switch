@@ -8,8 +8,18 @@ namespace nfsu {
 bool LanScene::load(const std::filesystem::path& root,const LanRaceOptions& options,
                     const std::array<std::string,2>& models,unsigned local,std::string& error){
     if(!valid_lan_options(options)||local>1){error="invalid LAN scene settings";return false;}
-    const auto& course=kLanCourses[options.course];SupportedRaceSelection race;
-    if(!supported_race_selection(course.event,course.round,race)){error="LAN course unavailable";return false;}
+    const auto& course=kLanCourses[options.course];
+    return load_course(root,course.event,course.round,options,models,local,error);
+}
+bool LanScene::load_local(const std::filesystem::path& root,unsigned event,unsigned round,
+                          const LanRaceOptions& options,const std::array<std::string,2>& models,std::string& error){
+    return load_course(root,event,round,options,models,0,error);
+}
+bool LanScene::load_course(const std::filesystem::path& root,unsigned event,unsigned round,
+                           const LanRaceOptions& options,const std::array<std::string,2>& models,
+                           unsigned local,std::string& error){
+    SupportedRaceSelection race;
+    if(!supported_race_selection(event,round,race)){error="two-player course unavailable";return false;}
     const auto global=root/"Global/GLOBALB.BUN";
     CareerCatalog catalog;if(!catalog.load_free_drive(root,error))return false;
     std::vector<unsigned char> globals;std::vector<RaceTableIssue> issues;
@@ -31,7 +41,7 @@ bool LanScene::load(const std::filesystem::path& root,const LanRaceOptions& opti
     if(!scene_.set_original_draw_distance(true)||!scene_.set_texture_filter(TextureFilterMode::linear)){
         error="LAN scene already loaded";return false;
     }
-    if(!scene_.load(posix_file_system(),root,error,nullptr,nullptr,false,false,true,&cars[local],&dress,course.event,true,course.round))return false;
+    if(!scene_.load(posix_file_system(),root,error,nullptr,nullptr,false,false,true,&cars[local],&dress,event,true,round))return false;
     const auto remote=1-local;const auto& ride=rides[remote];
     StockFrameInputs inputs;StockFrame other;
     if(!read_car_frame_inputs(root,cars[remote],inputs,false,error)||
@@ -44,13 +54,24 @@ bool LanScene::load(const std::filesystem::path& root,const LanRaceOptions& opti
     auto base=other.scene.instances;
     if(!scene_.add_rival(std::move(other.scene),std::move(base),other.skin_binding.source,std::move(shadow),error,
         false,{},nullptr,std::move(neon)))return false;
-    return load_race_hud_atlas(root,atlas_,error,true,false,false,race.slot.track);
+    return load_race_hud_atlas(root,atlas_,error,true,options.tier!=0,false,race.slot.track);
 }
 bool LanScene::frame(const LanRaceView& view,RaceGpuFrame& frame,RaceHudFrame& hud,std::string& error){
     if(!scene_.frame(view.session(),frame,error))return false;
     build_race_hud_frame(view.session(),atlas_,1280,720,hud);
     if(view.session().timing().racers[0].finish_valid)
         append_race_over(atlas_,1.,1280,720,hud,view.session().timing().racers[0].position==1?"You Win":"Race Over");
+    return true;
+}
+bool LanScene::split_frame(const RaceSession& world,const LanRaceView& view,unsigned player,RaceGpuFrame& frame,
+                           RaceHudFrame& hud,std::string& error,bool metric){
+    if(!scene_.frame_split_view(world,view.session().camera(),player,frame,error))return false;
+    build_race_hud_frame(view.session(),atlas_,1280,360,hud,metric);
+    if(!append_race_minimap(view.session(),atlas_,1280,360,minimaps_.at(player),hud)) {
+        error="split-screen minimap geometry refused";return false;
+    }
+    const auto& local=view.session().timing().racers[0];
+    if(local.finish_valid)append_race_over(atlas_,1.,1280,360,hud,local.position==1?"You Win":"Race Over");
     return true;
 }
 }

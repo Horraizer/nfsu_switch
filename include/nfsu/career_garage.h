@@ -50,6 +50,7 @@ public:
     unsigned selected()const{return state_.selection;}
     unsigned preview_index()const{return state_.page==GaragePage::colors?state_.preview:state_.selection;}
     bool confirming()const{return confirm_;}
+    unsigned trade_review()const{return trade_review_;}
     GarageDialog dialog()const{return dialog_;}
     unsigned dialog_selected()const{return dialog_selection_;}
     bool unique_intro()const{return unique_intro_;}
@@ -73,7 +74,7 @@ private:
     std::string title_;
     bool confirm_=false,unique_intro_=false,appearance_only_=false;
     GarageDialog dialog_=GarageDialog::none;
-    unsigned dialog_selection_=0;
+    unsigned dialog_selection_=0,trade_review_=0;
     void open_page(State,const CareerCatalog&,const CareerProfile&);
     void build(const CareerCatalog&,const CareerProfile&);
     void remember_color_cursor();

@@ -98,6 +98,7 @@ class CareerCatalog {
 public:
     bool load(const std::filesystem::path& retail,std::string& error);
     bool load_free_drive(const std::filesystem::path&,std::string& error);
+    bool enable_free_drive(const std::filesystem::path&,std::string& error);
     bool free_drive()const{return free_drive_;}
     const std::vector<FreeDriveCourse>& free_courses()const{return free_courses_;}
     std::vector<unsigned> quick_courses(QuickRaceMode)const;

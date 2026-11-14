@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -127,7 +128,11 @@ struct VehicleAxleStrut {
     float anti_roll = 0.0F;       // +0x10, kN/m on the difference within the axle
     float bump_limit = 0.0F;      // +0x14, m: compression is clamped here
     float droop_limit = 0.0F;     // +0x18, m: below this the wheel is off the ground
+    float visual_limit = std::numeric_limits<float>::max(); // +0x1C, m: rendered compression cap
 };
+
+// 478B20 publishes this travel for the wheel model; the solver uses compression.
+float vehicle_visual_strut_compression(const VehicleAxleStrut& strut, double compression) noexcept;
 
 // The fields of one CarTypeInfo record this model reads. Values are kept as
 // the stored floats, bit for bit; the model converts them to SI once.
@@ -230,9 +235,9 @@ constexpr std::size_t kVehicleYawTorqueLimitOffset = 0x398;
 // kVehicle240sxRecordBytesSha256. `nfsu_probe vehicle-sim --handling`
 // compares a decoded record against this table field by field.
 VehicleHandling stock_240sx_handling();
-constexpr std::size_t kVehicle240sxRecordBytes = 368;
+constexpr std::size_t kVehicle240sxRecordBytes = 376;
 constexpr const char* kVehicle240sxRecordBytesSha256 =
-    "D592EF5854C79CE0D76C5676300A71F99D2D7674317FC42E7EE3A1F3A343EAD2";
+    "7CD347DDEDE3F4BE6EE2B4014E67A7469A7620C7320E6FA8EA6E4D0F8C28CE79";
 
 struct VehicleHandlingIssue {
     // Offset of the offending field inside the record.
@@ -695,6 +700,8 @@ struct VehicleWheelTelemetry {
     // Output only: no effect on integration, replay or handling encoding.
     VehicleVec3 skid_velocity, skid_side;
     float skid_friction_usage=0,skid_load_kn=0;
+    // Wheel+100/+104, published at actor+374. Zero in the standing tyre path.
+    std::array<float,2> effect_slip_velocity{};
     double force_long = 0.0;    // N, along the wheel's heading on the ground
     double force_lat = 0.0;     // N, toward the wheel's left on the ground
     double drive_torque = 0.0;  // N m from the first clutch distribution
@@ -714,6 +721,7 @@ struct VehicleTelemetry {
     std::uint64_t step = 0;     // steps completed, 1 for the first step
     double simulation_seconds = 0.0;
     double solver_dt = kVehicleStepSeconds;
+    float component_interval = 0; // final shared 6F0738 value after force preparation
     bool alternate_yaw_active = true;
     VehicleVec3 position;
     VehicleVec3 velocity;

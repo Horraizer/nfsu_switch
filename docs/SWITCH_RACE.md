@@ -11,6 +11,45 @@ controls and chase camera, #157 residency, and #198's deko3d track path with
 #171 native DXT. The race also uses the command cache merged in #206 and
 the bounded track loader merged in #207.
 
+## Underground release gate
+
+Before delivering a Switch build, run the existing retail PC gate:
+
+```powershell
+ctest --test-dir build-release --output-on-failure -R "^nfsu_career_critical_flow_retail$"
+```
+
+A new profile goes through the production menu action, welcome, prologue
+decode, UG0 loader and two seconds after GO. An isolated save with a Civic
+reopens through the same action and publishes its car and event map.
+The map case first exercises the missing-art failure that previously
+surfaced as map::at. The gate requires both routes and uses the race
+draw, resource budget and save checks already in the critical-flow test.
+
+The test uses PC retail assets and the shared production code. Switch SDK,
+GPU execution, SD and controller behavior have separate coverage.
+`nfsu_career_full_retail` covers the authored stages and memory budgets.
+Full finish rendering is available with
+`tests/career_full_retail.py --finish-sweep`.
+`nfsu_career_garage_live_retail` covers live preview and purchase publication.
+
+## Quick Race split-screen
+
+From the main menu choose Multiplayer, then Quick Race / Split Screen.
+The Switch controller-selection applet assigns slots 1 and 2. Player 1
+uses the upper view and Player 2 uses the lower view. Each selects a car.
+Player 1 can also set the track, lap count and shared performance tier.
+The initial modes are Circuit and Sprint with two human cars and no traffic.
+On a paired controller use ZR/ZL to accelerate/brake. On a sideways
+Joy-Con use SR/SL. Press + (or - on a left Joy-Con) to leave the race.
+Controller reconnection stops the race clock and reopens controller selection.
+
+The two views share the loaded track and cars. Each has its own camera,
+HUD and minimap. Post-processing is disabled in this mode. The retail PC
+test `nfsu_split_screen_retail` verifies input ownership, the roster, camera,
+HUD and shared draw resources in both modes. The Switch controller
+applet and deko3d output require the usual hardware playthrough.
+
 ## Install and use
 
 For the HOME Menu forwarder, every updated build uses the filename

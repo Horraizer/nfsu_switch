@@ -200,18 +200,7 @@ struct VehicleTuningGrip {
 // the three deltas after them lower the car. +0x4C of each entry is zero in
 // all 35 retail records.
 struct VehicleTuningSuspension {
-    // Each block's eighth float, +0x1C, is not a field of VehicleAxleStrut
-    // and is unknown: no reader of it was traced, and it is not a copy of
-    // any neighbour. It equals the block's bump_limit at +0x14 in 21 of the
-    // 35 records' stock blocks and in 139 of this table's 210 blocks, and
-    // differs in the rest - the Golf's stock rear block holds 0.15 at +0x14
-    // and 0.05 at +0x1C. The 240SX is one of the records where the two
-    // agree, so a fixture built from it alone cannot tell them apart;
-    // nfsu_vehicle_tuning_tests (test_strut_unknown_1c) gives them different
-    // values, and `nfsu_probe vehicle-tuning` prints how many of each
-    // record's six blocks agree.
     std::array<VehicleAxleStrut, kVehicleTuningAxles> axles{};
-    std::array<float, kVehicleTuningAxles> unknown_1c{};
     // +0x40: subtracted from the centre of mass's vertical component,
     // +0x118 (0x00575A76..0x00575A7C).
     float centre_of_mass_vertical_drop = 0.0F;

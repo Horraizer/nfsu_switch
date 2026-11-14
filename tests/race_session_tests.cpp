@@ -661,6 +661,36 @@ int main() {
 
     check(camera.clear_fraction({32,48,20},{5032,48,20})==0,"refused long camera segment blocks camera");
 
+    VehicleTrackQuad camera_wall;
+    const float corners[4][3] = {{-3,-3,-2},{-3,3,-2},{-3,3,4},{-3,-3,4}};
+    for (unsigned i = 0; i < 4; ++i)
+        std::copy_n(corners[i], 3, camera_wall.corner[i]);
+    const auto camera_wall_image = build_vehicle_track_collision_image({camera_wall}, error);
+    const auto camera_wall_world = build_track_contact_world(
+        parse_track_collision(camera_wall_image.data(), camera_wall_image.size(), 0));
+    check(camera_wall_world.valid, "camera wall fixture builds");
+    RaceCameraWorld wall_camera(camera_wall_world);
+    const VehicleVec3 actor{.2, 0, .26};
+    const auto behind_wall = wall_camera.clear_race_eye(actor, {-4.7, 0, 1.7});
+    const auto near_wall = wall_camera.clear_race_eye(actor, {-2.9, 0, 1.7});
+    const auto past_edge = wall_camera.clear_race_eye(actor, {-2.9, 6, 1.7});
+    check(std::abs(behind_wall.x + 2.3) < 2e-5 && std::abs(behind_wall.z - 1.19758875) < 2e-5,
+          "4838E0 eye clips to wall and gains native normal clearance");
+    check(std::abs(near_wall.x + 2.3) < 2e-5 && std::abs(near_wall.z - 1.7) < 2e-5,
+          "4838E0 applies clearance even when the eye segment is unblocked");
+    check(std::abs(past_edge.x + 2.9) < 2e-5 && std::abs(past_edge.y - 6.) < 2e-5,
+          "4838E0 only admits the projection inside the polygon");
+
+    ChaseCamera wall_chase;
+    wall_chase.use_retail_race_mover();
+    ChaseCameraSubject wall_subject;
+    wall_subject.centre_of_mass = actor;
+    ChaseCameraView wall_view;
+    check(wall_chase.set_pov(1) && wall_chase.reset(wall_subject, wall_camera, wall_view) &&
+          std::abs(wall_view.forward.x - .99733877) < 2e-5 &&
+          std::abs(wall_view.forward.z + .07290658) < 2e-5,
+          "483AD0 preserves actor framing when wall clearance changes the eye");
+
     // Host route-driver steering is sampled every six frames; pedals must
     // still release the service brake immediately when actual speed falls.
     auto fast_course=course;fast_course.start.speed=20;

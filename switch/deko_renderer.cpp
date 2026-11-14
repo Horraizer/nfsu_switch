@@ -135,6 +135,7 @@ struct DekoRenderer::Impl {
     std::array<dk::Image, 2> depths;
     DekoSceneTarget scene_target;
     bool fxaa_enabled=false;
+    bool split_screen=false;
     bool speed_blur_enabled=false;
     SpeedBlurFrame speed_blur_frame;
 #if defined(NFSU_SPEED_BLUR_PROBE)
@@ -250,6 +251,7 @@ struct DekoRenderer::Impl {
     const PreparedCommandSource* package = nullptr;
     std::vector<const RecordedDraw*> static_definitions;
     std::vector<const RecordedDraw*> dynamic_definitions;
+    std::vector<std::size_t> dynamic_submission_order;
     std::vector<std::size_t> static_group_slots;
     DekoCubeRanges cube_ranges;
     std::array<std::vector<DkCmdList>, 2> static_lists;
@@ -513,10 +515,10 @@ struct DekoRenderer::Impl {
             error = "invalid scene resolution: scaling requires 1280x720 direct presentation"; return false;
         }
 #if defined(NFSU_RACE_FXAA)
-        fxaa_enabled=presentation && source.race_environment;
+        fxaa_enabled=presentation && source.race_environment && !split_screen;
 #endif
 #if defined(NFSU_RACE_MSAA2) || defined(NFSU_RACE_MSAA8)
-        msaa_enabled=presentation && source.race_environment;
+        msaa_enabled=presentation && source.race_environment && !split_screen;
 #endif
         if(fxaa_enabled && msaa_enabled) { error="select one race AA mode";return false; }
         DrawExecutionPlan plan;
@@ -562,6 +564,20 @@ struct DekoRenderer::Impl {
             }
             for (std::size_t i = source.static_track_draw_count(); i < source.draw_count(); ++i)
                 dynamic_definitions.push_back(&source.draw_view(i).definition);
+            dynamic_submission_order.reserve(dynamic_capacity);
+            for (std::size_t i = 0; i < dynamic_capacity; ++i)
+                dynamic_submission_order.push_back(i);
+            const auto& resources = source.resource_table().resources;
+            // Draw all opaque actors before either layer of vehicle glass.
+            // Keep the original slots for texture aliases and uniform offsets.
+            std::stable_partition(dynamic_submission_order.begin(),dynamic_submission_order.end(),
+                [&](std::size_t index) {
+                    const auto& draw = *dynamic_definitions[index];
+                    if (!draw.pipeline.blend || draw.texture_resource >= resources.size()) return true;
+                    const auto hash = resources[draw.texture_resource].texture_hash;
+                    return std::find(kIntactCrashWindowHashes.begin(),kIntactCrashWindowHashes.end(),hash)
+                        == kIntactCrashWindowHashes.end();
+                });
         } else dynamic_capacity = draw_capacity;
         // Prepared static draws are child lists, not repeated root commands.
         // Reserve root storage for the dynamic tail and child calls only.
@@ -838,7 +854,7 @@ struct DekoRenderer::Impl {
         // The comparison uses the existing single-sample scene/depth path.
         // MSAA remains independently selectable; its depth cannot be attached
         // to a single-sample light history target.
-        streaks_enabled=presentation && source.race_environment && !msaa_enabled;
+        streaks_enabled=presentation && source.race_environment && !msaa_enabled && !split_screen;
         if(streaks_enabled) {
             if(!shader("fxaa.vert",DkStage_Vertex,streak_vertex,error) ||
                !shader("streak_fade.frag",DkStage_Fragment,streak_fade_fragment,error) ||
@@ -945,7 +961,7 @@ struct DekoRenderer::Impl {
         }
         // Two half-resolution images are shared by the single ordered queue.
         // Constants have four distinct pass slots per fenced presentation slot.
-        speed_blur_enabled=presentation && source.race_environment && !msaa_enabled && source.borrowed() &&
+        speed_blur_enabled=presentation && source.race_environment && !msaa_enabled && !split_screen && source.borrowed() &&
             (scene_target.upscale || fxaa_enabled);
         if(speed_blur_enabled) {
             if(!shader("speed_blur.vert",DkStage_Vertex,speed_blur_vertex,error) ||
@@ -1176,9 +1192,11 @@ struct DekoRenderer::Impl {
             out.bindUniformBuffer(DkStage_Vertex, 1, instance_addr, sizeof(DrawInstanceUniform));
         out.bindUniformBuffer(DkStage_Fragment, 2, material_addr, sizeof(DrawMaterialUniform));
         if (shaded || shadow) out.bindUniformBuffer(DkStage_Vertex, 2, material_addr, sizeof(DrawMaterialUniform));
+        // world.efx uses a linear sampler for the sky. CPU diagnostics
+        // retain the legacy sampler specified by the manifest.
         if (bindings.texture && has_texture) out.bindTextures(DkStage_Fragment, 0,
             dkMakeTextureHandle(static_cast<std::uint32_t>(draw.texture_resource),
-                draw.program->textures[0].filter == sm::Filter::linear ? 1 : 0));
+                sky || draw.program->textures[0].filter == sm::Filter::linear ? 1 : 0));
         if (bindings.pipeline) {
             dk::RasterizerState raster;
             raster.setCullMode(state.cull == sm::Cull::back ? DkFace_Back :
@@ -1357,7 +1375,7 @@ struct DekoRenderer::Impl {
         for (std::size_t i=0;i<quads*4;++i) {
             vertices[i]=input[i];
             vertices[i].px=input[i].px-source_width()*0.5F;
-            vertices[i].py=input[i].py-source_height()*0.5F;
+            vertices[i].py=input[i].py*(split_screen?2.F:1.F)-source_height()*0.5F;
             vertices[i].pz=additive?input[i].pz:(input[i].pz>0?input[i].pz:-1.0F);
         }
         cmd.bindShaders(DkStageFlag_GraphicsMask,{additive?&frontend_vertex:&vertex,additive?&frontend_fragment:&textured_opaque});
@@ -1657,11 +1675,17 @@ struct DekoRenderer::Impl {
             cmd.bindMultisampleState(samples);
             cmd.setSampleMask(0xFFFFU);
         }
-        cmd.setViewports(0, {{0, 0, static_cast<float>(scene_target.width), static_cast<float>(scene_target.height), 0, 1}});
-        cmd.setScissors(0, {{0, 0, scene_target.width, scene_target.height}});
-        const auto* clear = commands->clear_color;
-        cmd.clearColor(0, DkColorMask_RGBA, clear[0]/255.0F, clear[1]/255.0F, clear[2]/255.0F, clear[3]/255.0F);
-        cmd.clearDepthStencil(true, 1, 0, 0);
+        const unsigned view_height=split_screen?scene_target.height/2:scene_target.height;
+        const unsigned view_top=split_screen?unsigned(slot)*view_height:0;
+        cmd.setViewports(0,{{0,float(view_top),float(scene_target.width),float(view_height),0,1}});
+        cmd.setScissors(0,{{0,view_top,scene_target.width,view_height}});
+        if(!split_screen||slot==0) {
+            const auto* clear=commands->clear_color;
+            cmd.setScissors(0,{{0,0,scene_target.width,scene_target.height}});
+            cmd.clearColor(0,DkColorMask_RGBA,clear[0]/255.0F,clear[1]/255.0F,clear[2]/255.0F,clear[3]/255.0F);
+        }
+        cmd.clearDepthStencil(true,1,0,0);
+        cmd.setScissors(0,{{0,view_top,scene_target.width,view_height}});
         if(!msaa_checkpoint("MSAA target clear"))return false;
         if(frontend&&frontend->background_quads){
             emit_overlay(slot,frontend->vertices.data(),frontend->background_quads,frontend->additive.data());
@@ -1741,7 +1765,13 @@ struct DekoRenderer::Impl {
         const auto first_dynamic = package ? commands->static_track_draw_count() : 0;
         const RecordedDraw* previous_dynamic = nullptr;
         bool environment_is_car = false;
-        for (std::size_t i = first_dynamic; i < commands->draw_count(); ++i) {
+        const auto dynamic_count = commands->draw_count() - first_dynamic;
+        const auto submission_count = package ? dynamic_submission_order.size() : dynamic_count;
+        for (std::size_t order = 0; order < submission_count; ++order) {
+            const auto submitted_index = package ? dynamic_submission_order[order] : order;
+            if (submitted_index >= dynamic_count) continue;
+            const auto i = first_dynamic + submitted_index;
+            const auto index = i - first_dynamic;
             if(frontend && frontend_profile_passes) {
                 if(i==frontend_car_begin)mark_frontend(10);
                 if(i==frontend_car_end)mark_frontend(11);
@@ -1749,7 +1779,6 @@ struct DekoRenderer::Impl {
             const auto view = commands->draw_view(i);
             if(!view.submit)continue;
             if(commands->frontend_car_only && std::strcmp(view.definition.program->name,"frontend_car_textured"))continue;
-            const auto index = i - first_dynamic;
             // Zero source alpha contributes no RGB, alpha or depth under
             // this validated additive state. Keep original uniform indices
             // and the last emitted draw for fixed-state reuse.
@@ -1904,6 +1933,42 @@ struct DekoRenderer::Impl {
         if (query_recording)
             cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*160+16);
         return true;
+    }
+
+    bool present_split(const DekoRenderer::SplitViewSource& next,std::string& error) {
+        if(!split_screen||!swapchain||!healthy(error)) {
+            if(error.empty())error="split-screen renderer is not open";
+            return false;
+        }
+        // A single fence covers both views. Each uses its own existing slot
+        // for uniforms, descriptors, HUD vertices and GPU commands.
+        for(unsigned i=0;i<frame_in_flight.size();++i)if(frame_in_flight[i]){
+            if(frame_fences[i].wait()!=DkResult_Success){error="split-screen frame fence failed";return false;}
+            frame_in_flight[i]=false;
+        }
+        const int image=queue.acquireImage(swapchain);
+        if(!healthy(error)||image<0||image>=2) {
+            if(error.empty())error="split-screen swapchain acquisition failed";
+            return false;
+        }
+        for(unsigned player=0;player<2;++player) {
+            const RecordedCommands* view=nullptr;
+            const RaceHudFrame* hud=nullptr;
+            if(!next(player,view,hud,error))return false;
+            if(!view||!hud){error="split-screen frame missing a view or HUD";return false;}
+            if(!update(*view,error,nullptr)||!write_uniforms(*view,player,error)||
+               !record_frame(colors[image],player,hud,error))return false;
+            const auto list=cmd.finishList();
+            if(!healthy(error))return false;
+            // finishList's control records belong to cmd until its next clear.
+            queue.submitCommands(list);
+        }
+        queue.signalFence(frame_fences[image]);
+        queue.presentImage(swapchain,image);
+        queue.flush();
+        frame_in_flight[image]=true;
+        ++fence_number;
+        return healthy(error);
     }
 
     bool present(std::string& error, DekoPresentTiming* timing,
@@ -2120,6 +2185,14 @@ bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bo
     try { return impl_->open(commands, error, presentation, draw_capacity, profile_frame,
                              opaque_first, sky_with_opaque, scene_height, hud_atlas); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
+}
+bool DekoRenderer::open_split(const RecordedCommands& commands,const RaceHudAtlas& atlas,
+                              std::size_t capacity,std::string& error) {
+    impl_->split_screen=true;
+    return open(commands,error,true,capacity,false,true,false,0,&atlas);
+}
+bool DekoRenderer::present_split(const SplitViewSource& next,std::string& error) {
+    return impl_->present_split(next,error);
 }
 bool DekoRenderer::open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error,std::uint32_t scene_height,bool profile_passes,StartupJournal* startup_journal,std::size_t draw_capacity) {
     impl_->startup_journal=startup_journal;

@@ -5,7 +5,7 @@ An experimental native Nintendo Switch port / engine reimplementation of
 The engine and deko3d renderer are rebuilt in C++; the Windows executable
 is not run on the console.
 
-**[Current r42 prerelease](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r42)** |
+**[Download r42 prerelease](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r42)** |
 **[LAN r7 archive](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-lan-r7)** |
 **[Install, controls and build](docs/GETTING_STARTED.md)** |
 **[r42 changes and limits](docs/RELEASE_0_2_R42.md)** |
@@ -29,23 +29,27 @@ not supported inputs. See the installation guide for the required SD layout.
   options, original-data HUD, music, speech, opponents and traffic.
 - Original-data vehicle assembly, rendering, reflections, headlights,
   shadows, audio, nitrous, particles and post-processing.
+- Local two-player Quick Race in split-screen, with the Switch controller
+  picker, separate cameras and HUDs, and no computer racers. Circuit and
+  Sprint are supported. See [Switch race setup](docs/SWITCH_RACE.md#quick-race-split-screen).
 - Experimental two-player router LAN room: create/join, race settings,
   all playable cars, shared Stock/Street/Pro/Extreme performance tier,
   and each player's appearance garage. See [LAN_MULTIPLAYER](docs/LAN_MULTIPLAYER.md).
 - Display settings include 540p/720p race rendering, motion blur, road
   reflections, and MPH/km/h. Diagnostic file logging is opt-in.
-- r42 includes updated race endings, garage presentation, traffic impact
-  recovery, turbo HUD, and startup traffic staging for the first drag of
-  career tournament 9.
+- The r74 source snapshot also includes updates to the garage, race cameras,
+  vehicle physics, traffic, track effects and the Underground startup checks.
 
 These are implemented paths, not a claim that every original behavior is
 finished. Campaign startup/finish automation does not replace a full driven
 campaign. Handheld play is the priority; frame-time drops and remaining
 physics, AI, traffic, audio and interface differences need further work.
 
-**r42 is a development prerelease.** This exact build passed desktop tests
-with retail data and Switch packaging checks. Console validation of the r42
-artifact and paired LAN handling is pending.
+**Source and download versions.** The main branch contains the newer r74
+source snapshot. The r42 release above is an earlier downloadable build.
+Local split-screen and Underground startup have PC regression coverage.
+Controller assignment, rendering and frame pacing for split-screen still
+need a Switch playthrough.
 
 ## Progress images
 
@@ -64,7 +68,7 @@ The [getting-started guide](docs/GETTING_STARTED.md) covers Switch packaging,
 PC tests and Netloader. The SDK build compiles shaders offline and embeds
 them in the NRO. A source build with another SDK needs its own hardware check.
 
-For issues, include the build tag `drag-grid-r42`, handheld/docked mode,
+For issues, include the build tag, handheld/docked mode,
 console model, event/course, reproduction steps and available logs or video.
 Do not attach retail data, disc images, executables, saves or credentials.
 

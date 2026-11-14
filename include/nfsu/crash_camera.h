@@ -48,14 +48,15 @@ public:
     bool update(std::int32_t tick,std::uint64_t frame,bool allowed,const VehicleState&,
                 const VehicleHandling&,float wheel_phase,float progress,const CrashCameraRoadSource&,
                 const CrashCameraWorld&,const ChaseCameraView&,ChaseCameraView&,bool finishing=false);
+    bool consume_damage_reset() noexcept;
     std::uint64_t activations=0,returns=0;
 private:
     bool request(std::int32_t tick,float progress,const VehicleState&,
                   const CrashCameraRoadSource&,const CrashCameraWorld&);
-    void stop() noexcept;
+    void stop(bool clear_damage=true) noexcept;
     unsigned track_=0,intensity_=0,event_=0;
     std::int32_t crash_tick_=0,last_[2]{};
-    bool crash_valid_=false,last_valid_[2]{};
+    bool crash_valid_=false,last_valid_[2]{},damage_reset_=false;
     float remaining_=0,flight_deadline_=0;
     CrashCameraShot shot_{};
 };

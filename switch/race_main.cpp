@@ -61,13 +61,15 @@ nfsu::RacePresentationOptions read_presentation_options(bool road_default) {
         std::ifstream file(path);
         unsigned version,blur,car,road,metric,height=0;
         if(!(file>>version>>blur>>car>>road>>metric) ||
-           version<1 || version>3 || blur>1 || car>1 || road>1 || metric>1)
+           version<1 || version>4 || blur>1 || car>1 || road>1 || metric>1)
             continue;
         if(version>=2 && (!(file>>height) || (height!=0 && height!=540 && height!=720)))
             continue;
         std::string logs,extra;
-        if(version==3 && (!(file>>logs) || (logs!="0"&&logs!="1")))continue;
-        if(!(file>>extra))return {blur!=0,car!=0,road!=0,metric!=0,height,logs=="1"};
+        if(version>=3 && (!(file>>logs) || (logs!="0"&&logs!="1")))continue;
+        int pov=0;
+        if(version>=4 && (!(file>>pov) || pov<0 || pov>2))continue;
+        if(!(file>>extra))return {blur!=0,car!=0,road!=0,metric!=0,height,logs=="1",pov};
     }
     return options;
 }
@@ -79,9 +81,9 @@ bool write_presentation_options(const nfsu::RacePresentationOptions& options) {
     auto pending=presentation_path;
     pending+=".tmp";
     std::ofstream file(pending,std::ios::trunc);
-    file<<"3 "<<options.motion_blur<<' '<<options.low_car_reflections<<' '
+    file<<"4 "<<options.motion_blur<<' '<<options.low_car_reflections<<' '
         <<options.road_reflections<<' '<<options.metric_speed<<' '<<options.race_height<<' '
-        <<options.diagnostic_logs<<'\n';
+        <<options.diagnostic_logs<<' '<<options.camera_pov<<'\n';
     file.close();
     if(!file)return false;
     if(std::filesystem::exists(presentation_path,error)) {
@@ -136,13 +138,14 @@ public:
     bool ready()const{return running_&&ready_.load(std::memory_order_acquire);}
     void join(){if(running_){threadWaitForExit(&thread_);threadClose(&thread_);running_=false;}environment_.reset();car_source_.reset();}
     bool start(std::filesystem::path root,unsigned width,unsigned height,
-               std::vector<CareerRideSetup> variants,std::string signature,
-               std::string installed,std::string car,std::vector<unsigned> indices,
+               const CareerCatalog& catalog,const std::vector<unsigned char>& globals,
+               const CareerGarage& menu,const CareerProfile& profile,std::string signature,std::string installed,
                std::shared_ptr<const FrontendSceneEnvironment> environment,
                std::shared_ptr<const FrontendSceneCarSource> car_source,std::string& error) {
         if(running_){error="garage asset job already running";return false;}
-        root_=std::move(root);width_=width;height_=height;variants_=std::move(variants);
-        signature_=std::move(signature);installed_=std::move(installed);car_=std::move(car);indices_=std::move(indices);
+        root_=std::move(root);width_=width;height_=height;
+        catalog_=&catalog;globals_=&globals;menu_=menu;profile_=profile;
+        signature_=std::move(signature);installed_=std::move(installed);car_=profile.car;indices_.clear();
         environment_=std::move(environment);car_source_=std::move(car_source);
         error_.clear();scene_.reset();ready_=false;
         // Rendering must not starve asset preparation on the process default core.
@@ -152,11 +155,10 @@ public:
         started_=armGetSystemTick();
         auto result=threadCreate(&thread_,entry,this,nullptr,1024*1024,0x30,asset_core);
         if(R_FAILED(result)){error="garage asset thread create: "+std::to_string(result);return false;}
-        const auto variant_count=variants_.size();
         result=threadStart(&thread_);
         if(R_FAILED(result)){threadClose(&thread_);error="garage asset thread start: "+std::to_string(result);return false;}
         running_=true;
-        std::printf("GARAGE_JOB started variants=%lu core=%d priority=48\n",(unsigned long)variant_count,asset_core);
+        std::printf("GARAGE_JOB started core=%d priority=48\n",asset_core);
         return true;
     }
     const std::string& signature()const{return signature_;}
@@ -168,18 +170,27 @@ private:
     static void entry(void* raw) {
         auto& self=*static_cast<GarageSceneLoad*>(raw);
         try {
-            self.scene_=std::make_unique<FrontendGpuScene>();
-            if(!self.scene_->load_garage(self.root_,self.width_,self.height_,self.variants_,self.error_,nullptr,self.environment_,self.car_source_))self.scene_.reset();
+            std::vector<CareerRideSetup> variants;
+            if(self.menu_.prepare_previews(*self.globals_,*self.catalog_,self.profile_,variants,self.indices_,self.error_)) {
+                self.scene_=std::make_unique<FrontendGpuScene>();
+                if(!self.scene_->load_garage(self.root_,self.width_,self.height_,variants,self.error_,nullptr,
+                                           self.environment_,self.car_source_))self.scene_.reset();
+            }
         }catch(const std::exception& e){self.error_=e.what();self.scene_.reset();}
         catch(...){self.error_="garage asset preparation failed";self.scene_.reset();}
-        std::vector<CareerRideSetup>().swap(self.variants_);
+        self.menu_=CareerGarage{};
+        self.profile_=CareerProfile{};
         self.prepare_ms_=armTicksToNs(armGetSystemTick()-self.started_)/1000000.0;
         self.ready_.store(true,std::memory_order_release);
     }
     Thread thread_{};std::atomic<bool> ready_{false};bool running_=false;
     std::uint64_t started_=0;
     std::filesystem::path root_;unsigned width_=0,height_=0;
-    std::vector<CareerRideSetup> variants_;std::string signature_;
+    std::string signature_;
+    // Both inputs live in the career scope and outlive its joined worker.
+    const CareerCatalog* catalog_=nullptr;
+    const std::vector<unsigned char>* globals_=nullptr;
+    CareerGarage menu_;CareerProfile profile_;
     std::shared_ptr<const FrontendSceneEnvironment> environment_;
     std::shared_ptr<const FrontendSceneCarSource> car_source_;
 };
@@ -312,11 +323,11 @@ public:
         blit_movie(frame,pixels,width,height,stride);
         framebufferEnd(&fb_);
     }
-    void startup_splash(const FrontendArt& art) {
+    void startup_splash(const FrontendArt& art,unsigned tick) {
         if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
         u32 stride=0; auto* pixels=static_cast<unsigned char*>(framebufferBegin(&fb_,&stride));
         if (!pixels) throw std::runtime_error("framebuffer unavailable");
-        art.draw_startup_splash({pixels,width,height,stride});
+        art.draw_startup_splash({pixels,width,height,stride},tick);
         framebufferEnd(&fb_);
     }
     void show(const std::vector<std::string>& lines, const std::vector<unsigned char>* rgba = nullptr) {
@@ -567,13 +578,21 @@ void show_result(Screen& screen, PadState& pad, const RaceRun& race, const RaceR
 enum class RaceReturn { menu, restart, intro_won, quit_tournament, restart_tournament, sweep_complete };
 RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool profile_frame,
           bool particles_enabled, const std::string& sky, bool tuned, bool glows,
-          bool car_shading, const RacePresentationOptions& presentation, TextureFilterMode texture_filter,
+          bool car_shading, RacePresentationOptions& presentation, TextureFilterMode texture_filter,
           std::uint32_t requested_height, bool gpu_boost, bool hud_mode, bool hud_trace, bool fps_overlay,
           const VehicleUpgradeLevels* performance, bool handling_telemetry, RaceSteering steering,
           const nfsu::CarAssets& selected_car, Screen& screen, PadState& pad, bool free_drive = false,
           const nfsu::RaceCarDress* dress = nullptr, std::uint32_t event_number = 1,
           const FrontendArt* post_art = nullptr, unsigned difficulty=1, unsigned* completed_place=nullptr, unsigned event_prize=0, unsigned previous_style=0, int* completed_style=nullptr, const CareerEventMedia* event_media=nullptr,float visual_reputation=0,const CareerCatalog* career_catalog=nullptr,unsigned previous_high_water=0,unsigned race_index=0,std::array<unsigned,4>* completed_places=nullptr,const CareerTournament* tournament=nullptr,bool nos_self_check=false,const std::string& player_name="YOU",CareerRaceReport* career_report=nullptr,const QuickRaceOptions* quick=nullptr,StartupJournal* sweep=nullptr,bool finish_sweep=false,const CareerProfile* career_profile=nullptr,audio::FrontendMusic* frontend_music=nullptr) {
     const bool wet_road_reflections=presentation.road_reflections;
+    struct SaveCameraPreference {
+        RacePresentationOptions& options;
+        int initial;
+        ~SaveCameraPreference() noexcept {
+            if (options.camera_pov == initial) return;
+            try { write_presentation_options(options); } catch (...) {}
+        }
+    } save_camera_preference{presentation,presentation.camera_pov};
     if(!requested_height && !panel_mode)requested_height=presentation.race_height;
     if(career_report)*career_report={};
     if(completed_place)*completed_place=0;
@@ -711,6 +730,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     require(race.set_event(event_number,error,race_index),error);
     require(race.set_crash_camera(kCrashCameraDefaultIntensity,error),error);
     require(race.set_difficulty(difficulty,error),error);
+
+    if(!replay_mode&&!ab_replay&&!ab_record&&!sweep&&!nos_self_check)
+        require(race.set_initial_camera_pov(presentation.camera_pov,error),error);
     require(quick?race.set_quick_race(*quick,error):race.set_free_drive(free_drive,error),error);
     require(!replay_mode || steering==RaceSteering::baseline,"recovered steering requires --live; pinned replay uses baseline");
     require(race.set_steering(steering,error),error);
@@ -1075,13 +1097,13 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         sound.set_suspended(paused);
         const bool driving_before = !paused && !just_unpaused && running &&
             race.session().timing().stage == RaceStage::racing;
-        const bool can_finish_drive=!replay_mode&&!ab_enabled&&(race.session().rival_count()>0||race.session().is_drift());
+        const bool can_finish_drive=!replay_mode&&!ab_enabled&&race.session().has_finish_driver();
         const bool finish_driving=can_finish_drive&&race.session().timing().outcome==RaceOutcome::finished;
         if (!paused && !just_unpaused && (running||finish_driving)) clock.add(elapsed); else clock.reset();
         double simulation = 0, residency = 0, record = 0, upload = 0;
         std::array<double,8> simulation_ticks{};
         RaceFrameProfile record_profile;
-        std::array<double,9> spatial_probe{};unsigned spatial_probe_ticks=0;
+        std::array<double,13> spatial_probe{};unsigned spatial_probe_ticks=0;
         const bool cpu_probe=!ab_minimal && (spike_probe || presented%60==0);
         DekoUpdateTiming update_timing;
         unsigned ticks = 0;
@@ -1125,10 +1147,13 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             auto stage = ab_minimal ? 0 : armGetSystemTick();
             const auto consumed_us = armTicksToNs(stage)/1000;
             RaceSimulationProfile sim_probe;
+            sim_probe.detailed_contacts=spike_probe;
             const bool probe_tick=cpu_probe && !race_car_held(race.session().timing());
             if(drag_shift_trace)drag_shift_trace->before(race.session());
             const bool crashing=race.session().crash_camera_event()!=0;
             require(race.simulate(input,error,probe_tick?&sim_probe:nullptr,probe_tick?&profile_clock:nullptr),error);
+            if(!replay_mode&&!ab_replay&&!ab_record&&!sweep&&!nos_self_check&&!race.session().is_drift())
+                presentation.camera_pov=race.session().camera().pov;
             if(!finish_seen&&race.session().timing().outcome==RaceOutcome::finished) {
                 // 42C2FB starts the finish hold on the world clock.
                 finish_world_start=race.session().timing().step_ticks;
@@ -1143,6 +1168,10 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 spatial_probe[6]+=sim_probe.traffic_motion;
                 spatial_probe[7]+=sim_probe.prop_motion;
                 spatial_probe[8]+=sim_probe.prop_contacts;
+                spatial_probe[9]+=sim_probe.contact_candidates;
+                spatial_probe[10]+=sim_probe.contact_queries;
+                spatial_probe[11]+=sim_probe.contact_response;
+                spatial_probe[12]+=sim_probe.contact_requeries;
                 for(unsigned i=0;i<6;++i){sim_probe_sum[i]+=values[i];sim_probe_max[i]=std::max(sim_probe_max[i],values[i]);}
                 const double children[]={sim_probe.traffic_motion,sim_probe.prop_motion,sim_probe.prop_contacts};
                 for(unsigned i=0;i<3;++i){contact_probe_sum[i]+=children[i];contact_probe_max[i]=std::max(contact_probe_max[i],children[i]);}
@@ -1327,9 +1356,6 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         if (hud_mode && pause_menu.hud() && hud_atlas.map.valid)
             require(append_race_minimap(race.session(),hud_atlas,frame.commands.width,
                     frame.commands.height,minimap_state,hud_frame),"minimap geometry invalid or HUD capacity exceeded");
-        if (fps_overlay && hud_mode)
-            append_race_fps_overlay(hud_atlas,fps_history,frame.commands.width,
-                                    frame.commands.height,hud_frame);
         if(hud_mode && finished) {
             std::string_view message="Race Over";
             const auto status=race.session().timing().racers[0].status;
@@ -1340,6 +1366,10 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             }
             append_race_over(hud_atlas,finish_seconds,frame.commands.width,frame.commands.height,hud_frame,message);
         }
+        // Diagnostics use the space left after the race presentation.
+        if (fps_overlay && hud_mode)
+            append_race_fps_overlay(hud_atlas,fps_history,frame.commands.width,
+                                    frame.commands.height,hud_frame);
         const bool nos_probe_was_complete=nos_self_check && renderer.speed_blur_probe_complete();
         if(sweep&&!presented)sweep_mark("race.first_frame_submit");
         require(renderer.present(error,ab_minimal?nullptr:&present,&scene_frame,
@@ -1929,7 +1959,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         std::printf("SPIKE_TRACE build=%s events=%zu dropped=%zu threshold_ms=20 capacity=64 bytes=%zu cpu_cadence=1 gpu_cadence=1 gpu_missing=-1 context=previous_current_next deferred_until_exit=1 extra_gpu_barriers=0\n",
             NFSU_RACE_BUILD_TAG,spike_trace->count,spike_trace->dropped,sizeof(*spike_trace));
         const char* time_names[]={"interval","work","sim","residency","record","update","present","acquire","fence","uniform","command","finish","submit","heap","gap","prior_tail","other"};
-        const char* sim_names[]={"planner","drivers","rivals","player","pair","timing","traffic","props","prop_contacts"};
+        const char* sim_names[]={"planner","drivers","rivals","player","pair","timing","traffic","props","prop_contacts",
+            "contact_candidates","contact_queries","contact_response","contact_requeries"};
         const char* render_names[]={"cull","list","car","track","combine","road","visuals"};
         for(std::size_t i=0;i<spike_trace->count;++i)for(unsigned c=0;c<3;++c) {
             const auto& r=spike_trace->events[i].rows[c];if(!r.frame)continue;
@@ -2242,8 +2273,10 @@ int main(int argc, char** argv) {
             } else
 #endif
             if (selected) {
+                auto presentation=read_presentation_options(wet_road_reflections);
+                presentation.road_reflections=wet_road_reflections;
                 run(root,replay,panel,profile_frame,particles_enabled,sky,
-                    tuned,glows,car_shading,{true,false,wet_road_reflections,false},texture_filter,scene_height,
+                    tuned,glows,car_shading,presentation,texture_filter,scene_height,
                     gpu_boost,hud,hud_trace,fps_overlay,explicit_performance ? &performance : nullptr,
                     handling_telemetry,steering,selected_car,screen,pad,false,nullptr,event_number,
                     nullptr,1,nullptr,0,0,nullptr,nullptr,0,nullptr,0,0,nullptr,nullptr,nos_self_check);
@@ -2270,7 +2303,9 @@ int main(int argc, char** argv) {
                 std::string startup_music_error;
                 const auto show_startup_splash=[&](bool start_music) {
                     trace("splash.before");
-                    screen.startup_splash(art);
+                    const auto splash_start=armGetSystemTick();
+                    screen.startup_splash(art,0);
+                    auto prompt_alpha=art.startup_prompt_alpha(0);
                     padUpdate(&pad);
                     if(start_music) {
                         trace("music.start.before");
@@ -2285,6 +2320,14 @@ int main(int argc, char** argv) {
                             if(pressed&(HidNpadButton_A|HidNpadButton_Plus)) {
                                 trace("splash.after");
                                 return;
+                            }
+                            const auto elapsed_ns=armTicksToNs(armGetSystemTick()-splash_start);
+                            const auto tick=static_cast<unsigned>((elapsed_ns/1000)*3/2500);
+                            const auto alpha=art.startup_prompt_alpha(tick);
+                            if(alpha!=prompt_alpha) {
+                                screen.startup_splash(art,tick);
+                                prompt_alpha=alpha;
+                                continue;
                             }
                         }
                         svcSleepThread(16666667);
@@ -2448,16 +2491,22 @@ int main(int argc, char** argv) {
                             {
                                 const bool sandbox=action==FrontendAction::free_drive;
                                 CareerCatalog career;CareerProfile profile;
-                                require(sandbox?career.load_free_drive(root,frontend_error):career.load(root,frontend_error),frontend_error);
+                                const auto mode_started=armGetSystemTick();
+                                if(sandbox)require(career.load(root,frontend_error),frontend_error);
+                                else {
+                                    require(active_profile.has_value(),"Underground requires an active profile");
+                                    require(open_underground(action,root,*active_profile,career,profile,frontend_error),frontend_error);
+                                }
                                 // Unrestricted ordinary practice cars do not unlock bonus presets.
                                 // Read the active real profile, never the sandbox's all-parts marker.
                                 std::uint32_t earned_style=0;
                                 if(sandbox&&!garage_car&&active_profile) {
-                                    CareerCatalog saved_catalog;CareerProfile saved;
-                                    require(saved_catalog.load(root,frontend_error),frontend_error);
-                                    require(load_career(active_profile->base,saved_catalog,saved,frontend_error),frontend_error);
+                                    CareerProfile saved;
+                                    require(load_career(active_profile->base,career,saved,frontend_error),frontend_error);
                                     earned_style=saved.style_high_water;
                                 }
+                                if(sandbox)require(career.enable_free_drive(root,frontend_error),frontend_error);
+                                const auto mode_catalog_ready=armGetSystemTick();
                                 // Port profiles are separate from retail assets and PC saves.
                                 const std::filesystem::path save_base=sandbox?std::filesystem::path{}:active_profile->base;
                                 const auto select_quick_car=[&](const std::string& identity,CareerProfile& next) {
@@ -2482,9 +2531,6 @@ int main(int argc, char** argv) {
                                         else require(career.free_profile("SKYLINE",profile,frontend_error),frontend_error);
                                         profile.page=CareerPage::menu;
                                     }
-                                }else {
-                                    require(load_career(save_base,career,profile,frontend_error),frontend_error);
-                                    profile.name=active_profile->name;
                                 }
                                 const auto store=[&](const CareerProfile& next) {
                                     if(!sandbox)require(save_career(save_base,career,next,frontend_error),frontend_error);
@@ -2536,8 +2582,8 @@ int main(int argc, char** argv) {
                                     }
                                     std::printf("CAREER welcome accepted=%u\n",unsigned(intro_accepted));std::fflush(stdout);
                                 }
-                                if(profile.page!=CareerPage::intro || intro_accepted) {
-                                    if(intro_accepted && profile.page==CareerPage::intro)music.stop();
+                                if(profile.page==CareerPage::intro && intro_accepted) {
+                                    music.stop();
                                     if(frontend_renderer)require(frontend_renderer->close(frontend_error),frontend_error);
                                     frontend_renderer.reset();frontend_gpu_profile.reset();
                                 }
@@ -2552,15 +2598,21 @@ int main(int argc, char** argv) {
                                         false,glows,true,presentation,texture_filter,scene_height,
                                         gpu_boost,hud,false,fps_overlay,nullptr,handling_telemetry,steering,
                                         selected_car,screen,pad,false,nullptr,0,&art,1,nullptr,0,0,nullptr,nullptr,
-                                        0,nullptr,0,0,nullptr,nullptr,false,profile.name,nullptr,nullptr,nullptr,false,nullptr,&music);
+                                        0,nullptr,0,0,nullptr,nullptr,false,profile.name,nullptr,nullptr,
+                                        nullptr,false,nullptr,&music);
                                     } while(intro_result==RaceReturn::restart && appletMainLoop());
                                     if(intro_result==RaceReturn::intro_won) {
                                         auto next=profile;require(career.intro_won(next,frontend_error),frontend_error);store(next);
                                     }
                                 }
                                 if(profile.page!=CareerPage::intro) {
+                                    const auto mode_art_started=armGetSystemTick();
                                     require(art.load_career_pages(root,career,frontend_error),frontend_error);
+                                    const auto mode_art_ready=armGetSystemTick();
+                                    if(frontend_renderer)
+                                        require(frontend_renderer->set_frontend_overlay(art.atlas(),frontend_error),frontend_error);
                                     bool leave=false,career_music=music.playing(),browser_loaded=false;
+                                    bool mode_presented=false;
                                     unsigned selection=0,map_prepared_event=0;std::string resident_car;
                                     bool choose_quick_mode=sandbox;
                                     std::vector<unsigned> quick_courses;
@@ -2571,6 +2623,8 @@ int main(int argc, char** argv) {
                                     std::string garage_signature,garage_resident_base;
                                     std::vector<unsigned> garage_preview_indices;
                                     GarageSceneLoad garage_load;std::unique_ptr<FrontendGpuScene> retired_garage;
+                                    std::optional<CareerGarage> trade_prefetch;
+                                    std::string trade_base,trade_signature;
                                     const auto close_career=[&] {
                                         garage_load.join();garage_load.scene_.reset();
                                         frontend_scene.release_preparation_cache();
@@ -2580,6 +2634,13 @@ int main(int argc, char** argv) {
                                         }
                                         retired_garage.reset();
                                     };
+                                    const auto publish_career_scene=[&] {
+                                        require(frontend_scene.adopt_garage(*retired_garage,frontend_error),frontend_error);
+                                        if(frontend_renderer)require(frontend_renderer->replace_frontend(frontend_scene.commands(),
+                                            frontend_scene.draw_capacity(),frontend_error),frontend_error);
+                                        retired_garage.reset();
+                                        career_scene_changed=true;
+                                    };
                                     const auto prepare_garage=[&] {
                                         // A bounded resident component bank. No race loading screen or
                                         // music stop is entered for a garage selection.
@@ -2587,19 +2648,43 @@ int main(int argc, char** argv) {
                                         const auto installed_base=CareerGarage::installed_signature(profile);
                                         const bool reuse_base=!garage.previewing()&&!garage_signature.empty()&&
                                             installed_base==garage_resident_base&&resident_car==profile.car;
+                                        const bool trading=garage.page()==GaragePage::trade_in;
+                                        const auto& entries=garage.entries();
+                                        const bool trade_highlight=garage.page()==GaragePage::root&&
+                                            garage.selected()<entries.size()&&entries[garage.selected()].value==2;
+                                        if(trade_highlight&&(!trade_prefetch||trade_base!=installed_base)) {
+                                            trade_prefetch=garage;
+                                            auto copy=profile;
+                                            bool purchased=false;
+                                            if(trade_prefetch->accept(career,copy,purchased,frontend_error)) {
+                                                trade_base=installed_base;
+                                                trade_signature=trade_prefetch->preview_signature(profile);
+                                            }else {
+                                                std::fprintf(stderr,"GARAGE prefetch: %s\n",frontend_error.c_str());
+                                                trade_base=installed_base;trade_signature.clear();
+                                            }
+                                        }else if(!trade_highlight&&!trading) {
+                                            trade_prefetch.reset();trade_base.clear();trade_signature.clear();
+                                        }
+                                        const bool prefetch=trade_highlight&&!trade_signature.empty()&&garage_signature!=trade_signature;
+                                        const auto& load_signature=prefetch?trade_signature:signature;
                                         frontend_scene.focus_part(garage.focus_slot());
                                         frontend_scene.road_target(garage.road_target());
-                                        if(garage_load.ready()) {
+                                        if(trading&&signature!=garage_signature)frontend_scene.prepare_car_change();
+                                        else if(!trading)frontend_scene.cancel_car_preparation();
+                                        // A ready prefetch remains CPU-only until the player opens Trade In.
+                                        if(garage_load.ready()&&(!prefetch||garage_load.signature()!=load_signature)) {
                                             garage_load.join();
-                                            require(garage_load.error_.empty(),garage_load.error_);
                                             if(garage_load.signature()==signature) {
+                                                require(garage_load.error_.empty(),garage_load.error_);
                                                 const auto publish_started=armGetSystemTick();
                                                 retired_garage=std::move(garage_load.scene_);
                                                 const auto selected=garage.previewing()&&garage.preview_index()<garage_load.indices_.size()?
                                                     garage_load.indices_[garage.preview_index()]:0;
                                                 require(frontend_scene.adopt_garage(*retired_garage,frontend_error,garage.page()==GaragePage::trade_in?0:selected),frontend_error);
-                                                if(garage.page()==GaragePage::trade_in)require(frontend_scene.select_car(selected,frontend_error),frontend_error);
+                                                if(trading)require(frontend_scene.select_car(selected,frontend_error),frontend_error);
                                                 if(frontend_renderer)require(frontend_renderer->replace_frontend(frontend_scene.commands(),frontend_scene.draw_capacity(),frontend_error),frontend_error);
+                                                frontend_clock.resume();garage_fps.reset();
                                                 retired_garage.reset();
                                                 garage_signature=signature;garage_resident_base=garage_load.installed_;
                                                 garage_preview_indices=std::move(garage_load.indices_);resident_car=garage_load.car_;
@@ -2609,10 +2694,11 @@ int main(int argc, char** argv) {
                                                     armTicksToNs(armGetSystemTick()-publish_started)/1000000.0);
                                             }else garage_load.scene_.reset();
                                         }
-                                        if(!reuse_base&&signature!=garage_signature&&!garage_load.running()) {
-                                            std::vector<CareerRideSetup> variants;std::vector<unsigned> indices;
-                                            require(garage.prepare_previews(garage_globals,career,profile,variants,indices,frontend_error),frontend_error);
-                                            require(garage_load.start(root,width,height,std::move(variants),signature,installed_base,profile.car,std::move(indices),frontend_scene.environment(),resident_car==profile.car?frontend_scene.car_source():nullptr,frontend_error),frontend_error);
+                                        if((prefetch||(!reuse_base&&signature!=garage_signature))&&!garage_load.running()) {
+                                            const auto& request=prefetch?*trade_prefetch:garage;
+                                            require(garage_load.start(root,width,height,career,garage_globals,request,profile,
+                                                load_signature,installed_base,frontend_scene.environment(),
+                                                resident_car==profile.car?frontend_scene.car_source():nullptr,frontend_error),frontend_error);
                                         }
                                         if(signature==garage_signature||reuse_base) {
                                             if(garage.previewing()&&garage.preview_index()<garage_preview_indices.size()) {
@@ -2657,29 +2743,27 @@ int main(int argc, char** argv) {
                                                 //The first Underground frame must already own the saved
                                                 //ride, including paints and installed parts. Do not show
                                                 //a stock-car placeholder while the garage job prepares.
-                                                close_career();
-                                                CareerRideSetup installed;
-                                                require(resolve_career_ride(garage_globals,career,profile,installed,frontend_error),frontend_error);
-                                                require(frontend_scene.load_garage(root,width,height,{installed},frontend_error,nullptr,frontend_scene.environment()),frontend_error);
+                                                retired_garage=std::make_unique<FrontendGpuScene>();
+                                                require(retired_garage->load_owned_ride(root,width,height,garage_globals,
+                                                    career,profile,frontend_error,frontend_scene.environment()),frontend_error);
+                                                publish_career_scene();
                                                 resident_car=car;browser_loaded=false;
                                                 garage_resident_base=CareerGarage::installed_signature(profile);
                                                 garage_signature=garage.previewing()?std::string{}:garage.preview_signature(profile);
-                                                career_scene_changed=true;
                                             }
                                             if(profile.page==CareerPage::unique_reward)garage.reset_unique(career,profile);
                                             if(sandbox||(profile.page==CareerPage::garage||profile.page==CareerPage::unique_reward))prepare_garage();
-                                            else if(resident_car!=car && !browser_loaded) {
-                                                close_career();
-                                                if(profile.page==CareerPage::choose_car) {
-                                                    std::vector<std::string> roster;
-                                                    for(const auto& entry:career.starters())roster.push_back(entry.name);
-                                                    require(frontend_scene.load_browser(root,width,height,roster,frontend_error),frontend_error);
-                                                    browser_loaded=true;
-                                                } else require(frontend_scene.load(root,width,height,frontend_error,car),frontend_error);
-                                                resident_car=car;career_scene_changed=true;
+                                            else if(profile.page==CareerPage::choose_car && !browser_loaded) {
+                                                retired_garage=std::make_unique<FrontendGpuScene>();
+                                                std::vector<std::string> roster;
+                                                for(const auto& entry:career.starters())roster.push_back(entry.name);
+                                                require(retired_garage->load_browser(root,width,height,roster,frontend_error),frontend_error);
+                                                publish_career_scene();
+                                                browser_loaded=true;resident_car=car;
                                             }
-                                            if(profile.page==CareerPage::map&&map_prepared_event!=profile.selected_event){
-                                                require(art.load_career_event(root,profile.selected_event,frontend_error),frontend_error);
+                                            // The briefing also draws the event map, including when resumed from a save.
+                                            if(career_uses_event_map(profile.page)&&map_prepared_event!=profile.selected_event) {
+                                                require(art.prepare_career_map(root,profile,frontend_error),frontend_error);
                                                 if(frontend_renderer)require(frontend_renderer->set_frontend_overlay(art.atlas(),frontend_error),frontend_error);
                                                 map_prepared_event=profile.selected_event;
                                             }
@@ -2948,10 +3032,7 @@ int main(int argc, char** argv) {
                                                         LoadingScreen race_loading(screen,root,!profile_frame,tip);
                                                         CarAssets owned;require(load_car_assets(std::filesystem::path(root)/"Global/GLOBALB.BUN",profile.car,owned,frontend_error),frontend_error);
                                                         load_post_race();
-                                                        std::vector<unsigned char> ride_globals;std::vector<RaceTableIssue> ride_issues;
-                                                        require(load_race_image(std::filesystem::path(root)/"Global/GLOBALB.BUN",ride_globals,ride_issues),"career ride global input");
-                                                        CareerRideSetup owned_setup;require(resolve_career_ride(ride_globals,career,profile,owned_setup,frontend_error),frontend_error);
-                                                        ride_globals.clear();ride_globals.shrink_to_fit();
+                                                        CareerRideSetup owned_setup;require(resolve_career_ride(garage_globals,career,profile,owned_setup,frontend_error),frontend_error);
                                                         RaceCarDress owned_dress;owned_dress.request=&owned_setup.request;owned_dress.skin=&owned_setup.skin;
                                                         owned_dress.bind=[](StockFrame& frame,const StockFrameInputs& inputs,const StockSceneRequest& request,std::string& error,void*) {
                                                             return bind_frontend_runtime_skin(frame,request,error)&&bind_frontend_sponsors(inputs,request.installed_parts,frame,error);
@@ -2998,7 +3079,13 @@ int main(int argc, char** argv) {
                                                         change=true;
                                                     }else if(profile.page==CareerPage::menu) {
                                                         auto next=profile;
-                                                        if(selection==0){next.page=CareerPage::map;store(next);change=true;}
+                                                        if(selection==0){
+                                                            if(career.available(next).empty())notice="No Underground events available.";
+                                                            else {
+                                                                career.select_available_event(next);
+                                                                next.page=CareerPage::map;store(next);change=true;
+                                                            }
+                                                        }
                                                         else if(selection==1){require(career.enter_customization(next,frontend_error),frontend_error);store(next);garage.reset(career,profile);garage_signature.clear();change=true;}
                                                         else if(selection==3){if(next.magazine_covers.empty())notice="No magazine covers earned yet.";else {next.page=CareerPage::magazines;store(next);selection=0;change=true;}}
                                                         else if(selection==5){store(next);notice="Career saved";}
@@ -3034,6 +3121,12 @@ int main(int argc, char** argv) {
                                                 if(show_garage_fps)art.append_fps(width,height,garage_fps.history,frontend_ui);
                                                 require(frontend_renderer->update(frontend_scene.commands(),frontend_error),frontend_error);
                                                 require(frontend_renderer->present_frontend(frontend_ui,frontend_error),frontend_error);
+                                                if(!mode_presented) {
+                                                    mode_presented=true;
+                                                    std::printf("MENU_MODE mode=%s catalog_ms=%.3f art_ms=%.3f mode_prep_ms=%.3f\n",
+                                                        sandbox?"quick":"underground",ms(mode_catalog_ready-mode_started),
+                                                        ms(mode_art_ready-mode_art_started),ms(armGetSystemTick()-mode_art_started));
+                                                }
                                                 if(show_garage_fps) {
                                                     const auto garage_presented=armGetSystemTick();
                                                     if(garage_fps.previous_present)
@@ -3165,7 +3258,8 @@ int main(int argc, char** argv) {
                         require(frontend_renderer->close(frontend_error),frontend_error);
                         frontend_renderer.reset();frontend_gpu_profile.reset();
                         try {
-                            run_switch_lan(root,pad,presentation.diagnostic_logs,free_rides,[&](const std::string& car,unsigned tier,
+                            run_switch_multiplayer(root,pad,presentation.diagnostic_logs,presentation.metric_speed,free_rides,
+                                [&](const std::string& car,unsigned tier,
                                                                  const std::function<void()>& poll) {
                                 run_career_action(FrontendAction::free_drive,&car,tier,poll);
                             });

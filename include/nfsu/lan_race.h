@@ -12,6 +12,8 @@ VehicleUpgradeLevels lan_performance_levels(unsigned tier);
 class LanRaceWorld {
 public:
     bool load(const std::filesystem::path&,std::string&,const LanRaceOptions& options={});
+    bool load_local(const std::filesystem::path&,unsigned event,unsigned round,
+                    const LanRaceOptions&,std::string&);
     bool advance(const std::array<GamepadFrame,2>&,std::string&);
     const RaceSession& session()const{return *session_;}
     LanRaceFrame snapshot()const;

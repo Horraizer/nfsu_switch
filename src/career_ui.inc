@@ -23,6 +23,7 @@ std::string career_language(const std::vector<unsigned char>& bytes,unsigned has
     }
     return fallback;
 }
+constexpr std::size_t kTradeStatsFng=0xb84f8c,kTradeConfirmFng=0xbbf10c;
 constexpr const char* underground_rows[]={"MapScreen","Customize","UGRanking","Magazines","STATISTICS","SAVE"};
 constexpr const char* underground_highlights[]={"HighlightGroup06","HighlightGroup01","HighlightGroup02","HighlightGroup03","HighlightGroup04","HighlightGroup05"};
 
@@ -56,12 +57,14 @@ std::vector<Object> career_objects(const std::vector<unsigned char>& front,std::
             result.push_back(std::move(high));post_state(o,script,length,"UnHighLight");
         }
         if(o.type==2 && o.language)o.text=career_language(language,o.language,o.text);
-        if(offset==0x21cd8c) {
+        if(offset==0x21cd8c||offset==kTradeConfirmFng) {
             if(o.name=="Highlight_1")post_state(o,script,length,"Highlight");
             if(o.name=="Highlight_2")post_state(o,script,length,"Unhighlight");
             if(o.name=="button1") {post_state(o,script,length,"highlight");o.text=career_language(language,0x639,"OK");}
             if(o.name=="button2") {post_state(o,script,length,"unhighlight");o.text=career_language(language,0x541389e5,"Cancel");}
-            if(o.name=="message_blurb")o.text=career_language(language,0x9da49222,"Would you like to choose this part?");
+            if(o.name=="message_blurb")o.text=offset==kTradeConfirmFng?
+                career_language(language,0x14012d64,"Do you really want to trade your car?"):
+                career_language(language,0x9da49222,"Would you like to choose this part?");
         }
         result.push_back(std::move(o));pos+=7+outer;
     }
@@ -130,7 +133,7 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
         auto scroller=career_objects(front,0xbd468c,language,error);
         std::map<std::size_t,Impl::GarageArt> garage_pages;
         const std::size_t garage_offsets[]={0xb7018c,0xb7e48c,0xb7fc8c,0xc0060c,0xb80a8c,0xb8180c,0xbbe50c,
-            0xb72f8c,0xb73c0c,0xb74c0c,0xb75b8c,0xbe4c0c,0xb7b18c,0xb7750c,0xb7680c,0xb7a40c,0xb7828c,0xbfb88c,0xbfc50c,0xbfd18c,0xbfde0c,0xbff68c,0xb71e0c,0xbcf70c,0xbd0d0c,0x21cd8c};
+            0xb72f8c,0xb73c0c,0xb74c0c,0xb75b8c,0xbe4c0c,0xb7b18c,0xb7750c,0xb7680c,0xb7a40c,0xb7828c,0xbfb88c,0xbfc50c,0xbfd18c,0xbfde0c,0xbff68c,0xb71e0c,0xbcf70c,0xbd0d0c,0x21cd8c,kTradeConfirmFng,kTradeStatsFng};
         auto textures=impl_->textures;
         const auto add=[&](const std::string& name) {
             const auto hash=bin_hash(name);if(textures.count(hash))return;
@@ -412,8 +415,13 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
         throw std::runtime_error("installed performance ratings unavailable");
     auto installed_ratings=displayed_ratings;
     const bool package_preview=garage&&page==3&&garage->page()==GaragePage::packages;
-    if(package_preview&&!catalog.performance_ratings(profile,installed_ratings))
+    const bool trade_preview=garage&&page==3&&garage->page()==GaragePage::trade_in&&display_profile.car!=profile.car;
+    const bool performance_preview=package_preview||trade_preview;
+    if(performance_preview&&!catalog.performance_ratings(profile,installed_ratings))
         throw std::runtime_error("installed performance comparison unavailable");
+    const unsigned trade_review=trade_preview?garage->trade_review():0;
+    const auto& trade_ratings=trade_review==1?installed_ratings:displayed_ratings;
+    const auto& trade_ride=trade_review==1?profile.ride:display_profile.ride;
     if(page==1) {
         // Native scroller uses two authored image planes with a separate
         // yellow spline and black/gradient modulation. No route recoloring.
@@ -425,13 +433,15 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
                 else if(o.name=="TrackEffect"||o.name=="SprintEffect")hash=career_maps.at(profile.selected_event);
                 else if(o.name.rfind("gradient",0)==0)hash=0x868a1fcfU;
                 else hash=0xe2a5c626U;
-                const auto& tex=textures.at(hash);const auto m=pose(pose,career_scroller,o,0);
-                quad(image,tex,m,-o.w/2,-o.h/2,o.w,o.h,o.uv,o.color);
+                const auto tex=textures.find(hash);
+                if(tex==textures.end())throw std::runtime_error("career map sprite not resident for event "+std::to_string(profile.selected_event));
+                const auto m=pose(pose,career_scroller,o,0);
+                quad(image,tex->second,m,-o.w/2,-o.h/2,o.w,o.h,o.uv,o.color);
             }
     }
     const auto draw_page=[&](const std::vector<Object>& list,unsigned layer,const GarageArt* override_art=nullptr) {
         const auto* art=override_art?override_art:garage_art;
-        const bool common=layer==1,browser=layer==2;
+        const bool common=layer==1,browser=layer==2,trade_stats=layer==4;
         std::vector<std::size_t> order(list.size());for(std::size_t i=0;i<order.size();++i)order[i]=i;
         std::stable_sort(order.begin(),order.end(),[&](auto a,auto b){return pose(pose,list,list[a],0).z>pose(pose,list,list[b],0).z;});
         for(auto index:order) {
@@ -494,9 +504,32 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
             if(browser && (o.name=="Select_arrow_right" || o.name=="Select_arrow_left"))continue;
             if(browser&&o.name=="Unlocked_Icon"&&(!garage||garage->entries().empty()||
                !garage->entries()[garage->selected()].newly_unlocked))continue;
-            if(common && ((o.name.find("Hypo_")!=std::string::npos&&!package_preview) ||
+            if(common && ((o.name.find("Hypo_")!=std::string::npos&&!performance_preview) ||
                (o.name=="SecondaryCarLogo"&&(!garage||garage->page()!=GaragePage::trade_in))))continue;
             auto value=o.text;auto c=color(color,list,o,0);auto m=pose(pose,list,o,0);
+            if(trade_stats) {
+                if(o.name=="PerfStatsTitle")value=trade_review==1?
+                    "Performance of car you are trading from":"Performance of car you are trading to..";
+                if(o.name.rfind("Bar",0)==0&&o.name.size()>10) {
+                    const auto marker=o.name.find("_b");
+                    if(marker!=std::string::npos&&o.name[3]>='1'&&o.name[3]<='3') {
+                        const auto metric=unsigned(o.name[3]-'1');
+                        unsigned cell=0;
+                        for(auto at=marker+2;at<o.name.size();++at)cell=10*cell+unsigned(o.name[at]-'0');
+                        if(o.name.find("_Top_")!=std::string::npos&&
+                           float(cell)>std::ceil(std::clamp(trade_ratings[metric],0.F,1.F)*12.F))continue;
+                    }
+                }
+                if(o.type==1&&o.name.size()==11&&o.name.rfind("Upgrade_",0)==0&&o.name[9]=='_'&&
+                   o.name[8]>='0'&&o.name[8]<='4'&&o.name[10]>='1'&&o.name[10]<='9') {
+                    // 509570 maps display rows to package storage order.
+                    constexpr std::array<unsigned,9> fields{{2,6,7,5,3,8,0,1,4}};
+                    const auto field=fields[unsigned(o.name[10]-'1')];
+                    const auto level=trade_ride.unique[field]?4U:unsigned(trade_ride.performance[field]);
+                    if(unsigned(o.name[8]-'0')!=level)continue;
+                }
+                if(o.name=="next_tag"||o.name=="quit_tag"||o.name=="back_tag")continue;
+            }
             if(garage&&garage->page()==GaragePage::vinyl_layers&&!common&&!browser) {
                 const auto layer=garage->selected()+1;
                 if(o.name=="COLOUR_VINYL_BUTTON")value=profile.ride.installed[35-layer]?"X: Color Vinyl":"";
@@ -666,7 +699,7 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
                     //4AEEE0 changes width then restores the original left edge.
                     width*=installed_ratings[metric];
                 }
-                if(common&&package_preview&&o.name.find("Hypo_")!=std::string::npos) {
+                if(common&&performance_preview&&o.name.find("Hypo_")!=std::string::npos) {
                     const unsigned metric=o.name=="AccelHypo_P1"?0:o.name=="TopSpeedHypo_P1"?1:2;
                     const char* bars[]={"ACCEL_BAR_P1","TOP_SPEED_BAR_P1","HANDLING_BAR_P1"};
                     const auto bar=std::find_if(list.begin(),list.end(),[&](const auto& v){return v.name==bars[metric];});
@@ -688,8 +721,13 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
         }
     };
     if(page==0 || page==3)draw_page(garage_common,1);
-    if(page!=2 && page!=4)draw_page(career_browser,2);
-    draw_page(objects,0);
+    if(trade_review) {
+        const auto& stats=garage_pages.at(kTradeStatsFng);
+        draw_page(stats.objects,4,&stats);
+    }else {
+        if(page!=2 && page!=4)draw_page(career_browser,2);
+        draw_page(objects,0);
+    }
     if(page==0) {
         //4C2ED0/4C3240 clone master_thumb and bind each manufacturer's
         //original small logo. Placeholder thumbs are suppressed above.
@@ -709,7 +747,8 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
     }
     if(page==3&&garage) {
         if(garage->dialog()!=GarageDialog::none||garage->confirming()) {
-            auto dialog=garage_pages.at(0x21cd8c);
+            const bool trade=garage->page()==GaragePage::trade_in;
+            auto dialog=garage_pages.at(trade?kTradeConfirmFng:0x21cd8c);
             const auto kind=garage->dialog();
             const bool replace=kind==GarageDialog::vinyl_layer;
             const bool information=kind==GarageDialog::already_installed;
@@ -719,13 +758,13 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
                 kind==GarageDialog::stock_hood?"Hood vinyls can only be installed on^stock hoods. Continue and remove^your custom hood?":
                 information?"That part is already installed.":
                 profile.page==CareerPage::unique_reward?"Would you like to choose this part?":
-                garage->page()==GaragePage::trade_in?"Trade this car?":"Install this part now?";
+                "Install this part now?";
             const auto selected=garage->dialog_selected();
             const auto first=std::find_if(dialog.objects.begin(),dialog.objects.end(),[](const auto& o){return o.name=="button1";});
             const auto second=std::find_if(dialog.objects.begin(),dialog.objects.end(),[](const auto& o){return o.name=="button2";});
             if(selected&&first!=dialog.objects.end()&&second!=dialog.objects.end())std::swap(first->color,second->color);
             for(auto& o:dialog.objects) {
-                if(o.name=="message_blurb")o.text=message;
+                if(o.name=="message_blurb"&&!trade)o.text=message;
                 if(o.name=="button1")o.text=replace?"REPLACE":kind==GarageDialog::stock_hood?"Yes":"OK";
                 if(o.name=="button2"){o.text=replace?"REMOVE":kind==GarageDialog::stock_hood?"No":"Cancel";if(information)o.color[3]=0;}
                 if(o.name=="Highlight_1")o.color[3]=selected==0?255:0;
@@ -987,9 +1026,21 @@ void FrontendArt::draw_magazine(ScreenImage image,const CareerMagazineRecipe& re
     impl_->draw_magazine(Canvas{image},recipe,car,background);
 }
 
+bool FrontendArt::prepare_career_map(const std::filesystem::path& root,
+    const CareerProfile& profile,std::string& error) {
+    if(!career_uses_event_map(profile.page)) {
+        error="career profile is not on the event map or briefing";
+        return false;
+    }
+    return load_career_event(root,profile.selected_event,error);
+}
 bool FrontendArt::load_career_event(const std::filesystem::path& root,unsigned event,std::string& error){
     try{
-        const auto route=impl_->career_maps.at(event),background=impl_->career_backgrounds.at(event);
+        const auto route_entry=impl_->career_maps.find(event);
+        const auto background_entry=impl_->career_backgrounds.find(event);
+        if(route_entry==impl_->career_maps.end()||background_entry==impl_->career_backgrounds.end())
+            throw std::runtime_error("career map unavailable for event "+std::to_string(event));
+        const auto route=route_entry->second,background=background_entry->second;
         if(impl_->textures.count(route)&&impl_->textures.count(background)){error.clear();return true;}
         auto textures=impl_->textures;for(auto hash:impl_->magazine_textures)textures.erase(hash);
         for(const auto& map:impl_->career_maps)if(map.second!=route&&map.second!=background)textures.erase(map.second);

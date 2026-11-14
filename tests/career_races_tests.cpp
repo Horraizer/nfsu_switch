@@ -13,6 +13,7 @@
 #include "nfsu/race_hud.h"
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/frontend_scene.h"
+#include "nfsu/intro_movie.h"
 #include "nfsu/drive_session.h"
 #include "nfsu/track_render.h"
 #include "nfsu/ai_powertrain.h"
@@ -53,6 +54,18 @@ int main(int argc,char** argv) {
                         std::to_string(test.round)+": "+e.what());
                 }
             }
+            const CampaignSweepCase first_round{6,0};
+            const auto base=std::filesystem::path(argv[3])/"career-event-6-loss";
+            auto lost=load_campaign_finish_case(base,career,first_round,"CIVIC");
+            const auto bank=lost.bank;
+            const std::array<unsigned,4> places{{4,1,2,3}};
+            if(!apply_career_race_result(career,lost,4,places,0,error)||
+               !save_career(base,career,lost,error))throw std::runtime_error(error);
+            const auto resumed=load_campaign_finish_case(base,career,CampaignSweepCase{6,1},"CIVIC");
+            if(resumed.races_lost!=1||resumed.races_won||resumed.bank!=bank||
+               resumed.status[6]==kEventStatusWon||resumed.tournament.places[0]!=places)
+                throw std::runtime_error("lost tournament opener did not preserve standings and next round");
+            std::cout<<"PASS loss reloads tournament round two\n";
             std::cout<<"PASS career finish save cases="<<count<<'\n';return 0;
         }
         if(argc==3&&std::string(argv[2])=="--sweep-manifest") {
@@ -188,6 +201,76 @@ int main(int argc,char** argv) {
         const auto verify=[&](bool ok,unsigned line){if(!ok)throw std::runtime_error("line "+std::to_string(line)+": "+error);};
 #define check(...) verify((__VA_ARGS__),__LINE__)
         const std::string player_name="WWW_[Racer]~";
+        const char* entry_check=std::getenv("NFSU_CAREER_UNDERGROUND_ENTRY");
+        if(entry_check) {
+            check(event==0&&finish_sweep);
+            FrontendArt art;
+            FrontendUiFrame ui;
+            const auto check_ui=[&] {
+                const auto& atlas=art.atlas();
+                check(atlas.width&&atlas.height&&atlas.rgba.size()==std::size_t(atlas.width)*atlas.height*4);
+                check(!ui.vertices.empty()&&ui.vertices.size()%4==0&&ui.additive.size()==ui.vertices.size()/4);
+            };
+            check(art.load_startup(root,error,true));
+            CareerCatalog catalog;
+            check(catalog.load(root,error));
+            const std::filesystem::path profiles_path(entry_check);
+            check(std::filesystem::create_directory(profiles_path));
+            CareerProfiles profiles(profiles_path);
+            CareerProfileEntry entry;
+            check(profiles.create("Entry Civic",catalog,entry,error));
+            std::vector<CareerProfileEntry> entries;
+            unsigned selected=0;
+            check(profiles.list(entries,selected,error)&&selected<entries.size());
+            const auto active=entries.begin()+selected;
+            check(active->id==entry.id&&active->name==entry.name);
+            art.record_profiles(1280,720,entries,unsigned(active-entries.begin()),{},ui);
+            check_ui();
+            FrontendMenu menu(true,true,true);
+            art.record_ui(1280,720,menu,ui);
+            check_ui();
+            FrontendInput accept{};
+            accept.accept=true;
+            CareerProfile profile;
+            check(open_underground(menu.update(accept),root,*active,catalog,profile,error));
+            check(profile.page==CareerPage::intro&&profile.car.empty()&&profile.name==entry.name);
+            art.record_underground_welcome(1280,720,false,ui);
+            check_ui();
+            {
+                MovieReader movie((root/"Movies"/kUndergroundPrologueMovie).string());
+                MovieFrame frame;
+                check(movie.next_video(frame)&&frame.width&&frame.height&&frame.duration_units&&
+                    frame.rgba.size()==std::size_t(frame.width)*frame.height*4);
+            }
+            check(art.load_post_race(root,error));
+            const auto& starters=catalog.starters();
+            const auto civic=std::find_if(starters.begin(),starters.end(),[](const auto& car){return car.name=="CIVIC";});
+            check(civic!=starters.end());
+            check(catalog.intro_won(profile,error)&&catalog.movie_finished(profile,error)&&
+                catalog.buy(profile,std::size_t(civic-starters.begin()),error)&&catalog.movie_finished(profile,error)&&
+                save_career(entry.base,catalog,profile,error));
+            CareerCatalog loaded_catalog;
+            CareerProfile loaded;
+            check(open_underground(menu.update(accept),root,*active,loaded_catalog,loaded,error));
+            check(career_uses_event_map(loaded.page)&&loaded.car=="CIVIC"&&loaded.selected_event==1&&loaded.name==entry.name);
+            check(art.load_career_pages(root,loaded_catalog,error));
+            auto invalid_map=loaded;
+            invalid_map.selected_event=kCareerLastEvent+1;
+            check(!art.prepare_career_map(root,invalid_map,error)&&
+                error=="career map unavailable for event "+std::to_string(invalid_map.selected_event));
+            check(art.prepare_career_map(root,loaded,error));
+            art.record_career(1280,720,loaded_catalog,loaded,0,{},ui);
+            check_ui();
+            std::vector<unsigned char> globals;
+            std::vector<RaceTableIssue> issues;
+            check(load_race_image(root/"Global/GLOBALB.BUN",globals,issues));
+            FrontendGpuScene visible,owned;
+            check(visible.load(root,1280,720,error)&&
+                owned.load_owned_ride(root,1280,720,globals,loaded_catalog,loaded,error,visible.environment())&&
+                visible.adopt_garage(owned,error)&&visible.selected_car_type()=="CIVIC"&&
+                visible.frame(1.F/60.F,0,error)&&visible.commands().draw_count()&&
+                validate_recorded_commands(visible.commands(),error));
+        }
         const auto verify_finish_sweep=[&](RaceRun& run,RaceGpuScene& scene,unsigned round) {
             RaceGpuFrame frame;
             check(scene.frame(run.session(),frame,error));
@@ -207,14 +290,24 @@ int main(int argc,char** argv) {
                 if(t.go_valid&&t.step_ticks-t.go_ticks>=2*kRaceTicksPerSecond)break;
                 tick(t.go_valid);
             }
+            const auto& start=run.session().timing();
+            check(start.go_valid&&start.step_ticks-start.go_ticks>=2*kRaceTicksPerSecond&&
+                start.outcome==RaceOutcome::running);
             record();
             check(run.arm_finish_probe(error));tick(false);
             check(run.session().timing().outcome==RaceOutcome::finished&&run.session().player_won());
             record();
-            if(run.session().rival_count()||run.session().is_drift()) {
+            if(run.session().has_finish_driver()) {
+                const auto finish_ticks=run.session().timing().racers[0].finish_ticks;
+                const auto finish_position=run.session().car().position;
                 for(unsigned i=0;i<360;++i) {
                     tick(false);
                     if(i>=179&&run.session().car().owner_speeds.magnitude<=1.F)break;
+                }
+                if(run.session().is_time_trial()) {
+                    const auto position=run.session().car().position;
+                    check(position.x!=finish_position.x||position.y!=finish_position.y);
+                    check(run.session().timing().racers[0].finish_ticks==finish_ticks);
                 }
             }
             record();
@@ -615,8 +708,12 @@ int main(int argc,char** argv) {
                     kNoHandle,std::move(actor.shadow),error,true,actor.glow_anchors,&actor.hull));
                 actor.frame.reset();
             }
-            if(finish_sweep){verify_finish_sweep(run,scene,round);return 0;}
-            verify_payload(scene,run,hud,selected_car,*human->config.performance,&grid);
+            if(!finish_sweep||entry_check)verify_payload(scene,run,hud,selected_car,*human->config.performance,&grid);
+            if(finish_sweep) {
+                verify_finish_sweep(run,scene,round);
+                if(entry_check)std::cout<<"PASS Underground PC entry and UG0 GO+2\n";
+                return 0;
+            }
             if(backing_test){verify_zone_backing_finish(root,run,scene);return 0;}
             if (std::getenv("NFSU_CAREER_SHADOW_WITNESS")) {
                 if (shared_shadow_traffic == kNoHandle || !run.session().traffic())

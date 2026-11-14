@@ -66,5 +66,6 @@ struct LanMessage {
 bool lan_encode(const LanMessage&,std::vector<std::uint8_t>&,std::string&);
 bool lan_decode(const std::uint8_t*,std::size_t,LanMessage&,std::string&);
 // Serial arithmetic admits wraparound and rejects duplicates/old datagrams.
+bool valid_lan_frame(const LanRaceFrame&) noexcept;
 bool lan_newer(std::uint32_t value,std::uint32_t previous) noexcept;
 }

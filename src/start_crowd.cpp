@@ -727,12 +727,14 @@ bool load_drift_start_pose(const std::filesystem::path& root,const VehicleTrackC
     }catch(const std::exception& e){error=e.what();return false;}
 }
 bool StartCrowd::car(const RaceSession& session,VehicleState& out,CarAnimationState* animation) const {
-    if(!data_->anchored || data_->car_poses.empty())return false;
+    if(!data_->anchored || data_->car_poses.empty() || !session.start_cinematic())return false;
     // 47C400 speed=.5: native 47B290 multiplies the 30Hz clock by speed.
-    const double frame=std::max(0.0,double(session.start_scene_ticks())*15/kRaceTicksPerSecond);
-    const auto a=std::min(std::size_t(frame),data_->car_poses.size()-1),b=std::min(a+1,data_->car_poses.size()-1);
-    Pose pose{};const float f=float(frame-std::floor(frame));
-    for(unsigned k=0;k<12;++k)pose[k]=data_->car_poses[a][k]+f*(data_->car_poses[b][k]-data_->car_poses[a][k]);
+    const double frame=std::clamp(double(session.start_scene_ticks())*15/kRaceTicksPerSecond,
+                                  0.0,double(data_->car_poses.size()-1));
+    const auto a=std::size_t(frame),b=std::min(a+1,data_->car_poses.size()-1);
+    const float f=float(frame-double(a));
+    Pose pose;
+    if(!eagl::blend_pose(data_->car_poses[a],data_->car_poses[b],f,pose))return false;
     const auto m=multiply(pose_matrix(pose),data_->anchor),last=multiply(pose_matrix(data_->car_poses.back()),data_->anchor);
     const double heading=std::atan2(m[1],m[0]);
     if(animation) {
@@ -742,7 +744,6 @@ bool StartCrowd::car(const RaceSession& session,VehicleState& out,CarAnimationSt
             if(radius>0)animation->wheel_phase[w]=std::remainder(session.animation().wheel_phase[w]+travel/radius,6.28318530717958647692);
         }
     }
-    if(!session.start_cinematic())return false;
     out=session.car();out.position.x+=m[12]-last[12];out.position.y+=m[13]-last[13];
     out.orientation={std::cos(heading*.5),0,0,std::sin(heading*.5)};
     return true;

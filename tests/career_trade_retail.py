@@ -2,9 +2,19 @@
 from pathlib import Path
 import argparse,os,subprocess,tempfile
 ap=argparse.ArgumentParser()
+ap.add_argument('--garage',action='store_true')
 for key in ('app','root','work'):ap.add_argument('--'+key,type=Path,required=True)
 a=ap.parse_args();a.work.mkdir(parents=True,exist_ok=True)
 out=Path(tempfile.mkdtemp(prefix='career-trade-',dir=a.work))
+if a.garage:
+ destination=os.path.relpath(out/'garage-live',Path.cwd());assert destination.isascii()
+ result=subprocess.run([str(a.app.resolve()),str(a.root),destination,'garage-live'],
+                       stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=160)
+ log=result.stdout.decode('ascii',errors='backslashreplace')
+ (out/'garage.log').write_text(log,encoding='ascii')
+ print(log,flush=True)
+ assert result.returncode==0 and 'PASS LIVE all visual menus' in log
+ raise SystemExit(0)
 for name,full in (('starter-stock',False),('all-cars-tuned',True)):
  env=os.environ.copy()
  for key in ('NFSU_TRADE_ALL_CARS','NFSU_TRADE_TUNED'):env.pop(key,None)

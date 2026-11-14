@@ -107,6 +107,16 @@ int main() {
         AiRivalActionController controller;AiRivalActionOutput result;
         check(controller.step(in,result)&&result.action.kind==(special?2:1),
             "ordinary traffic passes through the native admission gate to passing action");
+        if(special) {
+            in.finished=true;
+            in.traffic_continuation=false;
+            ++in.tick;world.tick=planner.path.tick=planner.fitness.tick=in.tick;
+            check(controller.step(in,result)&&result.action.kind==17&&result.speed.ready&&result.speed.speed==0,
+                  "finishing on the action completion tick installs the stop action");
+            ++in.tick;world.tick=planner.path.tick=planner.fitness.tick=in.tick;
+            check(controller.step(in,result)&&result.action.kind==17&&result.speed.speed==0,
+                  "finished rival keeps its stop action on subsequent updates");
+        }
         if(!special)for(int category=11;category<=16;++category) {
             for(auto& cell:road.cells)for(unsigned slot=0;slot<7;++slot) {
                 cell.lower[slot]=-100;cell.upper[slot]=100;

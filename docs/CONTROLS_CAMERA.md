@@ -191,6 +191,32 @@ whose update is slot 1, 0x00489690. The name `CubicCameraMover(DCC)` at
 exception funclet, so the fit is an INFERENCE; the update's behaviour below
 is what the rest rests on.
 
+**Live race mover.** The event 19 PC 1.4 USA capture uses type 17, vtable
+0x006C7E58, update 0x0048BCB0. It advances separate cubic channels for the
+eye, look target and chase direction with 0x00593D40, then queues the next
+requests through 0x0048B8C0. The chase frame originates at actor +0x50 and
+the fixed view uses actor +0x60 and the full body basis. The authored
+durations and acceleration limits are sampled from 0x00705C70 at the fixed
+0x006B6E28 input. Four acceleration samples feed the arm and aim requests.
+Changing between fixed and chase views snaps the affected channels
+(0x0048B410). The ordinary camera selection is saved in Switch
+presentation options. Legacy deterministic replay tooling retains the
+type-1 camera so its historical frame comparisons remain useful.
+
+The live chase uses the 0x004838E0 clearance sequence: clip the segment
+from the centre of mass, then average up to three passes of polygon-normal
+corrections. The track adapter uses the port's immutable collision index.
+The eye also clears the actor's vertical bounds sphere from 0x00483B90.
+The resulting view retains the actor's projected framing via 0x00483AD0.
+The ordinary race noise table 0x006B6EB8 supplies zero gain to
+0x00483640. The alternate table selected by 0x0078A344 or 0x007361A8 has
+nonzero gain and belongs to a separate camera mode. Impact and countdown
+effects have separate inputs and still apply.
+
+The original x86 witnesses in tools/race_camera_native.py cover the
+stationary far-to-near response, the world eye in a straight acceleration
+step and wall clearance. nfsu_drive_tests and nfsu_race_session_tests
+compare the corresponding results with the port.
 **The anchors, per car.** The update looks up the anchor of its POV
 (0x0047D680) in the car's CarTypeInfo record at +0xB50 (the record is car
 +0xC, plus 0xB50 at 0x004897C2): two u32 counts, eight bytes that every
@@ -270,14 +296,15 @@ second, 171.8 degrees a second; and truncation leaves a dead band: at 60
 frames a second a lag of 11 units, 0.06 degrees, never closes. RECOVERED.
 The factor is view +0x68, which the constructor sets to 1 (0x0048947B) and
 each frame moves by 0.24316 (0x006B6C78) toward 1 when car +0x3CC is above
-2 and toward 0 otherwise; what +0x3CC holds was not traced, and the factor
-is held at 1 (`ChaseCameraApproximations::lag_factor`).
+2 and toward 0 otherwise. +0x3CC is the published wheel support count.
+This ramp belongs to the type-1 mover. Compatibility runs use
+`ChaseCameraApproximations::lag_factor`.
 
 **The eye.** The anchor's offsets are turned by the lagged heading
-(0x0048A7C4..0x0048A7EE) and added to car +0x60 (0x0048A826). Where +0x60
-is on the car - the centre of mass or the body's origin - was not traced;
-this layer uses the body's origin, where the meshes are placed, because the
-anchors share the frame of the wheel and part tables (APPROXIMATION).
+(0x0048A7C4..0x0048A7EE) and added to car +0x60 (0x0048A826). The owner Stadium capture shows
+actor +0x60 matches rigid body +0x20, the centre of mass; actor +0x50 is the
+body's mesh origin. The live type-17 chase uses the mesh origin, and
+its fixed bumper view uses the centre of mass.
 
 **What was read and is not reproduced.**
 
@@ -310,10 +337,22 @@ anchors share the frame of the wheel and part tables (APPROXIMATION).
   height toward -3 and the pitch toward 0x1450 (0x0048A6CE..0x0048A784;
   16, -1 in the shared layout). Read as the camera before and after the race
   proper; not needed to drive.
-- A tilt: 0x0048A505..0x0048A609 follows the car's roll angle (0x00564CD0
-  of car +0x98) by a ninth one way and a third the other, smoothed at 25/8
-  of the difference a second, plus a term of 0x00441D80 times 250. This
-  camera keeps the world's up.
+- A tilt: 0x0048A505..0x0048A609 follows the car's pitch from the
+  vertical component of its forward axis (0x00564CD0 of actor +0x98).
+  Wheel support selects the angle correction; the angle difference is
+  divided by eight toward zero outside the small-angle branch, then
+  integrated with gain 25 and simulation dt. 0x0048A60B adds 250 times the
+  positional noise from 0x00441D80 with material 8. The live view rotates
+  its arm and aim with this result; its roll remains level. It holds the
+  chase history while a roadside cinematic owns the view. Final terrain
+  clearance and the precise landing return are still not a full match.
+- An impact pulse: world 420FD2 passes the completed actor acceleration to
+  575200, which starts an envelope when the weighted vector passes its
+  threshold. 48ACE5 applies 575040 to the finished camera transform.
+  574EB0 advances the envelope in scaled world time; the projection
+  skips slow motion and alternates visible and silent half-waves.
+  The live ordinary race camera uses these rules. This pulse does not
+  change vehicle physics, impact admission, or the camera eye position.
 - A sphere around the car (0x0048A96F..0x0048AA60): an eye closer to car
   +0x60 than the larger of two of the car's sizes plus 0.7 is lifted onto
   the sphere, and the pitch turned toward 0x2710 in proportion. A chase
@@ -336,12 +375,12 @@ not there.
 | --- | --- | --- |
 | anchors | the single-player list of CarTypeInfo +0xB50, POVs 0, 1 and 4 | RECOVERED |
 | distance, height | `-along`, `height`, held there | RECOVERED values; APPROXIMATION to hold them: the game's pull-back (above) is not reproduced, its input not traced |
-| pitch | the anchor's word, looking down | RECOVERED value, INFERENCE of the direction |
+| pitch | anchor plus the live body's filtered elevation and positional noise | RECOVERED inputs and filter; final retail view composition is incomplete |
 | target heading | the blend of heading and velocity by t(speed), 8 to 13 m/s, the reversing reflection | RECOVERED |
-| lag | the spring above, integer, per camera update | RECOVERED; the factor held at 1 |
+| lag | the spring above, integer, per camera update | RECOVERED for type 1 |
 | update rate | once per 1/60 s tick, dt 1/60 | the game updates once per rendered frame; its world ticks at 60 Hz (docs/VEHICLE.md) |
-| anchor point | the body frame's origin | APPROXIMATION |
-| roll | none: the camera's up is the world's, tilted only by the pitch | APPROXIMATION (the tilt is not reproduced) |
+| anchor point | type 1 uses the centre of mass in 0x0048A826 | RECOVERED; the live type-17 origins are described above |
+| roll | none: the camera's up is the world's, tilted only by the pitch | Independent roll is not reproduced |
 | field of view | the POV's word as the horizontal field of view of a 4:3 view, its vertical angle, 56.75 degrees, kept on any frame (`vertical_4_3`); `horizontal` keeps the width instead, 44.11 degrees high on 16:9 | INFERENCE of the axis; APPROXIMATION of the widening: the Switch is 16:9 and this is the picture the game drew on its own 4:3 screen, widened, where `horizontal` would crop the top and bottom, 44.11 degrees against 56.75. Even with the 4:3 height, POV 1 puts the rear plate on the frame's bottom edge (frame 840 below) |
 | clip planes | near 0.5 m, far 2000 m | 0.5 is what 0x0048ACD0 writes into view +0xBC for every chase POV (0.4 for POV 3, 0x006FBF1C); that +0xBC is the near plane was not traced. Far is invented |
 | first POV, cycle | POV 0 first, then 1, then 4 (`next_pov`); a change keeps the lag and the heading it chases, so the new view starts where the old one looked | APPROXIMATION: the game's initial POV bytes were not traced; POV 0 is the one that shows the whole car on a 4:3 view. speed.exe builds its mover with the lag zeroed (0x00489398) and the previous target seeded from car +0x3B4 (0x0048938E); whether a POV change rebuilds it or keeps it was not traced |

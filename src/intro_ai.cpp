@@ -168,13 +168,12 @@ public:
         }
         return true;
     }
-    bool camera_road(AiRoadChain& road,int& category)const {
-        if(!contexts[3].selected)return false;
-        auto chain=contexts[3].chain;auto decisions=policies[3];auto random=rng;
-        AiRoadPolicyInput policy;policy.direction=direction_;policy.role=1;
-        policy.decision_start=0;policy.probabilities={0,0,1};
-        if(!ai_road_extend(lines,events,reverse,contexts[3].category,100,policy,decisions,random,chain))return false;
-        road=chain;category=contexts[3].category;return true;
+    bool camera_road(const AiRoadContextInput& input,const AiRoadPolicyInput& policy,AiRoadContext& context)const {
+        // 42C4B0 builds a road span at the current body pose after physics.
+        // The driver context was prepared before physics and is not this span.
+        auto decisions=policies[3];auto random=rng;
+        AiRoadContextResult result;
+        return ai_road_update_context(lines,events,reverse,input,policy,decisions,random,context,result);
     }
     bool drag_human_snapshot(IntroDragSnapshot& out)const {
         if(!drag_||!contexts[3].selected)return false;
@@ -243,7 +242,7 @@ public:
         observed_tick_=tick;return true;
     }
     bool plan(const RaceSession& race,RaceRivalPlans& batch,int held_lane) {
-        const bool solo_finish=race.is_drift()&&race.timing().outcome==RaceOutcome::finished;
+        const bool solo_finish=race.has_finish_driver()&&race.timing().outcome==RaceOutcome::finished;
         if((!rival_count_&&!drag_&&!solo_finish)||race.rival_count()!=rival_count_||!observe_human(race))return false;
         AiPathCollisionWorld world;world.count=4;world.tick=std::uint32_t(race.timing().now_ticks);
         world.retain_parameters={16,0,0};world.prediction_horizon=.75F;
@@ -508,6 +507,7 @@ public:
                 if(!full&&!blocking&&!human_side) {
                     auto& p=batch.cars[i];p=retained_plan_[i];p.path=published[i].path;
                     p.recovery_cleanup=false;
+                    p.physics_full_update=false;
                     p.reset_car=stalled_reset_[i];
                     // 45FAC8 reads current actor3B8 even on retained-plan frames.
                     p.route_distance=race.rival(i).travelled_distance();
@@ -618,6 +618,10 @@ public:
                 p.driver_category=int(rival_grades_[i]);p.route_distance=race.rival(i).travelled_distance();
                 p.recovery_cleanup=action.reset_driver;
                 p.reset_car=action.rollover_reset||stalled_reset_[i];
+                p.physics_full_update=full;
+                const auto kind=action.action.kind;
+                p.path_physics_allowed=action.action.handle&&kind!=9&&kind!=10&&kind!=11&&
+                    kind!=12&&kind!=14&&selected_context[i]!=-2&&track_number_!=1099;
                 //44B707 fast human-side refresh only publishes a path. Its
                 //previous desired speed, catchup scale and RNG jitter survive.
                 if(full||blocking) {
@@ -655,6 +659,7 @@ public:
                     if(retail_speed_) {
                         if(!ai_action_publish_speed(speed,speed_state[i],rng,speed_output))return false;
                         p.desired_speed=speed_output.speed;p.enabled=speed_output.enabled;
+                        p.speed_duration=speed_output.duration;
                     }else p.desired_speed=action.speed.route_speed?12.F:action.speed.speed;
                 }
                 minimum_speed[i]=std::min(minimum_speed[i],p.desired_speed);
@@ -688,7 +693,10 @@ IntroAiPlanner::IntroAiPlanner()=default;
 IntroAiPlanner::~IntroAiPlanner()=default;
 std::uint32_t* IntroAiPlanner::world_random()noexcept{return state_?state_->world_random():nullptr;}
 void IntroAiPlanner::set_recovery_trace(bool value) {trace_recovery_=value;if(state_)state_->set_recovery_trace(value);}
-bool IntroAiPlanner::camera_road(AiRoadChain& road,int& category)const {return state_&&state_->camera_road(road,category);}
+bool IntroAiPlanner::camera_road(const AiRoadContextInput& input,const AiRoadPolicyInput& policy,
+                                 AiRoadContext& context)const {
+    return state_&&state_->camera_road(input,policy,context);
+}
 bool IntroAiPlanner::drag_human_snapshot(IntroDragSnapshot& out)const {return state_&&state_->drag_human_snapshot(out);}
 bool IntroAiPlanner::rail_snapshot(unsigned i,IntroRailSnapshot& out)const {return state_&&state_->rail_snapshot(i,out);}
 bool IntroAiPlanner::observe_human(const RaceSession& race) {

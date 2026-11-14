@@ -166,7 +166,93 @@ int main(int argc,char** argv) {
         check(scene.set_texture_filter(filter),"filter selection failed");check(race.prepare_metadata(root,error),error);
         check(scene.load(posix_file_system(),root,error,nullptr,nullptr,false,true,shaded),error);
         check(race.start(root,scene.track(),error),error);
-        RaceParticles expected;bool saw_live=false;
+        // Exercise material variants with the same retail data loaded by the scene.
+        const std::array<unsigned,7> surfaces{1,4,5,6,8,15,16};
+        const std::array<RaceParticleEffect,7> effects{RaceParticleEffect::road,
+            RaceParticleEffect::blue,RaceParticleEffect::yellow,RaceParticleEffect::red,
+            RaceParticleEffect::dirt,RaceParticleEffect::grass,RaceParticleEffect::rough_road};
+        const std::array<RaceParticleAtlas,7> atlases{RaceParticleAtlas::smoke,
+            RaceParticleAtlas::colored,RaceParticleAtlas::colored,RaceParticleAtlas::colored,
+            RaceParticleAtlas::dust,RaceParticleAtlas::dust,RaceParticleAtlas::smoke};
+        for (unsigned i=0; i<surfaces.size(); ++i) {
+            auto probe=scene.particles();
+            VehicleTrackTelemetry step;
+            step.orientation.w=1;
+            auto& wheel=step.model.wheels[0];
+            wheel.contact=true;
+            wheel.surface=surfaces[i];
+            wheel.effect_slip_velocity={10,0};
+            for (step.step=1; step.step<=48; ++step.step) probe.advance(step,race.session().spec());
+            check(probe.smoke_count()>0,"retail surface did not produce particles");
+            const auto& particle=probe.smoke(0);
+            check(particle.effect==effects[i] && particle.atlas==atlases[i],
+                  "retail surface selected the wrong particle preset or atlas");
+            const auto& layout=kRaceParticleAtlases[static_cast<unsigned>(atlases[i])];
+            const auto cell=race_particle_atlas_cell(particle,probe.step());
+            check(cell>=layout.first_cell && cell<layout.first_cell+layout.columns*layout.rows,
+                  "particle cell escaped its authored atlas grid");
+            const double base_life=atlases[i]==RaceParticleAtlas::dust ? 2.5 : 4.0;
+            check(particle.life_ticks>=unsigned(.7*base_life*1024) &&
+                  particle.life_ticks<=unsigned(base_life*1024),"particle life escaped its retail range");
+            VehicleVec3 at;
+            double diameter=0,opacity=0;
+            std::array<unsigned,3> tint{};
+            check(probe.visual(particle,at,diameter,opacity,tint) && opacity>0 &&
+                  opacity<=.5 && at.z>particle.origin.z,
+                  "retail smoke curve or upward motion missing");
+        }
+        for (unsigned surface : {13U,14U}) {
+            auto wet=scene.particles(), dry=scene.particles();
+            VehicleTrackTelemetry step;
+            step.orientation.w=1;
+            step.velocity.x=35;
+            for (auto& wheel : step.model.wheels) {
+                wheel.contact=true;
+                wheel.surface=surface;
+            }
+            bool spray=false;
+            for (step.step=1; step.step<=180; ++step.step) {
+                wet.advance(step,race.session().spec(),10,surface);
+                dry.advance(step,race.session().spec(),10,1);
+                check(dry.smoke_count()==0,"water emitted without a water material beneath the car");
+                for (unsigned i=0; i<wet.smoke_count(); ++i)
+                    spray|=wet.smoke(i).atlas==RaceParticleAtlas::water_spray;
+            }
+            check(spray,"water drive group did not select DUSTA_CS");
+        }
+        {
+            auto sparks=scene.particles(), gentle=scene.particles();
+            TrackContactWorld world;
+            world.collision.polygons.resize(1);
+            world.collision.polygons[0].unknown0[2]=20;
+            VehicleTrackTelemetry step;
+            step.step=1;
+            step.velocity.x=22;
+            step.audio_contact_count=1;
+            step.audio_contacts[0].normal={0,1,0};
+            step.audio_contacts[0].point={3,4,5};
+            step.audio_contacts[0].slide_mps=25;
+            sparks.advance(step,race.session().spec(),10,0,&world);
+            step.audio_contacts[0].slide_mps=15;
+            gentle.advance(step,race.session().spec(),10,0,&world);
+            check(sparks.spark_count()>0 && gentle.spark_count()==0,
+                  "solid wall scrape did not follow the speed gate");
+            check(sparks.spark(0).origin.z==5,"wall spark lost the collision witness");
+            RacePairFrame contact;
+            contact.count=1;
+            auto& bumper=contact.pairs[0].contact;
+            bumper.applied=true;bumper.point={3,4,5};bumper.impulse={10,0,0};
+            gentle.emit_car_impact_sparks(contact,{});
+            check(gentle.spark_count()==0,"car impact threshold is strict");
+            bumper.impulse={15,0,0};
+            gentle.emit_car_impact_sparks(contact,{100,0,0});
+            check(gentle.spark_count()==0,"car sparks respect camera distance");
+            gentle.emit_car_impact_sparks(contact,{});
+            check(gentle.spark_count()==2&&gentle.spark(0).effect==RaceParticleEffect::car_impact&&
+                  gentle.spark(0).atlas==RaceParticleAtlas::sparks&&gentle.spark(0).origin.z==5,
+                  "bumper impact must emit authored car sparks at the collision point");
+        }
+        RaceParticles expected=scene.particles();bool saw_live=false;
         for(unsigned tick=0;tick<kRaceInputMaxTicks;++tick) {
             const bool live_witness=!saw_live && expected.smoke_count()>=4 && expected.spark_count()==0;
             if(tick==0 || tick==1 || tick==1200 || live_witness) {

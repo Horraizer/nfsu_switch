@@ -14,7 +14,6 @@ public:
     std::array<bool,128> reverse{};
     int direction=0,performance_category=0;
     bool prepare(const VehicleState& car,AiRoadChain& road,int& category)const {
-        if(planner)return planner->camera_road(road,category);
         AiRoadContext context;context.category=performance_category;
         AiRoadContextInput input;input.selection.position={float(car.position.x),float(car.position.y),float(car.position.z)};
         TrackPathCoordinate coordinate;const float xy[]={input.selection.position[0],input.selection.position[1]};
@@ -24,7 +23,9 @@ public:
         input.initial_horizon=input.retained_horizon=100;input.back_margin=24;
         AiRoadPolicyInput policy;policy.direction=direction;policy.role=1;policy.decision_start=0;policy.probabilities={0,0,1};
         AiRoadPolicy decisions;std::uint32_t rng=0x60000000U;AiRoadContextResult result;
-        if(!ai_road_update_context(lines,events,reverse,input,policy,decisions,rng,context,result)||!context.selected)return false;
+        const bool prepared=planner ? planner->camera_road(input,policy,context) :
+            ai_road_update_context(lines,events,reverse,input,policy,decisions,rng,context,result);
+        if(!prepared||!context.selected)return false;
         road=context.chain;category=context.category;return true;
     }
 };

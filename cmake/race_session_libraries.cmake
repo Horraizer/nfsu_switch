@@ -5,7 +5,7 @@ nfsu_enable_warnings(nfsu_eagl_animation)
 add_library(nfsu_race_session src/race_session.cpp src/crash_camera.cpp src/race_crash_road.cpp src/race_particles.cpp src/race_setup.cpp
     src/handling_telemetry.cpp src/intro_ai.cpp src/race_leaderboard.cpp src/race_style.cpp src/race_drift.cpp src/traffic_motion.cpp src/race_traffic.cpp src/race_props.cpp src/race_world_motion.cpp)
 target_link_libraries(nfsu_race_session PUBLIC nfsu_drive_session nfsu_vehicle_track nfsu_race_timing
-    nfsu_vehicle_tuning nfsu_core nfsu_ai_driver nfsu_race_events nfsu_eagl_animation)
+    nfsu_vehicle_tuning nfsu_core nfsu_texture_decode nfsu_ai_driver nfsu_race_events nfsu_eagl_animation)
 target_compile_features(nfsu_race_session PUBLIC cxx_std_17)
 nfsu_enable_warnings(nfsu_race_session)
 # Inherits cmake/floating_point.cmake; the whole-tree Switch census includes

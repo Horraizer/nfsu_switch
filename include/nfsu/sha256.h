@@ -12,8 +12,8 @@ namespace nfsu {
 // Every reference frame this project pins is named by the SHA-256 of its
 // TGA file, printed by a host tool from the file on disk. A program that
 // writes no file - the Switch application writes nothing on the SD card -
-// needs its own digest to report the same number, and this is it. Standard
-// library only, integer arithmetic only, and no state outside the object.
+// needs its own digest to report the same number. All message state is local
+// to the object. Switch uses the ARM SHA-256 instructions for full blocks.
 using Sha256Digest = std::array<std::uint8_t, 32>;
 
 class Sha256 {
@@ -32,6 +32,7 @@ public:
 private:
     void reset() noexcept;
     void compress(const std::uint8_t* block) noexcept;
+    void compress_blocks(const std::uint8_t* blocks, std::size_t count) noexcept;
 
     std::array<std::uint32_t, 8> state_{};
     std::array<std::uint8_t, 64> block_{};

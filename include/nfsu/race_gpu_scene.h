@@ -63,6 +63,7 @@ public:
     }
     void set_particles_enabled(bool enabled) { particles_enabled_ = enabled; }
     void set_start_scenes_enabled(bool enabled) { start_scenes_enabled_ = enabled; }
+    const RaceParticles& particles() const noexcept { return particles_; }
     void advance_particles(const RaceSession& session) noexcept {
         if (particles_enabled_) particles_.advance(session);
     }
@@ -114,6 +115,7 @@ public:
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);
+    bool frame_split_view(const RaceSession&,const ChaseCameraView&,unsigned player,RaceGpuFrame&,std::string&);
     // Append before the first frame/upload. Payloads move into this stable owner.
     bool add_rival(PreparedCarScene scene,std::vector<PreparedInstance> base,
                    std::size_t skin_source,CarShadowAsset shadow,std::string& error,bool traffic=false,
@@ -123,6 +125,8 @@ public:
     // Conservative metadata/capacity estimate; payloads are borrowed once.
     std::uint64_t cache_bytes() const;
 private:
+    bool frame_view(const RaceSession&,RaceGpuFrame&,std::string&,RaceFrameProfile*,bool,
+                    TimingService*,const ChaseCameraView*,unsigned player);
     TrackSlice track_;
     struct AnimatedTexture {std::size_t animation=0,first=0;std::vector<std::size_t> frames;};
     std::vector<AnimatedTexture> animated_textures_;
@@ -250,6 +254,7 @@ private:
     std::size_t skin_source_ = kNoHandle;
     std::uint64_t car_bytes_ = 0;
     RaceParticles particles_;
+    RaceParticleTextures particle_textures_;
     std::unique_ptr<RaceSkidMarks> skids_;
     bool particles_enabled_ = false;
     std::size_t car_draw_count_ = 0;

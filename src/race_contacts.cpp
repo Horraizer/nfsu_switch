@@ -152,6 +152,10 @@ static bool resolve_pair_impl(VehicleState& sa,const VehicleSpec& as,const RaceC
     if(!na.rigid_body_ready)vehicle_import_rigid(as.handling,na);
     if(!nb.rigid_body_ready)vehicle_import_rigid(bs.handling,nb);
     if(job&&context&&context->refresh) {
+        // 46B72F/46B73C write the corrected body origins before either
+        // component refresh. Smokeable refresh publishes from rigid state.
+        na.rigid_body.position=narrow(na.position);
+        nb.rigid_body.position=narrow(nb.position);
         if(!context->refresh(context->refresh_owner,0,na)||
            !context->refresh(context->refresh_owner,1,nb))return false;
     }
@@ -429,11 +433,11 @@ bool update_race_track_polygon_cache(const TrackContactWorld& world,const RaceCo
 
 bool race_track_candidates(const TrackContactWorld& world,const VehicleState& s,
     const RaceTrackBodyBounds& bounds,const RaceTrackPolygonCache& cache,
-    const std::vector<std::size_t>& registered,std::vector<std::size_t>& out) {
+    const std::unordered_map<std::size_t,std::size_t>& registered,std::vector<std::size_t>& out) {
     out.clear();if(!world.valid||!cache.valid)return false;
     const float x=float(s.position.x),y=float(s.position.y),r=bounds.radius;
     for(auto index:cache.polygons) {
-        if(std::find(registered.begin(),registered.end(),index)!=registered.end())continue;
+        if(registered.find(index)!=registered.end())continue;
         if(index>=world.collision.polygons.size())return false;
         const auto& p=world.collision.polygons[index];
         std::array<ContactVector,4> corners;

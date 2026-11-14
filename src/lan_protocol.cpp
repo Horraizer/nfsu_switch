@@ -26,7 +26,8 @@ bool valid_input(const GamepadState& p){
     for(auto a:p.axes)if(a<kAxisMin||a>kAxisMax)return false;
     return true;
 }
-bool valid_frame(const LanRaceFrame& f){
+}
+bool valid_lan_frame(const LanRaceFrame& f) noexcept {
     if(f.stage>4||f.outcome>3||f.countdown>4||f.step>8000000||
        f.world_ticks<0||f.world_ticks>536870912||f.race_ticks<0||f.race_ticks>536870912||
        f.start_ticks<0||f.start_ticks>536870912||f.countdown_start<0||f.countdown_start>536870912)return false;
@@ -50,6 +51,7 @@ bool valid_frame(const LanRaceFrame& f){
     }
     return true;
 }
+namespace {
 void write_car(Writer& w,const LanCarFrame& c){
     for(auto x:c.position)w.real(x);
     for(auto x:c.velocity)w.real(x);
@@ -91,7 +93,7 @@ bool lan_encode(const LanMessage& m,std::vector<std::uint8_t>& out,std::string& 
     if(unsigned(m.kind)<1||unsigned(m.kind)>6||m.config!=kLanConfig||
        (m.kind==LanMessageKind::welcome&&!valid_lan_options(m.race))||
        (m.kind==LanMessageKind::input&&!valid_input(m.input))||
-       (m.kind==LanMessageKind::snapshot&&!valid_frame(m.frame))){error="invalid LAN message";return false;}
+       (m.kind==LanMessageKind::snapshot&&!valid_lan_frame(m.frame))){error="invalid LAN message";return false;}
     Writer w;
     for(auto x:{'N','F','S','L'})w.u8(unsigned(x));
     w.u8(1);w.u8(unsigned(m.kind));
@@ -137,7 +139,7 @@ bool lan_decode(const std::uint8_t* bytes,std::size_t size,LanMessage& out,std::
     for(auto& c:f.cars)read_car(r,c);
     }
     if(!r.good||r.at!=size||(m.kind==LanMessageKind::input&&!valid_input(m.input))||
-       (m.kind==LanMessageKind::snapshot&&!valid_frame(m.frame))){error="invalid LAN payload";return false;}
+       (m.kind==LanMessageKind::snapshot&&!valid_lan_frame(m.frame))){error="invalid LAN payload";return false;}
     out=m;error.clear();return true;
 }
 }

@@ -15,6 +15,9 @@
 #include <vector>
 namespace nfsu {
 enum class FrontendAction { none, underground, free_drive, profiles, exit, multiplayer, options, statistics };
+bool open_underground(FrontendAction,const std::filesystem::path&,const CareerProfileEntry&,
+                      CareerCatalog&,CareerProfile&,std::string& error);
+bool career_uses_event_map(CareerPage) noexcept;
 struct FrontendInput { bool up=false, down=false, accept=false, back=false, left=false, right=false, profiles=false; };
 struct RacePresentationOptions {
     bool motion_blur=true;
@@ -23,6 +26,7 @@ struct RacePresentationOptions {
     bool metric_speed=false;
     std::uint32_t race_height=0; // Auto follows handheld/docked mode.
     bool diagnostic_logs=false;
+    int camera_pov=0;
 };
 class FrontendMenu {
 public:
@@ -283,7 +287,8 @@ public:
     ~FrontendArt();
     bool load(const std::filesystem::path& root, std::string& error,bool background=true);
     bool load_startup(const std::filesystem::path& root,std::string& error,bool splash=false);
-    void draw_startup_splash(ScreenImage image)const;
+    unsigned startup_prompt_alpha(unsigned tick)const;
+    void draw_startup_splash(ScreenImage image,unsigned tick=~0U)const;
     void release_startup_splash();
     bool load_underground_welcome(const std::filesystem::path& root,std::string& error);
     void draw_underground_welcome(ScreenImage image,bool exit_selected=false,unsigned tick=600)const;
@@ -304,6 +309,7 @@ public:
     void record_post_race(unsigned width,unsigned height,const PostRaceMenu& menu,
                           const PostRaceValues& values,FrontendUiFrame& frame)const;
     bool load_career_event(const std::filesystem::path&,unsigned event,std::string& error);
+    bool prepare_career_map(const std::filesystem::path&,const CareerProfile&,std::string& error);
     bool load_magazine(const std::filesystem::path&,const CareerMagazineRecipe&,std::string& error);
     void draw_magazine(ScreenImage,const CareerMagazineRecipe&,const std::string& car,bool background)const;
     void record_magazine(unsigned width,unsigned height,const CareerMagazineRecipe&,

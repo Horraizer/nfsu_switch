@@ -3,7 +3,8 @@ import json,struct,sys,tempfile,unittest,zipfile
 from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
-from original_world_recorder import BinaryWriter,CALL,SNAP,decode_snapshot,package
+from original_world_recorder import BinaryWriter,CALL,SNAP,decode_snapshot,package,sample_landing_camera
+from original_recorder import CLOCK,FRAME,Sampler
 
 def call(seq=1,kind=1,phase=1):
     row=[0]*40;row[0]=seq;row[1]=1;row[2]=kind;row[3]=phase;row[6]=2
@@ -22,6 +23,54 @@ def batch(stream,number,first=0,count=1):
     return dict(kind='binary',stream=stream,batch=number,first=first,count=count,words=40 if stream=='calls'else 1344)
 
 class TapeTests(unittest.TestCase):
+    def test_landing_camera_same_frame_and_unavailable_view(self):
+        view_address=0x800000
+        actor,owner,active,saved=0x810000,0x820000,0x830000,0x840000
+        matrix=bytearray(0x200)
+        mover=bytearray(0x6c)
+        struct.pack_into('<I',mover,0,0x6c7fc8)
+        struct.pack_into('<I',mover,0xc,1)
+        struct.pack_into('<H',mover,0x58,65112)
+        struct.pack_into('<f',mover,0x68,.75)
+        pulse=bytearray(0x20)
+        struct.pack_into('<3f',pulse,0,0.,0.,-.125)
+        struct.pack_into('<I3f',pulse,0x10,0x704570,.25,.5,17.)
+        roadside=bytearray(0x6c)
+        struct.pack_into('<I',roadside,0xc,15)
+        struct.pack_into('<3f',matrix,0x40,12.,34.,56.)
+        struct.pack_into('<3f',matrix,0x1e0,1.,2.,3.)
+        class Memory:
+            def __init__(self):
+                self.values={FRAME:15,CLOCK:1000,0x740500:view_address,0x78a2f0:1002,actor+0x18:owner}
+                self.regions={(owner+0x27c,12):struct.pack('<3I',active,saved,0),
+                              (active,0x6c):bytes(roadside),(saved,0x6c):bytes(mover),
+                              (0x73b220,0x20):bytes(pulse),
+                              (actor+0x80,12):struct.pack('<3f',0.,0.,256.),
+                              (0x73457c,4):struct.pack('<f',.125)}
+            def read(self,address,size):
+                if address==view_address and size==len(matrix):return bytes(matrix)
+                if size==4 and address in self.values:return struct.pack('<I',self.values[address])
+                return self.regions.get((address,size))
+        memory=Memory()
+        sampler=Sampler(memory)
+        sample=dict(cross_frame=False,frame_after=15,clock_after=1000,actors=[dict(address=actor,role=1)])
+        recorded=sample_landing_camera(sampler,sample)
+        self.assertFalse(recorded['cross_frame'])
+        self.assertEqual(recorded['eye'],[12.,34.,56.])
+        self.assertEqual(recorded['eye_velocity'],[1.,2.,3.])
+        self.assertEqual(recorded['track'],1002)
+        self.assertEqual(recorded['movers']['active']['type'],15)
+        self.assertEqual(recorded['movers']['saved']['filtered_pitch'],65112)
+        self.assertEqual(recorded['movers']['saved']['support_weight'],.75)
+        self.assertEqual(recorded['shake']['direction'],[0.,0.,-.125])
+        self.assertEqual(recorded['shake']['phase'],.25)
+        self.assertEqual(recorded['world_dt'],.125)
+        self.assertEqual(recorded['movers']['acceleration'],[0.,0.,256.])
+        memory.values[FRAME]=16
+        self.assertTrue(sample_landing_camera(sampler,sample)['cross_frame'])
+        memory.values[0x740500]=0
+        self.assertIsNone(sample_landing_camera(sampler,sample)['eye'])
+
     def test_explicit_byte_ceiling_preserves_accepted_prefix(self):
         with tempfile.TemporaryDirectory(prefix='nfsu-world-')as d:
             folder=Path(d);w=BinaryWriter(folder,CALL.size+SNAP.size)

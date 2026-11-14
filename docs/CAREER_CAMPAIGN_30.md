@@ -32,7 +32,7 @@ it does not install the item or charge its price automatically.
 |30|Circuit tournament|After27,28,29; engine/exhaust, drivetrain and tyres level2; forward1008|
 
 Exact cash, lap/direction and record values are asserted from retail inputs
-by nfsu_career_retail and nfsu_career_block30_retail. They are not copied into
+by nfsu_career_retail and nfsu_career_full_retail. They are not copied into
 a second current-value table here. The original event block is now followed
 by [the remaining campaign through the finale](CAREER_CAMPAIGN_FULL.md).
 
@@ -91,7 +91,7 @@ Tiburon races from failing before their first frame.
 - nfsu_career_retail: complete16..30 progression at all three difficulties,
   losses, optional failure, one-time prizes, reward choices, save migration,
   earned covers, movies and actual level2 purchases.
-- nfsu_career_block30_retail: every authored stage through production loading,
+- nfsu_career_full_retail: every authored stage through production loading,
   simulation, HUD and recorded rendering commands, including new regions.
 - nfsu_career_unique_ui_retail: original chooser, explanation, confirmation
   and grant pages for7/15/26, through CPU pixels and bounded GPU commands.

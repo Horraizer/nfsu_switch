@@ -124,10 +124,11 @@ bool crash_camera_predict(const VehicleState& car,const VehicleHandling& h,float
     const float ss=player_angle_sin(steer),cs=player_angle_sin(std::uint16_t(steer+0x4000));
     const auto axes=race_contact_axes(car);const auto position=point(car.position);
     AiDriverPoint start{};
+    const float travel=vehicle_visual_strut_compression(h.struts[0],car.wheels[0].compression);
     for(const auto& wheel:h.wheels) {
         const float x=(-wheel.radius*(si*cs))+h.wheels[0].longitudinal;
         const float y=(-wheel.radius*(si*ss))+h.wheels[0].lateral;
-        const float z=(-wheel.radius*co)+(h.wheels[0].vertical+float(car.wheels[0].compression));
+        const float z=(-wheel.radius*co)+(h.wheels[0].vertical+travel);
         for(unsigned k=0;k<3;++k) {
             const float world_point=((x*float(axes[0][k])+y*float(axes[1][k]))+z*float(axes[2][k]))+position[k];
             start[k]+=world_point*.25F;
@@ -151,8 +152,21 @@ bool crash_camera_predict(const VehicleState& car,const VehicleHandling& h,float
     result=next;return true;
 }
 void RaceCrashCamera::configure(unsigned track,unsigned intensity) noexcept {track_=track;intensity_=std::min(intensity,255U);reset();}
-void RaceCrashCamera::reset() noexcept {event_=0;remaining_=0;crash_valid_=false;last_valid_[0]=last_valid_[1]=false;flight_deadline_=0;shot_={};activations=returns=0;}
-void RaceCrashCamera::stop() noexcept {if(event_)++returns;event_=0;remaining_=0;}
+void RaceCrashCamera::reset() noexcept {event_=0;remaining_=0;crash_valid_=false;last_valid_[0]=last_valid_[1]=false;flight_deadline_=0;shot_={};activations=returns=0;damage_reset_=false;}
+void RaceCrashCamera::stop(bool clear_damage) noexcept {
+    if(event_) {
+        ++returns;
+        // Retail 42DDC0(1) clears the player's damage channels.
+        damage_reset_=damage_reset_||clear_damage;
+    }
+    event_=0;
+    remaining_=0;
+}
+bool RaceCrashCamera::consume_damage_reset() noexcept {
+    const bool reset=damage_reset_;
+    damage_reset_=false;
+    return reset;
+}
 float RaceCrashCamera::scale(float real_dt) const noexcept {return event_&&remaining_-real_dt>=0?.4F:1.F;}
 void RaceCrashCamera::begin_frame(float real_dt) noexcept {if(event_){remaining_-=real_dt;if(remaining_<0)stop();}}
 bool RaceCrashCamera::request(std::int32_t tick,float progress,const VehicleState& car,const CrashCameraRoadSource& source,const CrashCameraWorld& world) {
@@ -192,7 +206,7 @@ bool RaceCrashCamera::update(std::int32_t tick,std::uint64_t frame,bool allowed,
         shot_.alternate[2]=std::max(shot_.alternate[2],float(car.position.z));
     if(sampled&&event_==6&&((car.collision_state==1&&crash_age>3.F)||
         (car.collision_state!=1&&float(tick)*.00025F>flight_deadline_))) {
-        stop();
+        stop(false); // 42DDC0(0) preserves damage through the second shot.
         if(intensity_&&(!last_valid_[1]||age(tick,last_[1])>=5.F)) {
             float ground=0;shot_.alternate[2]=std::max(shot_.alternate[2],float(car.position.z));
             if(world.ground(shot_.alternate,ground)&&shot_.alternate[2]<ground)shot_.alternate[2]=ground+1.F;

@@ -138,15 +138,22 @@ void drift_combo_update(DriftCombo& c,float velocity,bool blocked,unsigned grade
 }
 void RaceDrift::update(RaceStyle& score,const DriftDrivingSample& s) noexcept {
     reset_requested_=false;reset_countdown_=-1;
+    if(finished_)return;
+    if(s.finished) {
+        // 43E310 skips its producers for a finished racer. 4337FB then
+        // banks the already qualified chain without an extra score tick.
+        if(score.ready()){score.finish(s.now);finished_=true;}
+        return;
+    }
     //43EDE0: wrong direction or negative forward speed; one second grace,
     // then three seconds countdown. This uses simulation time, not frames.
-    if(s.motion.blocked && !finished_) {
+    if(s.motion.blocked) {
         if(!wrong_way_timer_){wrong_way_timer_=true;wrong_way_since_=s.now;}
         const float elapsed=float(double(std::int64_t(s.now)-wrong_way_since_)*.00025F);
         if(elapsed>4){wrong_way_timer_=false;reset_requested_=true;}
         else if(elapsed>1)reset_countdown_=4-elapsed;
     }else wrong_way_timer_=false;
-    if(!score.ready()||finished_||s.motion.grade>3||!(s.seconds>=0))return;
+    if(!score.ready()||s.motion.grade>3||!(s.seconds>=0))return;
     const auto& item=score.item(0);angle_=s.motion.slip;
     // 43EF30 observes the preceding style state/zone before current admission.
     if(item.phase==0) {
@@ -184,6 +191,6 @@ void RaceDrift::update(RaceStyle& score,const DriftDrivingSample& s) noexcept {
         }
     }
     combo_.multiplier=next;
-    if(s.finished) {score.finish(s.now);finished_=true;}else score.update(s.now,s.seconds);
+    score.update(s.now,s.seconds);
 }
 }

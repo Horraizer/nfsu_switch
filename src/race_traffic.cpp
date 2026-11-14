@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 namespace nfsu {
 namespace {
 constexpr double tau=6.2831853071795864769;
@@ -28,6 +29,17 @@ std::uint32_t traffic_random(std::uint32_t& seed) {
     const auto x=seed^0x1d872b41U,y=(x>>5)^x;
     seed=(y<<27)^y^x;
     return sample;
+}
+int traffic_grid_lane(const Route& route,bool forward,std::uint32_t& random) {
+    const unsigned first=forward?0:6;
+    for(unsigned attempt=0;attempt<10;++attempt) {
+        const unsigned lane=first+(traffic_random(random)%600000U)/100000U;
+        if(route.lane_enabled[lane])return int(lane);
+    }
+    for(unsigned lane=first;lane<first+6;++lane) {
+        if(route.lane_enabled[lane])return int(lane);
+    }
+    return -1;
 }
 AiDriverPoint lane_point(const RoutePoint& p,unsigned lane) {
     const auto* direction=lane<6?p.forward:p.backward;
@@ -92,6 +104,7 @@ bool RaceTraffic::load(const std::filesystem::path& root,const VehicleTrackCours
         track_number_=unsigned(std::stoul(course.name.substr(marker+6)));
     }catch(...){error="traffic track identity unavailable";return false;}
     auto u32=[](const unsigned char* p){return unsigned(p[0])|(unsigned(p[1])<<8)|(unsigned(p[2])<<16)|(unsigned(p[3])<<24);};
+    std::size_t spawn_count=0;
     for(std::size_t p=0;p+8<=image.size();) {
         const auto id=u32(image.data()+p),n=u32(image.data()+p+4);p+=8;
         if(n>image.size()-p){error="traffic road chunks truncated";return false;}
@@ -100,9 +113,42 @@ bool RaceTraffic::load(const std::filesystem::path& root,const VehicleTrackCours
 
         }else if(id==0x34123) {
             if(!ai_traffic_intersections(image.data()+p,n,intersections_)){error="traffic intersections invalid";return false;}
+        }else if(id==0x34124) {
+            constexpr std::size_t record_size=0x108;
+            if(n%record_size||n/record_size+spawn_count>20) {
+                error="invalid traffic placement records";return false;
+            }
+            spawn_count+=n/record_size;
+            const unsigned reverse=unsigned(course.route.reverse);
+            const unsigned value_offset=8*density_+4*reverse;
+            const auto read_float=[&](const unsigned char* bytes) {
+                const auto bits=u32(bytes);float value;
+                std::memcpy(&value,&bits,sizeof(value));
+                return value;
+            };
+            for(std::size_t i=0;i<n;i+=record_size) {
+                const auto* record=image.data()+p+i;
+                if(std::int8_t(record[0x100])>=6)continue;
+                const auto id=u32(record);
+                if(id>kRouteMaxIndex)continue;
+                SpawnRecord spawn{};
+                spawn.road=std::int16_t(id);
+                for(unsigned direction=0;direction<2;++direction) {
+                    const unsigned offset=4+2*direction;
+                    spawn.points[direction]=record[0xd0+4*density_+2*direction+reverse]?
+                        std::int16_t(unsigned(record[offset])|(unsigned(record[offset+1])<<8)):-1;
+                }
+                if(spawn.points[0]<0&&spawn.points[1]<0)continue;
+                spawn.speed_limit=read_float(record+0xb0+value_offset)*0.4470272660255432F;
+                if(!std::isfinite(spawn.speed_limit)||spawn.speed_limit<0) {
+                    error="invalid traffic placement values";return false;
+                }
+                spawn_records_.push_back(spawn);
+            }
         }
         p+=n;
     }
+    has_spawn_table_=spawn_count!=0;
     if(!ai_road_initialize(course.track,lines_,events_,error))return false;
     backward_lines_=lines_;
     if(!ai_road_orient(backward_lines_,1)){error="traffic reverse roads refused";return false;}
@@ -158,7 +204,7 @@ bool RaceTraffic::world_prediction(unsigned index,const AiPathActorSnapshot& act
     return ai_traffic_world_prediction(actor,a.driver_path,outside,a.action_owner.current.kind,tick,horizon,out);
 }
 bool RaceTraffic::activate(unsigned index,AiRoadCursor cursor,unsigned lane,std::uint32_t tick,
-                           bool staged,std::string& error) {
+                           bool staged,float speed_limit,std::string& error) {
     auto& a=actors_[index];
     const auto& authored=(lane>=6?backward_lines_:lines_).find(cursor.route)->points[cursor.point];
     const auto point=lane_point(authored,lane%6);
@@ -167,7 +213,7 @@ bool RaceTraffic::activate(unsigned index,AiRoadCursor cursor,unsigned lane,std:
     a.action_owner={};a.action_records={};a.action_speed={};a.next_action_handle=1;
     a.actor_override_enabled=false;a.actor_override={};a.coordinate={};a.ended=false;
     const float initial_speed=float(authored.speed[11+lane%6]);
-    a.target_speed=staged?initial_speed:std::min(24.58650016784668F,initial_speed);
+    a.target_speed=std::min(speed_limit,initial_speed);
     const auto* forward=authored.forward;
     a.motion={point[0],point[1],float(std::atan2(forward[1],forward[0])),a.target_speed};
     // Recycled bodies must not inherit impact compression/rest/contact caches.
@@ -180,7 +226,7 @@ bool RaceTraffic::activate(unsigned index,AiRoadCursor cursor,unsigned lane,std:
         return false;
     }
     if(!a.active)return true;
-    // Original 5992BC supplies the authored lane speed to the constructor.
+    // The startup constructor keeps its initial speed through the first plan.
     if(!staged)a.motion.speed=a.target_speed;
     if(!publish(a,point[2],0)||!impact_sessions_[index]->start(a.car)){
         error="traffic spawn publication refused";return false;
@@ -188,15 +234,89 @@ bool RaceTraffic::activate(unsigned index,AiRoadCursor cursor,unsigned lane,std:
     a.previous_valid=false;++a.activations;++spawns;return true;
 }
 
-bool RaceTraffic::stage_drag_grid(const std::array<const VehicleState*,4>& racers,
-                                 const std::array<const RaceContactBox*,4>& shapes,
-                                 float spacing,float clearance,std::int32_t clock,std::string& error) {
-    if(!drag_||drag_grid_staged_||!racers[0]||!std::isfinite(spacing)||spacing<=0||
-       !std::isfinite(clearance)||clearance<0||course_->route.start<0) {
-        error="invalid drag traffic grid";return false;
+bool RaceTraffic::stage_authored(unsigned index,float spacing,std::int32_t clock,
+                                 float* placed_progress,std::string& error) {
+    if(!has_spawn_table_)return true;
+    const auto& race=course_->route;
+    const auto& spline=race.spline;
+    const float length=spline.path_length;
+    struct Candidate {const SpawnRecord* record;const Route* road;};
+    std::array<std::array<Candidate,20>,2> candidates{};
+    std::array<unsigned,2> count{};
+    for(const auto& record:spawn_records_) {
+        const auto* road=lines_.find(record.road);
+        if(!road||road->points.empty())continue;
+        const float raw=road->points[road->points.size()/2].path_distance;
+        const float progress=race.reverse?length-raw:raw;
+        // 598D46 passes zero as the distance scale to 599FC0 at startup.
+        const float from=-length+20.F;
+        const float to=length+120.F;
+        const float relative=path_difference(progress,-length,spline);
+        if(relative<=0||relative>=to-from)continue;
+        for(unsigned direction=0;direction<2;++direction) {
+            if(record.points[direction]>=0&&unsigned(record.points[direction])<road->points.size())
+                candidates[direction][count[direction]++]={&record,road};
+        }
+    }
+    // Keep the existing drag replay seed when there is no authored candidate.
+    if(drag_&&count[0]==0&&count[1]==0)return true;
+    auto& random=world_random_?*world_random_:rng_;
+    for(unsigned attempt=0;attempt<100;++attempt) {
+        // 598C80 rolls the traffic direction independently of race direction.
+        const float unit=float(traffic_random(random)%0x7fffffffU)*4.656612873077393e-10F;
+        const unsigned direction=unit<.5F?1:0;
+        if(count[direction]==0)continue;
+        const auto& candidate=candidates[direction][traffic_random(random)%count[direction]];
+        const auto& road=*candidate.road;
+        const int lane=traffic_grid_lane(road,direction==0,random);
+        if(lane<0)continue;
+        // 598F00 samples between the authored reference and the road midpoint.
+        const unsigned reference=unsigned(candidate.record->points[direction]);
+        const unsigned midpoint=unsigned(road.points.size()-1)/2;
+        const unsigned left=std::min(reference,midpoint),right=std::max(reference,midpoint);
+        const unsigned point=left+traffic_random(random)%std::max(1U,right-left);
+        const auto& authored=(direction?backward_lines_:lines_).find(road.index)->points[point];
+        const auto position=lane_point(authored,unsigned(lane)%6);
+        // 59B130 tests XY distance against every active actor during startup.
+        const auto too_close=[&](const VehicleState& other) {
+            const float dx=position[0]-float(other.position.x);
+            const float dy=position[1]-float(other.position.y);
+            return std::sqrt(dx*dx+dy*dy)<spacing;
+        };
+        if(std::any_of(racers_.begin(),racers_.end(),
+                       [&](const VehicleState* racer){return racer&&too_close(*racer);})||
+           std::any_of(actors_.begin(),actors_.end(),
+                       [&](const RaceTrafficActor& actor){return actor.active&&!actor.ended&&too_close(actor.car);}))
+            continue;
+        if(!activate(index,{road.index,std::uint16_t(point)},unsigned(lane),
+                     std::uint32_t(clock),true,candidate.record->speed_limit,error))return false;
+        if(!actors_[index].active)continue;
+        if(placed_progress) {
+            const float raw=road.points[point].path_distance;
+            *placed_progress=race.reverse?length-raw:raw;
+        }
+        break;
+    }
+    return true;
+}
+
+bool RaceTraffic::stage_grid(const std::array<const VehicleState*,4>& racers,
+                             const std::array<const RaceContactBox*,4>& shapes,
+                             float spacing,float clearance,std::int32_t clock,std::string& error) {
+    if(!course_||grid_staged_||!racers[0]||!std::isfinite(spacing)||spacing<=0||
+       !std::isfinite(clearance)||clearance<0||(drag_&&course_->route.start<0)) {
+        error="invalid traffic grid";return false;
     }
     racers_=racers;racer_shapes_=shapes;world_clock_=clock;
     if(!prepare_world(error))return false;
+    if(!(drag_?stage_drag_grid(spacing,clearance,clock,error):
+               stage_ordinary_grid(spacing,clearance,clock,error)))return false;
+    grid_staged_=true;
+    return true;
+}
+
+bool RaceTraffic::stage_drag_grid(float spacing,float clearance,std::int32_t clock,std::string& error) {
+    const auto& racers=racers_;
     const auto& race=course_->route;
     const auto& spline=race.spline;
     const auto progress=[&](float raw){return race.reverse?spline.path_length-raw:raw;};
@@ -213,17 +333,8 @@ bool RaceTraffic::stage_drag_grid(const std::array<const VehicleState*,4>& racer
                 float(index+attempt)*spacing,forward);
             if(candidate.route<0)continue;
             const auto& route=*lines_.find(candidate.route);
-            int lane=-1;
-            for(bool direction:{forward,!forward}) {
-                const unsigned first=direction?0:6;
-                for(unsigned k=0;k<10&&lane<0;++k) {
-                    const auto draw=traffic_random(random)%600000U;
-                    if(route.lane_enabled[first+draw/100000U])lane=int(first+draw/100000U);
-                }
-                for(unsigned k=0;k<6&&lane<0;++k)
-                    if(route.lane_enabled[first+k])lane=int(first+k);
-                if(lane>=0)break;
-            }
+            int lane=traffic_grid_lane(route,forward,random);
+            if(lane<0)lane=traffic_grid_lane(route,!forward,random);
             if(lane<0)continue;
             const float position=progress(route.points[candidate.point].path_distance);
             if(std::abs(path_difference(position,start,spline))<clearance)continue;
@@ -233,13 +344,83 @@ bool RaceTraffic::stage_drag_grid(const std::array<const VehicleState*,4>& racer
             for(unsigned i=0;i<racers.size();++i)if(racers[i]&&
                 ai_traffic_spawn_gap_blocked(path_difference(position,progress(world_nodes_[i].progress),spline),spacing,false))blocked=true;
             if(blocked)continue;
-            if(!activate(index,candidate,unsigned(lane),std::uint32_t(clock),true,error))return false;
+            if(!activate(index,candidate,unsigned(lane),std::uint32_t(clock),true,
+                         std::numeric_limits<float>::infinity(),error))return false;
             if(!actors_[index].active)continue;
             placed[index]=position;
             break;
         }
+        if(!actors_[index].active&&
+           !stage_authored(index,spacing,clock,&placed[index],error))return false;
     }
-    drag_grid_staged_=true;
+    return true;
+}
+
+bool RaceTraffic::stage_ordinary_grid(float spacing,float clearance,std::int32_t clock,std::string& error) {
+    const auto& race=course_->route;
+    const auto& spline=race.spline;
+    const auto progress=[&](float raw){return race.reverse?spline.path_length-raw:raw;};
+    const float start=race.start<0?progress(world_nodes_[0].progress):
+        race.boundaries.at(unsigned(race.start)).percent*.01F*spline.path_length;
+    auto& random=world_random_?*world_random_:rng_;
+    std::array<std::array<const Route*,100>,2> roads{};
+    std::array<unsigned,2> road_counts{};
+    unsigned forward_weight=0;
+    // 59AF20 builds the draw bound from forward lanes even for reverse draws.
+    for(int id=0;id<100;++id) {
+        const auto* road=lines_.find(std::int16_t(id));
+        if(!road)continue;
+        for(unsigned direction=0;direction<2;++direction) {
+            const auto first=road->lane_enabled.begin()+6*direction;
+            if(std::none_of(first,first+6,[](bool enabled){return enabled;}))continue;
+            roads[direction][road_counts[direction]++]=road;
+            if(direction==0)forward_weight+=unsigned(road->points.size());
+        }
+    }
+    for(unsigned index=0;index<actors_.size();++index) {
+        if(!stage_authored(index,spacing,clock,nullptr,error))return false;
+        if(actors_[index].active||!forward_weight)continue;
+        const Route* selected=nullptr;
+        unsigned point=0;
+        for(unsigned attempt=0;attempt<100;++attempt) {
+            const float unit=float(traffic_random(random)%0x7fffffffU)*4.656612873077393e-10F;
+            const bool forward=(unit<.5F)!=race.reverse;
+            const unsigned direction=forward?0:1;
+            const unsigned roll=traffic_random(random)%forward_weight;
+            unsigned cumulative=0;
+            // 59B2C0 leaves the last candidate intact if the draw exceeds
+            // the selected direction's weight.
+            for(unsigned i=0;i<road_counts[direction];++i) {
+                const auto* road=roads[direction][i];
+                cumulative+=unsigned(road->points.size());
+                if(roll<cumulative) {
+                    selected=road;
+                    point=cumulative-roll;
+                    break;
+                }
+            }
+            if(!selected||point+1>=selected->points.size())continue;
+            const auto& sample=selected->points[point];
+            if(!ai_traffic_spawn_point_allowed(sample.unknown_84,true)||
+               !ai_traffic_spawn_point_allowed(sample.unknown_84,false))continue;
+            const float at=progress(sample.path_distance);
+            if(std::abs(path_difference(at,start,spline))<clearance)continue;
+            bool blocked=false;
+            for(unsigned i=0;i<world_nodes_.size();++i) {
+                if(!world_nodes_[i].enabled||
+                   (i>=4&&(!actors_[i-4].active||actors_[i-4].ended)))continue;
+                const float delta=path_difference(at,progress(world_nodes_[i].progress),spline);
+                if(ai_traffic_spawn_gap_blocked(delta,spacing,i>=4)) {blocked=true;break;}
+            }
+            if(blocked)continue;
+            int lane=traffic_grid_lane(*selected,forward,random);
+            if(lane<0)lane=traffic_grid_lane(*selected,!forward,random);
+            if(lane<0)continue;
+            if(!activate(index,{selected->index,std::uint16_t(point)},unsigned(lane),std::uint32_t(clock),
+                         true,std::numeric_limits<float>::infinity(),error))return false;
+            if(actors_[index].active)break;
+        }
+    }
     return true;
 }
 
@@ -291,7 +472,8 @@ bool RaceTraffic::spawn(unsigned index,const std::array<const VehicleState*,4>& 
                 for(const auto& other:actors_)if(other.active&&
                     ai_traffic_spawn_gap_blocked(difference(route.points[pi].path_distance,other.progress),spacing,true))clear=false;
                 if(!clear)continue;
-                if(!activate(index,cursor,lane,std::uint32_t(world_clock_>=0?world_clock_:tick*4000/60),false,error))
+                if(!activate(index,cursor,lane,std::uint32_t(world_clock_>=0?world_clock_:tick*4000/60),
+                             false,24.58650016784668F,error))
                     return false;
                 if(a.active)return true;
             }
@@ -370,9 +552,8 @@ bool RaceTraffic::prepare_frame(const std::array<const VehicleState*,4>& racers,
         error="traffic intersection phase refused";return false;
     }
     for(auto& a:actors_){a.previous_pose=race_contact_pose(a.car);a.previous_valid=a.active;}
-    // Preserve the drag factory's staged field through the countdown.
-    // The live recycler still uses the existing port adapter after GO.
-    if(tick%60==0&&(!drag_grid_staged_||!grid_held)) {
+    // Hold startup allocations during countdown while their movers run.
+    if(tick%60==0&&(!grid_staged_||!grid_held)) {
         auto& a=actors_[recycle_];bool near=false;
         for(const auto* r:racers)if(r&&distance2(a.car.position,r->position)<250.F*250.F)near=true;
         if(a.active&&!near&&!retire(recycle_,error))return false;

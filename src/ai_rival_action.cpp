@@ -259,7 +259,15 @@ bool AiRivalActionController::create(void* opaque,int kind,const AiOwnedAction& 
     auto& c=*static_cast<AiRivalActionController*>(opaque);
     AiActionCandidate selected{kind,0,0};c.candidate_path_={};c.candidate_time_=99999;
     if(kind==20) {
-        if(c.input_->finished){output={};return true;}
+        if(c.input_->finished) {
+            if(current.handle){output={};return true;}
+            // When the running action completes on the finish tick, the
+            // owner has already released it before calling the factory.
+            // Install the pending finish action instead of leaving it empty.
+            if(!c.construct({17,0,0},-1,output))return false;
+            c.owner_.requested_kind=20;
+            return true;
+        }
         AiStrategySelection s;s.current_kind=current.handle?current.kind:20;
         s.current_priority=current.handle?current.priority:-1;s.mode_priority=c.input_->mode_priority;
         s.recovery_enabled=ai_recovery_available(c.input_->tick,c.last_recovery_);

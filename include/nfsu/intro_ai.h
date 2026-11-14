@@ -29,7 +29,7 @@ public:
     bool load(const std::filesystem::path&,const std::array<int,3>&,
               const std::array<const VehicleHull*,4>&,bool retail_speed=true,
               unsigned track_number=1003,int direction=0,bool drag=false,float catchup_weight=0,int laps=2,bool point_to_point=false,unsigned traffic_selector=0,bool catchup_enabled=true);
-    bool camera_road(AiRoadChain&,int&)const;
+    bool camera_road(const AiRoadContextInput&,const AiRoadPolicyInput&,AiRoadContext&)const;
     bool drag_human_snapshot(IntroDragSnapshot&)const;
     bool rail_snapshot(unsigned rival,IntroRailSnapshot&)const;
     bool observe_human(const RaceSession&);

@@ -97,3 +97,107 @@ one is unavailable. This is output-only: no contact order, impulses, physical
 state or replay encoding is changed. The synthetic renderer test retains its
 old supplied point and separately displaces only that witness. Triggers,
 particle appearance and the complete original emitter runtime remain open.
+
+## Authored atlases in the race renderer
+
+The live CPU and deko3d renderers decode the original `SMOKE_CS` and
+`XE_SPARKSA` from `Global/INGAMEB.BUN`. The procedural discs above
+describe the earlier renderer and remain in the asset-free CPU test fixture.
+
+In `speed.exe`, `0x402872..0x402883` resolves the texture hash at effect
+record offset +0x0C. The `XETT_RoadSk_SmkA` and
+`XECS_SolidWall_SprksA` records in `GLOBALB.BUN` bind those two atlases.
+`0x403D2A..0x403D4C` derives the cell count from the log2 column and row
+bytes at +0x19 and +0x1A. Smoke has a 4-by-4 atlas. Sparks have a 4-by-2
+atlas. `0x403D50..0x403D73` turns +0x1B into the period in 1024 Hz ticks,
+or zero for a fixed cell. `0x403E08..0x403E34` advances the stored cell
+when the remaining lifetime crosses a frame boundary. Road skid smoke
+has a fixed cell and solid-wall sparks run at 22 frames per second.
+
+The port selects the initial cell deterministically for each emission.
+The original also selects a cell during spawn (`0x40354D..0x403575`,
+`0x4038C7..0x4038CB`), with its own random state. The port applies the
+solid-wall atlas period to its current track-contact spark path and uses
+its existing particle lifetime to calculate the remaining time. It still
+uses the prior slip thresholds, spawn cadence, life, fade and trajectory.
+Material-specific emitters, rival and traffic particle emission, and the
+original particle simulation remain open.
+
+## Wheel-slip admission
+
+The two floats read by the original selector-3 producer at actor +0x374
+are the physical slip velocities in wheel coordinates. At
+`0x58746A..0x58747D` the tyre computes rim speed minus longitudinal
+hub speed. `0x587681..0x58768F` publishes that result and lateral hub
+speed to wheel +0x100/+0x104 in the sliding branch. The standing branch
+zeros both at `0x58771C..0x587726`. `0x478BBE..0x478BE1` copies the
+pair to the first wheel's owner snapshot at +0x334/+0x338, corresponding
+to actor +0x374/+0x378. `VehicleWheelTelemetry::effect_slip_velocity`
+exports that pair from the equivalent port producer without changing
+the physics state or its encoding.
+
+`0x4286A0` checks wheel contact and selects the surface row at
+`0x6EF2D0`. It admits slip speeds strictly above the material minimum
+and a camera distance strictly below 150. The grounded timer resets
+below the minimum or outside the distance gate. It remains unchanged
+while the wheel is airborne. Effect strength uses the material's
+low/high speeds and the elapsed ramp. The port counts elapsed solver
+seconds and uses the current chase view for the camera gate.
+
+At `0x569B5C..0x569BEF`, selector 3 passes the negative of that strength
+to the particle emitter. `0x402E6D..0x403975` treats its magnitude as a
+burst budget against the interval of the effect record. Road, rough
+road, dirt and grass skid records have the same unit interval. The
+bounded port renderer applies the corresponding one/two-particle
+budget to its staggered visual schedule. Its current generic atlas,
+origin, motion, lifetime and fade still cover all of its skid smoke;
+per-surface appearance and the original full emitter scheduling
+remain separate work. The spark path retains its own trigger.
+
+## Surface-specific presentation
+
+The live renderers now read eight v4 effect records from the 0x35021 chunk
+of GLOBALB.BUN. The wheel surface selects road, rough road, dirt, grass or
+one of the three colored lane emitters. Wall contacts use the solid-wall
+spark record. The texture hash and atlas layout in each record select
+SMOKE_CS, SMOKEB_CS, SFX_SMOKE_A_CS or XE_SPARKSA from INGAMEB.BUN. The
+Switch shares the uploaded SMOKEB_CS with nitrous purge.
+
+The renderer evaluates the authored cubic RGBA and size at the lifetime
+phase used by the native draw loop. It samples initial lifetime and launch
+speed from the authored ranges, uses the atlas frame period, and advances
+position using authored gravity and drag coefficients. It uses local seed
+state, a body-up or wall-normal launch axis, and the port solver interval
+for motion. The full native emitter transform, global random state and
+packed update arithmetic are still open. Water has a separate original
+spray producer; the current live skid-smoke path skips the two water rows.
+Particle updates remain output-only with the existing draw and slot caps.
+
+The original x86 curve and spawn slices are described in the r48 checkpoint.
+The retail effect tests exercise each surface preset and check the matching
+GPU draw state. The retail smoke frame guard pins the CPU smoke witness.
+
+## Track environment emitters
+
+PC 1.4 USA loader 402820 reads version 4 presets from TRACKB chunk
+0x35021 and version 5 placements from 0x35020. The placement preset key
+at +0x0C selects the definition key at +0x08 through 402B40. The original
+update at 402D30 reads the placement origin at +0x60 and compares it to
+the camera positions using the preset radius at +0x80.
+
+RaceParticles reads both tables from the selected track bundle, including
+reverse races and tournament rounds, and resolves only the presets used
+by its placements. Empty tables have no environmental draws. The same
+runtime feeds the CPU overlay and prepared GPU commands. INGAMEB supplies
+SMOKE_CS and DUSTA_CS for steam, smoke and water, SFX_RJBSPARKS for
+electrical sparks, FLOCKOFSEAGULLS for birds and FIREA_CS for flames and
+embers. Electric sparks and fire use additive blending. Existing track
+mesh animations and vehicle contact effects keep their existing owners.
+
+The port uses the authored origin, direction, camera radius, start delay,
+rate, life, atlas and appearance curves. The stationary emitters use a
+deterministic visual RNG and the shared particle integration. Eight
+nearby emitters per blend class, bounded particle pools and an inactive
+draw skip cap frame work. Native random stream ordering, volume sampling,
+bird alpha testing and exact particle integration are still separate
+fidelity work.

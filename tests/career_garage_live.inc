@@ -215,6 +215,41 @@ void verify_live_garage(const std::filesystem::path& root,const std::filesystem:
     category(3);menu.move(3);enter();
     check(menu.slot()==37,"actual engine package opens engine accent paint");
     transaction("live-engine-paint.ppm",37);
+    const auto performance_page=[&](unsigned field) {
+        menu.reset(catalog,profile);menu.move(1);enter();
+        const auto found=std::find_if(menu.entries().begin(),menu.entries().end(),
+            [field](const auto& entry){return entry.value==field;});
+        check(found!=menu.entries().end(),"performance category available");
+        menu.move(int(found-menu.entries().begin())-int(menu.selected()));enter();
+    };
+    const auto body_height=[&] {
+        const auto& draws=visible.commands().owning_draws();
+        const auto draw=std::find_if(draws.begin(),draws.end(),[](const auto& entry){
+            return entry.name.find("car group ")!=std::string::npos&&entry.name.find("_FE_")==std::string::npos;
+        });
+        check(draw!=draws.end(),"body height witness");
+        return draw->placement.rows[14];
+    };
+    performance_page(1);
+    const auto original_suspension=profile.ride.performance[1];
+    const auto original_height=body_height();
+    for(unsigned level=1;level<=3;++level) {
+        menu.move(int(level)-int(menu.selected()));apply();
+        check(body_height()<original_height&&profile.ride.performance[1]==original_suspension&&
+              !visible.car_transitioning(),"each suspension package lowers the visible body on hover");
+        if(level==3)capture("live-suspension-extreme.ppm");
+    }
+    check(!menu.back(catalog,profile),"leave suspension preview");apply();
+    check(body_height()==original_height,"cancel restores installed suspension height");
+    performance_page(8);
+    check(menu.focus_slot()==16&&menu.selected()==profile.ride.performance[8],
+          "brake packages open at installed tier and use native caliper camera");
+    const auto installed_brake=shape();
+    menu.move(1);apply();
+    check(shape()!=installed_brake&&!visible.car_transitioning()&&profile.ride.performance[8]==1,
+          "highlight changes brake model in place without buying");
+    for(unsigned frame=0;frame<120;++frame)check(visible.frame(1.F/60,1000+frame*67,error),error);
+    capture("live-brake-package.ppm");
     const auto owned_car=profile.car;const auto owned_bank=profile.bank;
     menu.reset(catalog,profile);menu.move(2);enter();
     check(menu.page()==GaragePage::trade_in&&menu.preview(profile).car!=profile.car,"live Trade In has a different available car");
@@ -222,7 +257,14 @@ void verify_live_garage(const std::filesystem::path& root,const std::filesystem:
     check(profile.car==owned_car&&profile.bank==owned_bank,"live car preview leaves career save unchanged");
     check(!menu.back(catalog,profile),"cancel Trade In returns to garage");apply();
     menu.move(2-int(menu.selected()));enter();capture("live-trade-confirm.ppm");
-    const auto target=menu.preview(profile).car;enter();enter();
+    const auto target=menu.preview(profile).car;
+    for(unsigned page=1;page<=2;++page) {
+        enter();
+        check(!purchased&&menu.trade_review()==page&&!menu.confirming(),"live Trade In shows both stat pages");
+    }
+    enter();
+    check(!purchased&&menu.confirming(),"live Trade In shows the separate confirmation");
+    enter();
     check(purchased&&profile.car==target&&profile.car!=owned_car&&catalog.valid(profile,error),"live Trade In buys and restores installed new car without loader");
     check(shape()!=trade_preview,"new car is published after purchase");
     menu.reset(catalog,profile);menu.move(1);enter();enter();menu.move(1-int(menu.selected()));apply();capture("live-performance-hover.ppm");

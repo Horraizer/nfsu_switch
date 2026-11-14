@@ -19,7 +19,7 @@ def check(root,renderer,main):
     assert 'if(frontend && frontend_profile_passes)' in split
     assert 'cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);' in split
     assert split.count('cmd.barrier(')==1
-    assert 'fxaa_enabled=presentation && source.race_environment;' in renderer
+    assert 'fxaa_enabled=presentation && source.race_environment && !split_screen;' in renderer
     frame=renderer[renderer.index('bool record_frame('):renderer.index('bool present(std::string& error')]
     assert frame.index('if(fxaa_enabled) {')<frame.index('if (hud) emit_overlay(')
     assert frame.index('if (hud) emit_overlay(')<frame.index('query_memory.getGpuAddr()+slot*160+16')
@@ -29,11 +29,13 @@ def check(root,renderer,main):
     assert 'frontend_query_pending[slot]=frontend && frontend_profile_passes;' in renderer
     startup=main[main.index('const auto intro=play_original_intro('):main.index('const auto run_career_action=[&]')]
     splash=startup[startup.index('const auto show_startup_splash='):startup.index('show_startup_splash(true);')]
-    assert splash.index('screen.startup_splash(art);')<splash.index('music.start(')<splash.index('padGetButtonsDown(&pad)')
+    assert splash.index('screen.startup_splash(art,0);')<splash.index('music.start(')<splash.index('padGetButtonsDown(&pad)')
+    assert splash.index('if(alpha!=prompt_alpha)')<splash.index('screen.startup_splash(art,tick);')
     assert startup.count('music.start(')==1 and 'if(start_music)' in splash
-    assert startup.index('show_startup_splash(true);')<startup.index('while(!choose_profile(true))')
-    assert startup.index('while(!choose_profile(true))')<startup.index('show_startup_splash(false);')
-    assert startup.index('while(!choose_profile(true))')<startup.index('trace("profile.after")')
+    profile_loop=startup.index('!choose_profile(true)')
+    assert startup.index('show_startup_splash(true);')<profile_loop
+    assert profile_loop<startup.index('show_startup_splash(false);')
+    assert profile_loop<startup.index('trace("profile.after")')
     assert startup.index('trace("profile.after")')<startup.index('FrontendAction pending=FrontendAction::none;')
     assert 'refresh_profile()' not in startup
     picker=startup[startup.index('const auto choose_profile='):startup.index('trace("profile.before")')]
@@ -52,6 +54,9 @@ def check(root,renderer,main):
     intro=transition[transition.index('intro_result=run(root,'):transition.index('while(intro_result==RaceReturn::restart && appletMainLoop())')]
     assert 'selected_car,screen,pad,false,nullptr,0,&art,' in intro
     assert 'false,profile.name,' in intro and '&music);' in intro
+    assert 'open_underground(action,root,*active_profile,career,profile,frontend_error)' in transition
+    assert 'art.prepare_career_map(root,profile,frontend_error)' in transition
+    assert 'load_owned_ride(root,width,height,garage_globals,' in transition
     assert main.index('std::unique_ptr<HandheldGpuProfile> frontend_gpu_profile;')<main.index('std::unique_ptr<DekoRenderer> frontend_renderer;')
     assert 'constexpr std::uint32_t menu_height=720;' in main
     assert 'art.atlas(),frontend_error,menu_height,profile_frame && !ab_minimal,active_trace,frontend_scene.draw_capacity())' in main
@@ -73,7 +78,7 @@ def check(root,renderer,main):
 
 p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);root=p.parse_args().root
 r=(root/'switch/deko_renderer.cpp').read_text();m=(root/'switch/race_main.cpp').read_text();check(root,r,m)
-for name,bad_r,bad_m in [('minimal menu pass profiling enabled',r,m.replace('menu_height,profile_frame && !ab_minimal,active_trace','menu_height,profile_frame,active_trace')),('FXAA applied to menu',r.replace('fxaa_enabled=presentation && source.race_environment;','fxaa_enabled=presentation;'),m),('profiling always on',r.replace('if(!frontend || !frontend_profile_passes)return;',''),m),('timestamp overlap',r.replace('slot*208+point*16','slot*32+point*16'),m),('extra sprite barrier',r.replace('cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);','cmd.barrier(DkBarrier_Fragments,0); cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);'),m),('power guard held into race',r,m.replace('frontend_gpu_profile.reset();','')),('menu scene height lowered',r,m.replace('menu_height=720;','menu_height=540;')),('UI target lowered',r.replace('cmd.bindRenderTargets(&present_view, nullptr);',''),m),('profile counter mixed in',r,m.replace('!profile_frame && frontend_presentation_stats.sample','frontend_presentation_stats.sample')),('reentry counter not reset',r,m.replace('frontend_presentation_stats.reset();','')),('extra counter GPU wait',r,m.replace('FrontendPresentationWindow presentation_window;','FrontendPresentationWindow presentation_window; frontend_renderer->wait();'))]:
+for name,bad_r,bad_m in [('minimal menu pass profiling enabled',r,m.replace('menu_height,profile_frame && !ab_minimal,active_trace','menu_height,profile_frame,active_trace')),('FXAA applied to menu',r.replace('fxaa_enabled=presentation && source.race_environment && !split_screen;','fxaa_enabled=presentation;'),m),('profiling always on',r.replace('if(!frontend || !frontend_profile_passes)return;',''),m),('timestamp overlap',r.replace('slot*208+point*16','slot*32+point*16'),m),('extra sprite barrier',r.replace('cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);','cmd.barrier(DkBarrier_Fragments,0); cmd.reportCounter(DkCounter_Timestamp,frontend_query_memory.getGpuAddr()+slot*208+12*16);'),m),('power guard held into race',r,m.replace('frontend_gpu_profile.reset();','')),('menu scene height lowered',r,m.replace('menu_height=720;','menu_height=540;')),('UI target lowered',r.replace('cmd.bindRenderTargets(&present_view, nullptr);',''),m),('profile counter mixed in',r,m.replace('!profile_frame && frontend_presentation_stats.sample','frontend_presentation_stats.sample')),('reentry counter not reset',r,m.replace('frontend_presentation_stats.reset();','')),('extra counter GPU wait',r,m.replace('FrontendPresentationWindow presentation_window;','FrontendPresentationWindow presentation_window; frontend_renderer->wait();'))]:
     try:check(root,bad_r,bad_m)
     except (AssertionError,ValueError):print('PASS negative control: '+name)
     else:raise AssertionError('negative control accepted: '+name)

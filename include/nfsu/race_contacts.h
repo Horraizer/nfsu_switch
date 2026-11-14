@@ -1,6 +1,7 @@
 #pragma once
 #include "nfsu/car_contact.h"
 #include "nfsu/vehicle_track.h"
+#include <unordered_map>
 namespace nfsu {
 // Port world adapter: bounds rejection, convex witness query and recovered
 // kind-0 response and46EA50 ordered binary32 feature reduction.
@@ -96,7 +97,7 @@ bool update_race_track_polygon_cache(const TrackContactWorld&,const RaceContactP
     RaceTrackPolygonCache&,float supplied_radius=-1);
 bool race_track_candidates(const TrackContactWorld&,const VehicleState&,
     const RaceTrackBodyBounds&,const RaceTrackPolygonCache&,
-    const std::vector<std::size_t>& registered,std::vector<std::size_t>&);
+    const std::unordered_map<std::size_t,std::size_t>& registered,std::vector<std::size_t>&);
 // side_reference is original body+110 (the retained hull-bounds centre),
 // independent of the COM sampled while searching backwards in time.
 bool search_race_track_contact(const VehicleState&,const VehicleSpec&,const RaceContactBox&,

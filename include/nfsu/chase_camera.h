@@ -192,7 +192,9 @@ enum class ChaseFovMode : std::uint8_t {
     // on any viewport, so a 16:9 screen shows more to the sides instead of
     // less above and below. The default: the Switch's screen is 16:9, and
     // this is the picture the game drew on its own 4:3 screen, widened.
-    vertical_4_3
+    vertical_4_3,
+    // PC widescreen vertical framing with a square-pixel race projection.
+    retail_widescreen
 };
 
 // Everything invented, with the reason in docs/CONTROLS_CAMERA.md.
@@ -235,6 +237,8 @@ class ChaseCameraWorld {
 public:
     virtual ~ChaseCameraWorld() = default;
     virtual double clear_fraction(const VehicleVec3& from, const VehicleVec3& to) const = 0;
+    virtual VehicleVec3 clear_race_eye(const VehicleVec3& from, const VehicleVec3& to) const;
+    virtual float surface_height_offset(const VehicleVec3&) const { return 0.F; }
 };
 
 // Nothing to hit: the default.
@@ -262,6 +266,11 @@ struct ChaseCameraSubject {
     VehicleVec3 acceleration;
     // Body +z for the fixed bumper view; the chase views stay upright.
     VehicleVec3 body_up{0.0, 0.0, 1.0};
+    // Original actor+60 and actor+3CC, from the last physical publication.
+    VehicleVec3 centre_of_mass;
+    unsigned support = 4;
+    bool collision_active = false;
+    float vertical_body_extent = 0.F;
 };
 
 // The subject of a vehicle state: origin = position - R * centre of mass.
@@ -291,6 +300,22 @@ struct ChaseCameraView {
     double far_plane = 2000.0;
 };
 
+void apply_countdown_purge_view(ChaseCameraView& view) noexcept;
+
+// PC 575200/574EB0/575040: a filtered acceleration impulse applied in
+// camera space after the mover has produced its view.
+class CameraImpactShake {
+public:
+    void reset() noexcept { *this = {}; }
+    void observe(const std::array<float,3>& acceleration, bool second_crash_shot = false) noexcept;
+    void apply(ChaseCameraView&) const noexcept;
+    void advance(float world_seconds) noexcept;
+private:
+    float envelope() const noexcept;
+    VehicleVec3 impulse_{};
+    float phase_ = 1.0F, duration_ = 0.0F;
+};
+
 // Ordinary retail cycle: player list 0,1,2,4; 42E020 skips slot 3
 // unless the special high-camera mode is active. 4B6390 and 6F1D68..70
 // establish the list; 4BE6C0 also bounds the normal option to indices 0..2.
@@ -313,6 +338,8 @@ public:
     // False, with nothing changed, otherwise.
     bool set_pov(int pov) noexcept;
     int pov() const noexcept { return pov_; }
+    // The live retail view uses the published body and support history.
+    void use_retail_race_mover() noexcept { retail_race_mover_ = true; }
     // The next POV of kChasePovs that the list names. The lag and the
     // heading it chases carry over, so the new view starts where the old one
     // was looking. APPROXIMATION: speed.exe builds its type-1 mover with
@@ -348,6 +375,26 @@ private:
                ChaseCameraView& view,
                bool look_back = false);
 
+    bool place_race_chase(const ChaseCameraSubject&, const ChaseCameraAnchor&,
+                         const ChaseCameraWorld&, float dt, bool snap,
+                         bool look_back, ChaseCameraView&);
+
+    struct CubicChannel {
+        float value = 0, derivative = 0, requested = 0;
+        float cubic = 0, quadratic = 0, linear = 0, initial = 0, phase = 0;
+        bool active = false, pending = false;
+        void snap(float next) noexcept;
+        void advance(float dt, float duration) noexcept;
+        void request(float next) noexcept;
+    };
+    using CubicVector = std::array<CubicChannel, 3>;
+    CubicVector race_direction_, race_eye_, race_target_;
+    std::array<VehicleVec3, 4> race_acceleration_{};
+    std::size_t race_sample_ = 0, race_samples_ = 0;
+    float race_air_time_ = 0.F;
+    bool race_chase_started_ = false;
+    bool race_pov_cut_ = false;
+
     ChaseCameraTable table_;
     ChaseCameraRules rules_;
     ChaseCameraApproximations approx_;
@@ -359,6 +406,7 @@ private:
     std::int16_t lag_ = 0;
     double reach_ = 1.0;
     CameraSurge surge_;
+    bool retail_race_mover_ = false;
 };
 
 // The target heading of 0x0048A0B6..0x0048A1C9 for a subject: the heading

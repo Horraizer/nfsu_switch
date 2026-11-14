@@ -19,6 +19,37 @@ static int run(const char* root) {
   if(!actor.crash_stop||actor.pair_history[other].magnitude!=31){std::cerr<<"traffic full-roster shared magnitude lost";return 21;}
  }
 
+ // The queued job commits both corrected origins before the first refresh.
+ // Smokeable publishes its public position from the rigid body at that point.
+ {
+  const auto spec=stock_240sx_vehicle_spec();
+  const RaceContactBox box{{-1,-1,-1},{1,1,1},{},{}};
+  VehicleState car;vehicle_import_rigid(spec.handling,car);
+  RaceProp prop;prop.spec=spec;prop.state.position={2,0,.5};
+  vehicle_import_rigid(spec.handling,prop.state);
+  const auto car_history=race_contact_pose(car);
+  const auto prop_history=race_contact_pose(prop.state);
+  RaceContactJob job;job.admitted=true;job.correction={.125,.25,.125};
+  job.query.witness_a={1,0,0};job.query.witness_b={2,0,0};
+  RaceProps props;
+  struct Refresh {RaceProps& props;RaceProp& prop;};
+  Refresh refresh{props,prop};
+  ContactRecord record;std::uint32_t seed=1;
+  RaceContactContext context{record,seed,1};
+  context.refresh_owner=&refresh;
+  context.refresh=[](void* owner,unsigned slot,VehicleState& state) {
+   auto& fixture=*static_cast<Refresh*>(owner);
+   return slot==0||fixture.props.refresh_contact(fixture.prop,state);
+  };
+  RacePairContact result;
+  if(!resolve_swept_race_prop(car,spec,box,prop.state,spec,box,prop.impact,
+      car_history,prop_history,job,context,result)||
+     prop.state.rigid_body.position!=ContactVector{2.125F,.25F,.625F}||
+     result.resume_b.position.x!=2.125||result.resume_b.position.y!=.25||result.resume_b.position.z!=.625) {
+   std::cerr<<"prop lost corrected position during contact refresh\n";++failures;
+  }
+ }
+
  struct Job {unsigned a,b;float remaining;ContactVector point;};
  struct Pin {float wall;unsigned actor;std::array<ContactVector,2> inertia;unsigned count;
   std::array<Job,4> jobs;std::array<std::array<float,10>,2> states;bool reverse=false;bool floor=false;};

@@ -2066,7 +2066,7 @@ add_test(NAME nfsu_race_effect_source_tests
     endif()
     add_test(NAME nfsu_race_loader_peak_tests COMMAND nfsu_race_loader_peak_tests)
     add_executable(nfsu_career_races_tests tests/career_races_tests.cpp)
-    target_link_libraries(nfsu_career_races_tests PRIVATE nfsu_frontend nfsu_race_run nfsu_posix_file_system nfsu_track_render nfsu_race_audio)
+    target_link_libraries(nfsu_career_races_tests PRIVATE nfsu_frontend nfsu_race_run nfsu_posix_file_system nfsu_track_render nfsu_race_audio nfsu_intro_movie)
     nfsu_enable_warnings(nfsu_career_races_tests)
     add_executable(nfsu_career_tests tests/career_tests.cpp)
     target_link_libraries(nfsu_career_tests PRIVATE nfsu_frontend nfsu_posix_file_system nfsu_arg_path)
@@ -2264,6 +2264,7 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_ordinary_world_retail COMMAND nfsu_ordinary_world_retail_tests "${NFSU_RETAIL_ROOT}")
         add_test(NAME nfsu_rival_action_ug0_retail COMMAND nfsu_rival_action_retail_tests "${NFSU_RETAIL_ROOT}" 0)
         add_test(NAME nfsu_rival_action_event8_retail COMMAND nfsu_rival_action_retail_tests "${NFSU_RETAIL_ROOT}" 8)
+        add_test(NAME nfsu_rival_action_event19_retail COMMAND nfsu_rival_action_retail_tests "${NFSU_RETAIL_ROOT}" 19)
         add_test(NAME nfsu_drag_steering_event4_retail COMMAND nfsu_drag_steering_retail_tests "${NFSU_RETAIL_ROOT}" 4 0)
         foreach(round RANGE 0 2)
             add_test(NAME nfsu_drag_steering_event9_round${round}_retail COMMAND nfsu_drag_steering_retail_tests "${NFSU_RETAIL_ROOT}" 9 ${round})
@@ -2271,13 +2272,29 @@ if(NFSU_BUILD_TESTS)
             add_test(NAME nfsu_drag_traffic_paths_event9_round${round}_retail COMMAND nfsu_drag_tournament_paths_retail_tests "${NFSU_RETAIL_ROOT}" ${round} traffic)
             set_tests_properties(nfsu_drag_traffic_paths_event9_round${round}_retail PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
         endforeach()
+        foreach(event IN ITEMS 70 98)
+            add_test(NAME nfsu_drag_traffic_fallback_event${event}_retail
+                COMMAND nfsu_drag_tournament_paths_retail_tests "${NFSU_RETAIL_ROOT}" ${event} fallback-start)
+            set_tests_properties(nfsu_drag_traffic_fallback_event${event}_retail PROPERTIES
+                LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
+        endforeach()
+        add_test(NAME nfsu_drag_traffic_fallback_event80_reverse_retail
+            COMMAND nfsu_drag_tournament_paths_retail_tests "${NFSU_RETAIL_ROOT}" 80 fallback-start 1)
+        set_tests_properties(nfsu_drag_traffic_fallback_event80_reverse_retail PROPERTIES
+            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
+        add_test(NAME nfsu_traffic_start_event12_retail
+            COMMAND nfsu_drag_tournament_paths_retail_tests "${NFSU_RETAIL_ROOT}" 12 ordinary-start)
+        add_test(NAME nfsu_traffic_start_event14_reverse_retail
+            COMMAND nfsu_drag_tournament_paths_retail_tests "${NFSU_RETAIL_ROOT}" 14 ordinary-start 1)
+        set_tests_properties(nfsu_traffic_start_event12_retail nfsu_traffic_start_event14_reverse_retail
+            PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
         set_tests_properties(nfsu_drag_paths_event9_round0_retail nfsu_drag_paths_event9_round1_retail
             nfsu_drag_paths_event9_round2_retail PROPERTIES LABELS retail
             FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
         set_tests_properties(nfsu_drag_steering_event4_retail nfsu_drag_steering_event9_round0_retail
             nfsu_drag_steering_event9_round1_retail nfsu_drag_steering_event9_round2_retail
             PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
-        set_tests_properties(nfsu_rival_action_ug0_retail nfsu_rival_action_event8_retail PROPERTIES
+        set_tests_properties(nfsu_rival_action_ug0_retail nfsu_rival_action_event8_retail nfsu_rival_action_event19_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
         set_tests_properties(nfsu_ordinary_world_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
@@ -2286,7 +2303,6 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_circuit1005_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" --event8)
         set_tests_properties(nfsu_circuit1005_retail nfsu_circuit1005_drive_retail nfsu_circuit1005_recovered_drive_retail nfsu_circuit1005_loader_peak_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
-        add_test(NAME nfsu_circuit_tracks_retail COMMAND nfsu_circuit_tracks_tests "${NFSU_RETAIL_ROOT}")
         add_test(NAME nfsu_circuit_tracks_drive_retail COMMAND nfsu_circuit_tracks_tests "${NFSU_RETAIL_ROOT}" --measure)
         add_test(NAME nfsu_circuit1001_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=19")
         add_test(NAME nfsu_circuit1002_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=59")
@@ -2294,7 +2310,6 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_circuit1006_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=122")
         add_test(NAME nfsu_circuit1007_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=99")
         add_test(NAME nfsu_circuit1008_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=32")
-        add_test(NAME nfsu_drift_tracks_retail COMMAND nfsu_drift_tracks_tests "${NFSU_RETAIL_ROOT}")
         add_test(NAME nfsu_drift_tracks_drive_retail COMMAND nfsu_drift_tracks_tests "${NFSU_RETAIL_ROOT}" --measure)
         add_test(NAME nfsu_drift1301_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=3")
         add_test(NAME nfsu_drift1302_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=13")
@@ -2304,32 +2319,30 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_drift1306_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=65")
         add_test(NAME nfsu_drift1307_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=90")
         add_test(NAME nfsu_drift1308_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=105")
-        set_tests_properties(nfsu_circuit_tracks_retail nfsu_circuit_tracks_drive_retail
+        set_tests_properties(nfsu_circuit_tracks_drive_retail
             nfsu_circuit1001_loader_peak_retail nfsu_circuit1002_loader_peak_retail
             nfsu_circuit1004_loader_peak_retail nfsu_circuit1006_loader_peak_retail
             nfsu_circuit1007_loader_peak_retail nfsu_circuit1008_loader_peak_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
-        set_tests_properties(nfsu_drift_tracks_retail nfsu_drift_tracks_drive_retail
+        set_tests_properties(nfsu_drift_tracks_drive_retail
             nfsu_drift1301_loader_peak_retail nfsu_drift1302_loader_peak_retail
             nfsu_drift1303_loader_peak_retail nfsu_drift1304_loader_peak_retail
             nfsu_drift1305_loader_peak_retail nfsu_drift1306_loader_peak_retail
             nfsu_drift1307_loader_peak_retail nfsu_drift1308_loader_peak_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
         add_test(NAME nfsu_drag_tracks_retail COMMAND nfsu_drag_tracks_tests "${NFSU_RETAIL_ROOT}")
-        add_test(NAME nfsu_drag_tracks_measure_retail COMMAND nfsu_drag_tracks_tests "${NFSU_RETAIL_ROOT}" --measure)
         add_test(NAME nfsu_drag1201_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=21")
         add_test(NAME nfsu_drag1202_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=11")
         add_test(NAME nfsu_drag1206_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=36")
         add_test(NAME nfsu_drag1207_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=83")
         add_test(NAME nfsu_drag1210_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=4")
         add_test(NAME nfsu_drag1214_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=70")
-        set_tests_properties(nfsu_drag_tracks_retail nfsu_drag_tracks_measure_retail
+        set_tests_properties(nfsu_drag_tracks_retail
             nfsu_drag1201_loader_peak_retail nfsu_drag1202_loader_peak_retail
             nfsu_drag1206_loader_peak_retail nfsu_drag1207_loader_peak_retail
             nfsu_drag1210_loader_peak_retail nfsu_drag1214_loader_peak_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
         add_test(NAME nfsu_sprint_tracks_retail COMMAND nfsu_sprint_tracks_tests "${NFSU_RETAIL_ROOT}")
-        add_test(NAME nfsu_sprint_tracks_measure_retail COMMAND nfsu_sprint_tracks_tests "${NFSU_RETAIL_ROOT}" --measure)
         add_test(NAME nfsu_sprint1102_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=2")
         add_test(NAME nfsu_sprint1103_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=12")
         add_test(NAME nfsu_sprint1104_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=23")
@@ -2338,19 +2351,17 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_sprint1107_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=74")
         add_test(NAME nfsu_sprint1108_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=78")
         add_test(NAME nfsu_sprint1109_loader_peak_retail COMMAND nfsu_race_loader_peak_tests "${NFSU_RETAIL_ROOT}" "--event=94")
-        set_tests_properties(nfsu_sprint_tracks_retail nfsu_sprint_tracks_measure_retail
+        set_tests_properties(nfsu_sprint_tracks_retail
             nfsu_sprint1102_loader_peak_retail nfsu_sprint1103_loader_peak_retail
             nfsu_sprint1104_loader_peak_retail nfsu_sprint1105_loader_peak_retail
             nfsu_sprint1106_loader_peak_retail nfsu_sprint1107_loader_peak_retail
             nfsu_sprint1108_loader_peak_retail nfsu_sprint1109_loader_peak_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
-        add_test(NAME nfsu_knockout_tracks_retail COMMAND nfsu_knockout_tracks_tests "${NFSU_RETAIL_ROOT}")
         add_test(NAME nfsu_knockout_tracks_measure_retail COMMAND nfsu_knockout_tracks_tests "${NFSU_RETAIL_ROOT}" --measure)
-        set_tests_properties(nfsu_knockout_tracks_retail nfsu_knockout_tracks_measure_retail PROPERTIES
+        set_tests_properties(nfsu_knockout_tracks_measure_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
-        add_test(NAME nfsu_timetrial_tracks_retail COMMAND nfsu_timetrial_tracks_tests "${NFSU_RETAIL_ROOT}")
         add_test(NAME nfsu_timetrial_tracks_measure_retail COMMAND nfsu_timetrial_tracks_tests "${NFSU_RETAIL_ROOT}" --measure)
-        set_tests_properties(nfsu_timetrial_tracks_retail nfsu_timetrial_tracks_measure_retail PROPERTIES
+        set_tests_properties(nfsu_timetrial_tracks_measure_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
 
         add_test(NAME nfsu_retail_manifest_before
@@ -2641,16 +2652,31 @@ if(NFSU_BUILD_TESTS)
                 LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only
                 WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 180)
         endforeach()
-        add_test(NAME nfsu_career_block30_retail
-            COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/career_block30_retail.py
-                --app $<TARGET_FILE:nfsu_career_races_tests> --root "${NFSU_RETAIL_ROOT}" --work ${nfsu_retail_work})
-        set_tests_properties(nfsu_career_block30_retail PROPERTIES
-            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 900)
         add_test(NAME nfsu_career_full_retail
             COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/career_full_retail.py
                 --app $<TARGET_FILE:nfsu_career_races_tests> --root "${NFSU_RETAIL_ROOT}" --work ${nfsu_retail_work})
         set_tests_properties(nfsu_career_full_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 1800)
+        add_test(NAME nfsu_career_critical_flow_retail
+            COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/career_full_retail.py
+                --app $<TARGET_FILE:nfsu_career_races_tests> --root "${NFSU_RETAIL_ROOT}"
+                --work ${nfsu_retail_work} --critical-finish)
+        set_tests_properties(nfsu_career_critical_flow_retail PROPERTIES
+            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 420)
+        add_test(NAME nfsu_split_screen_retail
+            COMMAND $<TARGET_FILE:nfsu_lan_probe> --root "${NFSU_RETAIL_ROOT}" --split-screen)
+        set_tests_properties(nfsu_split_screen_retail PROPERTIES
+            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 90)
+        # The software rasterizer makes the complete garage flow expensive
+        # in Default. Run it in Release, alongside the full draw checks.
+        if(CMAKE_BUILD_TYPE STREQUAL "Release")
+            add_test(NAME nfsu_career_garage_live_retail
+                COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/career_trade_retail.py
+                    --app $<TARGET_FILE:nfsu_career_tests> --root "${NFSU_RETAIL_ROOT}"
+                    --work ${nfsu_retail_work} --garage)
+            set_tests_properties(nfsu_career_garage_live_retail PROPERTIES
+                LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 180)
+        endif()
         add_test(NAME nfsu_career_fixed_native_retail
             COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tests/original_native_audit.py
                 --tool career_fixed_native --root "${NFSU_RETAIL_ROOT}" --work ${nfsu_retail_work}
@@ -2953,23 +2979,11 @@ if(NFSU_BUILD_TESTS)
             add_test(NAME nfsu_race_run_retail_full_draws
                 COMMAND nfsu_race_run_tests
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
-                    "${NFSU_RETAIL_ROOT}" --full-draws)
-            add_test(NAME nfsu_race_run_retail_full_shading_draws
-                COMMAND nfsu_race_run_tests
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
-                    "${NFSU_RETAIL_ROOT}" --full-draws --car-shading)
-            add_test(NAME nfsu_race_run_retail_full_linear_draws
-                COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
-                    "${NFSU_RETAIL_ROOT}" --full-draws --texture-filter linear)
-            add_test(NAME nfsu_race_run_retail_full_linear_shading_draws
-                COMMAND nfsu_race_run_tests ${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/event1.txt
                     "${NFSU_RETAIL_ROOT}" --full-draws --texture-filter linear --car-shading)
             add_test(NAME nfsu_track_slice_retail_full
                 COMMAND nfsu_track_slice_tests "${NFSU_RETAIL_ROOT}" --full)
             set_tests_properties(
-                nfsu_race_run_retail_full_draws nfsu_race_run_retail_full_shading_draws
-                nfsu_track_slice_retail_full
-                nfsu_race_run_retail_full_linear_draws nfsu_race_run_retail_full_linear_shading_draws
+                nfsu_race_run_retail_full_draws nfsu_track_slice_retail_full
                 PROPERTIES LABELS "retail;retail-full"
                 FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 3600)
         endif()

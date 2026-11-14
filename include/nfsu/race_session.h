@@ -31,6 +31,8 @@ struct RaceSimulationProfile {
     double planner=0,drivers=0,rivals=0,player=0,contacts=0,tail=0;
     // Children of contacts, not additional frame time. Clock reads remain opt-in.
     double traffic_motion=0,prop_motion=0,prop_contacts=0;
+    bool detailed_contacts=false;
+    double contact_candidates=0,contact_queries=0,contact_response=0,contact_requeries=0;
     std::array<double,6> values() const noexcept {return {{planner,drivers,rivals,player,contacts,tail}};}
 };
 // Rivals have no local player's camera. Full presentation remains available
@@ -48,7 +50,8 @@ struct RaceRivalPlan {
     float desired_speed=0,throttle_cap=1,route_distance=0,physical_scale=1;
     int driver_category=0;
     bool enabled=true,recovery_cleanup=false,reset_car=false;
-    float grid_throttle=0;
+    float grid_throttle=0,speed_duration=0;
+    bool physics_full_update=false, path_physics_allowed=false;
 };
 struct RaceRivalPlans {
     std::size_t step=0,count=0,dropped=0;
@@ -99,10 +102,12 @@ class RaceCameraWorld final : public ChaseCameraWorld, public CrashCameraWorld {
 public:
     explicit RaceCameraWorld(const TrackContactWorld& world) : world_(world) {}
     double clear_fraction(const VehicleVec3& from, const VehicleVec3& to) const override;
+    VehicleVec3 clear_race_eye(const VehicleVec3& from, const VehicleVec3& to) const override;
     bool ground(const AiDriverPoint&,float&) const override;
+    float surface_height_offset(const VehicleVec3&) const override;
 private:
     const TrackContactWorld& world_;
-    mutable TrackGroundCache ground_cache_;
+    mutable TrackGroundCache ground_cache_, camera_ground_cache_;
 };
 
 // Event-1 integration: one pad tick at60Hz, four physics/collision slices,
@@ -123,7 +128,8 @@ public:
     bool crash_camera_enabled()const noexcept{return crash_source_!=nullptr;}
     double world_frame_seconds()const noexcept{return frame_seconds_;}
     std::uint64_t world_visual_frame()const noexcept{return crash_source_?std::uint64_t(visual_frames_):timing_.step;}
-    bool set_camera_table(const ChaseCameraTable&,std::string& error);
+    void use_retail_race_camera() noexcept { chase_.use_retail_race_mover(); }
+    bool set_camera_table(const ChaseCameraTable&,std::string& error,int initial_pov=0);
     bool set_drag(bool enabled,std::string& error,float shift_scale=1.F);
     bool is_drag() const {return drag_;}
     bool bind_world_obstacle(std::uint32_t type,int enter,int leave,WorldObstacleBinding&)const;
@@ -154,11 +160,13 @@ public:
     bool set_human_rival(const RaceRivalSetup&,std::string& error);
     bool advance_humans(const std::array<GamepadFrame,2>&,std::string& error);
     bool human_rival() const noexcept {return human_rival_;}
+    void enable_rival_physics_switching() noexcept;
+    unsigned physical_selector() const noexcept {return physical_selector_;}
     bool set_planned_rivals(const std::vector<RaceRivalSetup>&,
                             const std::array<float,3>& low_slip,std::string& error,
                             unsigned player_grid = 1);
     bool set_traffic(const std::filesystem::path&,const std::vector<RaceTrafficSetup>&,std::string&,unsigned density=1,std::uint32_t* random=nullptr);
-    bool stage_drag_traffic(float spacing,float clearance,std::string& error);
+    bool stage_traffic_grid(float spacing,float clearance,std::string& error);
     const RaceProps* props() const {return props_.get();}
     const VehiclePropContactFrame& prop_contacts() const {return prop_contacts_;}
     const RaceTraffic* traffic() const {return traffic_.get();}
@@ -173,6 +181,7 @@ public:
     const RaceDrift& drift() const {return drift_;}
     const DriftCompetition& drift_competition() const {return drift_competition_;}
     bool is_drift() const {return spec_.drift_mode;}
+    bool has_finish_driver() const {return rival_count() || is_drift() || is_time_trial();}
     void set_player_name(const std::string& name) { if(!name.empty())player_name_=name; }
     const std::string& player_name() const { return player_name_; }
     std::string leaderboard_label(unsigned actor) const;
@@ -266,7 +275,7 @@ private:
     bool advance_impl(const GamepadFrame*, const VehicleInput*, std::string&,int ai_gear_request=-1,
                        const RaceRivalPlans* plans=nullptr,
                        RaceSimulationProfile* profile=nullptr,TimingService* timer=nullptr,
-                       const GamepadFrame* remote_pad=nullptr);
+                       const GamepadFrame* remote_pad=nullptr,const RaceRivalPlan* rival_plan=nullptr);
     bool set_rivals_impl(const std::vector<RaceRivalSetup>&,std::string&,RacePresentation,
         const std::array<float,3>*,unsigned player_grid=1);
     void encode() const;
@@ -290,6 +299,7 @@ private:
     std::int32_t cinematic_skip_ticks_=0;
     ChaseCameraView view_;
     CameraMotion camera_motion_;
+    CameraImpactShake camera_shake_;
     int presented_pov_=0;
     unsigned presented_crash_=0;
     bool presented_look_back_=false;
@@ -314,6 +324,10 @@ private:
     float drag_shift_scale_ = 1.F;
     AiDriverForwardState drag_driver_;
     bool ai_physics_ = false;
+    unsigned physical_selector_ = 1;
+    std::int32_t rival_full_until_ = 0;
+    void select_rival_physics(unsigned selector) noexcept;
+    std::int32_t rival_path_blocked_until_=0;
     RaceSteering steering_mode_ = RaceSteering::baseline;
     SteeringState steering_state_;
     SteeringResult steering_result_;
@@ -335,6 +349,7 @@ private:
     AiDriverForwardState finish_driver_;
     std::vector<RaceProgressEvent> finish_probe_events_;
     bool planned_rivals_=false;
+    bool switch_rival_physics_=false;
     bool human_rival_=false,lan_player_=false;
     friend class LanRaceView;
     std::uint64_t pair_impulses_=0;
@@ -377,7 +392,13 @@ private:
         bool cars() const {return !track()&&!scenery()&&!object;}
     };
     std::vector<WorldContactPair> world_contact_pairs_;
-    struct WorldTrackShape {std::size_t polygon;unsigned id;bool expanded=true;};
+    struct WorldTrackShape {
+        std::size_t polygon;
+        unsigned id;
+        bool expanded=true;
+        std::array<float,4> bounds{};
+        ContactVector normal{};
+    };
     std::vector<WorldTrackShape> world_track_shapes_;
     std::vector<bool> world_shape_ids_;
     // Reserve only ordinary racer/legacy placeholder slots until traffic is configured.

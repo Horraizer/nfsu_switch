@@ -1,4 +1,5 @@
 #include "nfsu/race_setup.h"
+#include "nfsu/car_assets.h"
 #include "nfsu/part_placement.h"
 #include <fstream>
 #include <cstring>
@@ -7,6 +8,18 @@
 #include "nfsu/ai_powertrain.h"
 
 namespace nfsu {
+bool load_race_camera_table(const std::filesystem::path& global, const CarAssets& car,
+                            ChaseCameraTable& table, std::string& error) {
+    std::array<unsigned char,kVehicleRecordSize> record{};
+    std::ifstream input(global,std::ios::binary);
+    input.seekg(static_cast<std::streamoff>(car.record_offset));
+    input.read(reinterpret_cast<char*>(record.data()),record.size());
+    if(!input) {
+        error="camera record unavailable for "+car.car_type_name;
+        return false;
+    }
+    return decode_chase_camera_table(record.data(),record.size(),table,error);
+}
 bool race_rival_throttle_cap(unsigned selector,float& cap) noexcept {
     static constexpr float values[]{.93F,.97F,1.F};
     if(selector>=3)return false;

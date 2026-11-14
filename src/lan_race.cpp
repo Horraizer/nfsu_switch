@@ -28,10 +28,18 @@ VehicleUpgradeLevels lan_performance_levels(unsigned tier){
     return result;
 }
 bool LanRaceWorld::load(const std::filesystem::path& root,std::string& error,const LanRaceOptions& options){
-    if(session_){error="LAN world already loaded";return false;}
     if(!valid_lan_options(options)){error="invalid LAN world settings";return false;}
-    const auto& course=kLanCourses[options.course];SupportedRaceSelection race;
-    if(!supported_race_selection(course.event,course.round,race)){error="LAN course unavailable";return false;}
+    const auto& course=kLanCourses[options.course];
+    return load_local(root,course.event,course.round,options,error);
+}
+bool LanRaceWorld::load_local(const std::filesystem::path& root,unsigned event,unsigned round,
+                             const LanRaceOptions& options,std::string& error){
+    if(session_){error="two-player world already loaded";return false;}
+    SupportedRaceSelection race;
+    if(options.laps<1||options.laps>6||options.tier>3||
+       !supported_race_selection(event,round,race)||(race.lap_skip&&options.laps!=1)) {
+        error="invalid two-player course settings";return false;
+    }
     if(!load_vehicle_track_course(root/("Tracks/TRACKB"+std::to_string(race.slot.track)+".lzc"),
         options.laps,race.slot.direction,race.lap_skip,0,course_,error))return false;
     std::vector<std::string> names;
@@ -58,7 +66,7 @@ bool LanRaceWorld::load(const std::filesystem::path& root,std::string& error,con
     host_hull_=std::move(hulls[0]);
     auto world=std::make_unique<RaceSession>(course_,specs[0],RaceSteering::recovered_predicate1,host_hull_);
     if(!world->set_camera_table(cameras_[0],error))return false;
-    RaceRivalSetup guest;guest.spec=specs[1];guest.hull=std::move(hulls[1]);guest.name="GUEST";guest.car_type=models_[1];int marker=-1;
+    RaceRivalSetup guest;guest.spec=specs[1];guest.hull=std::move(hulls[1]);guest.name="PLAYER 2";guest.car_type=models_[1];int marker=-1;
     if(!vehicle_track_grid_pose(course_,1,guest.pose,marker,error)||!world->set_human_rival(guest,error)||
        !world->start(error,&course_.start,.9F,0))return false;
     session_=std::move(world);return true;
@@ -106,9 +114,8 @@ bool LanRaceView::open(const RaceSession& source,const ChaseCameraTable& cameras
     local_=local;view_=std::move(view);return true;
 }
 bool LanRaceView::apply(const LanRaceFrame& frame,double seconds,std::string& error,bool rear,bool camera){
-    LanMessage check;check.kind=LanMessageKind::snapshot;check.frame=frame;std::vector<std::uint8_t> bytes;
-    if(!view_||!std::isfinite(seconds)||seconds<=0||seconds>.25||!lan_encode(check,bytes,error)){
-        if(error.empty())error="invalid LAN render frame";
+    if(!view_||!std::isfinite(seconds)||seconds<=0||seconds>.25||!valid_lan_frame(frame)){
+        error="invalid two-player render frame";
         return false;
     }
     auto& world=*view_;

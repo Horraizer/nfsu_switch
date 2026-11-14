@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 
 #include "nfsu/draw_commands.h"
 #include "nfsu/gpu_scene_profile.h"
@@ -58,6 +59,10 @@ public:
               bool opaque_first = false, bool sky_with_opaque = false,
               std::uint32_t scene_height = 0,
               const RaceHudAtlas* hud_atlas = nullptr);
+    bool open_split(const RecordedCommands&,const RaceHudAtlas&,std::size_t draw_capacity,std::string&);
+    using SplitViewSource=std::function<bool(unsigned,const RecordedCommands*&,const RaceHudFrame*&,std::string&)>;
+    // Consume each borrowed view before requesting the next one.
+    bool present_split(const SplitViewSource&,std::string&);
     // Replace drained scene uploads without detaching the native window or
     // changing the displayed image. Both source owners survive this call.
     bool replace_frontend(const RecordedCommands&,std::size_t capacity,std::string& error);

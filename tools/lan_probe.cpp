@@ -7,6 +7,7 @@
 #include "nfsu/career.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -17,14 +18,93 @@ using namespace nfsu;
 namespace {
 std::uint64_t now_us(){return std::uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
 void require(bool okay,const std::string& error){if(!okay)throw std::runtime_error(error);}
+void check_split(const std::filesystem::path& root, std::string& error) {
+    CareerCatalog catalog;
+    require(catalog.load_free_drive(root,error),error);
+    LanRaceOptions options;
+    options.laps=1;
+    options.rides[0].car=bin_hash("CIVIC");
+    options.rides[1].car=bin_hash("MIATA");
+    for(const auto mode:{QuickRaceMode::circuit,QuickRaceMode::sprint}){
+        const auto choices=catalog.quick_courses(mode);
+        require(!choices.empty(),"split-screen race type has no tracks");
+        const auto& route=catalog.free_courses().at(choices.front());
+        LanRaceWorld world;
+        require(world.load_local(root,route.event,route.round,options,error),error);
+        require(world.models()[0]=="CIVIC"&&world.models()[1]=="MIATA","split-screen model mapping");
+        require(world.session().course().route.point_to_point==(mode==QuickRaceMode::sprint)&&
+            world.session().course().route.laps==1,"split-screen route does not match selected mode");
+        require(world.session().rival_count()==1&&!world.session().traffic()&&
+            world.session().timing().racers.size()==2,"split-screen must start with only two humans");
+        std::array<LanRaceView,2> views;
+        for(unsigned i=0;i<2;++i)
+            require(views[i].open(world.session(),world.cameras(i),i,error,&world.host_hull()),error);
+        std::array<GamepadFrame,2> input{};
+        for(auto& player:input)player.pads[0].connected=true;
+        const auto gas=gamepad_button_bit(GamepadButton::trigger_right);
+        for(unsigned active:{0U,1U}){
+            input[active].pads[0].buttons=gas;
+            input[1-active].pads[0].buttons=0;
+            for(unsigned step=0;step<(active?60U:300U);++step)
+                require(world.advance(input,error),error);
+            const auto state=world.snapshot();
+            require(state.go&&state.cars[active].throttle>.9F&&
+                state.cars[1-active].throttle==0.F,"split-screen throttle reached the wrong racer");
+            require(world.session().work().rival_driver_updates==0,"split-screen invoked a computer driver");
+        }
+        const auto state=world.snapshot();
+        for(auto& view:views)require(view.apply(state,1./60,error),error);
+        require(views[1].apply(state,1./60,error,false,true),error);
+        require(views[0].session().camera().pov==0&&views[1].session().camera().pov!=0,
+            "split-screen camera selection crossed player slots");
+        LanScene scene;
+        require(scene.load_local(root,route.event,route.round,options,world.models(),error),error);
+        std::array<RaceGpuFrame,2> frames;
+        RaceHudFrame hud;
+        for(unsigned i=0;i<2;++i) {
+            auto& frame=frames[i];
+            require(scene.split_frame(world.session(),views[i],i,frame,hud,error),error);
+            require(frame.track_draws&&frame.car_draws&&validate_recorded_commands(frame.commands,error),error);
+            if(i) {
+                std::vector<const RecordedDraw*> definitions;
+                for(auto draw=frame.commands.static_track_draw_count();draw<frame.commands.draw_count();++draw)
+                    definitions.push_back(&frame.commands.draw_view(draw).definition);
+                RaceGpuFrame next;
+                require(scene.split_frame(world.session(),views[0],0,next,hud,error)&&
+                    validate_prepared_dynamic_prefix(definitions,next.commands,error),error);
+                require(scene.split_frame(world.session(),views[i],i,frame,hud,error),error);
+            }
+            require(frame.commands.width==1280&&frame.commands.height==720&&
+                std::abs(frame.commands.frame.projection[0]*1280-frame.commands.frame.projection[1]*360)<.001F,
+                "split-screen projection must preserve square pixels");
+            require(hud.quads&&std::abs(hud.readout.engine_rpm-state.cars[i].rpm)<.1,
+                "split-screen HUD reads the wrong racer");
+            for(unsigned v=0;v<hud.quads*4;++v){
+                const auto& vertex=hud.vertices[v];
+                require(std::isfinite(vertex.px)&&std::isfinite(vertex.py)&&
+                    vertex.px>=-128&&vertex.px<=1408&&vertex.py>=-128&&vertex.py<=488,
+                    "split-screen HUD geometry is outside the clipped view");
+            }
+            if(i)require(!frames[0].commands.generation_valid()&&
+                frames[1].commands.package_identity()==frames[0].commands.package_identity(),
+                "split-screen must reuse the immutable track and car package");
+        }
+        const auto& first=frames[0].commands.frame;
+        const auto& second=frames[1].commands.frame;
+        require(!std::equal(std::begin(first.eye),std::end(first.eye),std::begin(second.eye)),
+            "split-screen cameras record identical views");
+    }
+    std::cout<<"PASS local split-screen circuit and sprint\n";
+}
 std::string frame_hash(const LanRaceFrame& frame){LanMessage m;m.kind=LanMessageKind::snapshot;m.frame=frame;std::vector<std::uint8_t> bytes;std::string error;require(lan_encode(m,bytes,error),error);return sha256_hex(sha256(bytes.data(),bytes.size()));}
 }
 int main(int argc,char** argv){
     try {
-        std::filesystem::path root,trace;std::string ip,error;bool host=false,fast=false,inspect=false;unsigned port=kLanPort,steps=1800;
+        std::filesystem::path root,trace;std::string ip,error;bool host=false,fast=false,inspect=false,split=false;unsigned port=kLanPort,steps=1800;
         LanRaceOptions options;bool guest_view=false,list_cars=false,demo_body=false;
         for(int i=1;i<argc;++i){const std::string a=argv[i];
             if(a=="--inspect")inspect=true;
+            else if(a=="--split-screen")split=true;
             else if(a=="--list-cars")list_cars=true;
             else if(a=="--demo-body")demo_body=true;
             else if(a=="--host")host=true;
@@ -50,8 +130,9 @@ int main(int argc,char** argv){
             else if(a=="--fast")fast=true;
             else throw std::runtime_error("unknown/incomplete LAN probe argument");
         }
-        require(!root.empty()&&(inspect||list_cars||(host!=!ip.empty()))&&port<=65535&&steps>0&&steps<=120000,
+        require(!root.empty()&&(split||inspect||list_cars||(host!=!ip.empty()))&&port<=65535&&steps>0&&steps<=120000,
             "use --root PATH and --inspect, --list-cars, --host or --join IP");
+        if(split){check_split(root,error);return 0;}
         if(list_cars){
             std::vector<std::string> models;require(load_lan_car_names(root,models,error),error);
             for(const auto& model:models)std::cout<<model<<'\n';

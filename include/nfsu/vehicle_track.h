@@ -6,6 +6,7 @@
 #include "nfsu/track_ground.h"
 #include "nfsu/vehicle.h"
 #include "nfsu/ai_powertrain.h"
+#include "nfsu/ai_driver.h"
 
 #include <array>
 #include <cstddef>
@@ -591,9 +592,9 @@ public:
               bool explicit_frame_end = false);
 
     // Human pre-race adapter: settled neutral, engine-only solver slices.
-    // Grid body, wheels, contact/route counters and nitrous remain untouched.
+    // Grid body, wheels and contact/route counters remain untouched.
     // simulation_seconds is the engine clock and continues across GO.
-    bool step_grid_engine(double throttle, VehicleTrackTelemetry& telemetry,
+    bool step_grid_engine(const VehicleInput&, VehicleTrackTelemetry& telemetry,
                           double publication_dt, double solver_dt,
                           bool drag=false, std::int32_t clock=0);
     void release_grid_engine(bool drag=false,unsigned category=3,float window_scale=1.F) noexcept;
@@ -606,6 +607,9 @@ public:
     // and selected low-slip scale. This is not complete retail world behavior.
     bool configure_ai(float low_slip);
     bool set_ai_scale(float scale) noexcept;
+    void select_rival_physics(unsigned selector) noexcept;
+    bool step_rival_path(const AiDriverPath&,float desired_speed,float speed_duration,bool publish,
+                         const VehicleInput&,VehicleTrackTelemetry&);
     // Ordinary processed driver1D4: -1 automatic,0 reverse. This is a held
     // AI command, not a player's one-shot shift edge.
     bool step_ai(const VehicleInput&,VehicleTrackTelemetry&,int gear_request=-1,float continuation_dt=-1,
@@ -635,12 +639,13 @@ public:
     // RaceSession owns one shared end-of-frame queue for cars and polygons.
     // Grid placement and standalone diagnostics retain their local solver.
     void defer_body_contacts(bool value) noexcept { deferred_body_contacts_=value; }
-    bool refresh_contact(VehicleState&,const VehicleState* published_actor=nullptr,float interval=0);
+    bool refresh_contact(VehicleState&,const VehicleState* published_actor,float& interval);
     bool meet_track(const RaceContactPose&,const RaceTrackContactJob&,float friction,
                     RaceContactContext&,RacePairContact&);
     bool meet_prop(struct RaceProp&,const RaceContactBox&,const RaceContactPose&,
                    const RaceContactJob&,RaceContactContext&,RacePairContact&);
     const VehicleState& state() const noexcept { return state_; }
+    float last_component_interval() const noexcept { return last_component_interval_; }
     const RaceProgress& progress() const noexcept { return progress_; }
     // 434C33..434C42: publish the race-stage transition into this car.
     void begin_race() noexcept {
@@ -661,14 +666,21 @@ private:
     std::int32_t owner_recovery_start_=0;
     std::uint32_t last_ghost_overlap_=0;
     void extend_owner_recovery(std::int32_t now) noexcept;
-    double last_solver_dt_=kVehicleStepSeconds;
+    float last_component_interval_=0;
     int last_ai_gear_request_=-1;
     class AiWorld;
     AiPhysicsState ai_;
     AiPowertrainTables ai_tables_;
-    bool ai_configured_ = false, ai_started_ = false, ai_route_tracking_ = true;
+    bool ai_configured_ = false, ai_active_ = false, ai_started_ = false, ai_route_tracking_ = true;
     bool preparing_grid_ = false; // placement must settle before rest admission
     float ai_low_slip_ = 1, ai_scale_ = 1;
+    struct RivalPathMotion {
+        AiDriverPath path;
+        float parameter=0, speed=0, acceleration=0, metres_per_point=0;
+        float lateral_offset=0, lateral_derivative=0, lateral_phase=0;
+        double vertical_offset=0;
+    } rival_path_;
+    std::array<float,64> ai_acceleration_{};
     bool resolve_body(VehicleState& s, VehicleTrackTelemetry& t) const;
     void run_tick(VehicleState& s, const VehicleInput& input, VehicleTrackTelemetry& t);
     bool ground_under(double x, double y, double& z) const;

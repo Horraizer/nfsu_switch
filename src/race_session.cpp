@@ -1,6 +1,7 @@
 #include "nfsu/race_session.h"
 #include "nfsu/platform.h"
 #include "nfsu/ai_powertrain.h"
+#include "nfsu/player_powertrain.h"
 #include "nfsu/track_zones.h"
 #include "nfsu/prop_settling.h"
 
@@ -10,6 +11,7 @@
 #include <limits>
 #include <locale>
 #include <sstream>
+#include <unordered_set>
 
 namespace nfsu {
 float RaceSession::next_world_frame_seconds()const noexcept {
@@ -17,7 +19,10 @@ float RaceSession::next_world_frame_seconds()const noexcept {
 }
 bool RaceSession::set_crash_camera(const CrashCameraRoadSource* source,unsigned intensity,unsigned track,std::string& error) {
     if(started_||intensity>255){error="crash camera must be configured before start, intensity 0..255";return false;}
-    crash_source_=intensity?source:nullptr;crash_camera_.configure(track,intensity);error.clear();return true;
+    crash_source_=intensity?source:nullptr;crash_camera_.configure(track,intensity);
+    // Rendering/texture comparison replays keep their fixed diagnostic camera.
+    if(crash_source_)chase_.use_retail_race_mover();
+    error.clear();return true;
 }
 bool RaceSession::set_traffic(const std::filesystem::path& root,const std::vector<RaceTrafficSetup>& setup,std::string& error,unsigned density,std::uint32_t* random) {
     if(started_||traffic_){error="traffic must be configured before start";return false;}
@@ -39,8 +44,8 @@ bool RaceSession::set_traffic(const std::filesystem::path& root,const std::vecto
     props_=std::move(props);traffic_=std::move(next);return true;
 }
 
-bool RaceSession::stage_drag_traffic(float spacing,float clearance,std::string& error) {
-    if(!started_||!drag_||timing_.step) {error="drag traffic staging requires the start grid";return false;}
+bool RaceSession::stage_traffic_grid(float spacing,float clearance,std::string& error) {
+    if(!started_||timing_.step) {error="traffic staging requires the start grid";return false;}
     if(!traffic_)return true;
     std::array<const VehicleState*,4> racers{{&car()}};
     std::array<const RaceContactBox*,4> shapes{{&contact_box_}};
@@ -48,7 +53,7 @@ bool RaceSession::stage_drag_traffic(float spacing,float clearance,std::string& 
         racers[i+1]=&rivals_[i]->car();
         shapes[i+1]=&rivals_[i]->contact_box_;
     }
-    return traffic_->stage_drag_grid(racers,shapes,spacing,clearance,timing_.now_ticks,error);
+    return traffic_->stage_grid(racers,shapes,spacing,clearance,timing_.now_ticks,error);
 }
 
 namespace {
@@ -98,11 +103,12 @@ RaceSession::RaceSession(const VehicleTrackCourse& course, const VehicleSpec& sp
 }
 
 RaceSession::~RaceSession()=default;
-bool RaceSession::set_camera_table(const ChaseCameraTable& table,std::string& error) {
+bool RaceSession::set_camera_table(const ChaseCameraTable& table,std::string& error,int initial_pov) {
     if(started_){error="camera table must precede start";return false;}
     ChaseCamera selected(table,{},{});
     if(!selected.valid()){error=selected.error();return false;}
-    chase_=selected;return true;
+    if(!selected.set_pov(spec_.drift_mode?4:initial_pov)){error="initial race camera anchor missing";return false;}
+    chase_=selected;error.clear();return true;
 }
 bool RaceSession::set_lap_knockout(bool enabled,std::string& error,unsigned laps) {
     if(started_){error="knockout policy must precede start";return false;}
@@ -281,6 +287,18 @@ bool RaceSession::set_rivals_impl(const std::vector<RaceRivalSetup>& setup,std::
     error.clear();return true;
 }
 
+void RaceSession::select_rival_physics(unsigned selector) noexcept {
+    if(physical_selector_==selector)return;
+    physical_selector_=selector;
+    vehicle_.select_rival_physics(selector);
+}
+
+void RaceSession::enable_rival_physics_switching() noexcept {
+    if(started_||!planned_rivals_||drag_)return;
+    switch_rival_physics_=true;
+    for(auto& rival:rivals_)rival->select_rival_physics(1);
+}
+
 unsigned RaceSession::registration_rank(unsigned actor) const noexcept {
     // 422A70 constructs racers by grid slot. 41FE50 subsequently publishes
     // the human first, but 468680 still uses construction IDs for equal X.
@@ -334,6 +352,86 @@ double RaceCameraWorld::clear_fraction(const VehicleVec3& from, const VehicleVec
     return status==TrackContactStatus::hit ? std::clamp(double(hit.distance)/length,0.0,1.0) : 1.0;
 }
 
+VehicleVec3 RaceCameraWorld::clear_race_eye(const VehicleVec3& from, const VehicleVec3& to) const {
+    // 4838E0 starts with the segment hit, inset .01 m toward the actor.
+    auto eye = ChaseCameraWorld::clear_race_eye(from, to);
+    const auto midpoint = [](double a, double b) { return float((a + b) * .5); };
+    const float x = midpoint(from.x, to.x), y = midpoint(from.y, to.y);
+    const double dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
+    const float radius = float((vehicle_sqrt(dx*dx + dy*dy + dz*dz) + 1.) * .5);
+    std::array<std::size_t, 9> cells{};
+    std::size_t cell_count = 0;
+    if (!query_track_collision_cells(world_.collision, x-radius-.5F, y-radius-.5F,
+            x+radius+.5F, y+radius+.5F, cells.data(), cells.size(), cell_count)) return eye;
+
+    // The world stores immutable polygons; the native query marks each
+    // admitted polygon until the camera update releases its local list.
+    std::array<std::size_t, 160> polygons{};
+    std::size_t count = 0;
+    for (std::size_t i = 0; i < cell_count && count < polygons.size(); ++i) {
+        const auto& cell = world_.collision.cells[cells[i]];
+        for (unsigned j = 0; j < cell.index_count && count < polygons.size(); ++j) {
+            const auto index = world_.collision.indices[cell.first_index + j];
+            if (std::find(polygons.begin(), polygons.begin() + count, index) != polygons.begin() + count) continue;
+            const auto& p = world_.collision.polygons[index];
+            const auto outside = [&](int axis, float centre) {
+                const auto [low, high] = std::minmax({p.corner[0][axis], p.corner[1][axis],
+                                                    p.corner[2][axis], p.corner[3][axis]});
+                return low > centre + radius + .5F || high < centre - radius - .5F;
+            };
+            if (!outside(0, x) && !outside(1, y)) polygons[count++] = index;
+        }
+    }
+    constexpr std::uint64_t excluded_materials =
+        (1ULL<<19)|(0x1ffULL<<21)|(1ULL<<34)|(7ULL<<36)|(1ULL<<40)|(1ULL<<42)|
+        (1ULL<<44)|(3ULL<<48)|(3ULL<<51)|(3ULL<<54)|(1ULL<<60)|(1ULL<<62);
+    for (unsigned pass = 0; pass < 3; ++pass) {
+        VehicleVec3 correction{};
+        unsigned hits = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto index = polygons[i];
+            const auto& p = world_.collision.polygons[index];
+            const auto material = p.unknown0[2];
+            if (material < 64 && (excluded_materials & (1ULL << material))) continue;
+            const auto plane = vehicle_track_ground_plane(world_, index);
+            constexpr double limit = .7F;
+            const double distance = eye.x*plane[0] + eye.y*plane[1] + eye.z*plane[2] - plane[3];
+            if (distance < 0.0 || distance >= limit) continue;
+            // 440200 tests projected containment using the ordered edges.
+            bool inside = true;
+            for (unsigned k = 0; k < 4; ++k) {
+                const auto& a = p.corner[k];
+                const auto& b = p.corner[(k+1)%4];
+                const double ax = a[0]-eye.x, ay = a[1]-eye.y, az = a[2]-eye.z;
+                const double bx = b[0]-eye.x, by = b[1]-eye.y, bz = b[2]-eye.z;
+                if ((ay*bz-az*by)*plane[0]+(az*bx-ax*bz)*plane[1]+(ax*by-ay*bx)*plane[2] < 0.0) {
+                    inside = false;
+                    break;
+                }
+            }
+            if (!inside) continue;
+            ++hits;
+            const double push = limit - distance;
+            correction.x += push*plane[0];
+            correction.y += push*plane[1];
+            correction.z += push*plane[2];
+        }
+        if (!hits) break;
+        eye.x += correction.x / hits;
+        eye.y += correction.y / hits;
+        eye.z += correction.z / hits;
+    }
+    return eye;
+}
+
+float RaceCameraWorld::surface_height_offset(const VehicleVec3& point) const {
+    TrackContact contact;
+    if (!query_track_ground(world_, point, camera_ground_cache_, contact)) return 0.F;
+    const auto material = world_.collision.polygons[contact.polygon].unknown0[2];
+    float offset = 0.F;
+    player_surface_height(material, float(point.x), float(point.y), offset);
+    return offset;
+}
 bool RaceCameraWorld::ground(const AiDriverPoint& point,float& z)const {
     if(!world_.valid||!std::all_of(point.begin(),point.end(),[](float f){return std::isfinite(f);}))return false;
     TrackContact hit;
@@ -352,7 +450,7 @@ bool RaceSession::skip_start_cinematic() {
     return true;
 }
 bool RaceSession::start(std::string& error,const VehiclePose* pose,float countdown_step,float cinematic_seconds) {
-    crash_camera_.reset();frame_seconds_=kDriveFrameSeconds;steering_seconds_=shift_seconds_=visual_frames_=0;
+    crash_camera_.reset();camera_shake_.reset();frame_seconds_=kDriveFrameSeconds;steering_seconds_=shift_seconds_=visual_frames_=0;
     prop_contacts_={};
     if (started_) { error = "race session is one-shot"; return false; }
     crash_windows_damaged_=false;
@@ -386,13 +484,17 @@ bool RaceSession::start(std::string& error,const VehiclePose* pose,float countdo
     set_race_stage(timing_, cinematic_seconds>0?RaceStage::prerace:RaceStage::countdown, timing_events_);
     update_standings();
 
-    //4B47A0 selects the fourth configured POV on entering drift.
-    if(!chase_.set_pov(spec_.drift_mode?4:0)) {
+    // Drift starts in the fourth configured view. Ordinary races retain the
+    // camera selected at setup, as 4B47A0 reads the driver's camera preference.
+    if(!chase_.set_pov(spec_.drift_mode?4:chase_.pov())) {
         error="race camera anchor missing for selected mode";return false;
     }
-    if (presentation_==RacePresentation::player &&
-        !chase_.reset(chase_subject(car(), spec_), camera_world_, view_)) {
-        error = chase_.error(); return false;
+    if (presentation_ == RacePresentation::player) {
+        auto subject = chase_subject(car(), spec_);
+        subject.vertical_body_extent = std::max(contact_bounds_.below, contact_bounds_.above);
+        if (!chase_.reset(subject, camera_world_, view_)) {
+            error = chase_.error(); return false;
+        }
     }
     camera_motion_.reset();presented_pov_=view_.pov;presented_crash_=0;presented_look_back_=false;
     camera_motion_.update({{float(view_.eye.x),float(view_.eye.y),float(view_.eye.z)}},float(kDriveFrameSeconds),true);
@@ -413,7 +515,7 @@ bool RaceSession::advance_planned(const GamepadFrame& pad,const RaceRivalPlans& 
                                   RaceSimulationProfile* profile,TimingService* timer) {
     const bool solo_drag=drag_&&rivals_.empty()&&plans.drag_steering&&
         plans.count==0&&plans.step==timing_.step;
-    const bool solo_finish=spec_.drift_mode&&rivals_.empty()&&timing_.outcome==RaceOutcome::finished&&
+    const bool solo_finish=has_finish_driver()&&rivals_.empty()&&timing_.outcome==RaceOutcome::finished&&
         plans.count==0&&plans.step==timing_.step;
     if(!planned_rivals_&&!solo_drag&&!solo_finish){error="planned rivals are not configured";return false;}
     return advance_impl(&pad,nullptr,error,-1,&plans,profile,timer);
@@ -433,7 +535,7 @@ bool RaceSession::configure_ai(float low_slip,std::string& error) {
     if(started_||presentation_!=RacePresentation::none||!vehicle_.configure_ai(low_slip)) {
         error="selector3 requires a configured headless car before start";return false;
     }
-    ai_physics_=true;error.clear();return true;
+    ai_physics_=true;physical_selector_=3;error.clear();return true;
 }
 
 void RaceSession::visit_actor_contacts(unsigned actor,void* context,
@@ -466,7 +568,7 @@ void RaceSession::visit_actor_pairs(unsigned actor,void* context,
 
 bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direct,std::string& error,int ai_gear_request,
                                const RaceRivalPlans* plans,RaceSimulationProfile* profile,TimingService* timer,
-                               const GamepadFrame* remote_pad) {
+                               const GamepadFrame* remote_pad,const RaceRivalPlan* rival_plan) {
     if(profile && !timer){error="simulation profiling requires a clock";return false;}
     auto profile_start=profile?timer->now_us():0;
     const auto stage=[&](double RaceSimulationProfile::*field) {
@@ -484,12 +586,13 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         error = "race session is not running"; return false;
     }
     crash_camera_.begin_frame(float(kDriveFrameSeconds));
+    if(crash_camera_.consume_damage_reset())crash_windows_damaged_=false;
     frame_seconds_=external_frame_seconds_>0?external_frame_seconds_:
         (crash_camera_.event()?double(float(kDriveFrameSeconds)*.4F):kDriveFrameSeconds);
     const float world_dt=float(frame_seconds_);
     const unsigned solver_slices=unsigned(world_dt/.004399999976158142F)+1;
     const double solver_dt=frame_seconds_/solver_slices;
-    if(ai_physics_&&!direct) {error="selector3 needs processed AI controls";return false;}
+    if(ai_physics_&&!direct) {error="rival physics needs processed AI controls";return false;}
     if(start_cinematic() && timing_.now_ticks>=cinematic_end_ticks_)
         set_race_stage(timing_,RaceStage::countdown,timing_events_);
     const bool held_grid=race_car_held(timing_);
@@ -614,7 +717,44 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
            ((planned_rivals_||human_rival_)&&r.timing().outcome==RaceOutcome::finished)) {
             bool ok;
             if(planned_rivals_) {
-                ok=r.advance_driver(rival_controls[i],error,drag_?-1:original_drivers_[i].gear_request);
+                if(switch_rival_physics_&&!held_grid) {
+                    // 44B35B arms 5 s on the grid. 44B3BB retries in 1 s
+                    // if it expires before all four wheels have support.
+                    if(timing_.step==timing_.go_step+1)
+                        r.rival_full_until_=timing_.go_ticks+5*kRaceTicksPerSecond;
+                    if(r.rival_full_until_&&timing_.now_ticks>=r.rival_full_until_) {
+                        r.rival_full_until_=r.car().published_support<4?
+                            timing_.now_ticks+kRaceTicksPerSecond:0;
+                    }
+                    const auto& plan=plans->cars[i];
+                    const auto& car_state=r.car();
+                    const auto near=[&](const VehicleVec3& point) {
+                        const auto& pos=car_state.position;
+                        const auto dx=pos.x-point.x,dy=pos.y-point.y,dz=pos.z-point.z;
+                        return dx*dx+dy*dy+dz*dz<120.0*120.0;
+                    };
+                    if(r.rival_full_until_!=0||timing_.racers[i+1].status!=RacerStatus::not_finished)
+                        r.select_rival_physics(1);
+                    else if(plan.reset_car||car_state.published_support==0||
+                            (r.physical_selector()==4&&(!plan.path_physics_allowed||near(car().position)||near(view_.eye)))||
+                            r.rival_path_blocked_until_>timing_.now_ticks)
+                        r.select_rival_physics(3);
+                    else if(plan.physics_full_update) {
+                        // 44B060 admits path motion on full controller decisions.
+                        const bool path=plan.path_physics_allowed&&plan.path.count>2&&plan.enabled&&
+                            car_state.owner_speeds.forward>=5.F&&
+                            !r.vehicle_.owner_recovery_active(timing_.now_ticks)&&
+                            !near(car().position)&&!near(view_.eye)&&
+                            timing_.now_ticks-timing_.go_ticks>=30*kRaceTicksPerSecond;
+                        r.select_rival_physics(path?4U:3U);
+                    } else if(r.physical_selector()==1)r.select_rival_physics(3);
+                    if(r.physical_selector()==1)rival_controls[i].direction_request=
+                        original_drivers_[i].gear_request==0?VehicleDirectionRequest::reverse:
+                        VehicleDirectionRequest::automatic;
+                }
+                ok=r.advance_impl(nullptr,&rival_controls[i],error,
+                    drag_?-1:original_drivers_[i].gear_request,nullptr,nullptr,nullptr,nullptr,
+                    held_grid?nullptr:&plans->cars[i]);
                 if(!held_grid)++work_.rival_driver_updates;
             } else if(human_rival_) {
                 r.external_human_drafting_=float(rival_controls[i].drafting);
@@ -639,7 +779,9 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         const auto transition=nitrous_dispatch(nitrous_resource_,nitrous_clock_,controls_.held(),{});
         nitrous_engine_.update(nitrous_resource_,nitrous_clock_);
         if(countdown&&transition==NitrousTransition::started)style_.trigger(14,1.F,timing_.now_ticks);
-        if(!held_grid&&controls_.frame_state().reset) {vehicle_.request_reset();crash_camera_.reset();}
+        if(!held_grid&&controls_.frame_state().reset) {
+            vehicle_.request_reset();crash_camera_.reset();crash_windows_damaged_=false;
+        }
     }
     if (!held_grid) {
         const bool recovered = !direct && !drag_ && steering_mode_ != RaceSteering::baseline;
@@ -709,13 +851,22 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         }
         if(first.shift!=VehicleShift::none) held.shift=first.shift;
         held.world_frame_seconds=world_dt;held.world_clock_valid=true;held.world_clock=timing_.now_ticks;
-        if(ai_physics_) {
-            if(!vehicle_.step_ai(held,track_telemetry_.back(),ai_gear_request)) {
-                started_=false;error=vehicle_.error();return false;
-            }
-            const unsigned ai_slices=unsigned(world_dt/.00839999970048666F)+1;
-            contact_component_interval_=world_dt/ai_slices;
-            work_.physics_steps+=ai_slices;
+        if(physical_selector()==4&&
+           (!rival_plan||!vehicle_.step_rival_path(rival_plan->path,rival_plan->desired_speed,
+                rival_plan->speed_duration,rival_plan->physics_full_update,held,track_telemetry_.back()))) {
+            // 463D50/463F20 drops a path that cannot be followed.
+            rival_path_blocked_until_=timing_.now_ticks+2*kRaceTicksPerSecond;
+            select_rival_physics(3);
+        }
+        if(physical_selector()!=1) {
+            if(physical_selector()==3) {
+                if(!vehicle_.step_ai(held,track_telemetry_.back(),ai_gear_request)) {
+                    started_=false;error=vehicle_.error();return false;
+                }
+                const unsigned ai_slices=unsigned(world_dt/.00839999970048666F)+1;
+                contact_component_interval_=world_dt/ai_slices;
+                work_.physics_steps+=ai_slices;
+            } else ++work_.physics_steps;
             for(std::size_t k=0;k<kDriveStepsPerFrame;++k) {
                 inputs_[k]=held;track_telemetry_[k]=track_telemetry_.back();
             }
@@ -739,7 +890,9 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                 ++drag_shifts_;
                 if(car().transmission.shift_quality>=.85F)++drag_perfect_shifts_;
             }
-            if (track_telemetry_[k].reset!=VehicleTrackReset::none) {turbo_={};crash_camera_.reset();}
+            if (track_telemetry_[k].reset!=VehicleTrackReset::none) {
+                turbo_={};crash_camera_.reset();crash_windows_damaged_=false;
+            }
             if (recovered) {
                 if (track_telemetry_[k].reset != VehicleTrackReset::none) {
                     steering_state_={}; steering_result_={}; shifted_=false;
@@ -757,7 +910,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                 animation_.wheel_phase[w] = phase;
             }
         }
-        if(!ai_physics_)for(unsigned k=solver_slices;k<kDriveStepsPerFrame;++k){inputs_[k]=inputs_[solver_slices-1];track_telemetry_[k]=track_telemetry_[solver_slices-1];}
+        if(physical_selector()==1)for(unsigned k=solver_slices;k<kDriveStepsPerFrame;++k){inputs_[k]=inputs_[solver_slices-1];track_telemetry_[k]=track_telemetry_[solver_slices-1];}
         timing_input.events = vehicle_.events().data();
         timing_input.event_count = vehicle_.events().size();
         timing_input.speed = static_cast<float>(speed(car()));
@@ -779,9 +932,16 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         if(!direct) controls_.step(0,kVehicleGearNeutral,VehicleGearbox::manual);
         for (std::size_t k = 0; k < kDriveStepsPerFrame; ++k) {
             inputs_[k] = {};
-            if(!ai_physics_) {
-                inputs_[k].throttle=throttle;inputs_[k].handbrake=true;
-                if(!vehicle_.step_grid_engine(throttle,track_telemetry_[k],
+            if(physical_selector()==1) {
+                auto& input=inputs_[k];
+                input.throttle=throttle;input.handbrake=true;
+                if(!direct&&countdown&&nitrous_engine_.active) {
+                    input.nitrous_active=true;
+                    input.nitrous_clock=nitrous_clock_;
+                    input.nitrous_activation_seconds=nitrous_engine_.activation_seconds;
+                    input.drag_mode=drag_;
+                }
+                if(!vehicle_.step_grid_engine(input,track_telemetry_[k],
                     k+1==kDriveStepsPerFrame?kDriveFrameSeconds:0.0,kDriveSolverSeconds,drag_,timing_.now_ticks)) {
                     started_=false;error="grid engine update refused";return false;
                 }
@@ -832,16 +992,15 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             auto& p=props_->objects_[physical[i].prop];okay=true;
             if(p.awake) {
                 okay=props_->advance_body(p,course_.world,error,world_dt);
-                contact_component_interval_=world_dt/float(unsigned(world_dt/.01F)+1);
             }
             if(profile)profile->prop_motion+=(timer->now_us()-begin)/1000.0;
         } else if(actor==0) {
             okay=advance_player();
-            if(!held_grid)contact_component_interval_=ai_physics_?world_dt/float(unsigned(world_dt/.00839999970048666F)+1):float(solver_dt);
+            if(!held_grid&&physical_selector()!=4)contact_component_interval_=physical_selector()==3?world_dt/float(unsigned(world_dt/.00839999970048666F)+1):vehicle_.last_component_interval();
             if(profile)profile->player+=(timer->now_us()-begin)/1000.0;
         } else if(actor<4) {
             okay=advance_rival(actor-1);
-            if(!held_grid)contact_component_interval_=rivals_[actor-1]->contact_component_interval_;
+            if(!held_grid&&rivals_[actor-1]->physical_selector()!=4)contact_component_interval_=rivals_[actor-1]->contact_component_interval_;
             if(profile)profile->rivals+=(timer->now_us()-begin)/1000.0;
         } else {
             okay=traffic_->advance_body(actor-4,error);
@@ -918,22 +1077,12 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         nitrous_resource_.stop(nitrous_clock_);nitrous_engine_.active=false;
     }
     update_style();
-    if (presentation_==RacePresentation::player) {
-      if (controls_.frame_state().camera) chase_.next_pov(spec_.drift_mode);
-      ++work_.camera_updates;
-      VehicleVec3 acceleration{};
-      const bool reset=telemetry().resets!=previous_resets[0];
-      if(!reset) {
-          const auto& a=car().owner_motion.acceleration;
-          acceleration={a[0],a[1],a[2]};
-      }
-      const auto subject=chase_subject(car(),spec_,acceleration);
-      if (!(reset?chase_.reset(subject,camera_world_,view_):
-            chase_.update(subject,frame_seconds_,camera_world_,view_,controls_.frame_state().look_back))) {
-        started_ = false; error = chase_.error(); return false;
-      }
-    }
+    if(presentation_==RacePresentation::player&&controls_.frame_state().camera)
+        chase_.next_pov(spec_.drift_mode);
     visual_frames_+=frame_seconds_/kDriveFrameSeconds;
+    if(crash_source_&&timing_.stage==RaceStage::racing)
+        camera_shake_.observe(car().owner_motion.acceleration,crash_camera_.event()==7);
+    bool cinematic_active=false;
     if(crash_source_) {
         const bool allowed=timing_.stage==RaceStage::racing&&timing_.outcome==RaceOutcome::running&&!spec_.drift_mode;
         // 42C2FB extends the finish hold when a roadside shot is active.
@@ -942,9 +1091,44 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         const bool finishing=plans&&timing_.outcome==RaceOutcome::finished&&crash_camera_.event()!=0;
         ChaseCameraView cinematic;
         if(crash_camera_.update(timing_.step_ticks,timing_.step-1,allowed,car(),spec_.handling,float(animation_.wheel_phase[0]),
-            progress().coordinate.fraction*100.F,*crash_source_,camera_world_,view_,cinematic,finishing))view_=cinematic;
+            progress().coordinate.fraction*100.F,*crash_source_,camera_world_,view_,cinematic,finishing)) {
+            cinematic.pov=chase_.pov();
+            view_=cinematic;
+            cinematic_active=true;
+        }
+    }
+    if(crash_camera_.consume_damage_reset())crash_windows_damaged_=false;
+    if (presentation_==RacePresentation::player) {
+        const bool reset=telemetry().resets!=previous_resets[0];
+        // The roadside shot replaces the chase mover. Keep the latter's
+        // history at the cut, then advance it once on the first chase frame.
+        if(!cinematic_active||reset) {
+            ++work_.camera_updates;
+            VehicleVec3 acceleration{};
+            if(!reset) {
+                const auto& a=car().owner_motion.acceleration;
+                acceleration={a[0],a[1],a[2]};
+            }
+            auto subject=chase_subject(car(),spec_,acceleration);
+            subject.vertical_body_extent = std::max(contact_bounds_.below, contact_bounds_.above);
+            ChaseCameraView hidden;
+            auto& target=cinematic_active?hidden:view_;
+            if(!(reset?chase_.reset(subject,camera_world_,target):
+                chase_.update(subject,frame_seconds_,camera_world_,target,controls_.frame_state().look_back))) {
+                started_=false;error=chase_.error();return false;
+            }
+        }
+    }
+    if(crash_source_) {
+        // 575040 reads the current world scale after 42DDC0 restores it.
+        // The landing frame can already use the chase view while its physics
+        // and the 574EB0 envelope still use the earlier scaled delta.
+        if(!cinematic_active&&crash_camera_.event()==0)camera_shake_.apply(view_);
+        camera_shake_.advance(float(frame_seconds_));
     }
     if(presentation_==RacePresentation::player) {
+        if(!cinematic_active&&nitrous_purging()&&(view_.pov==0||view_.pov==1||view_.pov==4))
+            apply_countdown_purge_view(view_);
         const bool rear=controls_.frame_state().look_back;
         const unsigned event=crash_camera_.event();
         const bool cut=event!=presented_crash_||view_.pov!=presented_pov_||(event==0&&rear!=presented_look_back_)||
@@ -962,6 +1146,14 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
 bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& previous_poses,
     const std::array<std::uint64_t,4>& previous_resets,std::string& error,
     RaceSimulationProfile* profile,TimingService* timer,std::vector<RaceQueuedContact>* trace) {
+    const bool measure_contacts=profile&&profile->detailed_contacts;
+    auto contact_start=measure_contacts?timer->now_us():0;
+    const auto contact_stage=[&](double RaceSimulationProfile::*field) {
+        if(!measure_contacts)return;
+        const auto end=timer->now_us();
+        profile->*field+=(end-contact_start)/1000.0;
+        contact_start=end;
+    };
     constexpr auto none=std::numeric_limits<std::size_t>::max();
     const auto tick=std::uint32_t(timing_.now_ticks);
     prop_contacts_={};
@@ -1044,21 +1236,16 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         return std::abs(float(x.position.x)-float(y.position.x))<=r&&
             std::abs(float(x.position.y)-float(y.position.y))<=r;
     };
-    const auto polygon_data=[&](std::size_t index,std::array<ContactVector,4>& corners,ContactVector& normal) {
-        const auto& p=course_.world.collision.polygons[index];
-        for(unsigned i=0;i<4;++i)std::copy_n(p.corner[i],3,corners[i].begin());
-        normal=race_track_polygon_normal(corners);
-    };
-    const auto track_near=[&](const WorldContactPair& pair) {
-        const auto& body=bodies[pair.a];const auto& s=*body.state;
-        const auto& p=course_.world.collision.polygons[pair.polygon];
-        float low[2]={p.corner[0][0],p.corner[0][1]},high[2]={low[0],low[1]};
-        for(unsigned i=1;i<4;++i)for(unsigned k=0;k<2;++k) {
-            low[k]=std::min(low[k],p.corner[i][k]);high[k]=std::max(high[k],p.corner[i][k]);
-        }
+    std::unordered_map<std::size_t,std::size_t> shape_index;
+    shape_index.reserve(world_track_shapes_.size());
+    for(std::size_t i=0;i<world_track_shapes_.size();++i)
+        shape_index.emplace(world_track_shapes_[i].polygon,i);
+    const auto track_near=[&](unsigned a,const WorldTrackShape& shape) {
+        const auto& body=bodies[a];const auto& s=*body.state;
+        const auto& bounds=shape.bounds;
         const float r=body.bounds.radius;
-        return !(float(s.position.x)-r>high[0]||float(s.position.x)+r<low[0]||
-            float(s.position.y)-r>high[1]||float(s.position.y)+r<low[1]);
+        return !(float(s.position.x)-r>bounds[2]||float(s.position.x)+r<bounds[0]||
+            float(s.position.y)-r>bounds[3]||float(s.position.y)+r<bounds[1]);
     };
     const auto prop_near=[&](unsigned a,const RaceProp& p,const std::array<float,4>& box) {
         const auto& body=bodies[a];const auto& s=*body.state;
@@ -1075,16 +1262,35 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
     world_contact_pairs_.erase(std::remove_if(world_contact_pairs_.begin(),world_contact_pairs_.end(),
         [&](const WorldContactPair& p) {
             if(!bodies[p.a].state||reset[p.a]||(!p.track()&&(!bodies[p.b].state||reset[p.b])))return true;
-            return !p.record.active&&!(p.track()?track_near(p):near(p.a,p.b));
+            return !p.record.active&&!(p.track()?track_near(p.a,world_track_shapes_[shape_index.at(p.polygon)]):near(p.a,p.b));
         }),world_contact_pairs_.end());
-    world_track_shapes_.erase(std::remove_if(world_track_shapes_.begin(),world_track_shapes_.end(),
-        [&](const WorldTrackShape& shape) {
+    // The vectors still own traversal order. The indices only answer membership
+    // and retrieve the immutable geometry of a registered track shape.
+    const std::uint64_t pair_stride=std::uint64_t(body_limit)+course_.world.collision.polygons.size();
+    const auto pair_key=[&](unsigned a,unsigned b,std::size_t polygon) {
+        if(polygon!=none)return a*pair_stride+body_limit+polygon;
+        return std::min(a,b)*pair_stride+std::max(a,b);
+    };
+    std::unordered_set<std::uint64_t> pair_keys;
+    pair_keys.reserve(world_contact_pairs_.size());
+    std::vector<bool> retained_shapes(world_track_shapes_.size());
+    for(const auto& pair:world_contact_pairs_) {
+        pair_keys.insert(pair_key(pair.a,pair.b,pair.polygon));
+        if(pair.track())retained_shapes[shape_index.at(pair.polygon)]=true;
+    }
+    std::size_t kept_shapes=0;
+    for(std::size_t i=0;i<world_track_shapes_.size();++i) {
+        const auto& shape=world_track_shapes_[i];
+        if(retained_shapes[i]) {
+            shape_index.at(shape.polygon)=kept_shapes;
+            world_track_shapes_[kept_shapes++]=shape;
+        } else {
             //466EEF..466F33 destroys a kind3 shape when its last pair retires.
-            if(std::any_of(world_contact_pairs_.begin(),world_contact_pairs_.end(),
-                [&](const WorldContactPair& pair){return pair.track()&&pair.polygon==shape.polygon;}))return false;
             world_shape_ids_[shape.id-dynamic_id_begin]=false;
-            return true;
-        }),world_track_shapes_.end());
+            shape_index.erase(shape.polygon);
+        }
+    }
+    world_track_shapes_.resize(kept_shapes);
     std::size_t registered_props=0;
     if(props_)for(auto& prop:props_->objects_)if(prop.body_id>=0) {
         const auto index=std::size_t(&prop-props_->objects_.data());
@@ -1106,8 +1312,12 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
     const auto upper_x=[&](unsigned a) {return float(bodies[a].state->position.x)+bodies[a].bounds.radius;};
     const auto body_rank=[&](unsigned a){return bodies[a].object?int(a-object_begin):
         bodies[a].prop?bodies[a].prop->body_id:int(object_count+registration_rank(a));};
+    std::vector<unsigned> scan;
+    std::vector<std::size_t> candidates;
+    struct Other {unsigned body;std::size_t polygon,prop;float upper;int id;};
+    std::vector<Other> others;
     const auto append_pairs=[&](unsigned affected_a,unsigned affected_b) {
-        std::vector<unsigned> scan;
+        scan.clear();
         if(affected_a==body_limit) {
             for(unsigned a=0;a<body_limit;++a)if(bodies[a].state)scan.push_back(a);
             //468680 maintains the registered list by body+2C (upper X).
@@ -1120,33 +1330,35 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         } else {
             scan.push_back(affected_a);if(affected_b<body_limit)scan.push_back(affected_b);
         }
-        std::vector<std::size_t> candidates;
-        struct Other {unsigned body;std::size_t polygon,prop;float upper;int id;};
         for(std::size_t cursor=0;cursor<scan.size();++cursor) {
             const unsigned a=scan[cursor];
             const auto& body=bodies[a];
             if(body.prop&&body.prop->expired)continue;
-            std::vector<Other> others;
+            others.clear();
             {
                 if(!body.object) {
-                std::vector<std::size_t> registered;registered.reserve(world_track_shapes_.size());
-                for(const auto& shape:world_track_shapes_)registered.push_back(shape.polygon);
-                const auto& cache=body.prop?body.prop->track_cache:world_track_caches_[a];
-                if(!race_track_candidates(course_.world,*body.state,body.bounds,cache,registered,candidates))return false;
-                for(auto polygon:candidates)
-                    if(std::none_of(world_track_shapes_.begin(),world_track_shapes_.end(),
-                        [&](const WorldTrackShape& shape){return shape.polygon==polygon;}))
-                        world_track_shapes_.push_back({polygon,acquire_body_id(),true});
-                //469810 creates shapes;469580 considers all registered
-                //overlapping bodies, including polygons created by other cars.
-                for(const auto& shape:world_track_shapes_) {
-                    WorldContactPair pair;pair.a=a;pair.polygon=shape.polygon;
-                    if(!track_near(pair))continue;
-                    const auto& polygon=course_.world.collision.polygons[shape.polygon];
-                    float high=polygon.corner[0][0];
-                    for(unsigned i=1;i<4;++i)high=std::max(high,polygon.corner[i][0]);
-                    others.push_back({body_limit,shape.polygon,none,high,int(shape.id)});
-                }
+                    const auto& cache=body.prop?body.prop->track_cache:world_track_caches_[a];
+                    if(!race_track_candidates(course_.world,*body.state,body.bounds,cache,shape_index,candidates))return false;
+                    for(auto polygon:candidates) {
+                        if(!shape_index.emplace(polygon,world_track_shapes_.size()).second)continue;
+                        WorldTrackShape shape{polygon,acquire_body_id()};
+                        const auto& source=course_.world.collision.polygons[polygon];
+                        shape.bounds={source.corner[0][0],source.corner[0][1],source.corner[0][0],source.corner[0][1]};
+                        std::array<ContactVector,4> corners;
+                        for(unsigned i=0;i<4;++i) {
+                            std::copy_n(source.corner[i],3,corners[i].begin());
+                            for(unsigned k=0;k<2;++k) {
+                                shape.bounds[k]=std::min(shape.bounds[k],source.corner[i][k]);
+                                shape.bounds[k+2]=std::max(shape.bounds[k+2],source.corner[i][k]);
+                            }
+                        }
+                        shape.normal=race_track_polygon_normal(corners);
+                        world_track_shapes_.push_back(shape);
+                    }
+                    //469810 creates shapes;469580 also considers overlapping
+                    //polygons registered by other cars.
+                    for(const auto& shape:world_track_shapes_)if(track_near(a,shape))
+                        others.push_back({body_limit,shape.polygon,none,shape.bounds[2],int(shape.id)});
                 }
                 for(unsigned b=0;b<body_limit;++b)if(a!=b&&bodies[b].state&&
                     !(body.object&&bodies[b].object)&&
@@ -1192,12 +1404,7 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                     }
                     other.body=actor_limit+p.world_slot;
                 }
-                const bool found=std::any_of(world_contact_pairs_.begin(),world_contact_pairs_.end(),
-                    [&](const WorldContactPair& p) {
-                        if(other.polygon!=none)return p.a==a&&p.polygon==other.polygon;
-                        return !p.track()&&((p.a==a&&p.b==other.body)||(p.b==a&&p.a==other.body));
-                    });
-                if(!found) {
+                if(pair_keys.insert(pair_key(a,other.body,other.polygon)).second) {
                     WorldContactPair pair;pair.a=a;pair.b=other.body;pair.polygon=other.polygon;
                     pair.object=body.object||(!pair.track()&&bodies[pair.b].object);
                     if(!pair.track()&&!pair.object&&pair.a>=actor_limit&&pair.b<actor_limit)std::swap(pair.a,pair.b);
@@ -1210,6 +1417,7 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         return true;
     };
     if(!append_pairs(body_limit,body_limit)){error="world contact candidates refused";started_=false;return false;}
+    contact_stage(&RaceSimulationProfile::contact_candidates);
     struct Job {
         RaceContactJob car;RaceTrackContactJob track;
         unsigned serial=0,repetitions=0;bool valid=false;
@@ -1223,7 +1431,13 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         if(a.prop&&a.prop->expired)return true;
         ++work_.pair_candidates;
         if(pair.track()) {
-            std::array<ContactVector,4> corners;ContactVector normal;polygon_data(pair.polygon,corners,normal);
+            std::array<ContactVector,4> corners;
+            const auto& source=course_.world.collision.polygons[pair.polygon];
+            for(unsigned i=0;i<4;++i)std::copy_n(source.corner[i],3,corners[i].begin());
+            const auto index=shape_index.find(pair.polygon);
+            if(index==shape_index.end())return false;
+            auto& shape=world_track_shapes_[index->second];
+            const auto& normal=shape.normal;
             if(a.prop&&(course_.world.collision.polygons[pair.polygon].unknown0[3]&2)) {
                 const bool triangle=corners[2]==corners[3];const unsigned count=triangle?3:4;
                 float centre=0;for(unsigned i=0;i<count;++i)centre+=corners[i][2];
@@ -1232,12 +1446,9 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                 for(auto& corner:corners)corner[2]+=shift;
             }
             const auto reference=race_track_side_reference(a.bounds,a.history);
-            auto shape=std::find_if(world_track_shapes_.begin(),world_track_shapes_.end(),
-                [&](const WorldTrackShape& value){return value.polygon==pair.polygon;});
-            if(shape==world_track_shapes_.end())return false;
             //473619 constructs an expanded shape.468160 clears it after the
             //first admission query, even when no contact job is admitted.
-            const bool expanded=shape->expanded;shape->expanded=false;
+            const bool expanded=shape.expanded;shape.expanded=false;
             if(!search_race_track_contact(*a.state,*a.spec,*a.box,a.history,corners,normal,reference,j.track,&pair.query,
                 expanded,a.prop!=nullptr,a.prop&&a.prop->impact.activation>0))return false;
             j.valid=j.track.admitted;j.remaining=j.track.remaining;
@@ -1276,17 +1487,40 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         }
         return true;
     };
-    for(unsigned k=0;k<jobs.size();++k)if(!enqueue(k)){error="world contact query refused";started_=false;return false;}
+    constexpr auto no_job=std::numeric_limits<unsigned>::max();
+    unsigned best=no_job;
+    const auto consider=[&](unsigned k) {
+        const auto& job=jobs[k];
+        if(job.valid&&(best==no_job||job.remaining>jobs[best].remaining||
+            (job.remaining==jobs[best].remaining&&job.serial<jobs[best].serial)))best=k;
+    };
+    for(unsigned k=0;k<jobs.size();++k) {
+        if(!enqueue(k)){error="world contact query refused";started_=false;return false;}
+        consider(k);
+    }
+    contact_stage(&RaceSimulationProfile::contact_queries);
     // 420380 shares one response budget across car, polygon and prop jobs.
-    for(unsigned processed=0;processed<20;++processed) {
-        unsigned best=unsigned(jobs.size());
-        for(unsigned k=0;k<jobs.size();++k)if(jobs[k].valid)
-            if(best==jobs.size()||jobs[k].remaining>jobs[best].remaining||
-                (jobs[k].remaining==jobs[best].remaining&&jobs[k].serial<jobs[best].serial))best=k;
-        if(best==jobs.size())break;
+    for(unsigned processed=0;processed<20&&best!=no_job;++processed) {
         const auto job=jobs[best];jobs[best].valid=false;++jobs[best].repetitions;
         auto& pair=world_contact_pairs_[best];const unsigned a=pair.a,b=pair.track()?body_limit:pair.b;
         const auto prop_index=pair.prop;
+        // 46B5E0 -> 469FB0 -> 44C860 runs before either body rewinds.
+        // A human counterpart requests selector1; a path actor otherwise
+        // returns to selector3. Only a path exit arms the two-second block.
+        const auto activate_rival=[&](unsigned id,unsigned other) {
+            if(!switch_rival_physics_||id==0||id>rivals_.size())return;
+            auto& actor=*actors[id];
+            if(actor.physical_selector()==4)
+                actor.rival_path_blocked_until_=timing_.now_ticks+2*kRaceTicksPerSecond;
+            if(other==0||timing_.racers[id].status!=RacerStatus::not_finished) {
+                actor.rival_full_until_=timing_.now_ticks+5*kRaceTicksPerSecond;
+                actor.select_rival_physics(1);
+            } else {
+                // 44C860 leaves the existing selector1 timer armed.
+                actor.select_rival_physics(3);
+            }
+        };
+        activate_rival(a,b);activate_rival(b,a);
         //Original46B5E0 activates both components before rewinding either.
         if(traffic_)for(unsigned id:{a,b})if(id>=4&&id<actor_limit) {
             bool activated=false;
@@ -1297,11 +1531,11 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         auto& world_seed=world_random_?*world_random_:contact_seed_;
         RaceContactContext context{pair.record,world_seed,tick};RacePairContact contact;bool ok=false;
         context.drag=drag_;
-        context.physical_selectors={{a<4?(actors[a]->ai_physics_?3U:1U):3U,
-            b<4?(actors[b]->ai_physics_?3U:1U):3U}};
+        context.physical_selectors={{a<4?actors[a]->physical_selector():3U,
+            b<4?actors[b]->physical_selector():3U}};
         struct RefreshOwner {
             VehicleTrackSession* session[2];VehicleState published[2];
-            RaceTraffic* traffic;unsigned ids[2];std::string* error;float interval;
+            RaceTraffic* traffic;unsigned ids[2];std::string* error;float& interval;
             RaceProps* props;RaceProp* prop[2];
             ContactRecord* record;std::size_t polygon;
             RaceSession* world;
@@ -1500,13 +1734,15 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
             }
         }
         if(!ok){if(error.empty())error="queued world contact refused";started_=false;return false;}
-        //6F0738 is shared across bodies. The last resumed component leaves
-        //its slice interval for the next queued job's two force refreshes.
-        const unsigned last=b<body_limit&&!bodies[b].object?b:a;
-        const float remaining=float(b<body_limit?contact.remaining_b:contact.remaining_a);
-        const bool ai=last>=4||actors[last]->ai_physics_;
-        const float maximum=bodies[last].prop?.01F:ai?.00839999970048666F:.004399999976158142F;
-        contact_component_interval_=remaining/float(unsigned(remaining/maximum)+1);
+        //46B5E0 resumes A, then B. Only the vehicle integrators write the
+        //shared 6F0738 value. 597420 supplies a local dt to scenery.
+        for(unsigned id:{a,b}) {
+            if(id>=body_limit||bodies[id].object||bodies[id].prop)continue;
+            const bool ai=id>=4||actors[id]->physical_selector()==3;
+            const float remaining=float(id==a?contact.remaining_a:contact.remaining_b);
+            contact_component_interval_=ai?remaining/float(unsigned(remaining/.00839999970048666F)+1):
+                actors[id]->vehicle_.last_component_interval();
+        }
 
         if(trace) {
             RaceQueuedContact observed{a,pair.track()?actor_limit:b,pair.polygon,job.remaining,contact.impulse};
@@ -1522,8 +1758,13 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         }
         bodies[a].history=contact.resume_a;
         if(bodies[a].prop)bodies[a].prop->history=contact.resume_a;
+        contact_stage(&RaceSimulationProfile::contact_response);
         if(!append_pairs(a,b)){error="world contact candidates refused after response";started_=false;return false;}
+        contact_stage(&RaceSimulationProfile::contact_candidates);
         jobs.resize(world_contact_pairs_.size());
+        best=no_job;
+        // A requery only writes its own slot. Select the next job as each
+        // slot reaches its final state, including untouched pending jobs.
         for(unsigned k=0;k<jobs.size();++k) {
             const auto& p=world_contact_pairs_[k];
             const auto affected=[&](unsigned id){return id<body_limit&&(p.a==id||(!p.track()&&p.b==id));};
@@ -1533,7 +1774,9 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
             //A pair touching both actors is queried twice, retaining its cache.
             for(unsigned id:{a,b})if(affected(id))
                 if(!enqueue(k)){error="world contact requery refused";started_=false;return false;}
+            consider(k);
         }
+        contact_stage(&RaceSimulationProfile::contact_requeries);
     }
     //420720 retires untouched records AFTER response processing. An old
     //record refreshed by this frame must keep its accumulated impulse.

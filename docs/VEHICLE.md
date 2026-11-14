@@ -65,32 +65,11 @@ table`.
 The built-in table is a small numeric table from a retail file, kept in the
 source under the owner's rule recorded on PR #169 (comment 3860): it states
 its source, `Global/GLOBALB.BUN` (SHA-256 39DF38FA...8DB9), chunk
-0x00034600, record 18 at file offset 1736752, and the SHA-256 of the bytes
-it reproduces, and a test rebuilds those bytes from it. It does not
-reproduce the whole record. It reproduces 316 of its 3216 bytes: the 79
-fields in "The fields the model reads" below, which are the bytes
-`encode_vehicle_handling` writes, in 23 runs:
-
-    +0x110..+0x11B  +0x120..+0x12B  +0x130..+0x133  +0x150..+0x15B
-    +0x160..+0x163  +0x180..+0x18B  +0x190..+0x193  +0x1B0..+0x1BB
-    +0x1C0..+0x1C3  +0x1E0..+0x1F3  +0x200..+0x213  +0x220..+0x233
-    +0x244..+0x247  +0x258..+0x25B  +0x280..+0x29B  +0x2A0..+0x2BB
-    +0x2C0..+0x2C3  +0x2C8..+0x2D3  +0x2D8..+0x2DB  +0x2E0..+0x30B
-    +0x310..+0x333  +0x358..+0x363  +0x370..+0x373
-
-Those 316 bytes, concatenated in offset order, hash to
-
-    54394827CC13AEE7DE095524810B790A238FFC24763E7C2A2BA236A1A2430DBD
-
-both as the retail record holds them and as the built-in table encodes
-them (every one of the 316 is equal). `kVehicle240sxRecordBytesSha256`
-holds the hash beside the table, and `nfsu_vehicle_tests`
-(`test_record_source`) encodes the table into an all-0x00 and an all-0xFF
-record image, takes the bytes that are equal in both - the ones the
-encoder writes - and requires 316 of them in those 23 runs, hashing to
-that value. It needs no retail file. The other 2900 bytes of the record,
-which the table does not hold, are not covered; for identification only,
-the whole 3216-byte record hashes to
+0x00034600, record 18 at file offset 1736752. The fields reproduced are
+the ones `encode_vehicle_handling` writes. `nfsu_vehicle_tests`
+(`test_record_source`) pins their count, byte runs and SHA-256 without
+needing the retail file. For identification, the complete retail record
+hashes to
 212F69AD8E739250F95E04C54FB6613A39A7C76014CB402DF966F64B5D9FFF9B.
 
 ### The fields the model reads
@@ -115,6 +94,7 @@ the whole 3216-byte record hashes to
 | strut +0x10 | anti-roll rate on the difference within the axle, kN/m | 37 / 30 | RECOVERED: 0x00475B90..0x00475B98, partner from the table at 0x006FFF14 (1 0 3 2) |
 | strut +0x14 | compression limit, m | 0.125 | RECOVERED: 0x00475AB9..0x00475AD4 clamps to it and keeps the excess |
 | strut +0x18 | extension limit, m | -0.13 | RECOVERED: 0x00475A9B..0x00475AB7; below it the wheel is off the ground |
+| strut +0x1C | rendered compression limit, m | 0.125 | RECOVERED: 0x00478B20 and the following wheel blocks cap the travel published to the visual wheel transform |
 | +0x2C0 | shift fraction | 0.8 | RECOVERED: 0x0046D1FC puts the neutral slot's threshold 0.8 of the way from idle to redline, and 0x004751C7 then scales that slot by a drive-type factor from 0x006F101C (1.0, 1.2, 1.1 for front, four and rear drive). Where the neutral slot is read was not traced; the model keeps the unscaled value and uses it nowhere |
 | +0x2C8 | final drive for wheels 2 and 3 | 4.083 | RECOVERED: 0x0047563D (sub +0x1B8) |
 | +0x2CC | final drive for wheels 0 and 1 | 4.083 | RECOVERED: 0x0047563D (sub +0x1BC); see "the engine speed" for the pairing |

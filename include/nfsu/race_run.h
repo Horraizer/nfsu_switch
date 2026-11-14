@@ -32,6 +32,7 @@ public:
     bool set_event(std::uint32_t event, std::string& error,unsigned race_index=0);
     bool set_difficulty(unsigned difficulty,std::string& error);
     bool set_crash_camera(unsigned intensity,std::string& error);
+    bool set_initial_camera_pov(int pov,std::string& error);
     bool set_start_clock(unsigned release_frame,unsigned go_frame,std::string& error);
     bool prepare_metadata(const std::filesystem::path& root, std::string& error,
                           TrackSliceLoadObserver* observer = nullptr);
@@ -109,6 +110,7 @@ private:
     IntroAiPlanner intro_ai_;
     RaceCrashRoad crash_road_;
     unsigned crash_intensity_=0;
+    int initial_camera_pov_=0;
     DriveControls drag_controls_;
     std::vector<RaceTrafficSetup> traffic_;
     VehicleHull player_hull_;

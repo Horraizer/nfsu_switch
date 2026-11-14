@@ -912,6 +912,8 @@ void original_strut_bump_impulse() {
     check(hit.gear==kVehicleGearFirst+1&&hit.transmission.mode==2&&
           miss.gear==kVehicleGearFirst&&miss.transmission.mode==1,
           "bump callback refreshes the gearbox without adding a derivative");
+    check(a.component_interval==0.F&&b.component_interval==float(1.0/240.0),
+          "477300 leaves the shared interval at zero after the final bump refresh");
 }
 void recovered_rigid_component() {
     using namespace nfsu;
@@ -1438,6 +1440,21 @@ void original_aero_and_outer_epoch() {
           state.aero.processed_throttle==.75F&&state.aero.support_kind==.25F&&
           state.aero_preloads==preload,
           "next outer call consumes prior published support and owner speed");
+    // 477100 reads the aero flag before the outer collision policy writes it.
+    state.collision_state=1;
+    check(model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,true,true)&&
+          !state.aero.enabled&&state.aero_preloads==player_aero_preloads(h,100,true,1),
+          "first crash update keeps the preceding speed preload");
+    check(model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,true,true)&&
+          !state.aero.enabled&&state.aero_preloads==player_aero_preloads(h,100,false,1),
+          "later crash updates omit speed preload");
+    state.collision_state=0;
+    check(model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,true,true)&&
+          state.aero.enabled&&state.aero_preloads==player_aero_preloads(h,100,false),
+          "first recovery update enables aero before speed preload returns");
+    check(model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,true,true)&&
+          state.aero.enabled&&state.aero_preloads==preload,
+          "later recovery updates restore speed preload");
     state.aero.speed_divisor=2;
     check(!model.step(state,input,VehicleFlatGround{},telemetry,0,1.0/240.0,false),
           "noninitial scale requiring body/engine/wheel coupling is refused");

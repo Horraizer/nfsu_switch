@@ -50,9 +50,27 @@ int main(int argc,char** argv) {
     check(score.item(0).points==0&&score.total()<before&&drift.multiplier()==1,"wall loses unbanked chain and penalizes once");
     const int penalty_total=score.total();s.motion.slip=0;advance(20);
     check(score.total()==penalty_total,"wall latch prevents repeated penalty");
-    advance(60);s.motion.slip=.6F;advance(180);s.finished=true;advance(1);
+    advance(60);s.motion.slip=.6F;advance(180);
+    const auto banked=score.item(0).total;
+    const auto qualified=score.item(0).points;
+    check(score.item(0).phase==0&&qualified>0,"finish fixture has a qualified chain");
+    s.finished=true;advance(1);
+    check(score.item(0).total==banked+qualified,"finish banks only the pre-line drift points");
     const int finished=score.total();advance(180);
     check(drift.finished()&&score.total()==finished&&finished>penalty_total,"finish banks once and stops accrual");
+    nfsu::RaceStyle impact_score;
+    if(!impact_score.load(root,error,true)){std::cerr<<error;return 1;}
+    nfsu::RaceDrift impact_finish;
+    s.finished=false;
+    for(unsigned i=0;i<120;++i) {
+        s.now+=67;s.motion.progress+=.001F;impact_finish.update(impact_score,s);
+    }
+    const auto pre_impact=impact_score.item(0).points;
+    check(impact_score.item(0).phase==0&&pre_impact>0,"finish impact fixture has a qualified chain");
+    s.finished=true;s.impact_strength=15;s.wall_impact=true;
+    impact_finish.update(impact_score,s);
+    check(impact_score.item(0).total==pre_impact&&impact_score.item(2).total==0,
+        "finish cannot cancel the previous chain or create a new wall penalty");
     nfsu::RaceDrift wrong_way;nfsu::DriftDrivingSample wrong;
     wrong.motion.blocked=true;wrong.motion.grade=3;wrong.now=100;wrong_way.update(score,wrong);
     wrong.now=4100;wrong_way.update(score,wrong);check(wrong_way.reset_countdown()<0,"wrong-way grace inclusive boundary");

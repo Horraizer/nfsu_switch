@@ -821,10 +821,10 @@ int main(int argc,char** argv) {
                     std::abs(entry_frame.forward[axis]-native_forward[axis])<1e-5,
                     "main entry native camera basis preserves original roll");
             }
-            // Genuine original 40DD00 primary view1, 1280x720 viewport.
-            check(std::abs(entry_frame.projection[0]-1.2961782217025757)<1e-6 &&
-                std::abs(entry_frame.projection[1]-2.32236385345459)<1e-6,
-                "main entry original independent fixed-angle projection scales");
+            // Preserve the genuine 40DD00 primary view1 vertical focal.
+            check(std::abs(entry_frame.projection[1]-2.32236385345459)<1e-6 &&
+                std::abs(entry_frame.projection[0]*1280-entry_frame.projection[1]*720)<.001F,
+                "main entry retains original vertical framing with square pixels");
             const auto initial_commands=gpu_scene.commands().owning_draws();
             check(!initial_commands.empty(),"original frontend resident GPU submission");
             const auto shadow=std::find_if(initial_commands.begin(),initial_commands.end(),
@@ -976,6 +976,8 @@ int main(int argc,char** argv) {
                     const double delta[3]={-uniform.eye[0],.75-uniform.eye[1],-uniform.eye[2]};
                     const auto dot=[&](const float* basis){return delta[0]*basis[0]+delta[1]*basis[1]+delta[2]*basis[2];};
                     const double depth=dot(uniform.forward);
+                    check(std::abs(uniform.projection[0]*1280-uniform.projection[1]*720)<.001F,
+                          "garage orbit publishes square pixels throughout the motion");
                     check(depth>uniform.projection[2]&&std::abs(dot(uniform.right)*uniform.projection[0])<depth&&
                         std::abs(dot(uniform.up)*uniform.projection[1])<depth,"live car center stays inside returned orbit frustum");
                     if(slot==31||slot==34) {
@@ -1081,6 +1083,17 @@ int main(int argc,char** argv) {
             check(gpu_art.load_startup(root,error,true),error.c_str());
             std::fill(pixels.begin(),pixels.end(),0);
             gpu_art.draw_startup_splash({pixels.data(),1280,720,1280*4});
+            check(gpu_art.startup_prompt_alpha(0)==1 && gpu_art.startup_prompt_alpha(4600)==1 &&
+                  gpu_art.startup_prompt_alpha(4700)==128 &&
+                  gpu_art.startup_prompt_alpha(4800)==255 && gpu_art.startup_prompt_alpha(5100)==160 &&
+                  gpu_art.startup_prompt_alpha(5400)==64 && gpu_art.startup_prompt_alpha(6000)==255,
+                  "startup prompt did not follow the original appear and pulse tracks");
+            std::vector<unsigned char> appearing(pixels.size()),first(pixels.size()),dim(pixels.size());
+            gpu_art.draw_startup_splash({appearing.data(),1280,720,1280*4},4700);
+            gpu_art.draw_startup_splash({first.data(),1280,720,1280*4},4800);
+            gpu_art.draw_startup_splash({dim.data(),1280,720,1280*4},5400);
+            check(first==pixels&&appearing!=first&&dim!=first&&appearing!=dim,
+                  "startup framebuffer did not present the authored appear and pulse alpha");
             std::size_t lit_splash_pixels=0;
             for(std::size_t p=0;p<pixels.size();p+=4)
                 if(pixels[p]||pixels[p+1]||pixels[p+2])++lit_splash_pixels;

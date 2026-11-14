@@ -307,10 +307,21 @@ std::vector<GamepadFrame> drive_demo_recording() {
 // The CPU reference renderer
 // ---------------------------------------------------------------------------
 
+namespace {
+double retail_widescreen_vertical_focal(std::uint16_t units) noexcept {
+    const double phase = double(units) * double(1.100000023841858F) /
+                         double(.9090908765792847F) * .5;
+    return double(float(retail_cotangent(phase) * double(1.28F)));
+}
+} // namespace
+
 double drive_vertical_fov_degrees(std::uint16_t units,
                                   ChaseFovMode fov_mode,
                                   std::uint32_t width,
                                   std::uint32_t height) noexcept {
+    if (fov_mode == ChaseFovMode::retail_widescreen && units) {
+        return 2 * chase_atan(1 / retail_widescreen_vertical_focal(units)) * (180 / kPi);
+    }
     if(fov_mode==ChaseFovMode::retail && width && height && units) {
         const double focal=retail_cotangent(double(units)*double(height)/double(width)*
             double(1.100000023841858F)/double(.9090908765792847F)*.5);
@@ -370,7 +381,12 @@ bool drive_render_camera(const ChaseCameraView& view,
     camera.target = {eye.x - camera.distance * cp * cy, eye.y - camera.distance * sp,
                      eye.z - camera.distance * cp * sy};
     camera.fov_y_deg = drive_vertical_fov_degrees(view.fov, fov_mode, width, height);
-    if(fov_mode==ChaseFovMode::retail) {
+    if (fov_mode == ChaseFovMode::retail_widescreen) {
+        // Preserve the PC widescreen vertical framing. Derive X from that
+        // focal and the viewport so the projection has square pixels.
+        camera.focal_y_override = retail_widescreen_vertical_focal(view.fov);
+        camera.focal_x_override = camera.focal_y_override * double(height) / double(width);
+    } else if(fov_mode==ChaseFovMode::retail) {
         camera.focal_x_override=retail_cotangent(double(view.fov)*double(1.100000023841858F)*.5);
         camera.focal_y_override=retail_cotangent(double(view.fov)*double(height)/double(width)*
             double(1.100000023841858F)/double(.9090908765792847F)*.5);
@@ -448,7 +464,13 @@ bool drive_place_instances(const std::vector<PreparedInstance>& base,
                 rotate_part(steer);
             }
             for (int c = 0; c < 3; ++c) part[3][c] += base[n].animation_pivot[c];
-            part[3][2] += state.wheels[wheel].compression;
+            // 465150 reads the active setup mount, including suspension tuning.
+            // The prepared mesh pivot was built from the stock mount.
+            const double mount_offset = double(spec.handling.wheels[wheel].vertical) -
+                                        base[n].animation_pivot[2];
+            part[3][2] += mount_offset +
+                vehicle_visual_strut_compression(spec.handling.struts[wheel/2],
+                                                 state.wheels[wheel].compression);
         }
         if (animation) {
             if (base[n].part_slot == kSlotHeadlight) placed[n].lamp_mode = 1;

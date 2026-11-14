@@ -62,7 +62,7 @@ public:
     bool advance(const std::array<const VehicleState*,4>&,std::uint64_t,std::string&,std::int32_t world_clock=-1,float dt=1.F/60.F,
                  const std::array<bool,4>& ghosts={},
                  const std::array<const RaceContactBox*,4>& racer_shapes={});
-    bool stage_drag_grid(const std::array<const VehicleState*,4>&,
+    bool stage_grid(const std::array<const VehicleState*,4>&,
                          const std::array<const RaceContactBox*,4>&,
                          float spacing,float clearance,std::int32_t clock,std::string&);
     //420B40 prepares every controller/driver before420310 integrates bodies.
@@ -96,6 +96,13 @@ private:
     std::array<bool,4> racer_ghosts_{};
     unsigned track_number_=0;
     std::vector<AiRoadEvent> events_;
+    struct SpawnRecord {
+        std::int16_t road;
+        std::array<std::int16_t,2> points;
+        float speed_limit;
+    };
+    std::vector<SpawnRecord> spawn_records_;
+    bool has_spawn_table_=false;
     std::vector<RaceTrafficActor> actors_;
     std::vector<std::unique_ptr<VehicleModel>> models_;
     std::vector<std::unique_ptr<VehicleTrackSession>> impact_sessions_;
@@ -110,8 +117,11 @@ private:
     std::array<unsigned,kRaceTrafficCapacity> prepared_actors_{};
     unsigned prepared_count_=0;
     std::array<bool,kRaceTrafficCapacity> advanced_actors_{};
-    bool frame_prepared_=false,drag_grid_staged_=false;
-    bool activate(unsigned,AiRoadCursor,unsigned,std::uint32_t,bool,std::string&);
+    bool frame_prepared_=false,grid_staged_=false;
+    bool activate(unsigned,AiRoadCursor,unsigned,std::uint32_t,bool,float speed_limit,std::string&);
+    bool stage_authored(unsigned,float spacing,std::int32_t clock,float* placed_progress,std::string&);
+    bool stage_drag_grid(float spacing,float clearance,std::int32_t clock,std::string&);
+    bool stage_ordinary_grid(float spacing,float clearance,std::int32_t clock,std::string&);
     bool spawn(unsigned,const std::array<const VehicleState*,4>&,std::uint64_t,std::string&);
     bool prepare_world(std::string&);
     bool plan(unsigned,std::uint32_t,std::string&);

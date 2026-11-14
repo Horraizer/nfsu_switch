@@ -4,6 +4,11 @@
 
 namespace nfsu {
 
+#ifdef NFSU_SHA256_ARM_CRYPTO
+void sha256_compress_arm(std::uint32_t* state, const std::uint8_t* blocks,
+                         std::size_t count, const std::uint32_t* rounds) noexcept;
+#endif
+
 namespace {
 
 // FIPS 180-4 section 4.2.2: the first 32 bits of the fractional parts of the
@@ -27,9 +32,11 @@ constexpr std::uint32_t kInitial[8] = {0x6A09E667U, 0xBB67AE85U, 0x3C6EF372U,
                                        0xA54FF53AU, 0x510E527FU, 0x9B05688CU,
                                        0x1F83D9ABU, 0x5BE0CD19U};
 
+#ifndef NFSU_SHA256_ARM_CRYPTO
 constexpr std::uint32_t rotate_right(std::uint32_t value, unsigned int count) noexcept {
     return (value >> count) | (value << (32U - count));
 }
+#endif
 
 } // namespace
 
@@ -48,6 +55,9 @@ void Sha256::reset() noexcept {
 
 // Section 6.2.2, one 512-bit block, words read big-endian.
 void Sha256::compress(const std::uint8_t* block) noexcept {
+#ifdef NFSU_SHA256_ARM_CRYPTO
+    sha256_compress_arm(state_.data(), block, 1, kRound);
+#else
     std::uint32_t w[64];
     for (std::size_t t = 0; t < 16; ++t) {
         w[t] = (static_cast<std::uint32_t>(block[t * 4]) << 24U) |
@@ -96,6 +106,15 @@ void Sha256::compress(const std::uint8_t* block) noexcept {
     state_[5] += f;
     state_[6] += g;
     state_[7] += h;
+#endif
+}
+
+void Sha256::compress_blocks(const std::uint8_t* blocks, std::size_t count) noexcept {
+#ifdef NFSU_SHA256_ARM_CRYPTO
+    sha256_compress_arm(state_.data(), blocks, count, kRound);
+#else
+    for (std::size_t i = 0; i < count; ++i) compress(blocks + i * block_.size());
+#endif
 }
 
 void Sha256::update(const void* data, std::size_t size) noexcept {
@@ -106,9 +125,11 @@ void Sha256::update(const void* data, std::size_t size) noexcept {
     length_ += static_cast<std::uint64_t>(size);
     while (size > 0) {
         if (block_used_ == 0 && size >= block_.size()) {
-            compress(bytes);
-            bytes += block_.size();
-            size -= block_.size();
+            const std::size_t count = size / block_.size();
+            const std::size_t consumed = count * block_.size();
+            compress_blocks(bytes, count);
+            bytes += consumed;
+            size -= consumed;
             continue;
         }
         std::size_t take = block_.size() - block_used_;

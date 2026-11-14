@@ -47,6 +47,28 @@ struct RaceWorldContactProbe {
 };
 }
 int main(){
+    {
+        CameraImpactShake shake;
+        ChaseCameraView quiet,first,silent,second,expired;
+        shake.observe({0,0,125.F});
+        shake.apply(quiet);
+        check(quiet.forward.z==0,"native impact-shake threshold is strict");
+        shake.observe({0,0,3000.F});
+        shake.apply(first);
+        // Authenticated 575200 -> 575040, straight view, scale 1.
+        check(std::abs(first.forward.z-.01840684562921524)<.00001,
+            "impact pulse rotates the rendered view in the native direction");
+        shake.advance(.05F);
+        shake.apply(silent);
+        check(silent.forward.z==0,"the original odd half-wave does not shake");
+        shake.advance(.04F);
+        shake.apply(second);
+        check(second.forward.z>0&&second.forward.z<first.forward.z,
+            "next visible pulse decays with world time");
+        shake.advance(1.F);
+        shake.apply(expired);
+        check(expired.forward.z==0,"expired shake leaves the camera unchanged");
+    }
     World world;Road road;VehicleState c;c.collision_state=1;c.published_support=0;c.position={0,0,2};c.velocity={20,0,0};
     RaceCrashCamera camera;camera.configure(1003,128);ChaseCameraView view;
     camera.contact(34.999F,true,4000,true,c,0,road,world);
@@ -75,6 +97,7 @@ int main(){
     c.published_support=4;
     check(camera.update(6000,1,true,c,stock_240sx_handling(),0,0,road,world,{},view),"half-second equality retains shot");
     check(!camera.update(6001,2,true,c,stock_240sx_handling(),0,0,road,world,{},view)&&camera.scale(1.F/60.F)==1,"four-wheel support after half-second restores time and view");
+    check(camera.consume_damage_reset()&&!camera.consume_damage_reset(),"ordinary return clears damage once");
     c.published_support=0;
     camera.contact(50,true,23999,true,c,0,road,world);check(camera.event()==0,"five-second cooldown rejects just below boundary");
     camera.contact(50,true,24000,true,c,0,road,world);check(camera.event()==6,"five-second cooldown equality accepts");
@@ -85,6 +108,7 @@ int main(){
         "an unsampled frame cannot switch to the second shot");
     check(camera.update(36400,13,true,c,stock_240sx_handling(),0,20,road,world,{},view)&&camera.event()==7,
         "next sampled frame above threshold starts the second shot");
+    check(!camera.consume_damage_reset(),"second shot preserves the cracked glass");
     check(view.eye.z==12,"second shot retains the falling car height sampled during the first shot");
     check(!camera.update(36002,2,false,c,stock_240sx_handling(),0,20,road,world,{},view)&&camera.event()==0,"finish or disabled mode restores ordinary view immediately");
     camera.reset();camera.contact(35,true,4000,true,c,0,road,world);
@@ -100,6 +124,7 @@ int main(){
     camera.begin_frame(8.F);check(camera.event()==6,"timeout equality preserves event");
     check(camera.scale(.001F)==1,"expiring frame uses unscaled world dt");
     camera.begin_frame(.001F);check(camera.event()==0,"timeout callback clears shot");
+    check(camera.consume_damage_reset(),"camera timeout clears damage");
     road.available=false;camera.reset();camera.contact(50,true,4000,true,c,0,road,world);check(camera.event()==0,"missing valid road never invents a camera");road.available=true;
     // Real RaceSession: change slice count4->2->4 without losing a publication.
     std::string error;VehicleTrackCourse course;
@@ -164,13 +189,14 @@ int main(){
     {
         RaceParticles particles;VehicleTrackTelemetry t;t.velocity={10,0,0};t.orientation.w=1;
         t.model.solver_dt=1.0/240;
-        for(auto& wheel:t.model.wheels){wheel.contact=true;wheel.slip_ratio=1;}
-        for(unsigned i=1;i<=8;++i){t.step=i;particles.advance(t,stock_240sx_vehicle_spec());}
+        for(auto& wheel:t.model.wheels){wheel.contact=true;wheel.surface=1;wheel.effect_slip_velocity={10,0};}
+        constexpr unsigned smoke_step=48; // Sustain slip past the original .15 s admission delay.
+        for(unsigned i=1;i<=smoke_step;++i){t.step=i;particles.advance(t,stock_240sx_vehicle_spec());}
         check(particles.smoke_count()>0,"particle fixture emitted smoke");
-        const auto before_particle=particles.smoke(0);t.step=9;t.model.solver_dt=double(1.F/60.F*.4F)/2;
+        const auto before_particle=particles.smoke(0);t.step=smoke_step+1;t.model.solver_dt=double(1.F/60.F*.4F)/2;
         for(auto& wheel:t.model.wheels)wheel.contact=false;
         particles.advance(t,stock_240sx_vehicle_spec());
-        const double expected=double(8-before_particle.born_step)*before_particle.solver_dt+t.model.solver_dt;
+        const double expected=double(smoke_step-before_particle.born_step)*before_particle.solver_dt+t.model.solver_dt;
         check(std::abs(particles.smoke(0).elapsed_seconds-expected)<1e-12,"existing smoke ages by actual slowed solver time across the transition");
     }
     {

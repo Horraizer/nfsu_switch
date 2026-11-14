@@ -4531,7 +4531,7 @@ int run_vehicle_tuning(const fs::path& path) {
         for (const nfsu::VehicleTuningSuspension& suspension : tuning.suspension) {
             for (std::size_t axle = 0; axle < nfsu::kVehicleTuningAxles; ++axle) {
                 ++total_here;
-                if (suspension.unknown_1c[axle] ==
+                if (suspension.axles[axle].visual_limit ==
                     suspension.axles[axle].bump_limit) {
                     ++equal_here;
                 }

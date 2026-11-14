@@ -37,6 +37,41 @@ int main() {
     VehicleInput input;input.throttle=.5;input.road_steering=true;input.road_angle_word_valid=true;
     VehicleTrackTelemetry telemetry;
     VehicleTrackSession car(model,course);
+    {
+        VehicleTrackSession follower(model,course);
+        VehicleState moving;
+        auto pose=course.start;
+        pose.heading=0;
+        pose.speed=25;
+        const bool prepared=model.reset(moving,pose);
+        moving.velocity.y=3;
+        moving.owner_speeds.forward=25;
+        check(prepared&&follower.configure_ai(1)&&follower.start(moving),"path motion setup");
+        follower.select_rival_physics(4);
+        AiDriverPath path;
+        path.count=5;
+        for(unsigned i=0;i<path.count;++i)path.points[i]={
+            float(moving.position.x)+5.F*float(i),float(moving.position.y)-.5F,float(moving.position.z)};
+        auto path_input=input;
+        path_input.world_frame_seconds=.01F;
+        check(follower.step_rival_path(path,25.F,0.F,true,path_input,telemetry)&&
+              telemetry.position.y>moving.position.y&&telemetry.velocity.y>2.F,
+              "path publication preserves the lateral velocity of the incoming body");
+        const auto prior=follower.state();
+        auto invalid_path=path;
+        invalid_path.points[1][0]=std::numeric_limits<float>::infinity();
+        check(!follower.step_rival_path(invalid_path,25.F,0.F,true,path_input,telemetry)&&
+              follower.state().step==prior.step&&follower.state().position.y==prior.position.y,
+              "invalid path publication leaves the physical state unchanged");
+        AiDriverPath crossing;
+        crossing.count=5;
+        for(unsigned i=0;i<crossing.count;++i)crossing.points[i]={
+            float(prior.position.x),float(prior.position.y)+5.F*float(i),float(prior.position.z)};
+        check(!follower.step_rival_path(crossing,25.F,0.F,true,path_input,telemetry)&&
+              follower.state().position.x==prior.position.x&&follower.state().step==prior.step&&
+              follower.state().rigid_body.angular_momentum==prior.rigid_body.angular_momentum,
+              "crossing path cannot publish a discontinuous body heading before contact");
+    }
     check(car.configure_ai(1)&&car.start(course.start),"AI world starts");
     check(car.step_ai(input,telemetry),"AI first frame");
     const auto before=car.state();
@@ -59,6 +94,36 @@ int main() {
           "reset removes stale prepared forces and wheel history");
     check(car.start(course.start)&&car.ai_physics().slices==0&&
           !car.owner_recovery_active(10000),"explicit restart clears AI state and recovery");
+    {
+        auto fast=course.start;fast.speed=32;
+        VehicleTrackSession landing(model,course);
+        auto controls=input;controls.world_clock_valid=true;controls.world_clock=10000;
+        check(landing.configure_ai(1)&&landing.start(fast)&&landing.step_ai(controls,telemetry),
+              "moving AI prepares speed-dependent strut preload");
+        auto car=landing.state();
+        const auto preloads=[&]() {
+            std::array<float,4> values{};
+            for(unsigned k=0;k<4;++k)values[k]=landing.ai_physics().engine.wheels[k].preload;
+            return values;
+        };
+        const auto held=preloads();
+        car.collision_state=1;car.collision_support_since=0;
+        const auto endpoint=car;
+        const auto& handling=model.spec().handling;
+        const auto recovery=player_aero_preloads(handling,0,false,1);
+        check(recovery!=player_aero_preloads(handling,endpoint.owner_speeds.forward,true,1),
+              "crash fixture distinguishes omitted speed load");
+        check(landing.step_ai_body(car,controls,telemetry,0,&endpoint,true,false,1.F/120)&&
+              preloads()==held,"collision refresh retains the previous outer preload");
+        check(landing.step_ai_body(car,controls,telemetry,.004F,&endpoint,false,true)&&
+              !landing.ai_physics().aero.enabled&&preloads()==recovery,
+              "selector3 collision continuation keeps static preload and drops speed load");
+        car.published_support=4;car.collision_body_flag=0;car.collision_support_since=1.F;
+        const auto restored=player_aero_preloads(handling,car.owner_speeds.forward,true);
+        check(landing.step_ai_body(car,controls,telemetry)&&car.collision_state==0&&
+              landing.ai_physics().aero.enabled&&preloads()==restored,
+              "selector3 restores speed load once crash recovery ends");
+    }
     {
         auto fast=course.start;fast.speed=12;
         auto brakes=input;brakes.throttle=0;brakes.brake=.75;brakes.handbrake=true;

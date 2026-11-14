@@ -79,6 +79,13 @@ bool RaceRun::set_crash_camera(unsigned intensity,std::string& error) {
     if(metadata_ready_||session_||intensity>255){error="crash camera must be configured before metadata/start";return false;}
     crash_intensity_=intensity;error.clear();return true;
 }
+bool RaceRun::set_initial_camera_pov(int pov,std::string& error) {
+    if(session_||std::find(kChasePovs.begin(),kChasePovs.end(),pov)==kChasePovs.end()) {
+        error="ordinary race camera must be selected before start";
+        return false;
+    }
+    initial_camera_pov_=pov;error.clear();return true;
+}
 bool RaceRun::set_difficulty(unsigned difficulty,std::string& error) {
     if(metadata_ready_||session_||quick_race_||difficulty>2){error="difficulty must be 0..2 before metadata/start";return false;}
     difficulty_=difficulty;return true;
@@ -163,11 +170,11 @@ bool RaceRun::read_metadata(const std::filesystem::path& front, const std::files
         laps_ = quick_race_ ? static_cast<std::int8_t>(quick_race_laps(*quick_race_)) :
             free_drive_ ? 0 : race.slot.laps;
         direction_ = race.slot.direction;
-        if(event_number_==9&&race_index_==0&&!quick_race_) {
+        if(!traffic_.empty()) {
             traffic_grid_spacing_=race.track.traffic_start_spacing[unsigned(direction_)];
             traffic_grid_clearance_=race.track.traffic_start_clearance[unsigned(direction_)];
             if(!std::isfinite(traffic_grid_spacing_)||traffic_grid_spacing_<=0) {
-                error="authored drag traffic grid spacing unavailable";return false;
+                error="authored traffic grid spacing unavailable";return false;
             }
         }
         // 435D30 stores grid positions 3, 1, 2, 4 in each direction's table.
@@ -264,16 +271,10 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
     CarAssets camera_car;
     const auto global=asset(root,track,"Global/GLOBALB.BUN");
     if(!load_car_assets(global,car_,camera_car,error))return false;
-    std::array<unsigned char,kVehicleRecordSize> camera_record{};
-    std::ifstream camera_file(global,std::ios::binary);
-    camera_file.seekg(static_cast<std::streamoff>(camera_car.record_offset));
-    camera_file.read(reinterpret_cast<char*>(camera_record.data()),camera_record.size());
     ChaseCameraTable camera_table;
-    if(!camera_file || !decode_chase_camera_table(camera_record.data(),camera_record.size(),camera_table,error) ||
-       !session_->set_camera_table(camera_table,error)) {
-        if(error.empty())error="selected camera record unavailable";
-        return false;
-    }
+    if(!load_race_camera_table(global,camera_car,camera_table,error) ||
+       !session_->set_camera_table(camera_table,error,initial_camera_pov_))return false;
+    if(crash_intensity_)session_->use_retail_race_camera();
     if(!free_drive_&&time_limit_ticks_&&!session_->set_time_trial(time_limit_ticks_,error))return false;
     if(race_type_==RaceType::drag) {
         constexpr float quick_drag_shift_scale[]={3.F,1.5F,1.F};
@@ -302,15 +303,15 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
         if(!intro_ai_.load(root,rival_contexts_,hulls,true,track_number_,direction_,race_type_==RaceType::drag,catchup_weight_,laps_,lap_skip_!=0,catchup_traffic_selector_,
             !quick_race_||quick_race_->catch_up)) {error="intro planner data refused";return false;}
         if(!session_->set_planned_rivals(rivals_,low_slip,error,player_grid_))return false;
+        session_->enable_rival_physics_switching();
         if(!session_->prepare_leaderboard(root,car_,error))return false;
         if(!session_->prepare_style(root,error,event_number_))return false;
     }
-    if(rivals_.empty()&&(race_type_==RaceType::drag||race_type_==RaceType::drift)) {
-        // Solo drag needs lane steering; drift uses the same human road
-        // context only after finish (435310 controller3, action17).
-        // No rival actors or difficulty contexts are created for this path.
+    if(rivals_.empty()&&(race_type_==RaceType::drag||session_->has_finish_driver())) {
+        // Solo drag needs lane steering. Drift and time trials need a road
+        // context for the human's finish driver (43531A, action17).
         std::array<const VehicleHull*,4> hulls{};hulls[3]=&hull;
-        if(!intro_ai_.load(root,rival_contexts_,hulls,true,track_number_,direction_,race_type_==RaceType::drag,catchup_weight_,laps_,false,catchup_traffic_selector_)) {
+        if(!intro_ai_.load(root,rival_contexts_,hulls,true,track_number_,direction_,race_type_==RaceType::drag,catchup_weight_,laps_,course_.route.point_to_point,catchup_traffic_selector_)) {
             error="solo finish/drag planner data refused";return false;
         }
     }
@@ -337,7 +338,7 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
            !load_drift_start_pose(root,course_,start,error,selection.region))return false;
     }
     if(!session_->start(error,drift_start?&start:nullptr,countdown,cinematic))return false;
-    if(traffic_grid_spacing_>0&&!session_->stage_drag_traffic(traffic_grid_spacing_,traffic_grid_clearance_,error))
+    if(traffic_grid_spacing_>0&&!session_->stage_traffic_grid(traffic_grid_spacing_,traffic_grid_clearance_,error))
         return false;
     if (observer) observer->checkpoint("race session started");
     return true;
@@ -371,7 +372,7 @@ bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
     if(profile)*profile={};
     if (!session_ || pending_) { error = "race simulation/commit order violated"; return false; }
     if(session_->timing().outcome!=RaceOutcome::running&&
-       !(session_->timing().outcome==RaceOutcome::finished&&(!rivals_.empty()||race_type_==RaceType::drift))) {error="race session is not running";return false;}
+       !(session_->timing().outcome==RaceOutcome::finished&&session_->has_finish_driver())) {error="race session is not running";return false;}
     if(!rivals_.empty()&&!intro_ai_.observe_human(*session_)){error="human difficulty history refused";return false;}
     int held_lane=0;
     if(race_type_==RaceType::drag) {
@@ -380,8 +381,8 @@ bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
         // Port input binding: use the existing calibrated stick dead zone.
         held_lane=steer<0?-1:steer>0?1:0;
     }
-    const bool drift_finish=race_type_==RaceType::drift&&session_->timing().outcome==RaceOutcome::finished;
-    if((!rivals_.empty()||race_type_==RaceType::drag||drift_finish)&&(!race_car_held(session_->timing())||race_type_==RaceType::drag)) {
+    const bool finishing=session_->timing().outcome==RaceOutcome::finished;
+    if((!rivals_.empty()||race_type_==RaceType::drag||finishing)&&(!race_car_held(session_->timing())||race_type_==RaceType::drag)) {
         RaceRivalPlans plans;
         const auto before=profile?timer->now_us():0;
         if(!intro_ai_.plan(*session_,plans,held_lane)) {error="intro path planner refused";return false;}

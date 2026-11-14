@@ -129,8 +129,8 @@ conversion feed the displayed and persisted post-race style award.
 
 This is not a completed whole-game garage. Trade In, installed and hypothetical
 performance ratings, and car-specific wide-body decal layouts are implemented;
-`nfsu_career_retail`, `nfsu_career_trade_retail` and the `garage-live` mode of
-`nfsu_career_tests` cover these paths with retail inputs. The full original
+`nfsu_career_retail`, `nfsu_career_trade_retail` and
+`nfsu_career_garage_live_retail` cover these paths with retail inputs. The full original
 magazine browser, complete special whole-car vinyl award presentation and
 detailed performance brand/tuner screens still need separate acceptance. The special
 award pages use the original unique performance and visual packages, separate

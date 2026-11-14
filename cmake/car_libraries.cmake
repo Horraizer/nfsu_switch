@@ -189,11 +189,15 @@ nfsu_enable_warnings(nfsu_render)
 # SHA-256 (FIPS 180-4) over bytes in memory. docs/ pins every reference
 # frame by the SHA-256 of its TGA file, printed by a host tool, and the
 # Switch application writes no file, so it needs a digest of its own to
-# report the same number. Standard library and integer arithmetic only;
-# it still inherits the global floating-point policy.
+# report the same number. Use the SDK target's ARMv8 crypto instructions
+# for compression on Switch and the standard C++ implementation elsewhere.
 add_library(nfsu_sha256
     src/sha256.cpp
 )
+if(NINTENDO_SWITCH)
+    target_sources(nfsu_sha256 PRIVATE switch/sha256_arm.cpp)
+    target_compile_definitions(nfsu_sha256 PRIVATE NFSU_SHA256_ARM_CRYPTO)
+endif()
 
 target_include_directories(nfsu_sha256
     PUBLIC

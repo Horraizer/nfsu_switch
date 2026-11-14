@@ -11,6 +11,8 @@ struct StockFrame;
 struct InstalledPartSelection;
 struct StockSceneRequest;
 struct CareerRideSetup;
+class CareerCatalog;
+struct CareerProfile;
 struct FrontendSceneEnvironment;
 struct FrontendSceneCarSource;
 bool bind_frontend_runtime_skin(StockFrame& car,
@@ -35,6 +37,12 @@ public:
     bool load_browser(const std::filesystem::path& root,unsigned width,unsigned height,
                       const std::vector<std::string>& cars,std::string& error);
     bool select_car(std::size_t index,std::string& error);
+    // Start native camera preparation while the incoming bank is loading.
+    void prepare_car_change();
+    void cancel_car_preparation();
+    bool load_owned_ride(const std::filesystem::path& root,unsigned width,unsigned height,
+                        const std::vector<unsigned char>& globals,const CareerCatalog&,const CareerProfile&,
+                        std::string& error,std::shared_ptr<const FrontendSceneEnvironment> environment);
     // Same car, resident component variants; selection never runs car travel.
     bool load_garage(const std::filesystem::path& root,unsigned width,unsigned height,
                      const std::vector<CareerRideSetup>& variants,std::string& error,FrontendGpuScene* previous=nullptr,

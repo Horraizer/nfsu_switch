@@ -569,15 +569,15 @@ void test_apply_items_only() {
 // in every block of every level and requires the whole path to carry +0x1C
 // on its own: the decoder, the round trip, the encoder's byte runs and the
 // strut block apply writes at sub +0x18C and +0x1AC.
-void test_strut_unknown_1c() {
+void test_strut_visual_limit() {
     nfsu::VehicleTuning tuning = nfsu::stock_240sx_tuning();
     for (std::size_t level = 0; level < nfsu::kVehicleTuningLevels; ++level) {
         for (std::size_t axle = 0; axle < nfsu::kVehicleTuningAxles; ++axle) {
             // Distinct from the bump limit, from the droop limit and from
             // every other block's value, and positive so no bound refuses it.
-            tuning.suspension[level].unknown_1c[axle] =
+            tuning.suspension[level].axles[axle].visual_limit =
                 0.0625F + 0.0078125F * static_cast<float>(2 * level + axle);
-            check(tuning.suspension[level].unknown_1c[axle] !=
+            check(tuning.suspension[level].axles[axle].visual_limit !=
                       tuning.suspension[level].axles[axle].bump_limit,
                   "the fixture's +0x1C equals the bump limit, so it tests nothing");
         }
@@ -598,7 +598,7 @@ void test_strut_unknown_1c() {
         for (std::size_t axle = 0; axle < nfsu::kVehicleTuningAxles; ++axle) {
             const std::size_t block = entry + nfsu::kVehicleAxleStride * axle;
             check(read_f32(record.data() + block + 0x1C) ==
-                      tuning.suspension[level].unknown_1c[axle],
+                      tuning.suspension[level].axles[axle].visual_limit,
                   "the encoder did not write strut +0x1C at level " +
                       std::to_string(level + 1));
             check(read_f32(record.data() + block + 0x1C) !=
@@ -617,17 +617,23 @@ void test_strut_unknown_1c() {
         check(nfsu::apply_vehicle_tuning(record.data(), record.size(), levels,
                                          out.data(), out.size(), issues),
               "a suspension level of " + std::to_string(level) + " was refused");
+        nfsu::VehicleHandling handling;
+        std::vector<nfsu::VehicleHandlingIssue> handling_issues;
+        check(nfsu::decode_vehicle_handling(out.data(),out.size(),handling,handling_issues),
+              "the tuned strut block must decode as runtime handling");
         const unsigned char* sub = out.data() + nfsu::kVehicleSubObjectOffset;
         for (std::size_t axle = 0; axle < nfsu::kVehicleTuningAxles; ++axle) {
             const unsigned char* block = sub + 0x170 + nfsu::kVehicleAxleStride * axle;
             check(read_f32(block + 0x1C) ==
                       tuning.suspension[static_cast<std::size_t>(level) - 1]
-                          .unknown_1c[axle],
+                          .axles[axle].visual_limit,
                   "apply did not carry strut +0x1C at level " +
                       std::to_string(level));
             check(read_f32(block + 0x1C) != read_f32(block + 0x14),
                   "apply made +0x1C equal to the bump limit at level " +
                       std::to_string(level));
+            check(handling.struts[axle].visual_limit == read_f32(block + 0x1C),
+                  "the runtime handling retains the tuned visual limit");
         }
     }
 }
@@ -847,7 +853,7 @@ int main() {
     test_apply_nothing();
     test_apply_levels();
     test_apply_items_only();
-    test_strut_unknown_1c();
+    test_strut_visual_limit();
     test_derived_gear_rule();
     test_engine_table_ratios();
     test_level_gate();

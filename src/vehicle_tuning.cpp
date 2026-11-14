@@ -150,6 +150,7 @@ void decode_strut(const unsigned char* base, VehicleAxleStrut& out) noexcept {
     out.anti_roll = read_f32(base + 0x10);
     out.bump_limit = read_f32(base + 0x14);
     out.droop_limit = read_f32(base + 0x18);
+    out.visual_limit = read_f32(base + 0x1C);
 }
 
 void encode_strut(const VehicleAxleStrut& strut, unsigned char* base) noexcept {
@@ -160,6 +161,7 @@ void encode_strut(const VehicleAxleStrut& strut, unsigned char* base) noexcept {
     write_f32(base + 0x10, strut.anti_roll);
     write_f32(base + 0x14, strut.bump_limit);
     write_f32(base + 0x18, strut.droop_limit);
+    write_f32(base + 0x1C, strut.visual_limit);
 }
 
 } // namespace
@@ -290,8 +292,6 @@ bool decode_vehicle_tuning(const unsigned char* record,
         VehicleTuningSuspension& susp = out.suspension[level];
         for (std::size_t axle = 0; axle < kVehicleTuningAxles; ++axle) {
             decode_strut(s + kVehicleAxleStride * axle, susp.axles[axle]);
-            susp.unknown_1c[axle] =
-                read_f32(s + kVehicleAxleStride * axle + 0x1C);
         }
         susp.centre_of_mass_vertical_drop = read_f32(s + 0x40);
         susp.front_wheel_vertical_rise = read_f32(s + 0x44);
@@ -499,8 +499,7 @@ bool check_vehicle_tuning(const VehicleTuning& tuning,
             check_finite(strut.anti_roll, o + 0x10, "strut anti-roll is not finite");
             check_finite(strut.bump_limit, o + 0x14, "strut bump limit is not finite");
             check_finite(strut.droop_limit, o + 0x18, "strut droop limit is not finite");
-            check_finite(susp.unknown_1c[axle], o + 0x1C,
-                         "strut +0x1C is not finite");
+            check_finite(strut.visual_limit, o + 0x1C, "strut visual limit is not finite");
             if (!(strut.spring > 0.0F)) {
                 fail(issues, o + 0x04, "strut spring rate is not above zero");
             }
@@ -643,7 +642,6 @@ void encode_vehicle_tuning(const VehicleTuning& tuning,
         const VehicleTuningSuspension& susp = tuning.suspension[level];
         for (std::size_t axle = 0; axle < kVehicleTuningAxles; ++axle) {
             encode_strut(susp.axles[axle], s + kVehicleAxleStride * axle);
-            write_f32(s + kVehicleAxleStride * axle + 0x1C, susp.unknown_1c[axle]);
         }
         write_f32(s + 0x40, susp.centre_of_mass_vertical_drop);
         write_f32(s + 0x44, susp.front_wheel_vertical_rise);
@@ -757,7 +755,6 @@ bool apply_vehicle_tuning(const unsigned char* record,
         for (std::size_t axle = 0; axle < kVehicleTuningAxles; ++axle) {
             unsigned char* block = sub(out_record, 0x170 + kVehicleAxleStride * axle);
             encode_strut(susp.axles[axle], block);
-            write_f32(block + 0x1C, susp.unknown_1c[axle]);
         }
         // 0x00575A4A..0x00575A70: wheels 0 and 1 take the front rise, 2 and
         // 3 the rear one, each on the wheel record's +0x08.

@@ -469,6 +469,29 @@ int main(int argc,char** argv) {
             std::ofstream preview_image(out/"garage-neon.ppm",std::ios::binary);preview_image<<"P6\n1280 720\n255\n";
             for(std::size_t i=0;i<scene_pixels.size();i+=4)preview_image.write(reinterpret_cast<const char*>(scene_pixels.data()+i),3);
             FrontendArt art;if(!art.load(argv[1],error,false))throw std::runtime_error("garage frontend: "+error);if(!art.load_career_pages(argv[1],catalog,error))throw std::runtime_error("garage artwork: "+error);
+            auto trading=profile;
+            CareerGarage trade;
+            trade.reset(catalog,trading);trade.move(2);
+            bool traded=false;
+            check(trade.accept(catalog,trading,traded,error)&&trade.page()==GaragePage::trade_in&&!trade.entries().empty(),
+                "enter trade browser");
+            const auto replacement=trade.preview(trading);
+            check(replacement.car!=trading.car,"candidate has a prepared replacement");
+            std::array<FrontendUiFrame,3> trade_ui;
+            for(unsigned stage=0;stage<3;++stage) {
+                check(trade.accept(catalog,trading,traded,error)&&!traded&&trading.car==profile.car&&
+                    trading.bank==profile.bank&&trade.trade_review()==std::min(stage+1,2U)&&
+                    trade.confirming()==(stage==2),"trade review and confirmation leave the profile untouched");
+                art.record_career(1280,720,catalog,trading,0,"",trade_ui[stage],&trade);
+                check(!trade_ui[stage].vertices.empty(),"original trade review submits");
+            }
+            check(trade_ui[2].vertices.size()>trade_ui[1].vertices.size(),"trade confirmation layers over candidate stats");
+            trade.move(1);
+            check(trade.accept(catalog,trading,traded,error)&&!traded&&!trade.confirming()&&trading.car==profile.car,
+                "cancel trade returns to candidate stats");
+            check(trade.accept(catalog,trading,traded,error)&&trade.confirming()&&
+                  trade.accept(catalog,trading,traded,error)&&traded&&trading.car==replacement.car,
+                "confirm trade installs the inspected replacement");
             FrontendUiFrame ui;art.record_career(1280,720,catalog,profile,0,"",ui,&menu);check(!ui.vertices.empty(),"original garage UI submits");
             std::vector<unsigned char> pixels(1280*720*4,0);art.draw_career({pixels.data(),1280,720,1280*4},catalog,profile,0,"",&menu);
             std::ofstream image(out/"garage-body.ppm",std::ios::binary);image<<"P6\n1280 720\n255\n";

@@ -793,7 +793,7 @@ bool VehicleTrackSession::start(const VehicleState& state) {
     state_ = state;
     ground_.reset_strut_cache();
     ai_={};ai_started_=false;
-    last_input_={};last_solver_dt_=kVehicleStepSeconds;last_ai_gear_request_=-1;
+    last_input_={};last_component_interval_=0;last_ai_gear_request_=-1;
     owner_recovery_start_=0;
     last_ghost_overlap_=0;
     progress_ = RaceProgress{};
@@ -1297,7 +1297,7 @@ bool VehicleTrackSession::prepare_grid(unsigned frames) {
     hold.road_steering=true;hold.road_angle_word_valid=true;
     VehicleTrackTelemetry telemetry;
     for(unsigned frame=0;frame<frames;++frame) {
-        if(ai_configured_) {
+        if(ai_active_) {
             if(!prepared.step_ai(hold,telemetry)) return false;
         } else for(unsigned slice=0;slice<4;++slice) {
             // Let the body find its terrain attitude before ordinary rest
@@ -1315,9 +1315,10 @@ bool VehicleTrackSession::prepare_grid(unsigned frames) {
     return true;
 }
 
-bool VehicleTrackSession::step_grid_engine(double throttle, VehicleTrackTelemetry& telemetry,
+bool VehicleTrackSession::step_grid_engine(const VehicleInput& input, VehicleTrackTelemetry& telemetry,
                                            double publication_dt, double solver_dt,bool drag,std::int32_t clock) {
-    if (!valid_ || !started_ || ai_configured_ || steps_ != 0 ||
+    const double throttle=input.throttle;
+    if (!valid_ || !started_ || ai_active_ || steps_ != 0 ||
         !finite(throttle) || throttle < 0 || throttle > 1 ||
         !finite(publication_dt) || publication_dt < 0 ||
         !finite(solver_dt) || solver_dt <= 0) return false;
@@ -1332,7 +1333,10 @@ bool VehicleTrackSession::step_grid_engine(double throttle, VehicleTrackTelemetr
     next.transmission.previous_slip_rpm=0;next.transmission.wheel_engine_speed=0;
     next.transmission.shift_pending=false;
     next.engine.throttle_multiplier=1;next.engine.feedback_torque=0;
-    const float crank=player_engine_torque(h,next.engine,next.gear,float(throttle));
+    // 477637 publishes active NOS to the crank even while the stage holds
+    // the gearbox in neutral. The grid body is stationary in the retail trace.
+    const float crank=player_engine_torque(h,next.engine,next.gear,float(throttle),&input,
+                                           model_->spec().nitrous.rate);
     player_engine_integrate(h,next.engine,crank,float(solver_dt));
     next.simulation_seconds+=solver_dt;
     if(drag)player_drag_heat_update(h,next.engine,next.transmission,next.gear,clock,true);
@@ -1358,7 +1362,7 @@ bool VehicleTrackSession::step_grid_engine(double throttle, VehicleTrackTelemetr
 void VehicleTrackSession::release_grid_engine(bool drag,unsigned category,float window_scale) noexcept {
     // Original461510 clears the hold and4615B0 restores the request policy.
     // Keep physical RPM and clutch phase; normal gearbox update engages first.
-    if(!ai_configured_ && state_.gear==kVehicleGearNeutral) {
+    if(!ai_active_ && state_.gear==kVehicleGearNeutral) {
         //46E8FB..46E925 evaluates the first request with PHYSICAL engine RPM.
         // The held-grid adapter bypasses that request consumer, so publish its
         // quality here exactly once. The existing clutch/46DEC3 tail consumes it.
@@ -1379,8 +1383,8 @@ void VehicleTrackSession::publish_contact_count(unsigned count) noexcept {
     state_.collision_body_flag=static_cast<std::int8_t>(count);
 }
 
-bool VehicleTrackSession::refresh_contact(VehicleState& sampled,const VehicleState* published_actor,float interval) {
-    if(ai_configured_) {
+bool VehicleTrackSession::refresh_contact(VehicleState& sampled,const VehicleState* published_actor,float& interval) {
+    if(ai_active_) {
         VehicleTrackTelemetry telemetry;
         const auto previous=state_;state_=sampled;
         const bool ok=step_ai(last_input_,telemetry,last_ai_gear_request_,0,published_actor,true,false,interval);
@@ -1392,13 +1396,15 @@ bool VehicleTrackSession::refresh_contact(VehicleState& sampled,const VehicleSta
         sampled.owner_motion=published_actor->owner_motion;
         sampled.owner_traction=published_actor->owner_traction;
     }
-    return model_->step(sampled,last_input_,ground_,telemetry,0,0,false,true,true,true,interval);
+    if(!model_->step(sampled,last_input_,ground_,telemetry,0,0,false,true,true,true,interval))return false;
+    interval=telemetry.component_interval;
+    return true;
 }
 
 bool VehicleTrackSession::continue_contact(double seconds,const VehicleState* published_actor,bool refreshed) {
     if(!std::isfinite(seconds)||seconds<0)return false;
     VehicleTrackTelemetry t;
-    if(ai_configured_)return step_ai(last_input_,t,last_ai_gear_request_,float(seconds),published_actor,false,refreshed);
+    if(ai_active_)return step_ai(last_input_,t,last_ai_gear_request_,float(seconds),published_actor,false,refreshed);
     auto next=state_;const auto saved_step=next.step;const auto saved_time=next.simulation_seconds;
     if(published_actor) {
         next.owner_motion=published_actor->owner_motion;
@@ -1447,7 +1453,9 @@ bool VehicleTrackSession::continue_contact(double seconds,const VehicleState* pu
         float(next.engine_rpm),float(seconds));
     // Continuation belongs to this already-counted world frame. It does not
     // sample controls, publish another lap event or advance the world clock.
-    next.step=saved_step;next.simulation_seconds=saved_time;state_=next;return true;
+    next.step=saved_step;next.simulation_seconds=saved_time;state_=next;
+    last_component_interval_=t.model.component_interval;
+    return true;
 }
 
 bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry& telemetry,
@@ -1483,7 +1491,7 @@ bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry&
         run_tick(s, input, t);
     }
     state_ = s;
-    last_input_=applied;last_solver_dt_=solver_dt;
+    last_input_=applied;last_component_interval_=t.model.component_interval;
     t.pending = pending_;
     t.resets = resets_;
     t.position = s.position;

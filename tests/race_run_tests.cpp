@@ -356,7 +356,8 @@ int main(int argc, char** argv) {
         // and four legacy draws, plus five authored anchors and eight
         // reusable original-sprite records: 24-3*408+5*56+8*72 = -344.
         // Both Default and Release replays retain their original state hashes.
-        const std::uint64_t cache_pin = (tuned ? 4557968U : 4557937U) +
+        // Particle atlas resource names are included in retained metadata.
+        const std::uint64_t cache_pin = (tuned ? 4611704U : 4611673U) +
                                         (glows ? 39787U : 0U);
         const auto initial_cache_bytes = scene.cache_bytes();
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
@@ -571,7 +572,7 @@ int main(int argc, char** argv) {
         require(all_wheels_have_contact(race.session().car().wheels) && first_contact_tick == 0 &&
                 first_shadow_tick == 0,
                 "starting grid has incomplete wheel contact or no visible shadow alpha");
-        RaceParticles expected_particles;
+        RaceParticles expected_particles=scene.particles();
         while (race.session().timing().outcome == RaceOutcome::running) {
             require(replay.next(race.session().timing().step, pad, error), error);
             require(race.simulate(pad, error), error);
@@ -673,7 +674,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 require(frame.track_draws > 0 && frame.car_draws == (tuned ? 75U : 74U) &&
-                        frame.particle_draws == kRaceParticleLimit,
+                        frame.particle_draws == kRaceParticleLimit+expected_particles.environment_draw_limit(),
                         "missing track/car/particle commands");
                 require(frame.commands.draw_count() == frame.track_draws + frame.car_draws +
                         frame.particle_draws + frame.glow_draws + 1,
@@ -684,7 +685,7 @@ int main(int argc, char** argv) {
                     const auto& camera=frame.commands.frame;
                     for (std::size_t i=frame.commands.static_track_draw_count()+1+frame.car_draws;
                          i<frame.commands.static_track_draw_count()+1+frame.car_draws+
-                           frame.particle_draws; ++i) {
+                           kRaceParticleLimit; ++i) {
                         const auto view=frame.commands.draw_view(i);
                         const auto slot=i-frame.commands.static_track_draw_count()-1-frame.car_draws;
                         const bool spark=slot>=kRaceSmokeLimit;
@@ -695,7 +696,8 @@ int main(int argc, char** argv) {
                                                           expected_particles.smoke(particle_index);
                             VehicleVec3 position;
                             double diameter=0,opacity=0;
-                            require(race_particle_visual(particle,expected_particles.step(),position,diameter,opacity),
+                            std::array<unsigned,3> tint;
+                            require(expected_particles.visual(particle,position,diameter,opacity,tint),
                                     "live particle has no visual state");
                             if (view.material.alpha[0] > 0.0F) {
                                 const double dx=view.placement.rows[12]-camera.eye[0];
@@ -718,6 +720,14 @@ int main(int argc, char** argv) {
                                         std::to_string(view.placement.rows[14]));
                                 require(std::abs(view.material.alpha[0]-opacity)<1.0e-5F,
                                         "GPU particle opacity differs from CPU visual opacity");
+                                require(view.material.environment_range[3] == 2 &&
+                                        view.material.environment_color[0] == float(tint[0]) &&
+                                        view.material.environment_color[1] == float(tint[1]) &&
+                                        view.material.environment_color[2] == float(tint[2]),
+                                        "GPU particle tint differs from the CPU curve");
+                                require(view.definition.first_index ==
+                                        6 * race_particle_atlas_cell(particle, expected_particles.step()),
+                                        "GPU particle selects a different atlas cell from the CPU");
                                 require(row0<=max_diameter+1.0e-5 && row2<=max_diameter+1.0e-5,
                                         "GPU particle sprite exceeds the 48-pixel bound");
                             }
@@ -726,10 +736,18 @@ int main(int argc, char** argv) {
                             (spark ? visible_sparks : visible_smoke)++;
                         if ((!spark && view.material.alpha[0] > 0 && !smoke_color_checked) ||
                             (slot == kRaceSmokeLimit && !spark_color_checked)) {
-                                // Evaluate the recorded textured shader state at two
-                                // opposed billboard headings against the CPU texel.
-                                const auto texel=race_particle_texel(
-                                    spark ? RaceParticleKind::spark : RaceParticleKind::smoke,8,8);
+                                const auto& atlas = frame.commands.resource_table().resources[
+                                    view.definition.texture_resource];
+                                require(atlas.texture_hash == (spark ? 0xA4C28190U : 0x09DC04B3U) &&
+                                        atlas.texture.width == (spark ? 256U : 128U) &&
+                                        atlas.texture.height == 128U,
+                                        "particle draw does not bind the retail atlas");
+                                const auto cell = view.definition.first_index / 6 %
+                                    (spark ? 8U : 16U);
+                                const auto cell_size = spark ? 64U : 32U;
+                                const auto x = (cell % 4) * cell_size + cell_size / 2;
+                                const auto y = (cell / 4) * cell_size + cell_size / 2;
+                                const auto* texel = atlas.data + (y * atlas.texture.width + x) * 4;
                                 const auto& state=frame.commands.frame;
                                 require(state.options[2] == 1 && view.material.fallback[3] == 2.0F &&
                                         view.material.alpha[2] == 0.0F && view.material.alpha[3] == 0.0F,
@@ -842,7 +860,8 @@ int main(int argc, char** argv) {
         for (const auto& line : race.result_lines()) std::cout << line << '\n';
         require(replay.exhausted() && race.matches_event1_replay(), "Switch race runner differs from desktop pins");
         require(initial_cache_bytes == cache_pin,
-                "event 1 command cache metadata estimate differs from pin");
+                "event 1 command cache metadata estimate differs from pin (actual "+
+                std::to_string(initial_cache_bytes)+", expected "+std::to_string(cache_pin)+")");
         std::cout << "PASS: exact per-step stream and result; frames " << frames << " max draws " << max_draws << '\n';
         return 0;
     } catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }

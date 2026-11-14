@@ -363,6 +363,7 @@ void visit_floats(Handling& h, Visitor&& visit) {
         visit(base + 0x10, h.struts[a].anti_roll);
         visit(base + 0x14, h.struts[a].bump_limit);
         visit(base + 0x18, h.struts[a].droop_limit);
+        visit(base + 0x1C, h.struts[a].visual_limit);
     }
     visit(kVehicleShiftFractionOffset, h.shift_fraction);
     visit(kVehicleFinalRearOffset, h.final_drive_rear);
@@ -632,8 +633,8 @@ VehicleHandling stock_240sx_handling() {
     h.inertia = {0.4595537F, 2.2462742F, 2.367461F};
     h.alternate_yaw_scale = 2.0F;
     // +0x280 front and +0x2A0 rear struts.
-    h.struts[0] = VehicleAxleStrut{5.4F, 35.0F, 5.4F, 5.8F, 37.0F, 0.125F, -0.13F};
-    h.struts[1] = VehicleAxleStrut{5.1F, 30.0F, 5.0F, 5.65F, 30.0F, 0.125F, -0.13F};
+    h.struts[0] = VehicleAxleStrut{5.4F, 35.0F, 5.4F, 5.8F, 37.0F, 0.125F, -0.13F, 0.125F};
+    h.struts[1] = VehicleAxleStrut{5.1F, 30.0F, 5.0F, 5.65F, 30.0F, 0.125F, -0.13F, 0.125F};
     // +0x2C0.. the gearbox.
     h.shift_fraction = 0.8F;
     h.final_drive_rear = 4.083F;
@@ -1179,6 +1180,12 @@ double VehicleModel::engine_brake_curve(double rpm) const noexcept {
                                  static_cast<double>(h.max_rpm), rpm);
 }
 
+float vehicle_visual_strut_compression(const VehicleAxleStrut& strut, double compression) noexcept {
+    const float travel = static_cast<float>(compression);
+    const float correction = travel >= strut.visual_limit ? strut.visual_limit - travel : 0.F;
+    return travel + correction;
+}
+
 void vehicle_brake_pin(VehicleWheelState& wheel, double brake) noexcept {
     // 0x004757F0..0x00475845: strict comparisons and a persistent flag.
     // The original state/input operands are floats; the port integrates
@@ -1352,12 +1359,15 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         //477BED and477100 precede the inner loop.479160's demonstrated
         // INITIAL1/0 coupling leaves body/engine/wheel scales at1. This
         // named adapter excludes active race scaling; drafting is world input.
+        // 477100 samples the previous aero enable before 477709/47785A
+        // latch the new collision policy. The gravity term uses the new state.
+        const bool preload_aero = spec_.aero.enabled && s.aero.enabled;
         s.aero = PlayerAeroCache{};
         s.aero.drag_scale=1.F-std::clamp(raw_input.drafting,0.F,.8999999761581421F);
         s.aero.enabled = spec_.aero.enabled && s.collision_state!=1;
         s.aero.processed_throttle = static_cast<float>(throttle);
         s.aero.support_kind = static_cast<float>(s.published_support)*0.25F;
-        s.aero_preloads = player_aero_preloads(h,s.owner_speeds.forward,s.aero.enabled,s.collision_state);
+        s.aero_preloads = player_aero_preloads(h,s.owner_speeds.forward,preload_aero,s.collision_state);
         s.aero_ready = true;
     }
 
@@ -1453,6 +1463,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     float audio_transmitted_torque=0;
     unsigned support=0;VehicleVec3 support_torque,force,torque;
     std::array<VehicleWheelTelemetry,kVehicleWheelCount> wheel_out{};
+    float component_interval=0;
     const auto prepare_forces=[&](double suspension_dt) {
         //477300 repeats46ABD0 at zero interval after rest or a bump-stop
         //impulse. Refresh the entire component list, including strut
@@ -1761,6 +1772,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             out.spin=w.spin;out.drive_applied=static_cast<double>(w.torque)*a.unit_scale;
             out.skid_friction_usage=w.friction_usage;
             out.skid_load_kn=w.load;
+            // 587689/58768F publish the same velocity pair used by sliding forces.
+            out.effect_slip_velocity = w.sliding ? std::array<float,2>{w.slip,w.velocity_lat} :
+                std::array<float,2>{};
             out.sliding=w.sliding;out.force_long=static_cast<double>(w.force_long)*a.unit_scale;
             out.force_lat=static_cast<double>(w.force_lat)*a.unit_scale;
             out.slip_ratio=(wheel.spin*d_.radius[k]-w.velocity_long)/std::max(absolute(w.velocity_long),a.slip_speed_floor);
@@ -1808,6 +1822,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         s.prepared_force=force;s.prepared_torque=torque;s.forces_prepared=true;
         s.rigid_body.force=rigid_vector(scale(force,1.0/a.unit_scale));
         s.rigid_body.torque=rigid_vector(scale(torque,1.0/a.unit_scale));
+        component_interval=static_cast<float>(suspension_dt);
         return true;
         }
         return false;
@@ -1815,7 +1830,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     if((refresh_only || !s.forces_prepared)&&!prepare_forces(refresh_only?refresh_interval:0.0)) return false;
     if(refresh_only) {
         if(!state_finite(s))return false;
-        state=s;return true;
+        state=s;telemetry.component_interval=component_interval;return true;
     }
     // Derivatives consume the previous completed force callback's data.
     // Wheel history and sign/lock fields retain the authentic update epoch.
@@ -1876,6 +1891,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.step = s.step;
     t.simulation_seconds = s.simulation_seconds;
     t.solver_dt = dt;
+    t.component_interval = component_interval;
     t.alternate_yaw_active = s.alternate_yaw_active;
     t.position = s.position;
     t.velocity = s.velocity;

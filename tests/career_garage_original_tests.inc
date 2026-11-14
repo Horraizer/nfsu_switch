@@ -70,6 +70,27 @@ void verify_original_garage(const std::filesystem::path& root,const nfsu::Career
     // Finish availability is the original campaign reward gate, not a UI guess.
     for(unsigned event=0;event<256;++event)if(find_race_event(catalog.events(),event))p.status[event]=kEventStatusWon;
     p.style_high_water=1000000;
+    for(unsigned field:{1U,8U}) {
+        CareerGarage performance;
+        performance.reset(catalog,p);performance.move(1);
+        check(performance.accept(catalog,p,purchased,error),"enter performance categories");
+        const auto& categories=performance.entries();
+        const auto row=std::find_if(categories.begin(),categories.end(),[&](const auto& e){return e.value==field;});
+        check(row!=categories.end(),"visual performance package category exists");
+        performance.move(int(row-categories.begin())-int(performance.selected()));
+        check(performance.accept(catalog,p,purchased,error)&&performance.previewing(),"package opens live preview");
+        std::vector<unsigned char> globals;
+        std::vector<RaceTableIssue> issues;
+        check(load_race_image(root/"Global/GLOBALB.BUN",globals,issues),"read retail garage parts");
+        std::vector<CareerRideSetup> variants;
+        std::vector<unsigned> indices;
+        check(performance.prepare_previews(globals,catalog,p,variants,indices,error),error.c_str());
+        check(indices.size()>1&&indices[1]>0,"street package has a resident preview");
+        const auto& stock=variants.front();
+        const auto& street=variants.at(indices[1]);
+        if(field==1)check(stock.performance.suspension==0&&street.performance.suspension==1,"preview stages suspension without purchasing");
+        else check(stock.request.installed_parts.records[16]!=street.request.installed_parts.records[16],"brake preview swaps the calliper model");
+    }
     menu.change_finish(1,catalog,p);check(menu.color_family()==0x03437A52U,"earned metallic finish appears");
     check(menu.entries().size()==30&&menu.entries()[0].value==10,"metallic retains absent level1 row");
     menu.move_color(0,-1);check(menu.entries()[menu.selected()].value==10,"missing metallic row cannot hide cursor");
@@ -298,6 +319,8 @@ void verify_original_garage(const std::filesystem::path& root,const nfsu::Career
     if(menu.entries().size()>1){menu.move(1);check(menu.preview_signature(p)==first_signature,"trade highlight keeps resident bank identity");menu.move(-1);}
     const auto trade_cost=menu.entries()[menu.selected()].trade_cost;
     check(p.car==original.car&&p.bank==original.bank,"trade highlight preserves owned car and bank");
+    enter();check(menu.trade_review()==1&&!menu.confirming()&&!purchased,"trade shows owned car performance first");
+    enter();check(menu.trade_review()==2&&!menu.confirming()&&!purchased,"trade shows replacement performance second");
     enter();check(menu.confirming()&&!purchased,"trade confirmation does not spend");
     enter();check(purchased&&p.car==selected_car&&std::int64_t(p.bank)==std::int64_t(original.bank)-trade_cost,"confirmed trade commits signed original credit");
     check(p.ride.performance==original.ride.performance&&p.ride.unique==original.ride.unique&&catalog.valid(p,error),"trade retains earned performance and valid mapped visual parts");

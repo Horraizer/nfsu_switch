@@ -15,6 +15,19 @@
 #include <functional>
 #include <stdexcept>
 namespace nfsu {
+bool open_underground(FrontendAction action,const std::filesystem::path& root,
+    const CareerProfileEntry& entry,CareerCatalog& catalog,CareerProfile& profile,std::string& error) {
+    if(action!=FrontendAction::underground) {
+        error="Go Underground action required";
+        return false;
+    }
+    if(!catalog.load(root,error)||!load_career(entry.base,catalog,profile,error))return false;
+    profile.name=entry.name;
+    return true;
+}
+bool career_uses_event_map(CareerPage page) noexcept {
+    return page==CareerPage::map||page==CareerPage::briefing;
+}
 FrontendAction FrontendMenu::update(FrontendInput input) {
     if(input.profiles) return FrontendAction::profiles;
     if(input.back) return FrontendAction::exit;
@@ -629,6 +642,7 @@ struct DialogArt {
 };
 struct FrontendArt::Impl {
     Image background,startup_splash;
+    std::vector<unsigned char> splash_prompt_script;
     Object splash_picture,splash_prompt;
     FrontendUiAtlas atlas;
     void draw(Canvas image,const FrontendMenu& menu) const;
@@ -1466,7 +1480,7 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
             if(o.name=="Description") label=selected==FrontendAction::underground?"Begin your Underground career":
                 selected==FrontendAction::free_drive?"Set up a race or explore a track in Free Run.":
                 selected==FrontendAction::statistics?"View your career statistics":
-                selected==FrontendAction::options?"Change display options.":"Host or join a race over your local network.";
+                selected==FrontendAction::options?"Change display options.":"Race a friend in Split Screen or over LAN.";
             if((underground || free || statistics) && !p.temporal) {
                 const bool current=(underground&&selected==FrontendAction::underground)||
                     (free&&selected==FrontendAction::free_drive)||(statistics&&selected==FrontendAction::statistics);

@@ -28,7 +28,9 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
     for(const unsigned event:{1U,8U}) {
         std::cout<<"event="<<event<<" loading actual package\n";
         RaceGpuScene gpu;gpu.set_race_visuals(true);gpu.set_wet_road_reflections(true);
+        const bool authored_purge=event==1;
         gpu.set_crash_windows(event==1);
+        gpu.set_particles_enabled(authored_purge);
         check(gpu.set_original_draw_distance(true),"original distance selection");
         check(gpu.load(posix_file_system(),root,error,nullptr,nullptr,false,true,true,
                        &dress.car,&dress.dress,event,true),error);
@@ -72,7 +74,7 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
         for(auto i=first.commands.static_track_draw_count();i<first.commands.draw_count();++i)
             dynamic.push_back(&first.commands.draw_view(i).definition);
         unsigned flame_cells=0,checks=0;
-        auto validate=[&](bool lit,const RaceSession* fresh=nullptr,bool purging=false) {
+        auto validate=[&](bool lit,const RaceSession* fresh=nullptr,bool purge_visible_now=false) {
             RaceGpuFrame frame;check(gpu.frame(fresh?*fresh:run.session(),frame,error),error);
             const auto& c=frame.commands;check(validate_recorded_commands(c,error),error);
             check(c.generation_valid()&&c.package_identity()==package&&c.width==width&&c.height==height&&
@@ -80,12 +82,19 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
             const auto track=c.static_track_draw_count();
             check(c.draw_count()<=gpu.draw_capacity()&&c.draw_count()-track==dynamic.size(),
                   "NOS activation changed prepared dynamic capacity");
-            unsigned flames=0,visible=0,purge_slots=0,purge_visible=0;
+            unsigned flames=0,visible=0,purge_slots=0,purge_visible=0,atlas_puffs=0;
             for(std::size_t i=0;i<dynamic.size();++i) {
                 const auto view=c.draw_view(track+i);
                 check(!view.track_instance && &view.definition==dynamic[i],"NOS changed prepared definition address/order");
                 if(view.definition.name=="race-nitrous/purge") {
                     ++purge_slots;if(view.material.alpha[0]>0)++purge_visible;continue;
+                }
+                if(authored_purge && view.definition.name.find("race-car/particle/smoke/")==0 &&
+                   view.material.alpha[0]>0 &&
+                   c.resource_table().resources.at(view.definition.texture_resource).texture_hash==0x454D2975U) {
+                    check(view.definition.first_index>=6*24 && view.definition.first_index<6*40,
+                          "nitrous purge samples a single SMOKEB_CS cell");
+                    ++atlas_puffs;
                 }
                 if(view.definition.name!="race-nitrous/flame")continue;
                 ++flames;
@@ -94,7 +103,10 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
                 if(view.material.alpha[0]>0){++visible;flame_cells|=1U<<(view.definition.first_index/6);}
             }
             check(flames==1&&visible==(lit?1U:0U),"one reserved authored pipe follows actual NOS state");
-            check(purge_slots==2&&purge_visible==(purging?2U:0U),"purge has its own reserved smoke draws");
+            check(purge_slots==2&&purge_visible==(!authored_purge&&purge_visible_now?2U:0U),
+                  "legacy purge smoke slots stay fixed");
+            if(authored_purge)check(purge_visible_now ? atlas_puffs>=8&&atlas_puffs<=kRaceSmokeLimit : atlas_puffs==0,
+                                   "both authored smoke bursts feed the prepared alpha pass");
             ++checks;
         };
         validate(false);std::cout<<"initial inactive package PASS\n";
@@ -102,17 +114,39 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
         auto step=[&](std::uint32_t buttons) {
             const auto pad=race_input_frame({1,buttons,0},tick++);
             check(run.simulate(pad,error)&&run.commit(error),error);
+            gpu.advance_particles(run.session());
         };
         const auto purge_button=gamepad_button_bit(GamepadButton::shoulder_left);
         while(run.session().timing().stage!=RaceStage::countdown&&tick<300)step(0);
         step(0); // An already-held button on the first input frame is latched.
         const auto grid=run.session().car().position;
+        const auto eye=run.session().camera().eye;
         step(purge_button);step(purge_button);
         check(run.session().nitrous_purging()&&!run.session().nitrous_boosting(),"held grid uses purge, not boost");
         check(run.session().nitrous().remaining<run.session().nitrous().capacity,"purge uses the NOS resource");
         check(run.session().car().position.x==grid.x&&run.session().car().position.y==grid.y,"purge cannot launch the car");
-        validate(false,nullptr,true);
-        step(0);validate(false);
+        const auto grid_view_distance=[&] {
+            const auto moved=run.session().camera().eye;
+            return std::hypot(moved.x-eye.x,moved.y-eye.y,moved.z-eye.z);
+        };
+        check(grid_view_distance()>.011&&grid_view_distance()<.014,"purge moves the stationary chase view");
+        if(authored_purge) {
+            const auto& particles=gpu.particles();
+            check(particles.smoke_count()>=2,"both grid purge emitters are active");
+            const auto& subject=run.session();
+            const auto pose=chase_subject(subject.car(),subject.spec());
+            const auto& wheels=subject.spec().handling.wheels;
+            const double expected=.5*(wheels[0].longitudinal+wheels[1].longitudinal)+.5944;
+            for(unsigned i=0;i<2;++i) {
+                const auto& point=particles.smoke(i).origin;
+                const double along=(point.x-pose.origin.x)*pose.forward.x+
+                    (point.y-pose.origin.y)*pose.forward.y+(point.z-pose.origin.z)*pose.forward.z;
+                check(std::abs(along-expected)<.001,"purge emitter follows the native front-axle anchor");
+            }
+        }
+        validate(true,nullptr,true);
+        step(0);validate(false,nullptr,authored_purge);
+        check(grid_view_distance()<.001,"released purge restores the chase view");
         while(race_car_held(run.session().timing())&&tick<300)step(0);
         check(!race_car_held(run.session().timing()),"countdown did not complete within 300 input frames");
         std::cout<<"countdown complete step="<<tick<<"\n";
@@ -174,6 +208,24 @@ int main(int argc,char** argv) { try {
         check(a.nitrous().remaining==8000 && !a.nitrous().active,"countdown preserves charge");
     }
     const auto gas=gamepad_button_bit(GamepadButton::trigger_right),nos=gamepad_button_bit(GamepadButton::shoulder_left);
+    RaceSession grid_stock(course,spec),grid_purge(course,spec);
+    check(grid_stock.start(error)&&grid_purge.start(error),error);
+    unsigned grid_tick=0;
+    while(grid_stock.timing().stage!=RaceStage::countdown) {
+        const auto neutral=race_input_frame({1,0,0},grid_tick++);
+        check(grid_stock.advance(neutral,error)&&grid_purge.advance(neutral,error),error);
+    }
+    const auto neutral=race_input_frame({1,0,0},grid_tick++);
+    check(grid_stock.advance(neutral,error)&&grid_purge.advance(neutral,error),error);
+    const auto press=race_input_frame({1,nos,0},grid_tick);
+    check(grid_stock.advance(race_input_frame({1,0,0},grid_tick),error)&&grid_purge.advance(press,error),error);
+    check(grid_purge.nitrous_purging()&&grid_purge.car().gear==kVehicleGearNeutral,
+          "pre-GO NOS stays in neutral");
+    check(grid_purge.physics_telemetry()[0].model.engine_torque>
+          grid_stock.physics_telemetry()[0].model.engine_torque,"purge adds torque to the held engine");
+    check(grid_purge.car().position.x==grid_stock.car().position.x&&
+          grid_purge.car().position.y==grid_stock.car().position.y&&
+          grid_purge.car().position.z==grid_stock.car().position.z,"purge leaves grid pose fixed");
     auto p=race_input_frame({1,gas,0},tick++);check(a.advance(p,error)&&b.advance(p,error),"launch");
     p=race_input_frame({1,gas,0},tick++);auto boosted=p;boosted.pads[0].buttons|=nos;
     check(a.advance(boosted,error)&&b.advance(p,error),"L activation");

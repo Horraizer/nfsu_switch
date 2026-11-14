@@ -37,11 +37,14 @@ retail `speed.exe` identified by SHA-256 in `PART_PLACEMENT.md`.
 120 Hz vehicle step into a separate visual phase. It reads the existing
 road-wheel steer angle and strut compression. The renderer composes wheel
 half-turn, spin, front steering and hub translation in the retail order;
-brakes reflect on the left and receive front steering but no spin. Positive
-compression moves the hub up. Using the model's compression directly for
-the retail display travel is an approximation because that writer remains
-untraced. The visual phase, lamp choice and prepared instance transforms
-are never serialized into the race state or returned to physics.
+brakes reflect on the left and receive front steering but no spin.
+Positive compression moves the hub up. Original 478B20 and the following
+three wheel blocks cap that travel with the eighth float of the active
+axle strut record (+0x1C). Original 465150 adds the published travel to
+the active setup mount, which includes suspension tuning. Race wheel and
+brake placement offset the stock mesh pivot accordingly. The camera's
+wheel-transform sample uses the same travel cap and active mount. Force
+calculations continue to use the strut's physical compression.
 
 APPROXIMATION - wheel spin source: retail `0x004B18F7..0x004B192A`
 advances one car-level 16-bit angle at `car+0x108` from road distance and

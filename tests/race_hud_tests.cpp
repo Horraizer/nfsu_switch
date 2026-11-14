@@ -715,6 +715,24 @@ int main(int argc,char** argv) {
               "FPS retains a long stutter and evicts oldest sample");
     }
     {
+        nfsu::RaceHudAtlas atlas;
+        atlas.lap_ready=true;
+        constexpr std::string_view message="Race Over";
+        for(const unsigned char c:message)if(c!=' ') {
+            auto& glyph=atlas.lap_fonts[1][c];
+            glyph.width=12;glyph.height=20;glyph.advance=13;
+        }
+        nfsu::RaceHudFrame frame;
+        frame.quads=nfsu::kRaceHudMaxQuads-2;
+        frame.lap_first_quad=frame.quads;
+        nfsu::append_race_over(atlas,.5,1280,720,frame,message);
+        const auto message_quads=message.size(); // Eight glyphs and the backing.
+        check(frame.quads==nfsu::kRaceHudMaxQuads&&frame.lap_first_quad==frame.quads-message_quads,
+              "finish reserves space for the entire message in a crowded HUD");
+        for(std::size_t i=frame.quads-message_quads+1;i<frame.quads;++i)
+            check(frame.vertices[i*4].px<frame.vertices[i*4+1].px,"every finish glyph is visible");
+    }
+    {
         using namespace nfsu;
         const auto left=gamepad_button_bit(GamepadButton::stick_left);
         const auto right=gamepad_button_bit(GamepadButton::stick_right);

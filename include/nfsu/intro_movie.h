@@ -7,6 +7,7 @@
 #include <vector>
 
 namespace nfsu {
+inline constexpr char kUndergroundPrologueMovie[]="01_DAY.mad";
 struct MovieFrame {
     unsigned width = 0, height = 0;
     // Frontend object geometry, independent of encoded sample dimensions.

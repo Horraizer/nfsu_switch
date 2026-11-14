@@ -13,7 +13,7 @@ struct FrameSpikeRow {
     // uniforms, command recording, finish, submit, heap, pre-begin gap,
     // previous post-present tail, unaccounted work.
     std::array<double,17> times{};
-    std::array<double,9> simulation{};
+    std::array<double,13> simulation{};
     std::array<double,7> render{};
 };
 // Bounded first-event capture: previous/current/next, no allocation or I/O.

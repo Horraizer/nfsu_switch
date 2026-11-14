@@ -33,7 +33,8 @@ nfsu::VehicleTrackTelemetry sample(std::uint64_t step) {
     t.velocity={8,0,0};
     for (auto& wheel : t.model.wheels) {
         wheel.contact=true;
-        wheel.slip_ratio=0.6;
+        wheel.surface=1;
+        wheel.effect_slip_velocity={8.0F,6.0F};
     }
     return t;
 }
@@ -70,10 +71,30 @@ int main() {
         nfsu::RaceParticles below;
         for (std::uint64_t step=1; step<=48; ++step) {
             auto t=sample(step);
-            for (auto& wheel : t.model.wheels) wheel.slip_ratio=0.25;
+            for (auto& wheel : t.model.wheels) wheel.effect_slip_velocity={3.0F,4.0F};
             below.advance(t,spec);
         }
         check(below.smoke_count()==0,"smoke threshold accepted equality");
+        nfsu::RaceParticles timed;
+        for (std::uint64_t step=1; step<=17; ++step) timed.advance(sample(step),spec);
+        check(timed.smoke_count()==0,"smoke started before the original .15-second gate");
+        for (std::uint64_t step=18; step<=24; ++step) {
+            auto t=sample(step);
+            for (auto& wheel : t.model.wheels) wheel.contact=false;
+            timed.advance(t,spec);
+        }
+        timed.advance(sample(25),spec);
+        timed.advance(sample(26),spec);
+        check(timed.smoke_count()>0,"airborne wheel lost its original smoke timer");
+        nfsu::RaceParticles distant, no_emitter;
+        for (std::uint64_t step=1; step<=48; ++step) {
+            distant.advance(sample(step),spec,150.0F);
+            auto t=sample(step);
+            for (auto& wheel : t.model.wheels) wheel.surface=17;
+            no_emitter.advance(t,spec);
+        }
+        check(distant.smoke_count()==0,"smoke admitted the camera distance boundary");
+        check(no_emitter.smoke_count()==0,"material with no skid effect emitted smoke");
         nfsu::RaceParticles wall;
         auto hit=sample(1);
         for (auto& wheel : hit.model.wheels) wheel.contact=false;

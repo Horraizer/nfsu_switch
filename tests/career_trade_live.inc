@@ -34,7 +34,15 @@ void verify_trade_garage(const std::filesystem::path& root,const std::filesystem
     std::vector<CareerRideSetup> variants;std::vector<unsigned> indices;
     check(menu.prepare_previews(globals,catalog,profile,variants,indices,error),error);
     check(variants.size()==menu.entries().size()+1,"resident trade bank includes every unlocked candidate");
-    FrontendGpuScene visible;check(visible.load_garage(root,1280,720,variants,error),error);
+    FrontendGpuScene visible,prepared;
+    check(visible.load_garage(root,1280,720,{variants.front()},error),error);
+    visible.focus_part(menu.focus_slot());
+    visible.prepare_car_change();
+    for(unsigned i=0;i<120;++i)check(visible.frame(1.F/60.F,i*67,error),error);
+    check(!visible.car_transitioning()&&visible.selected_car_type()==profile.car,
+          "camera preparation retains the car while bank data is unavailable");
+    check(prepared.load_garage(root,1280,720,variants,error,nullptr,visible.environment(),visible.car_source()),error);
+    check(visible.adopt_garage(prepared,error),error);
     FrontendArt art;check(art.load(root,error,false)&&art.load_career_pages(root,catalog,error),error);
     check(art.atlas().width<=4096&&art.atlas().height<=4096&&art.atlas().rgba.size()<=2048ULL*4096*4,
           "all original trade icons/logos fit the unchanged UI byte ceiling");
@@ -63,7 +71,15 @@ void verify_trade_garage(const std::filesystem::path& root,const std::filesystem
     const auto& bytes=visible.commands().resource_table().totals;
     std::cout<<"TRADE_BANK cars="<<variants.size()<<" vertex_bytes="<<bytes.vertex_bytes
              <<" index_bytes="<<bytes.index_bytes<<" texture_bytes="<<bytes.texture_bytes<<'\n';
-    unsigned tick=0;std::string previous_ui,previous_logo;
+    unsigned tick=8000;std::string previous_ui,previous_logo;
+    const auto travel=[&] {
+        const auto& draws=visible.commands().owning_draws();
+        const auto body=std::find_if(draws.begin(),draws.end(),[](const auto& draw){
+            return draw.name.find("car group ")!=std::string::npos&&draw.name.find("_FE_")==std::string::npos;
+        });
+        check(body!=draws.end(),"visible car body");
+        return body->placement.rows[12];
+    };
     for(unsigned i=0;i<menu.entries().size();++i) {
         menu.move(int(i)-int(menu.selected()));const auto target=menu.preview(profile);
         const auto car=std::find_if(catalog.cars().begin(),catalog.cars().end(),[&](const auto& c){return c.name==target.car;});
@@ -71,15 +87,19 @@ void verify_trade_garage(const std::filesystem::path& root,const std::filesystem
               "native4C3240 manufacturer thumbnail binding");
         check(menu.preview_signature(profile)==signature,"highlight never invalidates the resident trade bank");
         check(indices[i]>0&&variants[indices[i]].request.car_type_name==target.car,"selected menu row maps to its own car");
-        check(visible.select_car(indices[i],error),error);unsigned frames=0;
+        const auto parked=travel();
+        check(visible.select_car(indices[i],error),error);unsigned frames=0,departure=0;
         do {
             visible.focus_part(menu.focus_slot());visible.road_target(menu.road_target());
             check(visible.select_car(indices[i],error),error);
             check(visible.frame(1.F/60.F,++tick*4000/60,error),error);
             ++frames;
+            if(!departure&&std::abs(travel()-parked)>.0001F)departure=frames;
         }while(visible.car_transitioning()&&frames<900);
         check(!visible.car_transitioning()&&visible.selected_car_type()==target.car,
               "native car travel must complete at the selected visible car");
+        check(departure&&(i!=0||departure<=3),
+              "Trade In bank publication must not restart a completed camera preparation");
         check(validate_recorded_commands(visible.commands(),error),error);
         FrontendUiFrame ui;art.record_career(1280,720,catalog,profile,0,"",ui,&menu);
         const auto ui_hash=sha256_hex(sha256(reinterpret_cast<const unsigned char*>(ui.vertices.data()),ui.vertices.size()*sizeof(ui.vertices[0])));
@@ -100,9 +120,14 @@ void verify_trade_garage(const std::filesystem::path& root,const std::filesystem
             for(std::size_t j=0;j<pixels.size();j+=4)image.write(reinterpret_cast<const char*>(pixels.data()+j),3);
             check(bool(image),"trade frame written");
         }
-        std::cout<<"TRADE_VISIBLE index="<<i<<" car="<<target.car<<" frames="<<frames<<" cost="<<menu.entries()[i].trade_cost<<'\n';
+        std::cout<<"TRADE_VISIBLE index="<<i<<" car="<<target.car<<" frames="<<frames<<" departure_frame="<<departure<<" cost="<<menu.entries()[i].trade_cost<<'\n';
     }
     const auto target=menu.preview(profile).car;const int cost=menu.entries()[menu.selected()].trade_cost;
+    for(unsigned page=1;page<=2;++page) {
+        check(menu.accept(catalog,profile,purchased,error)&&!purchased&&!menu.confirming()&&
+              menu.trade_review()==page&&profile.car==original.car&&profile.bank==original.bank,
+              "trade review precedes confirmation and preserves the profile");
+    }
     check(menu.accept(catalog,profile,purchased,error)&&!purchased&&menu.confirming(),"trade confirmation is separate");
     check(menu.accept(catalog,profile,purchased,error)&&purchased&&profile.car==target&&
           std::int64_t(profile.bank)==std::int64_t(original.bank)-cost,"confirmed trade installs highlighted car and signed cost");
