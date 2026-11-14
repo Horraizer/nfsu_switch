@@ -14,6 +14,9 @@
 #include <cerrno>
 #include <algorithm>
 #include <cstdio>
+#include <memory>
+#include <new>
+#include <type_traits>
 #include <stdexcept>
 #include <string>
 
@@ -159,14 +162,26 @@ GamepadState sample_local(const PadState& pad) {
     }
     return input;
 }
-bool choose_local_controllers(LocalPads& pads) {
+bool choose_local_controllers(LocalPads& pads,std::string& error) {
+    error.clear();
     padConfigureInput(2,HidNpadStyleSet_NpadStandard);
     HidLaControllerSupportArg settings{};
     hidLaCreateControllerSupportArg(&settings);
     settings.hdr.player_count_min=2;
     settings.hdr.player_count_max=2;
     HidLaControllerSupportResultInfo result{};
-    if(R_FAILED(hidLaShowControllerSupport(&result,&settings))||result.player_count!=2)return false;
+    const Result rc=hidLaShowControllerSupport(&result,&settings);
+    if(R_FAILED(rc)) {
+        char message[96];
+        std::snprintf(message,sizeof message,"Controller selection closed (%04u-%04u). Press A to retry.",
+                      2000+unsigned(R_MODULE(rc)),unsigned(R_DESCRIPTION(rc)));
+        error=message;
+        return false;
+    }
+    if(result.player_count!=2) {
+        error="Two controllers are required. Press A to retry.";
+        return false;
+    }
     padInitialize(&pads[0],HidNpadIdType_No1);
     padInitialize(&pads[1],HidNpadIdType_No2);
     for(auto& pad:pads)padUpdate(&pad);
@@ -176,11 +191,11 @@ bool choose_local_controllers(LocalPads& pads) {
 bool local_lobby(const std::string& root,LocalPads& pads,LanScreen& screen,
                  const std::map<std::string,CareerRide>& rides,LanRaceOptions& options,
                  FreeDriveCourse& course,std::string& error) {
-    CareerCatalog catalog;
+    auto catalog=std::make_unique<CareerCatalog>();
     std::vector<std::string> cars;
-    if(!catalog.load_free_drive(root,error)||!load_lan_car_names(root,cars,error))return false;
+    if(!catalog->load_free_drive(root,error)||!load_lan_car_names(root,cars,error))return false;
     const std::array<QuickRaceMode,2> modes{{QuickRaceMode::circuit,QuickRaceMode::sprint}};
-    std::array<std::vector<unsigned>,2> courses{{catalog.quick_courses(modes[0]),catalog.quick_courses(modes[1])}};
+    std::array<std::vector<unsigned>,2> courses{{catalog->quick_courses(modes[0]),catalog->quick_courses(modes[1])}};
     require(!courses[0].empty()&&!courses[1].empty()&&!cars.empty(),"Quick Race roster unavailable");
     unsigned row=0,mode=0,track=0,laps=2,tier=0;
     std::array<unsigned,2> car_indices{{0,unsigned(cars.size()>1)}};
@@ -189,10 +204,11 @@ bool local_lobby(const std::string& root,LocalPads& pads,LanScreen& screen,
         return (value+(direction>0?1:count-1))%count;
     };
     while(appletMainLoop()) {
+        if(appletGetFocusState()!=AppletFocusState_InFocus)continue;
         for(auto& pad:pads)padUpdate(&pad);
         if(!padIsConnected(&pads[0])||!padIsConnected(&pads[1])) {
             screen.close();
-            if(!choose_local_controllers(pads))throw RoomExit{};
+            if(!choose_local_controllers(pads,error))return false;
             continue;
         }
         const auto buttons=local_buttons(pads[0],padGetButtonsDown(&pads[0]));
@@ -201,7 +217,7 @@ bool local_lobby(const std::string& root,LocalPads& pads,LanScreen& screen,
             options.laps=std::uint8_t(mode==0?laps:1);
             options.tier=std::uint8_t(tier);
             for(unsigned i=0;i<2;++i)options.rides[i]=chosen_ride(cars[car_indices[i]],rides);
-            course=catalog.free_courses().at(courses[mode].at(track));
+            course=catalog->free_courses().at(courses[mode].at(track));
             return true;
         }
         if(buttons&HidNpadButton_Up)row=cycle(row,7,-1);
@@ -222,7 +238,7 @@ bool local_lobby(const std::string& root,LocalPads& pads,LanScreen& screen,
         }
         if(const int change_p2=adjust(1))
             car_indices[1]=cycle(car_indices[1],unsigned(cars.size()),change_p2);
-        const auto& selected=catalog.free_courses().at(courses[mode].at(track));
+        const auto& selected=catalog->free_courses().at(courses[mode].at(track));
         screen.show({"QUICK RACE / SPLIT SCREEN","",
             label(0,quick_race_mode_name(modes[mode])),label(1,selected.name),
             label(2,"Laps: "+std::to_string(mode==0?laps:1)),
@@ -233,58 +249,72 @@ bool local_lobby(const std::string& root,LocalPads& pads,LanScreen& screen,
     throw RoomExit{};
 }
 
-void run_local(const std::string& root,bool metric_speed,const std::map<std::string,CareerRide>& rides) {
+void update_multiplayer_audio(audio::RaceAudioService& sound,const RaceSession& session,
+                              audio::RaceAudioSnapshot& snapshot) {
+    // Construct the tick directly in reusable heap storage. The return
+    // value is elided here, so the caller needs no contact buffer on stack.
+    static_assert(std::is_trivially_destructible_v<audio::RaceAudioSnapshot>);
+    ::new (static_cast<void*>(&snapshot)) audio::RaceAudioSnapshot(audio::race_audio_snapshot(session));
+    sound.on_tick(snapshot);
+}
+
+void run_local(const std::string& root,bool metric_speed,const std::map<std::string,CareerRide>& rides,
+               std::string& error) {
     LanScreen screen;
     struct RestorePads {~RestorePads(){padConfigureInput(1,HidNpadStyleSet_NpadStandard);}} restore;
     try {
         LocalPads pads{};
-        if(!choose_local_controllers(pads))return;
+        if(!choose_local_controllers(pads,error))return;
         LanRaceOptions options;FreeDriveCourse course;
-        std::string error;
         require(local_lobby(root,pads,screen,rides,options,course,error),error);
         screen.show({"QUICK RACE / SPLIT SCREEN","","Loading "+course.name+"..."});
-        LanRaceWorld world;
-        require(world.load_local(root,course.event,course.round,options,error),error);
+        auto world=std::make_unique<LanRaceWorld>();
+        require(world->load_local(root,course.event,course.round,options,error),error);
         std::array<LanRaceView,2> views;
         for(unsigned i=0;i<views.size();++i) {
-            require(views[i].open(world.session(),world.cameras(i),i,error,&world.host_hull()),error);
-            require(views[i].apply(world.snapshot(),1./60,error),error);
+            require(views[i].open(world->session(),world->cameras(i),i,error,&world->host_hull()),error);
+            require(views[i].apply(world->snapshot(),1./60,error),error);
         }
-        LanScene scene;RaceGpuFrame frame;RaceHudFrame hud;
-        require(scene.load_local(root,course.event,course.round,options,world.models(),error),error);
-        require(scene.split_frame(world.session(),views[0],0,frame,hud,error,metric_speed),error);
+        // RaceGpuScene owns large fixed render scratch buffers. Keep them
+        // off the main thread's stack, including during controller selection.
+        auto scene=std::make_unique<LanScene>();
+        RaceGpuFrame frame;auto hud=std::make_unique<RaceHudFrame>();
+        require(scene->load_local(root,course.event,course.round,options,world->models(),error),error);
+        require(scene->split_frame(world->session(),views[0],0,frame,*hud,error,metric_speed),error);
         screen.close();
         DekoRenderer renderer;
-        require(renderer.open_split(frame.commands,scene.atlas(),scene.draw_capacity(),error),error);
+        require(renderer.open_split(frame.commands,scene->atlas(),scene->draw_capacity(),error),error);
 
         audio::RaceAudioService sound;
+        auto audio_snapshot=std::make_unique<audio::RaceAudioSnapshot>();
         std::string audio_note;
         const auto levels=lan_performance_levels(options.tier);
-        const auto& induction=world.session().rival(0).spec().induction;
-        const std::vector<audio::RaceRemoteEngineBinding> other{{world.models()[1],levels.engine_a,
+        const auto& induction=world->session().rival(0).spec().induction;
+        const std::vector<audio::RaceRemoteEngineBinding> other{{world->models()[1],levels.engine_a,
             levels.induction,std::any_of(induction.begin(),induction.end(),[](float value){return value>0;})}};
         const auto audio_core=svcGetCurrentProcessorNumber()==2?1:2;
         sound.start(root,audio_note,{},[audio_core]{
             return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),audio_core,1U<<audio_core))&&
                 R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(),0x30));
-        },true,world.models()[0],levels.engine_a,levels.nitrous,levels.tyres,other,levels.induction,0,0);
+        },true,world->models()[0],levels.engine_a,levels.nitrous,levels.tyres,other,levels.induction,0,0);
 
         std::array<bool,2> next_camera{};
         std::array<GamepadFrame,2> input{};
         auto last=micros();std::uint64_t debt=0;
         const DekoRenderer::SplitViewSource render_view=[&](unsigned player,const RecordedCommands*& commands,
                                                            const RaceHudFrame*& view_hud,std::string& frame_error){
-            if(!scene.split_frame(world.session(),views[player],player,frame,hud,frame_error,metric_speed))return false;
-            commands=&frame.commands;view_hud=&hud;return true;
+            if(!scene->split_frame(world->session(),views[player],player,frame,*hud,frame_error,metric_speed))return false;
+            commands=&frame.commands;view_hud=hud.get();return true;
         };
         while(appletMainLoop()) {
+            if(appletGetFocusState()!=AppletFocusState_InFocus){last=micros();debt=0;continue;}
             for(auto& pad:pads)padUpdate(&pad);
             const auto buttons=local_buttons(pads[0],padGetButtonsDown(&pads[0]))|
                 local_buttons(pads[1],padGetButtonsDown(&pads[1]));
             if(buttons&HidNpadButton_Plus)break;
             if(!padIsConnected(&pads[0])||!padIsConnected(&pads[1])) {
                 sound.set_suspended(true);
-                if(!choose_local_controllers(pads))break;
+                if(!choose_local_controllers(pads,error))break;
                 sound.set_suspended(false);
                 last=micros();debt=0;continue;
             }
@@ -298,11 +328,11 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
             }
             while(debt>=1000000) {
                 debt-=1000000;
-                if(world.session().timing().outcome!=RaceOutcome::running)continue;
-                require(world.advance(input,error),error);
-                sound.on_tick(audio::race_audio_snapshot(world.session()));
+                if(world->session().timing().outcome!=RaceOutcome::running)continue;
+                require(world->advance(input,error),error);
+                update_multiplayer_audio(sound,world->session(),*audio_snapshot);
             }
-            const auto state=world.snapshot();
+            const auto state=world->snapshot();
             for(unsigned i=0;i<views.size();++i)
                 require(views[i].apply(state,dt,error,(input[i].pads[0].buttons&gamepad_button_bit(GamepadButton::stick_right))!=0,next_camera[i]),error);
             require(renderer.present_split(render_view,error),error);
@@ -399,27 +429,31 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
         const auto options=link.race_options();const unsigned local=host?0:1;
         screen.show({"LAN / LOADING",kLanCourses[options.course].name,
                      std::to_string(options.laps)+" laps",kLanPerformance[options.tier]});
-        LanRaceWorld world;trace("lan_world_begin");require(world.load(root,error,options),error);trace("lan_world_ready");
-        LanRaceView view;require(view.open(world.session(),world.cameras(local),local,error,&world.host_hull()),error);
-        auto latest=world.snapshot(),presented=latest;require(view.apply(latest,1./60,error),error);
-        LanScene scene;trace("lan_scene_begin");require(scene.load(root,options,world.models(),local,error),error);trace("lan_scene_ready");
-        RaceGpuFrame frame;RaceHudFrame hud;require(scene.frame(view,frame,hud,error),error);
+        auto world=std::make_unique<LanRaceWorld>();trace("lan_world_begin");require(world->load(root,error,options),error);trace("lan_world_ready");
+        LanRaceView view;require(view.open(world->session(),world->cameras(local),local,error,&world->host_hull()),error);
+        auto latest=world->snapshot(),presented=latest;require(view.apply(latest,1./60,error),error);
+        trace("lan_scene_begin");
+        auto scene=std::make_unique<LanScene>();
+        require(scene->load(root,options,world->models(),local,error),error);
+        trace("lan_scene_ready");
+        RaceGpuFrame frame;auto hud=std::make_unique<RaceHudFrame>();require(scene->frame(view,frame,*hud,error),error);
         screen.show({"LAN / READY","Waiting for the other console to finish loading...","+ cancels"});
         // Release the software framebuffer before opening a deko swapchain.
         screen.close();
         DekoRenderer renderer;trace("lan_renderer_begin");
-        require(renderer.open(frame.commands,error,true,scene.draw_capacity(),false,true,false,0,&scene.atlas()),error);
+        require(renderer.open(frame.commands,error,true,scene->draw_capacity(),false,true,false,0,&scene->atlas()),error);
         trace("lan_renderer_ready");audio::RaceAudioService sound;std::string audio_note;
+        auto audio_snapshot=std::make_unique<audio::RaceAudioSnapshot>();
         const auto audio_core=svcGetCurrentProcessorNumber()==2?1:2;
         const auto levels=lan_performance_levels(options.tier);
         const auto& remote_induction=view.session().rival(0).spec().induction;
-        const std::vector<audio::RaceRemoteEngineBinding> remote_audio{{world.models()[1-local],
+        const std::vector<audio::RaceRemoteEngineBinding> remote_audio{{world->models()[1-local],
             levels.engine_a,levels.induction,std::any_of(remote_induction.begin(),remote_induction.end(),
                 [](float value){return value>0.F;})}};
         const bool audio_started=sound.start(root,audio_note,{},[audio_core]{
             return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),audio_core,1U<<audio_core))&&
                 R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(),0x30));
-        },true,world.models()[local],levels.engine_a,levels.nitrous,levels.tyres,remote_audio,levels.induction,0,0);
+        },true,world->models()[local],levels.engine_a,levels.nitrous,levels.tyres,remote_audio,levels.induction,0,0);
         trace("lan_audio_result",audio_started?"started":audio_note.c_str());
         link.set_ready();trace("lan_room_ready");
         LanSnapshotBuffer snapshot_buffer;InputTiming input_timing;
@@ -442,13 +476,13 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
                     unsigned steps=0;
                     while(debt>=1000000&&steps++<8){
                         debt-=1000000;
-                        if(world.session().timing().outcome==RaceOutcome::running){
+                        if(world->session().timing().outcome==RaceOutcome::running){
                             std::array<GamepadFrame,2> pads{};pads[0].pads[0]=input;pads[1].pads[0]=link.remote_input(now);
                             if(first_simulation)trace("lan_simulation_begin");
-                            const auto begin=micros();require(world.advance(pads,error),error);
+                            const auto begin=micros();require(world->advance(pads,error),error);
                             if(first_simulation){trace("lan_simulation_ready");first_simulation=false;}
                             const double cost=double(micros()-begin)*.001;simulation_ms+=cost;sim_max=std::max(sim_max,cost);++simulations;
-                            latest=world.snapshot();
+                            latest=world->snapshot();
                             if(latest.outcome==unsigned(RaceOutcome::running))require(link.publish(latest,error),error);
                         }
                     }
@@ -475,13 +509,13 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
             const bool guest_sample=!host&&snapshot_buffer.sample(presentation_dt,presented,presented_ack);
             require(view.apply(presented,presentation_dt,error,(input.buttons&rear)!=0,(input.buttons&camera)&&!(previous_buttons&camera)),error);
             previous_buttons=input.buttons;
-            if(audio_started&&was_connected&&presented.step!=last_audio_step){sound.on_tick(audio::race_audio_snapshot(view.session()));last_audio_step=presented.step;}
+            if(audio_started&&was_connected&&presented.step!=last_audio_step){update_multiplayer_audio(sound,view.session(),*audio_snapshot);last_audio_step=presented.step;}
             if(diagnostic_frames<2){trace("lan_frame_begin");}
-            require(scene.frame(view,frame,hud,error),error);
+            require(scene->frame(view,frame,*hud,error),error);
             if(diagnostic_frames<2){trace("lan_update_begin");}
             require(renderer.update(frame.commands,error),error);
             if(diagnostic_frames<2){trace("lan_present_begin");}
-            require(renderer.present(error,nullptr,nullptr,&hud),error);
+            require(renderer.present(error,nullptr,nullptr,hud.get()),error);
             if(guest_sample)input_timing.measure(input_timing.presented,presented_ack,micros());
             if(diagnostic_frames<2){trace("lan_present_ready");++diagnostic_frames;}
             if(now-stats_at>=5000000){
@@ -525,16 +559,36 @@ void run_switch_lan(const std::string& root,PadState& pad,bool write_logs,
 void run_switch_multiplayer(const std::string& root,PadState& pad,bool write_logs,bool metric_speed,
                             const std::map<std::string,CareerRide>& rides,const LanGarageEditor& edit) {
     LanScreen screen;
+    std::string notice;
+    constexpr u64 actions=HidNpadButton_A|HidNpadButton_B|HidNpadButton_X|HidNpadButton_Plus;
+    bool armed=false;
     while(appletMainLoop()) {
-        padUpdate(&pad);const auto buttons=padGetButtonsDown(&pad);
+        if(appletGetFocusState()!=AppletFocusState_InFocus){armed=false;continue;}
+        screen.show({"MULTIPLAYER","","A: Quick Race / Split Screen","X: LAN","B: Back","",notice});
+        padUpdate(&pad);
+        if(!armed) {
+            // A from the main menu or Leave from the previous session.
+            armed=(padGetButtons(&pad)&actions)==0;
+            continue;
+        }
+        const auto buttons=padGetButtonsDown(&pad);
         if(buttons&(HidNpadButton_B|HidNpadButton_Plus))return;
         if(buttons&HidNpadButton_A) {
-            screen.close();run_local(root,metric_speed,rides);return;
+            screen.close();notice.clear();
+            try {
+                run_local(root,metric_speed,rides,notice);
+            } catch(const std::exception& e) {
+                notice=e.what();
+            }
+            if(!notice.empty()) {
+                std::fprintf(stderr,"SPLIT SCREEN: %s\n",notice.c_str());
+                std::fflush(stderr);
+            }
+            armed=false;
+        } else if(buttons&HidNpadButton_X) {
+            screen.close();run_switch_lan(root,pad,write_logs,rides,edit);
+            armed=false;
         }
-        if(buttons&HidNpadButton_X) {
-            screen.close();run_switch_lan(root,pad,write_logs,rides,edit);return;
-        }
-        screen.show({"MULTIPLAYER","","A: Quick Race / Split Screen","X: LAN","B: Back"});
     }
 }
 

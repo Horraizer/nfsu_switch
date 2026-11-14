@@ -21,17 +21,19 @@ bool LanScene::load_course(const std::filesystem::path& root,unsigned event,unsi
     SupportedRaceSelection race;
     if(!supported_race_selection(event,round,race)){error="two-player course unavailable";return false;}
     const auto global=root/"Global/GLOBALB.BUN";
-    CareerCatalog catalog;if(!catalog.load_free_drive(root,error))return false;
+    auto catalog=std::make_unique<CareerCatalog>();
+    if(!catalog->load_free_drive(root,error))return false;
     std::vector<unsigned char> globals;std::vector<RaceTableIssue> issues;
     if(!load_race_image(global,globals,issues)){error="LAN tuning table unavailable";return false;}
-    std::array<CareerRideSetup,2> rides;
+    auto storage=std::make_unique<std::array<CareerRideSetup,2>>();
+    auto& rides=*storage;
     std::array<CarAssets,2> cars;
     for(unsigned actor=0;actor<2;++actor){
         CareerProfile profile;
-        if(!catalog.free_profile(models[actor],profile,error)||!load_car_assets(global,models[actor],cars[actor],error))return false;
+        if(!catalog->free_profile(models[actor],profile,error)||!load_car_assets(global,models[actor],cars[actor],error))return false;
         profile.ride.installed=options.rides[actor].installed;
         profile.ride.performance.fill(options.tier);
-        if(!resolve_career_ride(globals,catalog,profile,rides[actor],error))return false;
+        if(!resolve_career_ride(globals,*catalog,profile,rides[actor],error))return false;
     }
     const auto bind=[](StockFrame& frame,const StockFrameInputs& inputs,const StockSceneRequest& request,std::string& error,void*){
         return bind_frontend_runtime_skin(frame,request,error)&&bind_frontend_sponsors(inputs,request.installed_parts,frame,error);
