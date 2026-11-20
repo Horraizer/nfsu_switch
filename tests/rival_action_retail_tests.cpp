@@ -84,6 +84,10 @@ int main(int argc,char** argv){try {
         IntroAiPlanner history;
         need(history.load(root,contexts,hulls,true,run.track_number()),"history probe load");
         RaceRivalPlans plans;
+        need(history.prepare_frame(run.session()),"prepare held-grid probe");
+        need(history.sample_human_history(run.session(),1.F/60),"advance timer before first road");
+        need(history.difficulty_line().find("history_samples=0 ")!=std::string::npos,
+             "an empty controller road must not add a history entry");
         need(history.inspect_plan(run.session(),plans),"publish history probe road");
         AiRoadCursor road;
         need(history.human_road_cursor(road),"expected human road publication");
@@ -94,10 +98,10 @@ int main(int argc,char** argv){try {
         car.position={10000000,10000000,0};
         for(unsigned i=0;i<65;++i) {
             timing.now_ticks+=67;
-            need(history.observe_human(run.session()),"sample the retained human road");
+            need(history.sample_human_history(run.session(),1.F/60),"sample the retained human road");
         }
         car.position=saved_position;timing.now_ticks=saved_tick;
-        need(history.difficulty_line().find("history_samples=2 ")!=std::string::npos,
+        need(history.difficulty_line().find("history_samples=1 ")!=std::string::npos,
              "human road history unexpectedly performed another spatial search");
     }
     if(event==19) {
@@ -163,7 +167,6 @@ int main(int argc,char** argv){try {
     RaceRouteDriver driver(event?race_event_driving_line(event):RaceDrivingLine::event1_forward);
     for(unsigned frame=0;frame<36000;++frame) {
         if(frame<1800) {
-            need(publication.observe_human(run.session()),"publication human observation");
             RaceRivalPlans planned;
             need(publication.inspect_plan(run.session(),planned,0,nullptr,{&epoch,EpochPaths::observe}),"publication plan refused");
             epoch.commit(planned);
@@ -179,6 +182,9 @@ int main(int argc,char** argv){try {
         if(!run.simulate(driver.sample(run.session()),error)||!run.commit(error)) {
             std::cerr<<"FAIL frame="<<frame<<" "<<error<<'\n';return 1;
         }
+        if(frame<1800)
+            need(publication.sample_human_history(run.session(),float(run.session().world_frame_seconds())),
+                 "publication human observation");
         for(unsigned i=0;i<3;++i) {
             const auto& world=run.session();
             const auto selector=world.rival(i).physical_selector();
