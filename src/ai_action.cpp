@@ -169,7 +169,13 @@ bool ai_action_publish_speed(const AiSpeedPolicyInput& in,AiSpeedPolicyState& st
             else {
                 float speed;
                 if(in.marker_point)speed=route_raw_speed(*in.marker_point,in.category,in.marker_columns_reversed);
-                else if(in.queued_override)speed=99999;
+                else if(in.queued_override) {
+                    speed=99999;
+                    if(in.respect_queued_road_speed) {
+                        speed=route_raw_speed(in.route->points[in.point],slot,in.route->category_columns_reversed);
+                        speed=(speed==0?30.F:speed)*in.context_scale;
+                    }
+                }
                 else {
                     const std::uint32_t elapsed_bits=in.tick-next.offset_tick;
                     std::int32_t elapsed;std::memcpy(&elapsed,&elapsed_bits,4);

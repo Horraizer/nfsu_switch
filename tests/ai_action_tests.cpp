@@ -103,6 +103,23 @@ void check(bool ok,const char* label){if(!ok){++failures;std::cerr<<"FAIL: "<<la
 std::uint32_t bits(float v){std::uint32_t result;std::memcpy(&result,&v,4);return result;}
 }
 int main(int argc,char** argv){
+    {
+        Route road;road.points.resize(1);
+        road.points[0].speed[2]=42;road.points[0].speed[7]=36;
+        AiSpeedPolicyInput in;in.route=&road;in.category=2;in.queued_override=true;
+        in.context_scale=.5F;in.catchup_scale=.75F;
+        AiSpeedPolicyState state;std::uint32_t random=19;AiSpeedPublication out;
+        const auto publish=[&]{return ai_action_publish_speed(in,state,random,out);};
+        check(publish() && out.speed==99999.F*.75F,"unrestricted queued maneuver");
+        in.respect_queued_road_speed=true;
+        check(publish() && out.speed==42.F*.5F*.75F,"paced maneuver uses forward road");
+        in.direction=1;
+        check(publish() && out.speed==36.F*.5F*.75F,"paced maneuver uses reverse road");
+        road.points[0].speed[7]=0;
+        check(publish() && out.speed==30.F*.5F*.75F,"unmarked road uses ordinary fallback");
+        in.route_speed=false;in.action_speed=-3;
+        check(publish() && out.speed==-3 && random==19,"explicit recovery and random stream preserved");
+    }
     for(const auto& c:nitrous_road_cases)for(bool storage_reversed:{false,true}) {
         RacingLineTrack track;track.routes.resize(1);auto& route=track.routes[0];
         route.points.resize(3);AiRoadChain chain;chain.count=c.count;

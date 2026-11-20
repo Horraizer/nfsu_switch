@@ -55,6 +55,15 @@ authenticated speed.exe instructions with supplied race snapshots and no
 semantic replacements. nfsu_career_races_tests checks that the production
 planner receives the event's traffic selector.
 
+## Switch port Hard career pacing
+
+In Circuit, Sprint and Lap Knockout the port caps positive catchup at the
+car's unassisted scale on Hard. A queued road maneuver uses the speed for
+the current road point and direction. As a rival builds a clear lead its
+requested road speed eases down. The car still uses its own powertrain,
+nitrous and traffic decisions. This is a port balance adjustment applied
+after the original catchup calculation. No event finish time is an input.
+
 ## Evidence limits
 
 These checks establish the isolated arithmetic, table selection and bounded
