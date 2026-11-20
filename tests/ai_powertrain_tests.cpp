@@ -13,6 +13,34 @@ void check(bool ok,const char* message) {
     ++checks;if(!ok){++failures;std::cerr<<"FAIL: "<<message<<'\n';}
 }
 std::uint32_t bits(float v){std::uint32_t b;std::memcpy(&b,&v,4);return b;}
+void path_slip_publication() {
+    struct PowertrainCase {
+        float speed,previous,rpm,forced_speed,forced_rpm;int gear;
+        std::uint32_t filtered;int output_gear;std::uint32_t output_rpm;
+    };
+    static const PowertrainCase powertrain[]={
+#include "ai_path_powertrain_native.inc"
+    };
+    for(const auto& row:powertrain) {
+        AiPathPowertrainState state{row.previous,row.gear,row.rpm};
+        const auto before=failures;
+        check(ai_path_powertrain(row.speed,state,row.forced_speed,row.forced_rpm)&&
+              bits(state.filtered_speed)==row.filtered&&state.gear==row.output_gear&&
+              bits(state.rpm)==row.output_rpm,"original path speed/gear/RPM publication bits");
+        if(failures!=before)std::cerr<<"path powertrain speed="<<row.speed<<" previous="<<row.previous
+            <<" gear="<<state.gear<<'/'<<row.output_gear<<" rpm="<<bits(state.rpm)<<'/'<<row.output_rpm<<'\n';
+    }
+    static const float rows[][12]={
+#include "ai_path_slip_native.inc"
+    };
+    for(const auto& row:rows) {
+        PlayerRigidMatrix axes{};
+        for(unsigned i=0;i<2;++i)for(unsigned j=0;j<3;++j)axes[i][j]=row[1+i*3+j];
+        const auto actual=ai_path_wheel_slip(row[0],{{row[7],row[8],row[9]}},axes);
+        check(bits(actual[0])==bits(row[10])&&bits(actual[1])==bits(row[11]),
+              "original path slip publication including lateral correction and pitch");
+    }
+}
 struct Case {unsigned id;std::array<float,111> input;std::array<std::uint32_t,60> expected;};
 const Case cases[]={
 #include "ai_powertrain_native.inc"
@@ -209,12 +237,12 @@ void system() {
     check(!ai_physics_advance(h,tables,{},-1,ground,s),"negative interval refused");
     for(unsigned frame=0;frame<24;++frame) {
         check(ai_physics_advance(h,tables,{},1.F/60,ground,s),"ordinary component system advances");
-        // Pins from actual original two-component46AA40 list, full strut
+        // Pins from tools/ai_physics_vectors.py: retail SSE dispatch, 46AA40 list, full strut
         // transform, supplied flat external queries, aero/rest/collision off.
         if(frame==0||frame==23) {
             const std::array<std::uint32_t,73> expected=frame==0?
-                std::array<std::uint32_t,73>{{0x3E613C66u,0x00000000u,0x3F135631u,0x41033DADu,0x2D8A3B05u,0x4130F0A0u,0xB30879F9u,0x3F9DE4C2u,0xB30879F9u,0x40D72628u,0x2D629B81u,0x41110861u,0xB3941A2Au,0x3F0C9528u,0xB1E2134Cu,0x00000000u,0x00000000u,0xC13F4BC7u,0x00000000u,0x00000000u,0x00000000u,0x3F7FFF40u,0xAE760F2Au,0xBB9CB0A7u,0x2E69F069u,0x3F800000u,0xB01E731Bu,0x3B9CB0A7u,0x301E60BFu,0x3F7FFF40u,0x00000000u,0x4233BFB8u,0xBDA81AF0u,0xC1068F00u,0x00000000u,0x00000000u,0x00000000u,0xC0C6FDDCu,0xB20088B5u,0x00000001u,0x00000000u,0x4233BFB8u,0xBDA81AF0u,0xC1068F00u,0x00000000u,0x00000000u,0x00000000u,0xC0C6FDDCu,0xB20088B5u,0x00000001u,0x00000000u,0x427F2199u,0xBD8BC3C8u,0xC11CF30Du,0x00000000u,0x00000000u,0x00000000u,0xC1545C13u,0x32132419u,0x00000001u,0x00000000u,0x427F2199u,0xBD8BC3C8u,0xC11CF30Du,0x00000000u,0x00000000u,0x00000000u,0xC1545C13u,0x32132419u,0x00000001u,0x00000000u,0x45FA0000u,0x00000002u}}:
-                std::array<std::uint32_t,73>{{0x40330659u,0x2CADBB84u,0x40562344u,0x41033DADu,0x2D8A3B05u,0x40CF3844u,0xB305E291u,0x3F9AE53Eu,0xB305E291u,0x40D72628u,0x2D629B81u,0x40A9DA2Fu,0xB386971Cu,0x3F09E9CAu,0xB0F39CD8u,0x00000000u,0x00000000u,0xC13F4BC7u,0x00000000u,0x00000000u,0x00000000u,0x3F7A326Fu,0xB192B859u,0xBE58CB26u,0xB0A38AE4u,0x3F800001u,0xB2DC7076u,0x3E58CB26u,0x32D99B3Bu,0x3F7A326Fu,0x00000000u,0x4233BFB8u,0xBE051EB8u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0xC0C6FDDCu,0xB20088B5u,0x00000000u,0x00000000u,0x4233BFB8u,0xBE051EB8u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0xC0C6FDDCu,0xB20088B5u,0x00000000u,0x00000000u,0x4284705Cu,0xBE051EB8u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0xC1545C13u,0x32132419u,0x00000000u,0x00000000u,0x4284705Cu,0xBE051EB8u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0xC1545C13u,0x32132419u,0x00000000u,0x00000000u,0x45FA0000u,0x00000002u}};
+                std::array<std::uint32_t,73>{{0x3E613C66u,0x00000000u,0x3F135631u,0x41033DADu,0x2D8A3B05u,0x4130F0A0u,0xB30879F9u,0x3F9DE4C2u,0xB30879F9u,0x40D72628u,0x2D629B81u,0x41110861u,0xB3941A2Au,0x3F0C9528u,0xB1E2134Bu,0x00000000u,0x00000000u,0xC13F4BC7u,0x00000000u,0x00000000u,0x00000000u,0x3F7FFF40u,0xAE760F2Au,0xBB9CB0A7u,0x2E69F069u,0x3F800000u,0xB01E731Bu,0x3B9CB0A7u,0x301E60BFu,0x3F7FFF40u,0x00000000u,0x4233BFB8u,0xBDA81AF0u,0xC1068F00u,0x00000000u,0x00000000u,0x00000000u,0xC0C6FDDCu,0xB20088B4u,0x00000001u,0x00000000u,0x4233BFB8u,0xBDA81AF0u,0xC1068F00u,0x00000000u,0x00000000u,0x00000000u,0xC0C6FDDCu,0xB20088B4u,0x00000001u,0x00000000u,0x427F2199u,0xBD8BC3C8u,0xC11CF30Du,0x00000000u,0x00000000u,0x00000000u,0xC1545C13u,0x32132419u,0x00000001u,0x00000000u,0x427F2199u,0xBD8BC3C8u,0xC11CF30Du,0x00000000u,0x00000000u,0x00000000u,0xC1545C13u,0x32132419u,0x00000001u,0x00000000u,0x45FA0000u,0x00000002u}}:
+                std::array<std::uint32_t,73>{{0x40330659u,0x2CADBB84u,0x40562344u,0x41033DADu,0x2D8A3B05u,0x40CF3844u,0xB305E291u,0x3F9AE53Eu,0xB305E291u,0x40D72628u,0x2D629B81u,0x40A9DA2Fu,0xB386971Du,0x3F09E9CAu,0xB0F39CD0u,0x00000000u,0x00000000u,0xC13F4BC7u,0x00000000u,0x00000000u,0x00000000u,0x3F7A326Fu,0xB192B859u,0xBE58CB26u,0xB0A38AE4u,0x3F800001u,0xB2DC7076u,0x3E58CB26u,0x32D99B3Bu,0x3F7A326Fu,0x00000000u,0x4233BFB8u,0xBE051EB8u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0xC0C6FDDCu,0xB20088B4u,0x00000000u,0x00000000u,0x4233BFB8u,0xBE051EB8u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0xC0C6FDDCu,0xB20088B4u,0x00000000u,0x00000000u,0x4284705Cu,0xBE051EB8u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0xC1545C13u,0x32132419u,0x00000000u,0x00000000u,0x4284705Cu,0xBE051EB8u,0x00000000u,0x00000000u,0x00000000u,0x00000000u,0xC1545C13u,0x32132419u,0x00000000u,0x00000000u,0x45FA0000u,0x00000002u}};
             std::array<std::uint32_t,73> actual{};unsigned at=0;
             const auto add=[&](float x){actual[at++]=bits(x);};
             for(const auto& v:{s.body.position,s.body.momentum,s.body.angular_momentum,s.body.velocity,
@@ -284,5 +312,5 @@ int main(int argc,char** argv){
           bits(predicted_speed)==0x4280BE72U,"580240 original stock 240SX steering speed");
     auto invalid=stock_240sx_handling();invalid.mass=0;float rating=-1,slip=-2;
     check(!ai_setup_performance(invalid,rating,slip)&&rating==-1&&slip==-2,"performance refusal retains outputs");
-    primitives();collision_outer();collision_rest();bump_stop();ground_clear();system();std::cout<<checks<<" checks, "<<failures<<" failures\n";return failures?1:0;
+    path_slip_publication();primitives();collision_outer();collision_rest();bump_stop();ground_clear();system();std::cout<<checks<<" checks, "<<failures<<" failures\n";return failures?1:0;
 }

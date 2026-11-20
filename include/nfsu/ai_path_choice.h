@@ -12,7 +12,11 @@ struct AiPathActorSnapshot {
     float signed_speed=0,absolute_speed=0; // retained Actor+3D0/+3D4, not fresh body norm
     int role=2,action=4,selector=3;
     bool traffic_prediction_ready=false;
+    AiContactManeuver maneuver;
 };
+// 45BFB0 checks the traffic car's maneuver before ignoring it in collision prediction.
+bool ai_traffic_blocks_pass(const AiPathActorSnapshot& self,const AiPathActorSnapshot& target,
+                            int passing_side) noexcept;
 struct AiPathCollisionWorld {
     std::array<AiPathActorSnapshot,kAiPathWorldActors> actors{};
     unsigned count=0,self=0;
@@ -75,6 +79,7 @@ struct AiPathCollisionQuery {
     // A refused query MUST return false, never a fabricated clear path.
     bool (*run)(const void*,const AiPlannedPath&,std::uint32_t ignored,
                 float horizon,std::uint32_t& obstacle,float& time)=nullptr;
+    std::uint32_t* ignored_actor=nullptr;
 };
 //45B050: original geometry -> fitness -> side score/publication -> collision.
 // The query receives the temporary3E8 target; the final world publication is
@@ -133,15 +138,20 @@ struct AiPathPlannerInput {
     AiPathFitnessInput fitness;
     std::array<AiManeuverInput,16> targets{};
     std::array<std::uint32_t,16> target_ids{};
-    std::array<bool,16> target_available{};
+    // 45AD30 admits side descriptors by target membership, independently of
+    // the forward road category. Every entry is a current neighbor.
     unsigned target_count=0;
     float side_score_scale=0,fallback_margin=0;
 };
+// 45C760 reads the active lane's offset for categories 11..16, and the
+// ordinary ride-category offset for 0..4. Both bodies use the same frame.
+bool ai_path_maneuver_vehicle(const AiPathActorSnapshot&,const AiNeighborEntry&,
+                              int category,AiManeuverVehicle&) noexcept;
 // Connect45B150's choice to45AE10 geometry,459B30 fitness and457590 collision
 // on one frozen world frame. Context, eligibility and strategy are supplied
 // by their existing owners. No synthetic score or clear-path callback here.
 bool ai_plan_path(const AiPathPlannerInput&,const AiPathCollisionWorld&,
-                  AiPathChoiceResult&) noexcept;
+                  AiPathChoiceResult&,std::uint32_t* ignored_actor=nullptr) noexcept;
 // Ordinary racer456780/45C0D0. Globals remain configuration inputs.
 struct AiPathNeighborPolicy {
     float eligibility_padding=0,width_margin=0,center_limit=0,lateral_limit=0;

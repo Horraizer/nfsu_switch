@@ -318,7 +318,7 @@ std::vector<std::uint32_t> track_object_mesh_hashes(
 
 // Model hashes requested by group-zero TrainEngine/TrainCar/Trolley records.
 // Authored actors are separate from scenery instances and must not be pruned.
-bool track_world_motion_models(const std::vector<unsigned char>& track,
+bool track_world_models(const std::vector<unsigned char>& track,int direction,
                                std::vector<std::uint32_t>& models,std::string& error);
 
 // Keep every LOD/fallback hash of every placed object, including the sky.

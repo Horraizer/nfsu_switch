@@ -127,7 +127,7 @@ bool load_track_slice(FileSystemService& files, const std::filesystem::path& roo
         std::vector<unsigned char> image;
         const auto zones = load_track_zones(trackb, image);
         const auto table = parse_track_stream_table(image.data(), image.size());
-        if(!track_world_motion_models(image,result.world_models,error))return false;
+        if(!track_world_models(image,race.slot.direction,result.world_models,error))return false;
         TrackStreamSelection selected;
         if (!zones.ok() || !table.ok() ||
             !select_track_stream_sections(table, zones, result.track_number, backing_set, selected, error)) {

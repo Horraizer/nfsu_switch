@@ -4,6 +4,7 @@ sys.path.insert(0,str(Path.cwd()/'tools'))
 from world_body_trace import Image
 from physics256_native import bits
 import contact256_native as n
+from unicorn.x86_const import UC_X86_REG_CR4
 import argparse,re
 ap=argparse.ArgumentParser(description="Original body-only flat-turn supplied-state regression; not a world trajectory")
 ap.add_argument('--root',type=Path,required=True)
@@ -32,6 +33,9 @@ cases=[]
 for number,row in enumerate(inputs):
  assert len(row)==42
  m=n.fixture(im,(4,0,0),(0,0,0),(0,0,0),mass=row[0]);rigid=n.RIGID_A;props=0x1132000;system=0x1130000;table=0x1131000
+ # Use the vector and matrix implementations selected in the captured PC run.
+ m.uc.reg_write(UC_X86_REG_CR4,m.uc.reg_read(UC_X86_REG_CR4)|0x200)
+ m.put(0x6d4ac4,0x5ebce3);m.put(0x6d4acc,0x5ece7a)
  m.put(props,row[0],'f');n.matrix(m,props+0x10)
  for offset,value in zip((0,0x14,0x28),row[1:4]):m.put(props+0x10+offset,value,'f')
  m.put(props+0x50,row[4],'f');m.run(0x584800,ecx=rigid,eax=props)
@@ -64,7 +68,7 @@ print('PASS four exact original body update/normalization cases; lower-than-.98 
 
 def values(row):return '{{'+','.join(float(v).hex()+'F' for v in row)+'}}'
 lines=['// Authenticated PC1.4 USA speed.exe SHA256 '+sha+'.',
-       '// Original body-only46AA40/585410/585810/40BD40, precision007F, no hooks.',
+       '// Original body-only46AA40/585410/585810/40BD40, precision007F, live SSE dispatch, no hooks.',
        '// Four supplied port states; no original reachable-trajectory/world claim.']
 for c in cases:lines.append('{'+values(c['input'])+','+values(c['original_raw'])+','+values(c['original_normalized_axes'])+'},')
 (out/'flat_roll_native.inc').write_text(chr(10).join(lines)+chr(10),encoding='ascii')

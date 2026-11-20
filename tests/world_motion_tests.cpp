@@ -122,7 +122,7 @@ struct RaceWorldContactProbe {
         GamepadFrame pad{};
         for(unsigned i=0;i<180;++i)if(!session.advance(pad,error)){check(false,error.c_str());return;}
         for(unsigned i=0;i<session.world_objects_.size();++i) {
-            const auto& b=session.world_objects_[i];if(!b.animated)continue;
+            const auto& b=session.world_objects_[i];if(!course.world_objects[i].motion_collision)continue;
             if(course.world_objects[i].type==0x67dbe3eaU) {
                 check(b.clock.phase>0&&b.state.position.x!=initial[i].x,"public world frame advances trolley");
                 check(b.state.angular_velocity.x==0&&b.state.angular_velocity.y==0&&b.state.angular_velocity.z==0,"original node angular velocity zero");
@@ -134,29 +134,84 @@ struct RaceWorldContactProbe {
             const auto sphere=course.train_triggers.front();
             auto& player=const_cast<VehicleState&>(session.car());
             player.position={sphere.centre[0],sphere.centre[1],sphere.centre[2]};
-            player.owner_speeds.magnitude=20;player.owner_motion.acceleration={};
-            for(auto& b:session.world_objects_)if(b.animated){b.reference_ready=true;b.reference.distance=session.progress().coordinate.distance+20.F;}
-            check(session.advance_world_motion(1.F/60.F,11,error),error.c_str());
-            for(const auto& b:session.world_objects_)if(b.animated) {
-                check(!(b.clock.flags&0x80),"trigger releases whole consist");
-                if(course.world_objects[&b-session.world_objects_.data()].type==0x24cebc53U)
-                    check(b.train_prediction.ready&&std::abs(b.train_prediction.delay+.2F)<.00001F,"train prediction separate from animation phase");
+            player.owner_speeds.magnitude=40;player.owner_motion.acceleration={};
+            for(unsigned i=0;i<session.world_objects_.size();++i)if(course.world_objects[i].motion_collision) {
+                auto& b=session.world_objects_[i];b.reference_ready=true;
+                b.reference.distance=session.progress().coordinate.distance+60.F;
             }
             check(session.advance_world_motion(1.F/60.F,11,error),error.c_str());
-            for(unsigned i=0;i<session.world_objects_.size();++i)if(session.world_objects_[i].animated)
+            for(unsigned i=0;i<session.world_objects_.size();++i)if(course.world_objects[i].motion_collision)
+                check(session.world_objects_[i].clock.flags&0x80,"lane 11 waits outside the 50 m fallback");
+            check(session.advance_world_motion(1.F/60.F,13,error),error.c_str());
+            for(unsigned i=0;i<session.world_objects_.size();++i)if(course.world_objects[i].motion_collision) {
+                const auto& b=session.world_objects_[i];
+                check(!(b.clock.flags&0x80),"lane 13 releases at the exact arrival threshold");
+                if(course.world_objects[i].type==0x24cebc53U)
+                    check(b.train_prediction.ready&&std::abs(b.train_prediction.delay)<.00001F,"train prediction separate from animation phase");
+            }
+            check(session.advance_world_motion(1.F/60.F,11,error),error.c_str());
+            for(unsigned i=0;i<session.world_objects_.size();++i)if(course.world_objects[i].motion_collision)
                 check(session.world_objects_[i].state.position.x!=initial[i].x,"released consist moves next frame");
             for(unsigned frame=0;frame<1000;++frame)check(session.advance_world_motion(1.F/60.F,11,error),error.c_str());
-            for(const auto& b:session.world_objects_)if(b.animated)check(b.clock.phase<=100.F&&b.clock.phase>99.F,"train endpoint does not wrap");
+            for(unsigned i=0;i<session.world_objects_.size();++i)if(course.world_objects[i].motion_collision) {
+                const auto phase=session.world_objects_[i].clock.phase;
+                check(phase<=100.F&&phase>99.F,"train endpoint does not wrap");
+            }
         }
         if(trolleys) {
             bool wrapped=false;float last=0;
             for(unsigned frame=0;frame<2800;++frame) {
                 check(session.advance_world_motion(1.F/60.F,-1,error),error.c_str());
-                for(const auto& b:session.world_objects_)if(b.animated){wrapped|=b.clock.phase<last;last=b.clock.phase;}
+                for(unsigned i=0;i<session.world_objects_.size();++i)if(course.world_objects[i].type==0x67dbe3eaU) {
+                    const auto phase=session.world_objects_[i].clock.phase;wrapped|=phase<last;last=phase;
+                }
             }
             check(wrapped,"trolley loop wraps at authored duration");
         }
         std::cout<<"runtime "<<name<<" engines="<<engines<<" cars="<<cars<<" trolleys="<<trolleys<<'\n';
+    }
+    static void terminal_decor(const std::filesystem::path& root,int direction) {
+        VehicleTrackCourse course;std::string error;
+        if(!load_vehicle_track_course(root/"Tracks/TRACKB1004.lzc",1,direction,0,0,course,error)){
+            check(false,error.c_str());return;
+        }
+        RaceSession race(course);
+        if(!race.prepare_world_motion(root,error)||!race.start(error)){check(false,error.c_str());return;}
+        unsigned plane=~0U,door=~0U;
+        for(unsigned i=0;i<course.world_objects.size();++i) {
+            const auto& source=course.world_objects[i];
+            if(!source.visual_motion)continue;
+            check(!source.fixed_collision&&!source.motion_collision&&source.hull.points.empty(),
+                "animated decor has no collision body");
+            if(source.name==kPlaneWorldObject)plane=i;
+            if(source.animation[1]==0x7799e3f6U)door=i;
+        }
+        const bool found=plane!=~0U&&door!=~0U&&course.plane_triggers.size()==1;
+        check(found,"Terminal contains plane, its trigger and rotating door");
+        if(!found)return;
+        const auto& aircraft=race.world_objects_[plane];
+        const auto& rotating=race.world_objects_[door];
+        const auto initial_door=rotating.placement;
+        const auto initial_plane=aircraft.placement;
+        for(unsigned i=0;i<60;++i)check(race.advance_world_motion(1.F/60.F,-1,error),error.c_str());
+        check(rotating.clock.phase>2.99F&&rotating.clock.phase<3.01F&&rotating.placement!=initial_door,
+            "rotation-only door follows original 0.1 playback rate");
+        check(aircraft.placement==initial_plane&&aircraft.clock.phase==0&&(aircraft.clock.flags&0x80),
+            "aircraft is held before its trigger");
+        const auto& sphere=course.plane_triggers.front();
+        auto& player=const_cast<VehicleState&>(race.car());
+        player.position={sphere.centre[0],sphere.centre[1],sphere.centre[2]};
+        player.owner_motion.velocity={};
+        check(race.advance_world_motion(1.F/60.F,-1,error),error.c_str());
+        check(aircraft.clock.phase==0&&!(aircraft.clock.flags&0x80),
+            "terminal trigger releases aircraft after mover update");
+        check(race.advance_world_motion(1.F/60.F,-1,error),error.c_str());
+        check(aircraft.clock.phase==.5F&&aircraft.placement!=initial_plane,"aircraft advances after release");
+        for(unsigned i=0;i<500;++i)check(race.advance_world_motion(1.F/60.F,-1,error),error.c_str());
+        const auto end=aircraft.placement;
+        check(aircraft.clock.phase==aircraft.clock.end,"aircraft reaches authored endpoint");
+        check(race.advance_world_motion(1.F/60.F,-1,error)&&aircraft.placement==end,
+            "aircraft holds its endpoint");
     }
 };
 }
@@ -170,36 +225,66 @@ void graphics(const std::filesystem::path& root,unsigned event,unsigned round) {
     RaceGpuFrame frame;
     if(!gpu.frame(run.session(),frame,error)){check(false,error.c_str());return;}
     check(validate_draw_update(frame.commands.resource_table(),frame.commands,kDekoPreparedDrawCapacity,error),error.c_str());
-    unsigned visible=0;std::uint64_t triangles=0;
+    std::vector<std::size_t> static_slots;
+    if (!prepare_static_group_slots(frame.commands,static_slots,error)) {
+        check(false,error.c_str());return;
+    }
+    unsigned visible=0,jump_draws=0;std::uint64_t triangles=0;
+    std::vector<bool> drawn_world_objects(run.session().course().world_objects.size());
     for(std::size_t i=0;i<frame.commands.draw_count();++i){
         const auto view=frame.commands.draw_view(i);const auto& draw=view.definition;triangles+=draw.index_count/3;
+        if (view.track_instance) {
+            check(draw.group<static_slots.size() && static_slots[draw.group]!=kNoHandle &&
+                  &frame.commands.static_track_definition(static_slots[draw.group])==&draw,
+                  "selected scenery resolves to its prepared static definition");
+        }
         if(draw.name.find("world model group ")!=0)continue;
         ++visible;bool matched=false;
+        if(gpu.track().scene.region.meshes[draw.mesh].mesh_hash==0x64db522dU)++jump_draws;
         check(draw.texture_resource!=kNoHandle,"world model texture resolved");
         for(unsigned w=0;w<run.session().course().world_objects.size();++w){
             const auto& source=run.session().course().world_objects[w];
             const auto* state=run.session().world_object_state(w);
-            if(!source.motion_collision||!state||source.model!=gpu.track().scene.region.meshes[draw.mesh].mesh_hash)continue;
+            if(!state||source.model!=gpu.track().scene.region.meshes[draw.mesh].mesh_hash)continue;
             bool equal=true;
             for(unsigned k=0;k<3;++k)equal&=view.placement.rows[12+k]==float(state->rigid_body.position[k]);
+            drawn_world_objects[w]=drawn_world_objects[w]||equal;
             matched|=equal;
         }
-        check(matched,"graphics and collision share animation-node pose");
+        check(matched,"graphics and collision share world object pose");
     }
+    unsigned fixed_drawn=0;
+    for(unsigned w=0;w<drawn_world_objects.size();++w)
+        if(run.session().course().world_objects[w].fixed_collision&&drawn_world_objects[w])++fixed_drawn;
+    if(event==1)check(fixed_drawn==4,"city truck and three boxcar poses reach the renderer");
     check(visible>0,"live world models submitted to renderer");
+    check((jump_draws!=0)==(event==21||(event==9&&round==1)),"authored jump only renders in forward 1201/1210");
     check(triangles==frame.triangles,"frame accounting includes world model triangles");
     std::cout<<"graphics event="<<event<<" round="<<round<<" world draws="<<visible<<'\n';
 }
 }
 int main(int argc,char** argv){
     clocks();moving_contacts();arrivals();
+    // 454B81: when the train already straddles the crossing, approaching
+    // traffic is held even if the crossing estimate falls after clearance.
+    nfsu::WorldObstacleWindow crossing;
+    crossing.bound=crossing.head_present=crossing.tail_present=true;
+    crossing.head={0x20,1,120,60};crossing.tail={0x20,1,120,30};
+    crossing.enter=52;crossing.leave=42;
+    check(!nfsu::world_obstacle_clear(crossing,20,10,0),"moving rival must respect nearby occupied crossing");
+    check(nfsu::world_obstacle_clear(crossing,30,10,0),"near crossing guard is strictly below 30 m");
+    check(nfsu::world_obstacle_clear(crossing,20,0,0),"near crossing speed guard uses nonzero forward speed");
     if(argc==2){std::filesystem::path root;std::string error;
         if(!nfsu::argument_to_path(argv[1],root,error)){std::cerr<<error<<'\n';return 2;}
         clips(root);
         nfsu::RaceWorldContactProbe::runtime(root,"TRACKB1001.lzc");
         nfsu::RaceWorldContactProbe::runtime(root,"TRACKB1201.lzc");
+        nfsu::RaceWorldContactProbe::terminal_decor(root,0);
+        nfsu::RaceWorldContactProbe::terminal_decor(root,1);
         graphics(root,1,0);
         graphics(root,9,1);
+        graphics(root,9,2);
+        graphics(root,21,0);
     }
     std::cout<<"world motion tests: "<<failures<<" failures\n";return failures?1:0;
 }

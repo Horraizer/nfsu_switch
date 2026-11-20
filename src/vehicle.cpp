@@ -94,9 +94,11 @@ bool state_finite(const VehicleState& s) noexcept {
     ok=ok&&finite(s.owner_slip_angle)&&finite(s.grip_recovery)&&s.grip_recovery>=.5F&&s.grip_recovery<=1.F;
     ok=ok&&finite(s.owner_traction.timer)&&finite(s.owner_traction.scale)&&finite(s.owner_traction.quiet);
     ok=ok&&finite(s.owner_speeds.forward)&&finite(s.owner_speeds.magnitude)&&s.owner_speeds.magnitude>=0.0F;
+    ok=ok&&finite(s.path_powertrain_speed);
     for(const auto& vector:{s.owner_motion.velocity,s.owner_motion.angular_velocity,s.owner_motion.acceleration})
         for(float value:vector)ok=ok&&finite(value);
     for(const auto& vector:s.owner_motion.axes)for(float value:vector)ok=ok&&finite(value);
+    for(const auto& pair:s.published_wheel_slip)for(float value:pair)ok=ok&&finite(value);
     ok=ok&&finite(s.prepared_force)&&finite(s.prepared_torque)&&s.body_rest_state<=2&&
        s.published_support<=4&&s.published_gear>=kVehicleGearReverse&&s.published_gear<static_cast<int>(kVehicleGearSlots);
     const auto& body=s.rigid_body;
@@ -114,6 +116,7 @@ bool state_finite(const VehicleState& s) noexcept {
              finite(w.prepared_torque)&&finite(w.prepared_force_long)&&finite(w.prepared_slip)&&
              finite(w.prepared_load)&&w.prepared_load>=0&&w.surface<29;
         for(float point:w.contact_point) ok=ok&&finite(point);
+        for(float slip:w.prepared_effect_slip)ok=ok&&finite(slip);
     }
     ok=ok&&finite(s.aero.speed_divisor)&&finite(s.aero.drag_scale)&&
        finite(s.aero.processed_throttle)&&finite(s.aero.support_kind);
@@ -1323,6 +1326,16 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     // Selector1 has separate service and parking paths47792A/477953.
     const double brake = sanitize(raw_input.brake, 0.0, 1.0);
     const double steer = sanitize(raw_input.steer, -1.0, 1.0);
+    // 4778B0..477951 routes service braking before the wheel solver. The
+    // rear axle is released throughout staging. In the race, overlapping
+    // pedals below 10 mph select a speed term in place of rear brake bias.
+    const float driver_brake=static_cast<float>(brake);
+    const float front_brake=driver_brake*(2.F*(1.F-h.brake_balance));
+    const float speed_mph=s.owner_speeds.forward*2.237F;
+    float rear_brake=driver_brake*(2.F*h.brake_balance);
+    if(raw_input.on_start_grid) rear_brake=0.F;
+    else if(static_cast<float>(throttle)>.8F && driver_brake>.5F && speed_mph<10.F)
+        rear_brake=speed_mph*.05F;
     if(!refresh_only && (select_request || !s.aero_ready)) {
         const float interval=float(outer_dt>=0?outer_dt:step_dt);
         s.grip_recovery=raw_input.handbrake?
@@ -1514,22 +1527,28 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         }
         const bool height_queries=ground.strut_heights(attach_world,hits);
         if(!height_queries)ground.cast_wheels(origins,down,lengths,hits);
+        if(height_queries)s.dynamic_ground_candidate=hits.back().dynamic_candidate;
         for (std::size_t k = 0; k < kVehicleWheelCount; ++k) {
             const std::size_t axle = k / 2;
             const double length=lengths[k];
-            // A hit off the segment, or whose normal is not finite, has no
-            // length or faces away from the car, is a miss; the normal is made
-            // unit length here so an implementation need not be exact about it.
             if (hits[k].hit) {
-                const VehicleVec3 n = hits[k].normal;
-                const double n_length = vehicle_sqrt(dot(n, n));
-                if ((height_queries&&!hits[k].has_plane) ||
-                    (!height_queries&&(!finite(hits[k].distance)||hits[k].distance<0.0||
-                                       hits[k].distance>length)) || !finite(n) || !(n_length > 0.0) ||
-                    !(dot(n, up) > 0.0)) {
-                    hits[k].hit = false;
-                } else {
-                    hits[k].normal = scale(n, 1.0 / n_length);
+                auto& hit = hits[k];
+                // 440AAF copies the collision plane normal to Wheel+140.
+                // Its binary32 components also drive the contact point and load.
+                if (height_queries)
+                    hit.normal = {hit.plane[0], hit.plane[1], hit.plane[2]};
+                const auto n = hit.normal;
+                if ((height_queries && !hit.has_plane) ||
+                    (!height_queries && (!finite(hit.distance) || hit.distance < 0.0 ||
+                                         hit.distance > length)) ||
+                    !finite(n) || !(dot(n, up) > 0.0)) {
+                    hit.hit = false;
+                } else if (!height_queries) {
+                    const double n_length = vehicle_sqrt(dot(n, n));
+                    if (n_length > 0.0 && finite(n_length))
+                        hit.normal = scale(n, 1.0 / n_length);
+                    else
+                        hit.hit = false;
                 }
             }
             //587070 projects the cached road height at attachment XY along
@@ -1615,8 +1634,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             w.spin_direction=wheel.spin_direction;w.locked=wheel.brake_locked;
             w.contact=wheel.contact;w.load=static_cast<float>(strut_force[k]/a.unit_scale);
             w.owner_speed=s.owner_speeds.forward;
-            const float balance=k<2?1.0F-h.brake_balance:h.brake_balance;
-            w.service=static_cast<float>(brake)*(balance+balance);
+            w.service=k<2?front_brake:rear_brake;
             // Ordinary owner state0: rear mask1, front mask0; >0.2 adds0.5.
             w.parking=k>=2&&raw_input.handbrake?1.5F:0.0F;
             w.position_x=static_cast<float>(d_.attach[k].x);
@@ -1659,12 +1677,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             // wheel force at contact instead; the fitted tyre-force lift is unused.
             const VehicleVec3 point=player_hub_velocity(body_axes,hub_local,s.velocity,s.angular_velocity);
             out.skid_velocity=point;out.skid_side=across;
-            const auto resolve=[&point](const VehicleVec3& axis) {
-                return (static_cast<float>(point.z)*static_cast<float>(axis.z)+
-                        static_cast<float>(point.y)*static_cast<float>(axis.y))+
-                        static_cast<float>(point.x)*static_cast<float>(axis.x);
-            };
-            const float vlong=resolve(along),vlat=resolve(across);
+            const float vlong=player_axis_projection(point,along);
+            const float vlat=player_axis_projection(point,across);
             w.velocity_long=vlong;w.velocity_lat=vlat;
             w.heading_x=c;w.heading_y=sn;w.side_x=-sn;w.side_y=c;
             // The original standing/sliding producer uses quantized angles.
@@ -1681,7 +1695,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         player_gear_update(h,s.gear,s.transmission,s.engine,work,static_cast<float>(throttle),
                            s.owner_speeds.magnitude,
                            raw_input.drag_mode?&spec_.drag_shift_offsets:nullptr,
-                           raw_input.drag_mode?raw_input.drag_world_random:nullptr,
+                           raw_input.gearbox_world_random,
                            gear_assisted,gear_assisted&&raw_input.handbrake);
         if(raw_input.drag_mode)player_drag_shift_boost(s.transmission,s.engine,raw_input.drag_clock);
         if(rest_pass==0 && !s.forces_prepared && !contact_completion) {
@@ -1713,8 +1727,10 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             else if(s.body_rest_state==1) w.spin*=0.94999998807907104F;
             if(s.body_rest_state!=0)
                 w.spin_direction=w.spin>1.0e-5F?0:(w.spin<-1.0e-5F?2:1);
+            // The repeated wheel refresh (586DA0) observes the stopped or
+            // damped spin before the next derivative can reject a reversal.
             wheel.spin=w.spin;
-
+            wheel.spin_direction=w.spin_direction;
         }
         bool refresh=s.body_rest_state!=0;
         if(!refresh)for(std::size_t k=0;k<4;++k) {
@@ -1729,12 +1745,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             suspension_dt=0.0;continue;
         }
         }
-        force = v3(0.0,0.0,s.body_gravity?-d_.weight:0.0);
+        // 47AC00 changes gravity for the next 585810 refresh. The current
+        // force already contains the gravity contribution from refresh entry.
         const float crank=player_engine_torque(h,s.engine,s.gear,static_cast<float>(throttle),
             spec_.nitrous.installed?&raw_input:nullptr,spec_.nitrous.rate);
         engine_torque=static_cast<double>(crank)*a.unit_scale;
-        s.transmission.wheel_engine_speed=player_wheel_engine_speed(h,s.gear,
-            {{work[0].spin,work[1].spin,work[2].spin,work[3].spin}});
+        // 478581 consumes Gearbox+4C from 46DB60, including on a gear change.
         const float transmitted=player_clutch_torque(h,s.engine,s.transmission,s.gear,
                                                     s.transmission.wheel_engine_speed,crank);
         audio_transmitted_torque=s.gear==kVehicleGearNeutral?0.0F:transmitted;
@@ -1749,10 +1765,11 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         player_aero_apply(h,aero_body,s.aero,spec_.aero);
         force=scale(public_vector(aero_body.force),a.unit_scale);
         torque=scale(public_vector(aero_body.torque),a.unit_scale);
-        const VehicleVec3 local_force=r.apply_transpose(force);
+        const auto external_force=public_vector(aero_body.force);
+        const float forward_force=player_axis_projection(external_force,public_vector(aero_body.axes[0]));
+        const float lateral_force=player_axis_projection(external_force,public_vector(aero_body.axes[1]));
         for (unsigned iteration=0;iteration<5;++iteration) {
-            player_body_wheel_constraints(h,work,static_cast<float>(local_force.x/a.unit_scale),
-                                         static_cast<float>(local_force.y/a.unit_scale));
+            player_body_wheel_constraints(h,work,forward_force,lateral_force);
             const float correction=player_coupled_correction(h,s.gear,s.engine,s.transmission,work,crank);
             if(s.gear!=kVehicleGearNeutral)audio_transmitted_torque+=correction;
             player_distribute_torque(h,s.gear,s.engine,work,correction,s.owner_traction.mode);
@@ -1769,12 +1786,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             wheel.prepared_torque=w.torque;wheel.prepared_force_long=w.force_long;
             wheel.prepared_slip=w.slip;wheel.prepared_sliding=w.sliding;
             wheel.prepared_load=w.load;
+            wheel.prepared_effect_slip=w.effect_slip;
             out.spin=w.spin;out.drive_applied=static_cast<double>(w.torque)*a.unit_scale;
             out.skid_friction_usage=w.friction_usage;
             out.skid_load_kn=w.load;
             // 587689/58768F publish the same velocity pair used by sliding forces.
-            out.effect_slip_velocity = w.sliding ? std::array<float,2>{w.slip,w.velocity_lat} :
-                std::array<float,2>{};
+            out.effect_slip_velocity = w.effect_slip;
             out.sliding=w.sliding;out.force_long=static_cast<double>(w.force_long)*a.unit_scale;
             out.force_lat=static_cast<double>(w.force_lat)*a.unit_scale;
             out.slip_ratio=(wheel.spin*d_.radius[k]-w.velocity_long)/std::max(absolute(w.velocity_long),a.slip_speed_floor);
@@ -1879,6 +1896,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         s.owner_speeds=player_publish_owner_speeds(s.velocity,rigid_rotation(s.rigid_body.axes).column(0));
         s.owner_slip_angle=player_owner_slip_angle(s.velocity,s.owner_motion.heading);
         s.published_support=support;s.published_gear=s.gear;
+        for(unsigned k=0;k<4;++k)s.published_wheel_slip[k]=s.wheels[k].prepared_effect_slip;
     }
     s.step = s.step + 1;
 

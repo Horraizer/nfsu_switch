@@ -400,6 +400,7 @@ struct RaceResultRow {
     std::int32_t best_lap_ticks = kRaceNoTime;
     // Laps completed: the highest lap, never below 0.
     int laps = 0;
+    bool total_estimated = false;
 };
 
 // Every racer: the finished by place, then the rest by racer number.

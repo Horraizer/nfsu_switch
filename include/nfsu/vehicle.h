@@ -426,6 +426,9 @@ struct VehicleQuat {
 
 struct VehicleGroundHit {
     bool hit = false;
+    //577060 writes Actor828 on a dynamic record/cache overlap, even when
+    //the wheel misses that record's surface. This is not a support contact.
+    bool dynamic_candidate = false;
     // Distance from the segment's start to the surface, metres.
     double distance = 0.0;
     // Unit surface normal in the world frame, facing up out of the ground.
@@ -525,6 +528,7 @@ struct VehicleInput {
     float nitrous_activation_seconds = 0;
     float drafting = 0; // original actor47C, world426450 sum capped at .9
     bool race_active = false; // original world stage4, separate from race type
+    bool on_start_grid = false; // held racer, including the final contact refresh
     //4280A0 timed owner gate; false in the supported normal racer context.
     bool owner_traction_suppressed = false;
     //73AD34 is shared by every actor and constant across a frame's slices.
@@ -539,7 +543,7 @@ struct VehicleInput {
     float drag_shift_scale = 1.F;
     // Non-owning race RNG, stable for this session and retained contact input.
     // Original46D760 consumes the same world state as AI planning.
-    std::uint32_t* drag_world_random = nullptr;
+    std::uint32_t* gearbox_world_random = nullptr;
 };
 
 struct VehicleWheelState {
@@ -564,6 +568,7 @@ struct VehicleWheelState {
     //164 for46D830 after next component refresh clears160 alone.
     float prepared_torque = 0.0F, prepared_force_long = 0.0F, prepared_slip = 0.0F;
     float prepared_load = 0.0F; // wheel158, retained until the next component refresh
+    std::array<float,2> prepared_effect_slip{}; // wheel100/104, not raw160/164
     bool prepared_sliding = false;
     float owner_grip = 1; // wheel+178, latched by ordinary4774A0
     float drift_grip = 1; // wheel+180, published after force preparation
@@ -669,7 +674,10 @@ struct VehicleState {
     std::uint32_t body_rest_state = 0;
     bool body_gravity = true, forces_prepared = false;
     std::uint32_t published_support = 4; // biased owner38C / actor3CC
+    bool dynamic_ground_candidate = false; // Actor828, last actual ground query
+    std::array<std::array<float,2>,4> published_wheel_slip{}; // actor374, stride8
     int published_gear = kVehicleGearFirst; // biased owner398 / actor3D8
+    float path_powertrain_speed = 0; // Actor4C0, retained across selector changes
     PlayerRigidBodyState rigid_body;
     bool rigid_body_ready = false;
     VehicleQuat rigid_orientation; // detects external edits to the public pose
@@ -800,7 +808,7 @@ void encode_vehicle_telemetry(const VehicleTelemetry& record,
 // and Release builds produce it: the pin docs/VEHICLE.md records, which
 // nfsu_vehicle_tests requires and nfsu_switch_vehicle compares the
 // console's run against.
-constexpr const char* kVehiclePinnedMixedSha256 = "0BD6A3668B340A4A24AC61D36D710FE8556013069D893892EBEFE3D36008B9BD";
+constexpr const char* kVehiclePinnedMixedSha256 = "BA45FD978A3442B6F2F18D2BBD69627CC563C78D74DBEB7FB7A170BC578F44DD";
 
 // SHA-256 over the encoded records of a run, in step order.
 class VehicleTelemetryHash {
@@ -835,6 +843,7 @@ public:
     // these getters retain the existing placement compatibility behavior.
     const std::array<double, kVehicleGearSlots>& upshift_rpm() const noexcept { return upshift_; }
     const std::array<float,kVehicleGearSlots>& request_upshift_rpm() const noexcept {return request_upshift_;}
+    const std::array<float,kVehicleGearSlots>& request_downshift_rpm() const noexcept {return request_downshift_;}
     const std::array<double, kVehicleGearSlots>& downshift_rpm() const noexcept { return downshift_; }
 
     // The recovered torque curves at an engine speed, kN m as stored

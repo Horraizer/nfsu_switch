@@ -115,6 +115,7 @@ def main():
     cases += [[False,5.,1.,0,2,1,4.,True,False],[True,5.,-1.,0,2,1,4.,True,False],
               [False,5.,0.,11,3,0,.001,True,False],[False,5.,0.,16,3,0,-2.,True,True],
               [True,5.,1.,0,2,0,0.,False,False],[False,5.,1.,17,2,0,-2.,True,False]]
+    cases += [[False,5.,1.,-1,2,0,4.,True,False],[True,5.,-1.,-1,2,0,4.,True,False]]
     updates=[];start_event=len(m.events)
     for human,gap,lateral,category,role,road_value,relative,present,opposite in cases:
         scene([gap,0.,0.],[1 if human else 2,2,2],[True]*3)

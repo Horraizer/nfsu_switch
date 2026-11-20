@@ -40,12 +40,12 @@ class DragPadInput {
             stick_held_<0?nfsu::gamepad_button_bit(nfsu::GamepadButton::face_east):0;
     }
 
-    static nfsu::GamepadFrame snapshot(const PadState& pad) noexcept {
-        nfsu::GamepadFrame frame;auto& p=frame.pads[0];p.connected=padIsConnected(&pad);
-        p.buttons=switch_race_buttons(padGetButtons(&pad));
-        const auto left=padGetStickPos(&pad,0),right=padGetStickPos(&pad,1);
-        p.axes[0]=left.x;p.axes[1]=left.y;p.axes[2]=right.x;p.axes[3]=right.y;
-        return frame;
+    using InputMap=nfsu::GamepadState(*)(u32,u64,HidAnalogStickState,HidAnalogStickState);
+    static nfsu::GamepadState map_default(u32,u64 buttons,HidAnalogStickState left,HidAnalogStickState right) noexcept {
+        nfsu::GamepadState input;
+        input.buttons=switch_race_buttons(buttons);
+        input.axes[0]=left.x;input.axes[1]=left.y;input.axes[2]=right.x;input.axes[3]=right.y;
+        return input;
     }
     static size_t history(const PadState& pad,HidNpadIdType& id,u32& style,
                           std::array<HidNpadCommonState,17>& states) noexcept {
@@ -57,8 +57,12 @@ class DragPadInput {
             id=HidNpadIdType_Handheld;style=HidNpadStyleTag_NpadHandheld;
             return hidGetNpadStatesHandheld(id,states.data(),states.size());
         }
-        if(pad.active_id_mask!=1)return 0;
-        id=HidNpadIdType_No1;
+        const auto mask=pad.active_id_mask;
+        if(!mask||(mask&(mask-1)))return 0;
+        unsigned slot=0;
+        while(slot<8&&!(mask&(1U<<slot)))++slot;
+        if(slot>=8)return 0;
+        id=static_cast<HidNpadIdType>(HidNpadIdType_No1+slot);
         if(pad.style_set&HidNpadStyleTag_NpadFullKey){style=HidNpadStyleTag_NpadFullKey;return hidGetNpadStatesFullKey(id,states.data(),states.size());}
         if(pad.style_set&HidNpadStyleTag_NpadJoyDual){style=HidNpadStyleTag_NpadJoyDual;return hidGetNpadStatesJoyDual(id,states.data(),states.size());}
         if(pad.style_set&HidNpadStyleTag_NpadJoyLeft){style=HidNpadStyleTag_NpadJoyLeft;return hidGetNpadStatesJoyLeft(id,states.data(),states.size());}
@@ -66,13 +70,22 @@ class DragPadInput {
         return 0;
     }
 public:
-    void poll(const PadState& pad,bool discard=false) noexcept {
-        ++polls_;latest_=snapshot(pad);
+    void poll(const PadState& pad,bool discard=false,InputMap map=map_default) noexcept {
+        ++polls_;
+        auto& latest=latest_.pads[0];
+        latest=map(padGetStyleSet(&pad),padGetButtons(&pad),padGetStickPos(&pad,0),padGetStickPos(&pad,1));
+        latest.connected=padIsConnected(&pad);
         std::array<HidNpadCommonState,17> states{};auto id=source_;u32 style=0;
         const auto count=history(pad,id,style,states);
         // HID may be newer than padUpdate. Its newest lane magnitude is the
         // authoritative latest value too, including on a baseline/source reset.
-        if(count)latest_.pads[0].axes[0]=states[0].analog_stick_l.x;
+        const auto map_history=[&](const HidNpadCommonState& state) {
+            auto input=map(style,state.buttons,state.analog_stick_l,state.analog_stick_r);
+            input.connected=(state.attributes&HidNpadAttribute_IsConnected)!=0;
+            return input;
+        };
+        const auto current=count?map_history(states[0]):latest;
+        if(count)latest.axes[0]=current.axes[0];
         const bool changed=count&&(!cursor_||id!=source_||style!=style_||states[0].sampling_number<last_);
         if(discard||!initialized_||!count||changed) {
             // First poll/source change/resume establishes a current baseline.
@@ -80,8 +93,8 @@ public:
             if(discard||!initialized_||changed) {
                 auto baseline=latest_;
                 if(count)baseline.pads[0].buttons=(baseline.pads[0].buttons&~mask)|
-                    (switch_race_buttons(states[0].buttons)&mask);
-                reset_stick(count?states[0].analog_stick_r.y:latest_.pads[0].axes[3]);
+                    (current.buttons&mask);
+                reset_stick(current.axes[3]);
                 queue_.reset(baseline);
             } else {
                 auto frame=latest_;frame.pads[0].buttons|=stick_buttons(latest_.pads[0].axes[3]);
@@ -94,9 +107,8 @@ public:
         if(states[count-1].sampling_number>last_&&states[count-1].sampling_number-last_>1)++gaps_;
         for(size_t i=count;i-- >0;) {
             const auto& s=states[i];if(s.sampling_number<=last_)continue;
-            auto frame=latest_;frame.pads[0].connected=(s.attributes&HidNpadAttribute_IsConnected)!=0;
-            frame.pads[0].buttons=switch_race_buttons(s.buttons)|stick_buttons(s.analog_stick_r.y);
-            frame.pads[0].axes[0]=s.analog_stick_l.x;
+            auto frame=latest_;frame.pads[0]=map_history(s);
+            frame.pads[0].buttons|=stick_buttons(frame.pads[0].axes[3]);
             queue_.observe(frame);last_=s.sampling_number;++samples_;
         }
         // The history call may be slightly newer than padUpdate. Do not append

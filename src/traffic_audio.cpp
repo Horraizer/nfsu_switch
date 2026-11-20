@@ -16,6 +16,34 @@ float distance(const std::array<float,3>& a,const std::array<float,3>& b)noexcep
     return std::sqrt((z*z+y*y)+x*x);
 }
 }
+SceneryAudioPosition scenery_audio_position(bool plane,const std::array<float,3>& source,
+    const std::array<float,3>& human,const std::array<float,3>& eye,
+    const std::array<float,3>& forward) noexcept {
+    const float meters=distance(source,human);
+    auto delta=source;for(unsigned i=0;i<3;++i)delta[i]-=eye[i];delta[2]=0;
+    auto axis=forward;axis[2]=0;
+    delta=TrafficAudioController::normalized(delta);axis=TrafficAudioController::normalized(axis);
+    const auto pan=std::uint16_t(player_velocity_angle(axis[0],axis[1])-player_velocity_angle(delta[0],delta[1]));
+    const unsigned quadrant=pan>>14;
+    const int phase=(pan&0x3fff)*2;
+    // The 52EA00 contexts 6F45E0 and 6F4730 share the positional curve.
+    static constexpr float bridge_far[4]={220.F,150.F,140.F,150.F};
+    const float near=plane?80.F:25.F;
+    const auto level=[&](unsigned q) {
+        const float far=plane?200.F:bridge_far[q];
+        const float distance_fraction=std::clamp((meters-near)/(far-near),0.F,1.F);
+        if(!plane)return distance_curve(distance_fraction);
+        // Plane context selects curve 1 in 52E380.
+        const float scaled=distance_fraction*511.999908447265625F;
+        if(scaled>511.5F)return 0;
+        const int index=int(scaled);
+        return kEngineBalance[index]+(index<511?int((scaled-index)*
+            float(kEngineBalance[index+1]-kEngineBalance[index])):0);
+    };
+    const int shaped=(((32767-phase)*level(quadrant))>>15)+((level((quadrant+1)&3)*phase)>>15);
+    const int base=plane?26540:12736;
+    return {(base*shaped)>>15,pan,meters};
+}
 void TrafficAudioPosition::tick(const std::array<float,3>& source,const std::array<float,3>& human,
     const std::array<float,3>& eye,const std::array<float,3>& forward,float milliseconds)noexcept {
     const float d=distance(source,human);

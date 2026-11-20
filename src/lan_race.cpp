@@ -1,4 +1,5 @@
 #include "nfsu/lan_race.h"
+#include "nfsu/platform.h"
 #include "nfsu/car_collision_hull.h"
 #include "nfsu/car_assets.h"
 #include "nfsu/race_setup.h"
@@ -30,18 +31,32 @@ VehicleUpgradeLevels lan_performance_levels(unsigned tier){
 bool LanRaceWorld::load(const std::filesystem::path& root,std::string& error,const LanRaceOptions& options){
     if(!valid_lan_options(options)){error="invalid LAN world settings";return false;}
     const auto& course=kLanCourses[options.course];
-    return load_local(root,course.event,course.round,options,error);
+    return load_course(root,course.event,course.round,options,false,error);
 }
-bool LanRaceWorld::load_local(const std::filesystem::path& root,unsigned event,unsigned round,
-                             const LanRaceOptions& options,std::string& error){
+bool LanRaceWorld::load_local(const std::filesystem::path& root,unsigned event,unsigned round,QuickRaceMode mode,
+                             const LanRaceOptions& options,std::string& error,unsigned traffic_density,
+                             const std::vector<RaceTrafficSetup>& traffic){
+    return load_course(root,event,round,options,true,error,mode,traffic_density,traffic);
+}
+bool LanRaceWorld::load_course(const std::filesystem::path& root,unsigned event,unsigned round,
+                              const LanRaceOptions& options,bool split,std::string& error,QuickRaceMode mode,unsigned traffic_density,
+                              const std::vector<RaceTrafficSetup>& traffic){
     if(session_){error="two-player world already loaded";return false;}
     SupportedRaceSelection race;
-    if(options.laps<1||options.laps>6||options.tier>3||
+    if(options.laps<1||options.laps>6||options.tier>3||traffic_density>3||
+       (!traffic_density&&!traffic.empty())||
        !supported_race_selection(event,round,race)||(race.lap_skip&&options.laps!=1)) {
         error="invalid two-player course settings";return false;
     }
     if(!load_vehicle_track_course(root/("Tracks/TRACKB"+std::to_string(race.slot.track)+".lzc"),
         options.laps,race.slot.direction,race.lap_skip,0,course_,error))return false;
+    const bool drag=mode==QuickRaceMode::drag;
+    const bool drift=mode==QuickRaceMode::drift;
+    if(split&&mode!=QuickRaceMode::circuit&&mode!=QuickRaceMode::sprint&&!drag&&!drift) {
+        error="unsupported split-screen race mode";return false;
+    }
+    if(drag)course_.start.gearbox=VehicleGearbox::manual;
+    if(drift&&traffic_density) {error="drift requires traffic off";return false;}
     std::vector<std::string> names;
     if(!load_lan_car_names(root,names,error))return false;
     const auto levels=lan_performance_levels(options.tier);
@@ -51,7 +66,7 @@ bool LanRaceWorld::load_local(const std::filesystem::path& root,unsigned event,u
         const auto* model=find_lan_car_name(names,options.rides[actor].car);
         if(!model){error="LAN peer selected an unknown car";return false;}
         const auto& car=*model;models_[actor]=car;
-        if(!load_race_vehicle_spec(global,car,levels,specs[actor],error))return false;
+        if(!load_race_vehicle_spec(global,car,levels,specs[actor],error,drift))return false;
         std::ifstream geometry(root/"Cars"/car/"GEOMETRY.BIN",std::ios::binary|std::ios::ate);
         const auto length=geometry.tellg();
         if(!geometry||length<=0||length>64*1024*1024){error="LAN "+car+" collision geometry unavailable";return false;}
@@ -59,21 +74,77 @@ bool LanRaceWorld::load_local(const std::filesystem::path& root,unsigned event,u
         geometry.read(reinterpret_cast<char*>(bytes.data()),length);
         if(!geometry||!decode_car_collision_hull(bytes,bin_hash(car+"_CV"),hulls[actor])){error="LAN "+car+" hull unavailable";return false;}
         CarAssets assets;if(!load_car_assets(global,car,assets,error))return false;
-        std::array<unsigned char,kVehicleRecordSize> record{};std::ifstream file(global,std::ios::binary);
-        file.seekg(static_cast<std::streamoff>(assets.record_offset));file.read(reinterpret_cast<char*>(record.data()),record.size());
-        if(!file||!decode_chase_camera_table(record.data(),record.size(),cameras_[actor],error))return false;
+        if(!load_race_camera_table(global,assets,cameras_[actor],error))return false;
     }
     host_hull_=std::move(hulls[0]);
     auto world=std::make_unique<RaceSession>(course_,specs[0],RaceSteering::recovered_predicate1,host_hull_);
-    if(!world->set_camera_table(cameras_[0],error))return false;
+    if(!world->set_camera_table(cameras_[0],error)||(drag&&!world->set_drag(true,error,1.5F)))return false;
     RaceRivalSetup guest;guest.spec=specs[1];guest.hull=std::move(hulls[1]);guest.name="PLAYER 2";guest.car_type=models_[1];int marker=-1;
-    if(!vehicle_track_grid_pose(course_,1,guest.pose,marker,error)||!world->set_human_rival(guest,error)||
-       !world->start(error,&course_.start,.9F,0))return false;
+    const bool crash_cameras=split&&!drag&&!drift;
+    if(crash_cameras)for(unsigned i=0;i<specs.size();++i) {
+        if(!crash_roads_[i].load(root,race.slot.track,race.slot.direction,course_,specs[i].handling,nullptr,error))
+            return false;
+    }
+    if(!vehicle_track_grid_pose(course_,1,guest.pose,marker,error))return false;
+    if(drag)guest.pose.gearbox=VehicleGearbox::manual;
+    if(!world->set_human_rival(guest,error,split?&cameras_[1]:nullptr)||
+       (crash_cameras&&!world->set_local_crash_cameras(crash_roads_[0],crash_roads_[1],race.slot.track,error)))return false;
+    if(drift&&(!world->prepare_style(root,error,event,false)||
+               !world->rivals_[0]->prepare_style(root,error,event,false)))return false;
+    if(drag) {
+        auto local=std::make_unique<LocalDrag>();
+        const std::array<const VehicleHull*,2> hull{{&host_hull_,&world->rival_setup_[0].hull}};
+        for(unsigned i=0;i<2;++i) {
+            const std::array<const VehicleHull*,4> selected{{nullptr,nullptr,nullptr,hull[i]}};
+            if(!local->controls[i].configure(default_drag_controls_config(),error))return false;
+            if(!local->planners[i].load(root,{},selected,true,race.slot.track,race.slot.direction,
+                                        true,0,options.laps,course_.route.point_to_point,traffic_density,false)) {
+                error="split-screen drag steering data unavailable";return false;
+            }
+        }
+        drag_=std::move(local);
+    }
+    auto* world_random=drag_?drag_->planners[0].world_random():nullptr;
+    if(split&&!world->set_traffic(root,traffic,error,std::max(1U,traffic_density),world_random))return false;
+    if(drag_)world->rivals_[0]->world_random_=world_random;
+    if(!world->start(error,&course_.start))return false;
+    if(!traffic.empty()) {
+        SupportedRace authored;
+        if(!load_supported_race(root/"FrontEnd/FrontB.lzc",global,event,authored,error,round)||
+           !world->stage_traffic_grid(authored.track.traffic_start_spacing[race.slot.direction],
+                                     authored.track.traffic_start_clearance[race.slot.direction],error))return false;
+    }
     session_=std::move(world);return true;
 }
-bool LanRaceWorld::advance(const std::array<GamepadFrame,2>& pads,std::string& error){
+bool LanRaceWorld::advance(const std::array<GamepadFrame,2>& pads,std::string& error,
+                           RaceSimulationProfile* profile,TimingService* timer){
+    if(profile&&!timer){error="split timing service unavailable";return false;}
     if(!session_){error="LAN world is not loaded";return false;}
-    return session_->advance_humans(pads,error);
+    if(!drag_)return session_->advance_humans(pads,error,nullptr,profile,timer);
+    const auto begin=profile?timer->now_us():0;
+    std::array<RaceRivalPlans,2> plans;
+    for(unsigned i=0;i<2;++i) {
+        auto& driver=i?session_->rival(0):*session_;
+        if(session_->timing().racers[i].status!=RacerStatus::not_finished) {
+            plans[i].step=driver.timing().step;
+            plans[i].drag_steering=true;
+            continue;
+        }
+        auto input=pads[i];
+        input.time_us=session_->timing().step*1000000/60;
+        input.sample_clock_available=false;
+        drag_->controls[i].update(input);
+        const auto& frame=drag_->controls[i].frame_state();
+        const auto steer=frame.steer_from_button?frame.steer_digital:frame.steer_analog;
+        if(!drag_->planners[i].plan(driver,plans[i],steer<0?-1:steer>0?1:0,session_.get())) {
+            error="split-screen drag lane planner refused for player "+std::to_string(i+1);return false;
+        }
+        plans[i].gearbox_world_random=drag_->planners[0].world_random();
+    }
+    const double planner=profile?(timer->now_us()-begin)/1000.0:0;
+    if(!session_->advance_humans(pads,error,&plans,profile,timer))return false;
+    if(profile)profile->planner=planner;
+    return true;
 }
 LanRaceFrame LanRaceWorld::snapshot()const {
     LanRaceFrame out;if(!session_)return out;

@@ -118,6 +118,21 @@ int main() {
             std::abs(pinned.impulse_b[0]-42.13583374F)<.00001F&&
             std::abs(pinned.arm_a[0]-.64896512F)<.00001F,
             "pinned prop applies native high-speed drag and arm scaling only to the car");
+        // 46BAE0 with Smokeable +15C=2. Original 597980 supplies this
+        // fraction on the first solve and releases the prop for the retry.
+        check(calculate_car_contact_response(car,prop,geometry,pinned,.04746666178107262F,{.1F,.6F},true)
+            &&pinned.closing&&std::abs(pinned.arm_a[0]-.08064065128564835F)<.00001F,
+            "break callback scales the first impulse before shortening its arm");
+        prop.inverse_mass=.5F;
+        prop.inverse_inertia=car.inverse_inertia;
+        ContactResponse repeated;
+        check(calculate_car_contact_response(car,prop,geometry,repeated,1.F,{.1F,.6F},false,{},false,&pinned)
+            &&repeated.closing&&repeated.arm_a==pinned.arm_a&&repeated.arm_b==pinned.arm_b,
+            "breaking prop keeps shortened car arm on second solve");
+        const ContactVector original_retry{{-33.255592346191406F,-19.942550659179688F,-.02764757350087166F}};
+        for(unsigned i=0;i<3;++i)
+            check(std::abs(repeated.current_impulse[i]-original_retry[i])<.00001F,
+                "break retry reproduces the second native impulse");
     }
     for(const auto& row:kNativeDragContact) {
         bool totalled=false;
@@ -185,6 +200,22 @@ int main() {
         check(record.creation_tick==p.creation_tick &&record.last_hit_tick==p.last_hit_tick
               &&same(record.initial_point,p.initial_point) &&same(record.point,{3,2,1})
               &&record.tangent_speed==7,"original full-width hit tick preserves record creation");
+    }
+    {
+        // PC launch capture, actor 101 at tick 30586. The middle component
+        // distinguishes the packed 5EBCE3 transform from the scalar fallback.
+        ContactBody body;
+        body.identity=1;
+        body.inverse_mass=1;
+        body.angular_momentum={-0x1.692eb4p-8F,0x1.8e5406p-7F,0x1.81cf02p-7F};
+        body.inverse_inertia={{
+            {0x1.20703cp+1F,0x1.e6c130p-2F,-0x1.a33a78p-14F},
+            {0x1.e6c134p-2F,0x1.a6ecd2p-1F,0x1.00c064p-16F},
+            {-0x1.a33a7cp-14F,0x1.00c06cp-16F,0x1.4fb72ap-2F}
+        }};
+        const ContactVector expected={-0x1.b34976p-8F,0x1.e66238p-8F,0x1.fa0aa8p-9F};
+        check(refresh_car_contact_velocity(body,1,200) && body.cached_angular_velocity==expected,
+              "PC angular velocity after contact refresh");
     }
     for(const auto& p:kRefreshPins) {
         auto body=p.before;

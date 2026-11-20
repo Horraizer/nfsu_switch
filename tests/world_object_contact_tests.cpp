@@ -151,7 +151,7 @@ int main(int argc,char** argv){
             unsigned fixed=0,jumps=0,defaults=0,driven=0;
             for(const auto& object:course.world_objects){
                 if(object.fixed_collision){++fixed;check(!object.hull.points.empty(),"fixed kind4 hull loaded");}
-                else ++driven;
+                else if(object.motion_collision)++driven;
                 jumps+=object.name==0x6691470d;defaults+=object.default_shape;
             }
             if(std::string(name)=="TRACKB1001.lzc")check(fixed==4&&driven==1&&defaults==1,"named parked objects and separate Trolley controller");

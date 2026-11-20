@@ -1,13 +1,29 @@
 #include "nfsu/traffic_model.h"
+#include "nfsu/quick_rival.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 namespace nfsu {
-namespace {
-unsigned draw(std::uint32_t& state,unsigned extent) noexcept {
-    const auto sample=state%extent,a=state^0x1d872b41U,b=(a>>5)^a;
-    state=(b<<27)^b^a;return sample;
+std::uint32_t authored_race_roster_seed(std::uint32_t global) noexcept {
+    // 431F13 saves and advances the settings state; 4B3A20 draws the names.
+    quick_rival_random(global,1);
+    std::array<bool,48> used{};
+    for(unsigned name=0;name<4;++name) {
+        for(unsigned attempt=0;attempt<100;++attempt) {
+            const auto index=quick_rival_random(global,unsigned(used.size()));
+            if(used[index])continue;
+            used[index]=true;
+            break;
+        }
+    }
+    return global;
 }
+RaceStartupRandom race_startup_random(std::uint32_t global) noexcept {
+    const auto sound=global;
+    quick_rival_random(global,1);
+    const auto before_world=global;
+    quick_rival_random(global,1);
+    return {sound,before_world,global};
 }
 bool decode_traffic_model_record(const unsigned char* bytes,std::size_t size,TrafficModelRecord& out) noexcept {
     if(!bytes||size<0xc90)return false;
@@ -36,7 +52,7 @@ TrafficModelChoice choose_traffic_model(const TrafficModelRecord* records,
     if(!std::isfinite(total)||std::fabs(total)<0.001F)return result;
     const TrafficModelRecord* selected=nullptr;
     for(;;) {
-        float sample=(float(draw(random,0x7fffffffU))*0x1p-31F)*total;
+        float sample=(float(quick_rival_random(random,0x7fffffffU))*0x1p-31F)*total;
         selected=nullptr;
         for(std::size_t i=0;i<count;++i)if(eligible(records[i])) {
             sample=sample-records[i].weights[region];
@@ -49,7 +65,7 @@ TrafficModelChoice choose_traffic_model(const TrafficModelRecord* records,
         if(++result.retries>=100)break;
     }
     result.id=selected->id;
-    result.skin=selected->skins[draw(random,unsigned(selected->variants))];
+    result.skin=selected->skins[quick_rival_random(random,unsigned(selected->variants))];
     return result;
 }
 }

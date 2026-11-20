@@ -21,7 +21,8 @@ DialogArt read_dialog(const std::vector<unsigned char>& image,std::size_t at,std
     return out;
 }
 }
-void FrontendArt::decode_startup_splash(const std::vector<unsigned char>& front,std::string& error) {
+void FrontendArt::decode_startup_splash(const std::filesystem::path& root,
+                                       const std::vector<unsigned char>& front,std::string& error) {
     // LS_Splash_PC.fng in the authenticated FrontB image.
     const auto art=read_dialog(front,0xbb5d8c,{},
         [](unsigned,const std::string& fallback){return fallback;},error);
@@ -38,6 +39,7 @@ void FrontendArt::decode_startup_splash(const std::vector<unsigned char>& front,
     if(p.splash_picture.type!=1||p.splash_prompt.type!=2||
        !texture(front,bin_hash("LS_SPLASH_PC"),p.startup_splash,error))
         throw std::runtime_error("original startup splash artwork absent");
+    load_enhanced_art(root,bin_hash("LS_SPLASH_PC"),p.startup_splash);
 }
 unsigned FrontendArt::startup_prompt_alpha(unsigned tick)const {
     const auto& p=*impl_;
@@ -222,7 +224,8 @@ void FrontendArt::record_options(unsigned width,unsigned height,const RacePresen
         {"OptionName_3",options.road_reflections?"Road Reflections   ON":"Road Reflections   OFF"},
         {"OptionName_4",options.metric_speed?"Speed Units   KM/H":"Speed Units   MPH"},
         {"OptionName_5",options.race_height==540?"Race Resolution   540p":
-                        options.race_height==720?"Race Resolution   720p":"Race Resolution   AUTO"},
+                        options.race_height==720?"Race Resolution   720p":
+                        options.race_height==1080?"Race Resolution   1080p (Docked)":"Race Resolution   AUTO"},
         {"OptionName_6",options.diagnostic_logs?"Diagnostic Logs   ON":"Diagnostic Logs   OFF"},
         {"Controls","Left / Right: Adjust   B: Back"},{"Notice",notice}};
     impl_->draw_dialog(Canvas{width,height,impl_->atlas,frame},0,values,selected,600);

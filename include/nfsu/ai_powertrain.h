@@ -3,6 +3,18 @@
 #include "nfsu/vehicle.h"
 
 namespace nfsu {
+struct AiPathPowertrainState {
+    float filtered_speed=0;
+    int gear=2;
+    float rpm=1000;
+};
+// Original427A30 actor publication used by selector4. The speed filter is
+// owned by the actor, not reconstructed when its physical selector changes.
+bool ai_path_powertrain(float speed,AiPathPowertrainState&,
+                        float forced_speed=0,float forced_rpm=100) noexcept;
+//464405..46445A path-physics publication, reused for all four wheel slots.
+std::array<float,2> ai_path_wheel_slip(float speed,const PlayerRigidVector& velocity,
+                                     const PlayerRigidMatrix& axes) noexcept;
 
 // Selector3 wheel/engine component475070. Binary32, tonnes/kN/metres.
 // These are physical component callbacks, not selector1 with fewer steps.
@@ -35,7 +47,8 @@ struct AiPowertrainTables {
 };
 
 //581B30 sampled acceleration descriptor, shared by original AI and frontend.
-bool ai_setup_acceleration_curve(const VehicleHandling&,std::array<float,64>&) noexcept;
+bool ai_setup_acceleration_curve(const VehicleHandling&,std::array<float,64>&,
+                                 float* gearing_speed_limit=nullptr) noexcept;
 //580240 searches the cached acceleration table against drag for steering.
 bool ai_setup_predicted_speed(const VehicleHandling&,float& speed) noexcept;
 

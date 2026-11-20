@@ -120,5 +120,22 @@ class TapeTests(unittest.TestCase):
         row=decode_snapshot(bytes(blob));self.assertIsNone(row['path']);self.assertNotIn('demand',row);self.assertNotIn('rigid',row)
     def test_short_snapshot_is_refused(self):
         with self.assertRaises(ValueError):decode_snapshot(snapshot()[:-1])
+    def test_existing_tapes_and_human_road_publication(self):
+        self.assertNotIn('human_road',decode_snapshot(snapshot()))
+        blob=bytearray(snapshot())
+        struct.pack_into('<I',blob,15*4,1|16|16384)
+        struct.pack_into('<I',blob,608*4,0x6b8968)
+        struct.pack_into('<I',blob,1184*4,0x54)
+        struct.pack_into('<3If3I',blob,632*4,2,29,13,411.5,29,14,3)
+        struct.pack_into('<I4f',blob,639*4,(13<<16)|29,0.,-1.25,-4.,5.)
+        struct.pack_into('<I4f',blob,644*4,(14<<16)|29,9.25,-1.,-3.5,4.5)
+        road=decode_snapshot(bytes(blob))['human_road']
+        self.assertEqual((road['seed'],road['published'],road['progress'],road['category']),
+                         ([29,13],[29,14],411.5,3))
+        self.assertEqual(road['cells'][1],dict(route=29,point=14,distance=9.25,
+                                              offset=-1.,lower=-3.5,upper=4.5))
+        struct.pack_into('<I',blob,632*4,41)
+        with self.assertRaisesRegex(ValueError,'Invalid human road publication'):
+            decode_snapshot(bytes(blob))
 
 if __name__=='__main__':unittest.main()

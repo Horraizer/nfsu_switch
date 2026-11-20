@@ -135,7 +135,11 @@ struct DekoRenderer::Impl {
     std::array<dk::Image, 2> depths;
     DekoSceneTarget scene_target;
     bool fxaa_enabled=false;
+    static constexpr unsigned query_stride=176;
+    bool split_query_pending=false;
     bool split_screen=false;
+    SplitLayout split_layout=SplitLayout::stacked;
+    bool high_resolution_refused=false;
     bool speed_blur_enabled=false;
     SpeedBlurFrame speed_blur_frame;
 #if defined(NFSU_SPEED_BLUR_PROBE)
@@ -295,11 +299,14 @@ struct DekoRenderer::Impl {
         return true;
     }
 
+    std::uint64_t gpu_limit() const { return kGpuBudgetPlaceholder + msaa_budget_extra + mip_budget_extra; }
+
     bool block(std::uint64_t bytes, std::uint32_t flags, const char* name,
                dk::MemBlock& out, std::string& error) {
         bytes = align_up(bytes ? bytes : 1, DK_MEMBLOCK_ALIGNMENT);
         if(!trace("allocation.before",error,name,bytes))return false;
-        if (bytes > kMaxUploadResourceBytes || gpu_bytes + bytes > kGpuBudgetPlaceholder + msaa_budget_extra + mip_budget_extra) {
+        if (bytes > kMaxUploadResourceBytes || gpu_bytes + bytes > gpu_limit()) {
+            high_resolution_refused=scene_target.output_height==1080;
             std::printf("GPU_BUDGET resource=%s requested=%llu resident=%llu limit=%llu\n",name,
                 (unsigned long long)bytes,(unsigned long long)gpu_bytes,
                 (unsigned long long)(kGpuBudgetPlaceholder+msaa_budget_extra+mip_budget_extra));
@@ -309,6 +316,7 @@ struct DekoRenderer::Impl {
             .setFlags(flags).create();
         if (!memory || !healthy(error)) {
             if (error.empty()) error = std::string(name) + ": deko3d memory block allocation failed";
+            high_resolution_refused=scene_target.output_height==1080;
             return false;
         }
         out = memory;
@@ -422,6 +430,22 @@ struct DekoRenderer::Impl {
         return true;
     }
 
+    bool replacement_overlay_fits(const FrontendUiAtlas& atlas) {
+        dk::ImageLayout layout;
+        dk::ImageLayoutMaker{device}.setFormat(DkImageFormat_RGBA8_Unorm)
+            .setDimensions(atlas.width,atlas.height).initialize(layout);
+        const auto stride=align_up(deko_overlay_stripe(atlas.width,atlas.height,0).bytes,DK_MEMBLOCK_ALIGNMENT);
+        const auto geometry=align_up(sizeof(TrackVertex)*kFrontendUiMaxQuads*8,DK_MEMBLOCK_ALIGNMENT)+
+            align_up(kFrontendUiMaxQuads*6*sizeof(std::uint16_t),DK_MEMBLOCK_ALIGNMENT);
+        const auto incoming=align_up(layout.getSize(),DK_MEMBLOCK_ALIGNMENT)+stride+geometry+2*DK_MEMBLOCK_ALIGNMENT;
+        const auto retired=deko_allocated_block_size(hud_image_memory)+deko_allocated_block_size(hud_vertices)+
+            deko_allocated_block_size(hud_indices)+deko_allocated_block_size(hud_uniforms)+deko_allocated_block_size(hud_descriptors);
+        if(gpu_bytes-retired+incoming<=gpu_limit())return true;
+        std::printf("GPU_OVERLAY_BUDGET required=%llu limit=%llu\n",
+                    (unsigned long long)(gpu_bytes-retired+incoming),(unsigned long long)gpu_limit());
+        return false;
+    }
+
     std::size_t overlay_capacity=0;
     bool init_overlay(const std::vector<unsigned char>& pixels,std::uint32_t width,std::uint32_t height,
                       std::size_t capacity,std::string& error) {
@@ -502,7 +526,8 @@ struct DekoRenderer::Impl {
     }
 
     bool init_hud(const RaceHudAtlas& atlas,std::string& error) {
-        return init_overlay(atlas.rgba,kRaceHudAtlasWidth,atlas.height,kRaceHudMaxQuads,error);
+        const auto height=atlas.rgba.size()/(4*kRaceHudAtlasWidth);
+        return init_overlay(atlas.rgba,kRaceHudAtlasWidth,height,kRaceHudMaxQuads,error);
     }
     float source_width() const { return static_cast<float>(commands->width); }
     float source_height() const { return static_cast<float>(commands->height); }
@@ -549,19 +574,10 @@ struct DekoRenderer::Impl {
                     " dynamic="+std::to_string(dynamic_capacity)+" reserved="+std::to_string(draw_capacity); return false;
             }
             const auto count = source.static_track_definition_count();
+            if (!prepare_static_group_slots(source,static_group_slots,error)) return false;
             static_definitions.reserve(count);
-            for (std::size_t i = 0; i < count; ++i) {
-                const auto& draw = source.static_track_definition(i);
-                // Sparse source group IDs are bounded to a 512 KiB slot table.
-                if (draw.group >= kDekoStaticGroupCapacity) { error = "prepared group ID exceeds capacity"; return false; }
-                if (draw.group >= static_group_slots.size())
-                    static_group_slots.resize(draw.group + 1, kNoHandle);
-                if (static_group_slots[draw.group] != kNoHandle) {
-                    error = "duplicate prepared group ID"; return false;
-                }
-                static_group_slots[draw.group] = i;
-                static_definitions.push_back(&draw);
-            }
+            for (std::size_t i = 0; i < count; ++i)
+                static_definitions.push_back(&source.static_track_definition(i));
             for (std::size_t i = source.static_track_draw_count(); i < source.draw_count(); ++i)
                 dynamic_definitions.push_back(&source.draw_view(i).definition);
             dynamic_submission_order.reserve(dynamic_capacity);
@@ -670,7 +686,7 @@ struct DekoRenderer::Impl {
         if (!block(command_bytes[0], kDataFlags, "command memory", command_memory[0], error) ||
             (presentation && !block(command_bytes[1], kDataFlags, "second frame command memory",
                                     command_memory[1], error))) return false;
-        if (profile_enabled && !block(320,
+        if (profile_enabled && !block(2*query_stride,
             DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuUncached,
             "GPU timestamp reports", query_memory, error))
             return false;
@@ -889,7 +905,8 @@ struct DekoRenderer::Impl {
         const auto transfer_flags = (scene_target.upscale || msaa_enabled) ? DkImageFlags_Usage2DEngine : 0;
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | transfer_flags |
                                             (presentation ? DkImageFlags_UsagePresent : 0))
-            .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(source.width, source.height).initialize(color_layout);
+            .setFormat(DkImageFormat_RGBA8_Unorm)
+            .setDimensions(scene_target.output_width, scene_target.output_height).initialize(color_layout);
         dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
             .setType(msaa_enabled?DkImageType_2DMS:DkImageType_2D)
             .setMsMode(msaa_enabled?msaa_mode:DkMsMode_1x)
@@ -1021,6 +1038,7 @@ struct DekoRenderer::Impl {
             if(!trace("swapchain.after",error))return false;
             if (!swapchain || !healthy(error)) {
                 if (error.empty()) error = "deko3d swapchain creation failed";
+                high_resolution_refused=scene_target.output_height==1080;
                 return false;
             }
         }
@@ -1035,6 +1053,8 @@ struct DekoRenderer::Impl {
             std::printf("WORLD ANIMATION texture_aliases=%zu immutable_frames=1 per_slot_descriptors=1\n",animation_aliases);
         }
 
+        std::printf("DEKO_TARGET scene=%ux%u output=%ux%u split=%u\n",
+            scene_target.width,scene_target.height,scene_target.output_width,scene_target.output_height,unsigned(split_screen));
         std::printf("deko3d: %zu draws, %zu uploads, %llu bytes of GPU blocks (placeholder budget)\n",
             source.draw_count(), handles.size(), static_cast<unsigned long long>(gpu_bytes));
         std::printf("GPU_RESIDENCY live=%llu peak=%llu limit=%llu\n",
@@ -1090,7 +1110,7 @@ struct DekoRenderer::Impl {
         if (!query_pending[slot]) return;
         query_pending[slot] = false;
         if (!query_frames[slot].active || query_generations[slot] != profile_generation) return;
-        const auto* words = static_cast<const std::uint64_t*>(query_memory.getCpuAddr()) + slot*20;
+        const auto* words = static_cast<const std::uint64_t*>(query_memory.getCpuAddr()) + slot*(query_stride/8);
         const auto begin_timestamp = words[1], end_timestamp = words[3];
         if (!begin_timestamp || end_timestamp <= begin_timestamp) {
             ++gpu_profile.invalid; return;
@@ -1113,8 +1133,15 @@ struct DekoRenderer::Impl {
         // The caller has waited for this frame slot's fence before writing.
         for(const auto& item:streamed_resources) {
             const auto& r=source.resource_table().resources.at(item.first);
+            auto bytes=r.bytes;
+            if(r.streamed_elements) {
+                const auto count=*r.streamed_elements;
+                if(count>r.elements){error="live vertex stream exceeds its allocation";return false;}
+                bytes=count*r.element_bytes;
+            }
+            if(!bytes)continue;
             std::memcpy(static_cast<unsigned char*>(streamed_memory.getCpuAddr())+slot*streamed_stride+item.second,
-                r.data,static_cast<std::size_t>(r.bytes));
+                r.data,static_cast<std::size_t>(bytes));
         }
         auto* data = static_cast<unsigned char*>(uniforms.getCpuAddr()) +
             uniform_allocation.offset + slot * uniform_stride;
@@ -1374,8 +1401,9 @@ struct DekoRenderer::Impl {
             static_cast<unsigned char*>(hud_vertices.getCpuAddr())+slot*slot_bytes+quad_offset*4*sizeof(TrackVertex));
         for (std::size_t i=0;i<quads*4;++i) {
             vertices[i]=input[i];
-            vertices[i].px=input[i].px-source_width()*0.5F;
-            vertices[i].py=input[i].py*(split_screen?2.F:1.F)-source_height()*0.5F;
+            const bool side=split_screen&&split_layout==SplitLayout::side_by_side;
+            vertices[i].px=input[i].px*(side?2.F:1.F)-source_width()*0.5F;
+            vertices[i].py=input[i].py*(split_screen&&!side?2.F:1.F)-source_height()*0.5F;
             vertices[i].pz=additive?input[i].pz:(input[i].pz>0?input[i].pz:-1.0F);
         }
         cmd.bindShaders(DkStageFlag_GraphicsMask,{additive?&frontend_vertex:&vertex,additive?&frontend_fragment:&textured_opaque});
@@ -1510,12 +1538,12 @@ struct DekoRenderer::Impl {
             begin(slot);return true;
         };
         if (query_recording)
-            cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*160);
+            cmd.reportCounter(DkCounter_TimestampPipelineTop, query_memory.getGpuAddr()+slot*query_stride);
         const auto mark_ab=[&](unsigned point) {
             if(!query_recording || !query_frames[slot].ordinal || !ab_passes)return;
             if(point)cmd.barrier(DkBarrier_Fragments,0);
             cmd.reportCounter(point?DkCounter_Timestamp:DkCounter_TimestampPipelineTop,
-                query_memory.getGpuAddr()+slot*160+32+point*16);
+                query_memory.getGpuAddr()+slot*query_stride+32+point*16);
         };
         mark_ab(0);
         const auto mark_frontend=[&](unsigned point) {
@@ -1675,17 +1703,17 @@ struct DekoRenderer::Impl {
             cmd.bindMultisampleState(samples);
             cmd.setSampleMask(0xFFFFU);
         }
-        const unsigned view_height=split_screen?scene_target.height/2:scene_target.height;
-        const unsigned view_top=split_screen?unsigned(slot)*view_height:0;
-        cmd.setViewports(0,{{0,float(view_top),float(scene_target.width),float(view_height),0,1}});
-        cmd.setScissors(0,{{0,view_top,scene_target.width,view_height}});
+        const auto view=split_screen?split_viewport(scene_target.width,scene_target.height,split_layout,unsigned(slot)):
+            SplitViewport{0,0,scene_target.width,scene_target.height};
+        cmd.setViewports(0,{{float(view.x),float(view.y),float(view.width),float(view.height),0,1}});
+        cmd.setScissors(0,{{view.x,view.y,view.width,view.height}});
         if(!split_screen||slot==0) {
             const auto* clear=commands->clear_color;
             cmd.setScissors(0,{{0,0,scene_target.width,scene_target.height}});
             cmd.clearColor(0,DkColorMask_RGBA,clear[0]/255.0F,clear[1]/255.0F,clear[2]/255.0F,clear[3]/255.0F);
         }
         cmd.clearDepthStencil(true,1,0,0);
-        cmd.setScissors(0,{{0,view_top,scene_target.width,view_height}});
+        cmd.setScissors(0,{{view.x,view.y,view.width,view.height}});
         if(!msaa_checkpoint("MSAA target clear"))return false;
         if(frontend&&frontend->background_quads){
             emit_overlay(slot,frontend->vertices.data(),frontend->background_quads,frontend->additive.data());
@@ -1697,6 +1725,7 @@ struct DekoRenderer::Impl {
         cmd.bindUniformBuffer(DkStage_Fragment, 0, base, sizeof(DrawFrameUniform));
         cmd.bindUniformBuffer(DkStage_Vertex,3,frontend_light_uniforms.getGpuAddr()+slot*256,sizeof(FrontendLighting));
         for (const auto list : static_lists[slot]) cmd.callList(list);
+        if(split_screen)mark_ab(8);
         // 40997E scenery/4099BA blur precede 4099C5 actors and
         // 4099D3 car nodes in the original. Keep cars, shadows and glows sharp.
         if(speed_blur_enabled && speed_blur_frame.active()) {
@@ -1905,15 +1934,17 @@ struct DekoRenderer::Impl {
             cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
             dk::ImageView present_view{target};
             dk::ImageView filtered_view{fxaa_enabled?fxaa_colors[slot]:scene_colors[slot]};
-            cmd.blitImage(filtered_view, {0, 0, 0, scene_target.width, scene_target.height, 1},
-                          present_view, {0, 0, 0, commands->width, commands->height, 1},
+            const auto output=split_screen?split_viewport(commands->width,commands->height,split_layout,unsigned(slot)):
+                SplitViewport{0,0,commands->width,commands->height};
+            cmd.blitImage(filtered_view, {view.x,view.y,0,view.width,view.height,1},
+                          present_view, {output.x,output.y,0,output.width,output.height,1},
                           DkBlitFlag_FilterLinear);
             cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
             // The HUD is native 1280x720 artwork. Draw it on the presentation
             // image after the linear scene upscale, with no scene depth.
             cmd.bindRenderTargets(&present_view, nullptr);
-            cmd.setViewports(0, {{0, 0, source_width(), source_height(), 0, 1}});
-            cmd.setScissors(0, {{0, 0, commands->width, commands->height}});
+            cmd.setViewports(0, {{float(output.x),float(output.y),float(output.width),float(output.height),0,1}});
+            cmd.setScissors(0, {{output.x,output.y,output.width,output.height}});
         }
         mark_ab(6);
         mark_frontend(8);
@@ -1921,7 +1952,7 @@ struct DekoRenderer::Impl {
         if (hud) emit_overlay(slot,hud->vertices.data(),hud->quads,nullptr,hud->lap_first_quad);
         if(frontend){const auto first=frontend->background_quads;
             emit_overlay(slot,frontend->vertices.data()+first*4,frontend->additive.size()-first,
-                         frontend->additive.data()+first,kRaceHudMaxQuads,first);
+                         frontend->additive.data()+first,kRaceHudMaxQuads,first+(hud?hud->quads:0));
         }
         if(!checkpoint("UI overlay"))return false;
         if(!msaa_checkpoint("single-sample HUD"))return false;
@@ -1931,22 +1962,41 @@ struct DekoRenderer::Impl {
         if(diagnose)frontend_first_frame=false;
         cmd.barrier(DkBarrier_Fragments, 0);
         if (query_recording)
-            cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*160+16);
+            cmd.reportCounter(DkCounter_Timestamp, query_memory.getGpuAddr()+slot*query_stride+16);
         return true;
     }
 
-    bool present_split(const DekoRenderer::SplitViewSource& next,std::string& error) {
+    bool present_split(const DekoRenderer::SplitViewSource& next,std::string& error,DekoSplitTiming* timing) {
+        if(timing)*timing={};
         if(!split_screen||!swapchain||!healthy(error)) {
             if(error.empty())error="split-screen renderer is not open";
             return false;
         }
         // A single fence covers both views. Each uses its own existing slot
         // for uniforms, descriptors, HUD vertices and GPU commands.
+        auto stage=timing?armGetSystemTick():0;
         for(unsigned i=0;i<frame_in_flight.size();++i)if(frame_in_flight[i]){
             if(frame_fences[i].wait()!=DkResult_Success){error="split-screen frame fence failed";return false;}
             frame_in_flight[i]=false;
         }
+        if(timing) {
+            timing->fence_ms=elapsed_ms(stage);
+            if(split_query_pending)for(unsigned player=0;player<2;++player) {
+                const auto* words=static_cast<const std::uint64_t*>(query_memory.getCpuAddr())+player*(query_stride/8);
+                auto& view=timing->views[player];
+                const auto delta=[&](unsigned from,unsigned to){
+                    return words[from]&&words[to]>=words[from]?
+                        dkTimestampToNs(words[to]-words[from])/1000000.0:-1.;
+                };
+                view.gpu_ms=delta(1,3);view.reflections_gpu_ms=delta(7,9);
+                view.world_gpu_ms=delta(9,21);view.dynamic_gpu_ms=delta(21,11);
+                view.upscale_gpu_ms=delta(15,17);view.hud_gpu_ms=delta(17,19);
+            }
+            stage=armGetSystemTick();
+        }
+        split_query_pending=false;
         const int image=queue.acquireImage(swapchain);
+        if(timing)timing->acquire_ms=elapsed_ms(stage);
         if(!healthy(error)||image<0||image>=2) {
             if(error.empty())error="split-screen swapchain acquisition failed";
             return false;
@@ -1954,19 +2004,37 @@ struct DekoRenderer::Impl {
         for(unsigned player=0;player<2;++player) {
             const RecordedCommands* view=nullptr;
             const RaceHudFrame* hud=nullptr;
+            stage=timing?armGetSystemTick():0;
             if(!next(player,view,hud,error))return false;
+            if(timing)timing->views[player].source_ms=elapsed_ms(stage);
             if(!view||!hud){error="split-screen frame missing a view or HUD";return false;}
-            if(!update(*view,error,nullptr)||!write_uniforms(*view,player,error)||
-               !record_frame(colors[image],player,hud,error))return false;
+            auto* measured=timing?&timing->views[player]:nullptr;
+            stage=timing?armGetSystemTick():0;
+            if(!update(*view,error,nullptr))return false;
+            if(measured){measured->validate_ms=elapsed_ms(stage);stage=armGetSystemTick();}
+            if(!write_uniforms(*view,player,error))return false;
+            if(measured){measured->uniforms_ms=elapsed_ms(stage);stage=armGetSystemTick();}
+            query_recording=profile_enabled&&timing;
+            if(query_recording) {
+                std::memset(static_cast<unsigned char*>(query_memory.getCpuAddr())+player*query_stride,0,query_stride);
+                query_frames[player].ordinal=1;ab_passes=true;
+            }
+            if(!record_frame(colors[image],player,hud,error))return false;
             const auto list=cmd.finishList();
+            if(measured){measured->record_ms=elapsed_ms(stage);stage=armGetSystemTick();}
             if(!healthy(error))return false;
             // finishList's control records belong to cmd until its next clear.
             queue.submitCommands(list);
+            if(measured)measured->submit_ms=elapsed_ms(stage);
         }
+        split_query_pending=query_recording;
+        query_recording=false;
+        stage=timing?armGetSystemTick():0;
         queue.signalFence(frame_fences[image]);
         queue.presentImage(swapchain,image);
         queue.flush();
         frame_in_flight[image]=true;
+        if(timing)timing->queue_ms=elapsed_ms(stage);
         ++fence_number;
         return healthy(error);
     }
@@ -2006,8 +2074,8 @@ struct DekoRenderer::Impl {
         if (timing) timing->fence_wait_ms = elapsed_ms(stage);
         query_recording=profile_enabled && !frontend && (!scene_frame || scene_frame->sample);
         if (query_recording) {
-            auto* report = static_cast<unsigned char*>(query_memory.getCpuAddr()) + slot*160;
-            std::memset(report, 0, 160);
+            auto* report = static_cast<unsigned char*>(query_memory.getCpuAddr()) + slot*query_stride;
+            std::memset(report, 0, query_stride);
             query_frames[slot] = scene_frame ? *scene_frame : DekoSceneFrame{};
             query_generations[slot] = profile_generation;
         }
@@ -2186,13 +2254,27 @@ bool DekoRenderer::open(const RecordedCommands& commands, std::string& error, bo
                              opaque_first, sky_with_opaque, scene_height, hud_atlas); }
     catch (const std::bad_alloc&) { error = "not enough memory for deko3d renderer"; return false; }
 }
-bool DekoRenderer::open_split(const RecordedCommands& commands,const RaceHudAtlas& atlas,
-                              std::size_t capacity,std::string& error) {
-    impl_->split_screen=true;
-    return open(commands,error,true,capacity,false,true,false,0,&atlas);
+bool DekoRenderer::open_race_target(const RecordedCommands& commands, std::string& error,
+                                   std::size_t capacity, bool profile_frame, bool sky_with_opaque,
+                                   std::uint32_t& scene_height, const RaceHudAtlas* atlas, bool split_screen,
+                                   const FrontendUiAtlas* pause_atlas) {
+    impl_->split_screen=split_screen;
+    if (open(commands,error,true,capacity,profile_frame,true,sky_with_opaque,scene_height,atlas)) {
+        if (scene_height!=1080 || !pause_atlas || impl_->replacement_overlay_fits(*pause_atlas)) return true;
+        impl_->high_resolution_refused=true;
+        error="Not enough GPU memory for the race pause and results atlas";
+    }
+    if (scene_height != 1080 || !impl_->high_resolution_refused) return false;
+    std::printf("RACE_RESOLUTION_FALLBACK requested=1080 actual=720 reason=%s\n",error.c_str());
+    if (!impl_->shutdown(error)) return false;
+    impl_ = std::make_unique<Impl>();
+    impl_->split_screen=split_screen;
+    scene_height=720;
+    return open(commands,error,true,capacity,profile_frame,true,sky_with_opaque,scene_height,atlas);
 }
-bool DekoRenderer::present_split(const SplitViewSource& next,std::string& error) {
-    return impl_->present_split(next,error);
+bool DekoRenderer::present_split(const SplitViewSource& next,std::string& error,SplitLayout layout,DekoSplitTiming* timing) {
+    impl_->split_layout=layout;
+    return impl_->present_split(next,error,timing);
 }
 bool DekoRenderer::open_frontend(const RecordedCommands& commands,const FrontendUiAtlas& atlas,std::string& error,std::uint32_t scene_height,bool profile_passes,StartupJournal* startup_journal,std::size_t draw_capacity) {
     impl_->startup_journal=startup_journal;
@@ -2280,12 +2362,12 @@ bool DekoRenderer::present_frontend(const FrontendUiFrame& frame,std::string& er
 }
 bool DekoRenderer::reconfigure_target(const RecordedCommands& commands, std::string& error,
                                       std::size_t draw_capacity, bool profile_frame,
-                                      bool sky_with_opaque, std::uint32_t scene_height,
-                                      const RaceHudAtlas* hud_atlas) {
+                                      bool sky_with_opaque, std::uint32_t& scene_height,
+                                      const RaceHudAtlas* hud_atlas, bool split_screen,
+                                      const FrontendUiAtlas* pause_atlas) {
     if (!close(error)) return false;
     impl_ = std::make_unique<Impl>();
-    return open(commands,error,true,draw_capacity,profile_frame,true,
-                sky_with_opaque,scene_height,hud_atlas);
+    return open_race_target(commands,error,draw_capacity,profile_frame,sky_with_opaque,scene_height,hud_atlas,split_screen,pause_atlas);
 }
 bool DekoRenderer::update(const RecordedCommands& commands, std::string& error,
                           DekoUpdateTiming* timing) {
@@ -2311,9 +2393,14 @@ bool DekoRenderer::capture(std::vector<unsigned char>& rgba, double& render_ms,
 }
 bool DekoRenderer::present(std::string& error, DekoPresentTiming* timing,
                            const DekoSceneFrame* scene_frame,
-                           const RaceHudFrame* hud_frame) {
+                           const RaceHudFrame* hud_frame,const FrontendUiFrame* song_card) {
     error.clear();
-    return impl_->present(error, timing, scene_frame, hud_frame);
+    if(song_card && (song_card->background_quads || song_card->vertices.size()!=4*song_card->additive.size() ||
+                    (hud_frame?hud_frame->quads:0)+song_card->additive.size()>kRaceHudMaxQuads)) {
+        error="race song card exceeds overlay capacity";
+        return false;
+    }
+    return impl_->present(error, timing, scene_frame, hud_frame,song_card);
 }
 void DekoRenderer::set_speed_blur(const SpeedBlurFrame& frame) {
     if(impl_)impl_->speed_blur_frame=frame;

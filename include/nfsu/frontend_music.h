@@ -15,6 +15,7 @@ unsigned original_music_next(unsigned first,const std::vector<std::uint64_t>& le
                              std::uint64_t played_frames) noexcept;
 struct MenuSong { const char* title; const char* artist; const char* album; };
 MenuSong original_menu_song(unsigned index);
+const MenuSong* original_race_song(unsigned index) noexcept;
 class FrontendMusic {
 public:
     FrontendMusic();

@@ -2,10 +2,25 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <sstream>
 
 namespace nfsu {
+float route_raw_speed(const RoutePoint& point,int category,bool reversed) noexcept {
+    if(category==-1) {
+        const float word=point.lane_offset[reversed?5:11]*256.F;
+        if(!std::isfinite(word)||word< -32768.F||word>32767.F)
+            return std::numeric_limits<float>::quiet_NaN();
+        return float(std::uint16_t(static_cast<std::int16_t>(word))>>8);
+    }
+    if(category<0||category>=23)return std::numeric_limits<float>::quiet_NaN();
+    if(reversed) {
+        if(category<10)category=category<5?category+5:category-5;
+        else if(category>=11)category=category<17?category+6:category-6;
+    }
+    return float(point.speed[unsigned(category)]);
+}
 namespace {
 
 std::uint16_t read_u16(const unsigned char* bytes) {

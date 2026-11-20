@@ -15,6 +15,9 @@
 using namespace nfsu;
 namespace nfsu {struct RaceWorldContactProbe {
     static void travelled(RaceSession& session,float value){session.travelled_distance_=value;}
+    static void nitrous(RaceSession& session,std::uint32_t capacity,std::uint32_t charge) {
+        session.nitrous_resource_={capacity,0,charge,0};
+    }
 };}
 void need(bool value,const std::string& error){if(!value)throw std::runtime_error(error);}
 #include "drag_lane_step_native.inc"
@@ -37,7 +40,7 @@ void native_manual_stage(const std::filesystem::path& root) {
         DragLaneState lane;lane.category=row.before.category;lane.mode=row.before.mode;
         lane.exclude_first=row.before.first;lane.exclude_last=row.before.last;
         std::array<bool,7> available;available.fill(true);
-        need(drag_lane_step(*road,row.road.point,row.position,chain,available,row.held,10,lane,{1003,0,0,2}),"native manual stage refused");
+        need(drag_lane_step(roads,row.road,row.position,chain,available,row.held,10,lane,{1003,0,0,2}),"native manual stage refused");
         need(lane.category==row.after.category&&lane.mode==row.after.mode&&
              lane.exclude_first==row.after.first&&lane.exclude_last==row.after.last,
              "manual lane state differs from actual4605E0/45D800");
@@ -70,8 +73,13 @@ int main(int argc,char** argv){try{
     std::cout<<"DRAG_PUBLICATION event="<<event<<" round="<<round<<" human_points="<<unsigned(plans.human.path.count)<<" steering="<<plans.drag_steering<<std::endl;
     need(plans.drag_steering&&plans.human.path.count>=2,"human drag path is empty at the production publication boundary");
     std::cout<<"DRAG_PATH distance="<<plans.human.route_distance<<std::endl;
-    for(unsigned i=0;i<3;++i)need(plans.cars[i].path.count>=2,"rival drag path empty");
+    for(unsigned i=0;i<3;++i)need(plans.cars[i].path.count==0,
+        "rival chose an action path during the held countdown");
     need(plans.human.driver_category>=0&&plans.human.driver_category<=4,"human drag driver category invalid");
+    IntroDragSnapshot grid_snapshot;
+    need(planner.drag_human_snapshot(grid_snapshot)&&plans.human_drag_lane>=11&&
+         plans.human_drag_lane<=16&&plans.human_drag_lane==grid_snapshot.lane.category,
+         "train lead requires the current drag lane from 44AC60");
     {
         // Actual drag vtable462390/458B90 supplied-speed oracle. Exercise the
         // production human caller, not only the already-correct scalar helper.
@@ -117,18 +125,18 @@ int main(int argc,char** argv){try{
             state.orientation={std::cos(heading*.5F),0,0,std::sin(heading*.5F)};
             const int held=step%4==0?-1:step%4==2?1:0;
             const AiDriverPoint position{float(state.position.x),float(state.position.y),float(state.position.z)};
-            const auto* old_road=roads.find(before.road.road.route);need(old_road!=nullptr,"old retained road");
             auto expected=before.lane;
             const AiLaneTransitionInput transition{grid.setup->race.track,grid.setup->race.direction,
                 session.progress().coordinate.distance,2};
-            need(drag_lane_step(*old_road,before.road.road.point,position,before.road.chain,
+            need(drag_lane_step(roads,before.road.road,position,before.road.chain,
                  before.road.flags.enabled,held,session.travelled_distance(),expected,transition),"native-equivalent retained manual stage");
             need(retained.plan(session,plans,held)&&retained.drag_human_snapshot(after),"moving human context");
             need(after.lane.mode==expected.mode&&after.lane.exclude_first==expected.exclude_first&&
                  after.lane.exclude_last==expected.exclude_last,"production human consumed the updated road instead of its retained road");
+            need(plans.human_drag_lane==after.lane.category,"train lead did not follow the player lane");
             changed+=before.road.road.route!=after.road.road.route||before.road.road.point!=after.road.road.point;
-            auto wrong=before.lane;const auto* updated=roads.find(after.road.road.route);need(updated!=nullptr,"updated road");
-            need(drag_lane_step(*updated,after.road.road.point,position,after.road.chain,
+            auto wrong=before.lane;
+            need(drag_lane_step(roads,after.road.road,position,after.road.chain,
                  after.road.flags.enabled,held,session.travelled_distance(),wrong,transition),"after-context comparison stage");
             sensitive+=wrong.mode!=expected.mode||wrong.exclude_first!=expected.exclude_first||wrong.exclude_last!=expected.exclude_last;
         }
@@ -137,6 +145,17 @@ int main(int argc,char** argv){try{
         std::cout<<"DRAG_RETAINED_STAGE changed="<<changed<<" order_witnesses="<<sensitive<<std::endl;
         state=saved;RaceWorldContactProbe::travelled(session,0);
     }
+    // The archived drag driver has no path before GO and publishes one
+    // once it enters the first active controller decision.
+    for(unsigned frame=0;race_car_held(run.session().timing())&&frame<600;++frame)
+        need(run.simulate({},error)&&run.commit(error),error);
+    need(run.session().timing().go_valid,"drag countdown did not release");
+    for(unsigned i=0;i<3;++i) {
+        const auto& driver=run.session().rival_driver(i);
+        need(driver.pedals.throttle==1.F&&driver.pedals.brake==0.F,"drag GO pedal release");
+    }
+    need(planner.plan(run.session(),plans,0),"first active rival plan refused");
+    for(unsigned i=0;i<3;++i)need(plans.cars[i].path.count>=2,"active rival drag path empty");
     // Supplied moving state isolates lane input from launch/shift timing.
     // Each side gets a fresh real grid and production pad -> planner -> driver.
     std::array<double,2> angles{};
@@ -175,6 +194,17 @@ int main(int argc,char** argv){try{
         need(post_race_result_ready(result)&&!session.player_won(),"totalled result was rejected or awarded a win");
         auto report=post_race_report(session,{},{{"CIVIC","NEON","MIATA","CIVIC"}},0);
         need(report["Time"+report["PlayerRow"]]=="Totaled","post-race report lost Totaled result");
+        unsigned estimated=0;
+        for(const auto& row:session.result_rows()) {
+            if(!row.racer||row.status!=RacerStatus::not_finished)continue;
+            need(row.total_estimated&&!row.total_valid&&row.total_ticks>0,"running rival lost drag finish estimate");
+            need(report["Time"+std::to_string(row.position)]==post_race_time(row.total_ticks),
+                "post-race table lost estimated rival time");
+            need(RaceResultStatistics{}.values(session,"CIVIC",unsigned(row.racer))["Data_1"]==format_race_ticks(row.total_ticks),
+                "drag statistics lost estimated rival time");
+            ++estimated;
+        }
+        need(estimated>0,"drag end fixture must leave at least one rival running");
         need(moving.commit(error),error);
     }
     need(angles[0]!=angles[1],"left and right drag pad inputs produce identical road steering");
@@ -209,6 +239,34 @@ int main(int argc,char** argv){try{
             need(c==' '||hud.lap_fonts[1][c].width>0,"drag failure glyph absent");
         RaceHudFrame frame;append_race_over(hud,1,1280,720,frame,hud.drag_failure_labels[1]);
         need(frame.quads>1,"totalled HUD message did not draw");
+        const auto winner=drag_finish_message(hud,1,120321);
+        need(winner=="Winner!\nYOUR TIME:   30.08  "&&
+             drag_finish_message(hud,2,240320)=="You Finished Second!\nYOUR TIME: 1:00.08  "&&
+             drag_finish_message(hud,3,6797)=="You Finished Third!\nYOUR TIME:    1.69  "&&
+             drag_finish_message(hud,4,466800)=="Last Place\nYOUR TIME: 1:56.70  ",
+             "original finish messages and 586580 compact time format");
+        unsigned glyph_count=0;
+        for(const unsigned char c:winner)if(c!=' '&&c!='\n') {
+            need(hud.lap_fonts[1][c].width>0,"drag finish glyph absent: "+std::string(1,char(c)));
+            ++glyph_count;
+        }
+        frame={};append_race_over(hud,1,1280,720,frame,winner);
+        need(frame.quads==glyph_count+1,"both drag finish lines must draw");
+        auto& race=const_cast<RaceSession&>(run.session());
+        RaceWorldContactProbe::nitrous(race,8000,8000);
+        const auto bars=[&](std::uint32_t charge) {
+            RaceWorldContactProbe::nitrous(race,8000,charge);
+            RaceHudFrame panel;
+            build_race_hud_frame(race,hud,1280,720,panel);
+            unsigned visible=0;
+            for(unsigned i=0;i<panel.quads;++i) {
+                const auto& v=panel.vertices[i*4];
+                if(v.color[0]==0&&v.color[1]==255&&v.color[2]==0&&v.color[3])++visible;
+            }
+            return visible;
+        };
+        need(bars(8000)==6&&bars(6000)==5&&bars(0)==0,
+             "drag must use six bars on the two-second nitrous package");
     }
     std::cout<<"PASS retail drag human and rival paths published"<<std::endl;return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<std::endl;return 1;}}

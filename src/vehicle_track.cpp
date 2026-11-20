@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 
 // The step's arithmetic must be IEEE-754 binary64 and binary32 without
 // excess precision, as src/vehicle.cpp requires of the model it extends.
@@ -20,17 +21,17 @@ namespace nfsu {
 bool VehicleTrackSession::meet_track(const RaceContactPose& history,const RaceTrackContactJob& job,
     float friction,RaceContactContext& context,RacePairContact& result) {
     if(!started_)return false;
-    const auto saved=state_;const auto saved_ai=ai_;const bool saved_started=ai_started_;
+    const auto saved=state_;const auto saved_ai=ai_;const auto saved_import=ai_import_;const bool saved_started=ai_started_;
     const auto record=context.record;
     if(resolve_swept_race_track_contact(state_,model_->spec(),history,job,friction,context,result)&&
        (!result.searched||continue_contact(result.remaining_a,&saved,context.refresh!=nullptr)))return true;
-    state_=saved;ai_=saved_ai;ai_started_=saved_started;context.record=record;result={};return false;
+    state_=saved;ai_=saved_ai;ai_import_=saved_import;ai_started_=saved_started;context.record=record;result={};return false;
 }
 bool VehicleTrackSession::meet_external(VehicleState& other,const VehicleSpec& spec,
     const RaceContactBox& self_box,const RaceContactBox& other_box,RacePairContact& result,
     const RaceContactPose* previous,const RaceContactPose* other_previous,RaceContactContext* context,const RaceContactJob* prepared,bool self_is_b,bool other_fixed_world) {
     if(!started_)return false;
-    const auto saved=state_,saved_other=other;const auto saved_ai=ai_;
+    const auto saved=state_,saved_other=other;const auto saved_ai=ai_;const auto saved_import=ai_import_;
     const bool saved_started=ai_started_;
     const auto saved_record=context?context->record:ContactRecord{};
     const auto saved_seed=context?context->world_seed:0U;
@@ -45,7 +46,7 @@ bool VehicleTrackSession::meet_external(VehicleState& other,const VehicleSpec& s
             resolve_race_pair(state_,model_->spec(),self_box,other,spec,other_box,result,nullptr,context);
     }
     if(ok&&(!(result.applied||result.searched)||continue_contact(self_is_b?result.remaining_b:result.remaining_a,&saved,context&&context->refresh)))return true;
-    state_=saved;other=saved_other;ai_=saved_ai;ai_started_=saved_started;
+    state_=saved;other=saved_other;ai_=saved_ai;ai_import_=saved_import;ai_started_=saved_started;
     if(context){context->record=saved_record;context->world_seed=saved_seed;}
     result={};return false;
 }
@@ -56,6 +57,7 @@ bool VehicleTrackSession::meet(VehicleTrackSession& other,const RaceContactBox& 
     if(this==&other || !started_ || !other.started_)return false;
     const auto saved=state_,saved_other=other.state_;
     const auto saved_ai=ai_,saved_other_ai=other.ai_;
+    const auto saved_import=ai_import_,saved_other_import=other.ai_import_;
     const bool saved_started=ai_started_,saved_other_started=other.ai_started_;
     const auto saved_record=context?context->record:ContactRecord{};
     const auto saved_seed=context?context->world_seed:0U;
@@ -64,6 +66,7 @@ bool VehicleTrackSession::meet(VehicleTrackSession& other,const RaceContactBox& 
         resolve_race_pair(state_,model_->spec(),self_box,other.state_,other.model_->spec(),other_box,result,nullptr,context);
     if(ok&&(!(result.applied||result.searched)||(continue_contact(result.remaining_a,&saved,context&&context->refresh)&&other.continue_contact(result.remaining_b,&saved_other,context&&context->refresh))))return true;
     state_=saved;other.state_=saved_other;ai_=saved_ai;other.ai_=saved_other_ai;
+    ai_import_=saved_import;other.ai_import_=saved_other_import;
     ai_started_=saved_started;other.ai_started_=saved_other_started;
     if(context){context->record=saved_record;context->world_seed=saved_seed;}
     result={};return false;
@@ -580,6 +583,11 @@ void TrackVehicleGround::probe_strut_heights(
         const auto rank=[limit](float height){return height<limit?height:height-50000.F;};
         float best=road?rank(answer.contact.point[2]):0.F;
         if(support_faces_)for(const auto& face:*support_faces_) {
+            const auto& bounds=strut_cache_.bounds;
+            if(face.low[0]>=bounds[2]||face.high[0]<=bounds[0]||
+               face.low[1]>=bounds[3]||face.high[1]<=bounds[1])continue;
+            //577138 precedes the point-in-polygon and height winner tests.
+            answer.hit.dynamic_candidate=true;
             if(face.plane[2]<=0||x<face.low[0]||x>face.high[0]||y<face.low[1]||y>face.high[1])continue;
             bool inside=true;
             for(unsigned j=0;j<4;++j) {
@@ -792,7 +800,7 @@ bool VehicleTrackSession::start(const VehicleState& state) {
     }
     state_ = state;
     ground_.reset_strut_cache();
-    ai_={};ai_started_=false;
+    ai_={};ai_started_=false;ai_import_={};
     last_input_={};last_component_interval_=0;last_ai_gear_request_=-1;
     owner_recovery_start_=0;
     last_ghost_overlap_=0;
@@ -811,6 +819,10 @@ bool VehicleTrackSession::start(const VehicleState& state) {
     stuck_count_ = 0;
     last_reset_ = VehicleTrackResetInfo{};
     started_ = true;
+    if(ai_active_) {
+        VehicleTrackTelemetry telemetry;
+        if(!reconstruct_ai_physics(state_,last_input_,-1,0,telemetry)){started_=false;return false;}
+    }
     return true;
 }
 
@@ -1072,9 +1084,110 @@ bool VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
 // axis at the speed plus 0.1; the stored speed takes the speed itself
 // (0x00427CBA) and each wheel's spin the speed over its radius
 // (0x00427D36..0x00427D7E), as the model's reset gives them.
+std::array<VehicleVec3,kVehicleWheelCount> vehicle_placement_hubs(
+    const VehicleHandling& h,std::uint16_t heading,const VehicleVec3& position,
+    PlayerRigidMatrix& axes) noexcept {
+    const float c=player_angle_sin(std::uint16_t(heading+16384)),s=player_angle_sin(heading);
+    axes={{{c,s,0},{-s,c,0},{0,0,1}}};
+    std::array<VehicleVec3,kVehicleWheelCount> hubs{};
+    for(unsigned k=0;k<hubs.size();++k) {
+        const auto& w=h.wheels[k];
+        hubs[k]={float((w.longitudinal*c-w.lateral*s)+float(position.x)),
+                 float((w.longitudinal*s+w.lateral*c)+float(position.y)),
+                 float(w.vertical+float(position.z))};
+    }
+    return hubs;
+}
+
+bool vehicle_placement_ground(const VehicleHandling& h,
+    const std::array<VehicleVec3,kVehicleWheelCount>& hubs,
+    const std::array<VehicleGroundHit,kVehicleWheelCount>& hits,
+    VehicleVec3& position,PlayerRigidMatrix& axes) noexcept {
+    std::array<PlayerRigidVector,kVehicleWheelCount> feet{};
+    float heights=0,ride=0;
+    bool supported=true;
+    for(unsigned k=0;k<feet.size();++k) {
+        const auto& p=hits[k].plane;
+        supported=supported&&hits[k].hit&&hits[k].has_plane&&p[2]!=0;
+        const float x=float(hubs[k].x),y=float(hubs[k].y);
+        const float z=hits[k].hit&&hits[k].has_plane&&p[2]!=0?
+            -((x*p[0]+y*p[1]-p[3])/p[2]):float(hubs[k].z);
+        feet[k]={x,y,z};heights+=z;
+        ride+=h.wheels[k].radius-h.wheels[k].vertical;
+    }
+    if(!supported)return false;
+    const auto direction=[&](unsigned a,unsigned b,unsigned c,unsigned d) {
+        PlayerRigidVector v{};
+        for(unsigned k=0;k<3;++k)v[k]=(feet[a][k]-feet[b][k])+(feet[c][k]-feet[d][k]);
+        const float length=std::sqrt((v[2]*v[2]+v[1]*v[1])+v[0]*v[0]);
+        if(length==0)return PlayerRigidVector{};
+        const float reciprocal=1.F/length;
+        for(auto& component:v)component*=reciprocal;
+        return v;
+    };
+    const auto forward=direction(0,3,1,2);
+    // Retail orders each axle left then right. Accepted handling records can
+    // reverse that order; build the same physical left axis in either case.
+    const unsigned front_left=h.wheels[0].lateral>=h.wheels[1].lateral?0:1;
+    const unsigned rear_left=h.wheels[3].lateral>=h.wheels[2].lateral?3:2;
+    const auto side=direction(front_left,1-front_left,rear_left,5-rear_left);
+    const PlayerRigidVector up{forward[1]*side[2]-forward[2]*side[1],
+        forward[2]*side[0]-forward[0]*side[2],forward[0]*side[1]-forward[1]*side[0]};
+    if(!(up[2]>0.F))return false;
+    const float height=heights*.25F+(ride*.25F+h.centre_of_mass[2])/up[2];
+    if(!std::isfinite(height))return false;
+    axes={forward,side,up};
+    position.z=height;
+    return true;
+}
+
+void VehicleTrackSession::fit_road_pose(std::uint16_t heading, VehicleVec3& position,
+    PlayerRigidMatrix& axes, std::array<VehicleTrackCast,kVehicleWheelCount>& casts,
+    bool new_placement) const {
+    const auto& handling=model_->spec().handling;
+    const auto hubs=vehicle_placement_hubs(handling,heading,position,axes);
+    if(new_placement)ground_.reset_strut_cache();
+    ground_.probe_strut_heights(hubs,casts);
+    std::array<VehicleGroundHit,kVehicleWheelCount> hits;
+    for(unsigned i=0;i<hits.size();++i)hits[i]=casts[i].hit;
+    // A missing wheel retains the supplied position and the authored yaw.
+    vehicle_placement_ground(handling,hubs,hits,position,axes);
+}
+
 void VehicleTrackSession::lead_velocity(VehicleState& s, double speed) noexcept {
     const Mat3 r = rotation(s.orientation);
     s.velocity = scale(r.column(0), speed + kVehicleTrackResetSpeedLead);
+}
+
+bool VehicleTrackSession::reset_to_road(VehicleState& s, VehicleTrackReset reason,std::int32_t clock) {
+    VehicleTrackResetInfo info;info.reason=reason;info.step=steps_;last_reset_=info;
+    VehicleRoadResetPoint target;
+    if(!road_reset_.resolve(road_reset_.context,road_reset_.slot,s,progress_,clock,target))return false;
+    const auto& forward=s.owner_motion.axes[0];
+    const auto& tangent=progress_.coordinate.tangent;
+    const float alignment=std::max(0.F,tangent[1]*forward[1]+tangent[0]*forward[0]);
+    const float speed=std::min(8.F,std::max(0.F,s.owner_speeds.forward)*alignment);
+    const auto units=track_angle(target.forward[0],target.forward[1]);
+    PlayerRigidMatrix axes;
+    auto position=target.position;
+    std::array<VehicleTrackCast,4> casts;
+    fit_road_pose(units,position,axes,casts,true);
+    VehiclePose pose;pose.ground=target.position;pose.heading=vehicle_track_heading(units);
+    pose.speed=speed;pose.gearbox=s.gearbox;
+    VehicleState next;if(!model_->reset(next,pose))return false;
+    next.position=position;next.orientation=vehicle_orientation_from_axes(axes);
+    const float lead=speed+float(kVehicleTrackResetSpeedLead);
+    next.velocity={axes[0][0]*lead,axes[0][1]*lead,axes[0][2]*lead};
+    next.path_powertrain_speed=s.path_powertrain_speed;
+    next.dynamic_ground_candidate=casts.back().hit.dynamic_candidate;
+    player_publish_owner_motion(next.owner_motion,
+        {float(next.velocity.x),float(next.velocity.y),float(next.velocity.z)},{},axes);
+    next.owner_speeds=player_publish_owner_speeds(next.velocity,{axes[0][0],axes[0][1],axes[0][2]});
+    next.owner_speeds.forward=speed;
+    s=next;
+    ++resets_;info.performed=true;info.heading_units=units;info.pose=pose;last_reset_=info;
+    upside_down_count_=0;stuck_count_=0;
+    return true;
 }
 
 bool VehicleTrackSession::reset_to_node(VehicleState& s, VehicleTrackReset reason) {
@@ -1129,6 +1242,8 @@ bool VehicleTrackSession::reset_to_node(VehicleState& s, VehicleTrackReset reaso
         return false;
     }
     lead_velocity(next, pose.speed);
+    // Actor4C0 is initialized only by4257BE, not by427C50 placement.
+    next.path_powertrain_speed = s.path_powertrain_speed;
     s = next;
     // 0x00427C7F: the coordinate follows the car to where it now is. The
     // replay's stand-in for the car's heading is its last step, which a
@@ -1173,6 +1288,8 @@ bool VehicleTrackSession::reset_to_point(VehicleState& s, int zone_index) {
         return false;
     }
     lead_velocity(next, pose.speed);
+    // Actor4C0 is initialized only by4257BE, not by427C50 placement.
+    next.path_powertrain_speed = s.path_powertrain_speed;
     s = next;
     const float xy[2] = {zone.point[0], zone.point[1]};
     update_track_path_coordinate(course_->route.spline, course_->track, progress_.coordinate,
@@ -1190,9 +1307,39 @@ bool VehicleTrackSession::reset_to_point(VehicleState& s, int zone_index) {
 }
 
 void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
-                                   VehicleTrackTelemetry& t) {
+                                   VehicleTrackTelemetry& t, unsigned selector) {
     events_.clear();
     const auto world_tick=input.world_clock_valid?input.world_clock:static_cast<std::int32_t>((ticks_*4000)/60);
+    const auto finish_placement = [&](bool road=false) {
+        // 427C50 tears down the old solver;464C80 seeds the published actor
+        // before426110 constructs the selected solver again. Cold grid spawn
+        // deliberately keeps VehicleModel::reset's separate first-gear policy.
+        s.gear=kVehicleGearNeutral;s.published_gear=kVehicleGearNeutral;
+        s.engine_rpm=1000.F;
+        if(selector==1) {
+            reconstruct_full_physics(s,world_tick);
+            if(input.gearbox_world_random) {
+                player_gear_seed(s.transmission,*input.gearbox_world_random);
+                *input.gearbox_world_random=s.transmission.rng_state;
+            }
+        }
+        ai_started_=false;ai_import_={};rival_path_={};
+        if(selector==4)ai_path_body_seed(rival_path_,s.owner_motion.heading,
+            s.owner_speeds.magnitude,s.owner_motion.angular_velocity[2]);
+        if(selector==3) {
+            auto controls=input;controls.road_angle_word=0;
+            if(!reconstruct_ai_physics(s,controls,-1,world_tick,t))throw std::runtime_error(error_);
+        }
+        if(road) {
+            if(course_->has_route) {
+                const float xy[]={float(s.position.x),float(s.position.y)};
+                update_track_path_coordinate(course_->route.spline,course_->track,progress_.coordinate,xy);
+                progress_.previous_position[0]=xy[0];progress_.previous_position[1]=xy[1];
+            }
+            if(road_reset_.placed)road_reset_.placed(road_reset_.context,road_reset_.slot,s,progress_,world_tick);
+        }
+        owner_recovery_start_=world_tick;
+    };
     const auto request = [&](VehicleTrackReset reason) {
         if (pending_ == VehicleTrackReset::none) {
             pending_ = reason;
@@ -1209,7 +1356,9 @@ void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
     if (reason != VehicleTrackReset::none) {
         pending_ = VehicleTrackReset::none;
         //4264D0/4314A0 arm the owner timer after a successful reset.
-        if(reset_to_node(s,reason))owner_recovery_start_=world_tick;
+        if(road_reset_.resolve?reset_to_road(s,reason,world_tick):reset_to_node(s,reason)) {
+            finish_placement(road_reset_.resolve!=nullptr);
+        }
         t.reset = reason;
         return;
     }
@@ -1233,7 +1382,7 @@ void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
             if (below) {
                 if (zone.type == kZoneResetToPoint) {
                     //427ED0 invokes427E60 with its recovery flag set.
-                    if(reset_to_point(s,progress_.zone))owner_recovery_start_=world_tick;
+                    if(reset_to_point(s,progress_.zone))finish_placement();
                     t.reset = VehicleTrackReset::zone_to_point;
                     return;
                 }
@@ -1311,12 +1460,52 @@ bool VehicleTrackSession::prepare_grid(unsigned frames) {
     // Only the physical placement and contact history leave preparation.
     // Route/lap/reset counters and AI driver history still begin at zero.
     state_=prepared.state_;state_.step=0;state_.simulation_seconds=0;
-    ai_=prepared.ai_;ai_.slices=0;ai_.ground_queries=0;ai_started_=prepared.ai_started_;
+    ai_=prepared.ai_;ai_import_=prepared.ai_import_;ai_.slices=0;ai_.ground_queries=0;ai_started_=prepared.ai_started_;
+    // 425350 constructs the actor's motion state through 464860/464C80.
+    // Grid settling must not replace its initial RPM with the car's idle.
+    state_.engine_rpm=1000.F;
+    player_engine_reset(state_.engine,float(state_.engine_rpm));
+    if(ai_active_)ai_.engine.rpm=float(state_.engine_rpm);
     return true;
 }
 
+void VehicleTrackSession::initialize_gearbox_offsets(std::uint32_t& world_random) noexcept {
+    // 46D436 draws during construction. The restored neutral gearbox
+    // publishes zero shift offsets until its first gear engagement.
+    player_gear_seed(state_.transmission,world_random);
+    world_random=state_.transmission.rng_state;
+}
+
+void VehicleTrackSession::publish_start_car_speeds(bool animated) noexcept {
+    // 47C580 calls 427C50 with zero placement speed. Actor+3D0 stays zero;
+    // actor+3D4 is the magnitude of the unit road axis scaled by 0.1.
+    state_.owner_speeds={0.F,animated?.1F:0.F};
+}
+
+void VehicleTrackSession::place_start_car(const VehicleVec3& position,const PlayerRigidMatrix& axes,bool animated) {
+    state_.position=position;
+    state_.orientation=vehicle_orientation_from_axes(axes);
+    // 427C50 stores its zero speed argument separately from the world vector.
+    PlayerRigidVector velocity{};
+    if(animated)for(unsigned k=0;k<3;++k)velocity[k]=axes[0][k]*.1F;
+    state_.velocity={velocity[0],velocity[1],velocity[2]};
+    state_.angular_velocity={};
+    state_.rigid_body_ready=false;
+    state_.forces_prepared=false;
+    state_.aero_ready=false;
+    state_.owner_speeds={0.F,std::sqrt((velocity[0]*velocity[0]+velocity[1]*velocity[1])+velocity[2]*velocity[2])};
+    state_.owner_slip_angle=0;
+    player_publish_owner_motion(state_.owner_motion,velocity,{},axes);
+    ground_.reset_strut_cache();
+    if(course_->has_route) {
+        const float xy[]={float(position.x),float(position.y)};
+        start_race_progress(course_->route,course_->track,xy,progress_);
+    }
+}
+
 bool VehicleTrackSession::step_grid_engine(const VehicleInput& input, VehicleTrackTelemetry& telemetry,
-                                           double publication_dt, double solver_dt,bool drag,std::int32_t clock) {
+                                           double publication_dt, double solver_dt,bool drag,std::int32_t clock,
+                                           bool advance_chassis) {
     const double throttle=input.throttle;
     if (!valid_ || !started_ || ai_active_ || steps_ != 0 ||
         !finite(throttle) || throttle < 0 || throttle > 1 ||
@@ -1325,44 +1514,54 @@ bool VehicleTrackSession::step_grid_engine(const VehicleInput& input, VehicleTra
     auto next=state_;
     const auto& h=model_->spec().handling;
     // Original stage setter434B50 calls human vfunc1C/20;4616BE requests
-    // neutral with handbrake while held. This port enters countdown directly,
-    // after the omitted flyby/prerace, so begin with settled neutral here.
+    // neutral with the service brake while held. Keep that settled neutral state
+    // during the road NIS and countdown, without recreating the engine here.
     next.gear=kVehicleGearNeutral;next.published_gear=next.gear;
     next.transmission.requested_gear=next.gear;
     next.transmission.mode=3;next.transmission.clutch=1;
     next.transmission.previous_slip_rpm=0;next.transmission.wheel_engine_speed=0;
     next.transmission.shift_pending=false;
     next.engine.throttle_multiplier=1;next.engine.feedback_torque=0;
-    // 477637 publishes active NOS to the crank even while the stage holds
-    // the gearbox in neutral. The grid body is stationary in the retail trace.
-    const float crank=player_engine_torque(h,next.engine,next.gear,float(throttle),&input,
-                                           model_->spec().nitrous.rate);
-    player_engine_integrate(h,next.engine,crank,float(solver_dt));
-    next.simulation_seconds+=solver_dt;
-    if(drag)player_drag_heat_update(h,next.engine,next.transmission,next.gear,clock,true);
-    //46CC5E/46CC8C read the world clock, held constant across solver slices.
-    player_engine_cutoff_update(h,next.gear,next.engine,
-        float(clock)*.00025F);
-    if(publication_dt>0) next.engine_rpm=player_engine_publish_rpm(h,next.engine,
-        float(next.engine_rpm),float(publication_dt));
-    if(!finite_state(next)) return false;
     VehicleTrackTelemetry t;
+    VehicleInput grid_input=input;
+    grid_input.on_start_grid=true;
+    if(advance_chassis) {
+        // 4774A0 keeps integrating the resting body's basis and contact forces.
+        if(!model_->step(next,grid_input,ground_,t.model,publication_dt,solver_dt,false,true))return false;
+    } else {
+        const float crank=player_engine_torque(h,next.engine,next.gear,float(throttle),&input,
+                                               model_->spec().nitrous.rate);
+        player_engine_integrate(h,next.engine,crank,float(solver_dt));
+        next.simulation_seconds+=solver_dt;
+        if(drag)player_drag_heat_update(h,next.engine,next.transmission,next.gear,clock,true);
+        player_engine_cutoff_update(h,next.gear,next.engine,float(clock)*.00025F);
+        if(publication_dt>0) next.engine_rpm=player_engine_publish_rpm(h,next.engine,
+            float(next.engine_rpm),float(publication_dt));
+        t.model.position=next.position;t.model.velocity=next.velocity;
+        t.model.engine_rpm=next.engine_rpm;t.model.engine=next.engine;
+        t.model.transmission=next.transmission;t.model.gear=next.gear;
+        t.model.published_gear=next.published_gear;
+        t.model.throttle=throttle;t.model.brake=input.brake;t.model.handbrake=input.handbrake;
+        t.model.engine_torque=double(crank)*1000.0;
+        t.model.simulation_seconds=next.simulation_seconds;t.model.solver_dt=solver_dt;
+    }
+    if(!finite_state(next)) return false;
     t.position=next.position;t.orientation=next.orientation;
     t.velocity=next.velocity;t.angular_velocity=next.angular_velocity;
-    t.model.position=next.position;t.model.velocity=next.velocity;
-    t.model.engine_rpm=next.engine_rpm;t.model.engine=next.engine;
-    t.model.transmission=next.transmission;t.model.gear=next.gear;
-    t.model.published_gear=next.published_gear;
-    t.model.throttle=throttle;t.model.handbrake=true;
-    t.model.engine_torque=double(crank)*1000.0;
-    t.model.simulation_seconds=next.simulation_seconds;t.model.solver_dt=solver_dt;
-    state_=next;telemetry=t;return true;
+    state_=next;last_input_=grid_input;telemetry=t;return true;
 }
 
-void VehicleTrackSession::release_grid_engine(bool drag,unsigned category,float window_scale) noexcept {
+bool VehicleTrackSession::release_grid_engine(bool drag,unsigned category,float window_scale) {
     // Original461510 clears the hold and4615B0 restores the request policy.
     // Keep physical RPM and clutch phase; normal gearbox update engages first.
     if(!ai_active_ && state_.gear==kVehicleGearNeutral) {
+        // 4774A0 consumes the previous neutral component forces before the
+        // first live 46ABD0 processes the request. The parked countdown
+        // keeps the body fixed; complete its held inputs before releasing it.
+        if(!state_.forces_prepared) {
+            VehicleTelemetry telemetry;
+            if(!model_->step(state_,last_input_,ground_,telemetry,0,0,false,true,true,true))return false;
+        }
         //46E8FB..46E925 evaluates the first request with PHYSICAL engine RPM.
         // The held-grid adapter bypasses that request consumer, so publish its
         // quality here exactly once. The existing clutch/46DEC3 tail consumes it.
@@ -1371,6 +1570,7 @@ void VehicleTrackSession::release_grid_engine(bool drag,unsigned category,float 
             model_->request_upshift_rpm()[kVehicleGearNeutral],category,kVehicleGearNeutral,window_scale);
         state_.transmission.requested_gear=kVehicleGearFirst;
     }
+    return true;
 }
 
 void VehicleTrackSession::publish_world_acceleration(const VehicleVec3& before,float dt) noexcept {
@@ -1444,6 +1644,7 @@ bool VehicleTrackSession::continue_contact(double seconds,const VehicleState* pu
     next.published_support=0;
     for(const auto& wheel:next.wheels)next.published_support+=wheel.contact?1U:0U;
     next.published_gear=next.gear;
+    for(unsigned k=0;k<4;++k)next.published_wheel_slip[k]=next.wheels[k].prepared_effect_slip;
     const auto& forward=next.rigid_body.axes[0];
     player_publish_owner_motion(next.owner_motion,next.rigid_body.velocity,
         next.rigid_body.angular_velocity,next.rigid_body.axes);

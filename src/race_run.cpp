@@ -67,13 +67,29 @@ bool RaceRun::set_event(std::uint32_t event,std::string& error,unsigned race_ind
     event_number_=event;race_index_=race_index;race_type_=selection.type;
     track_number_=std::uint32_t(selection.slot.track);return true;
 }
-bool RaceRun::set_start_clock(unsigned release,unsigned go,std::string& error) {
-    if(session_ || !release || go<=release || go>10000 || free_drive_ || race_type_==RaceType::drag || race_type_==RaceType::drift) {
+bool RaceRun::set_start_clock(unsigned release,unsigned go,std::string& error,
+                             unsigned road_scene_slots,unsigned scene_end) {
+    if(session_){error="start clock requires a fresh session";return false;}
+    return apply_start_clock(release,go,error,road_scene_slots,scene_end);
+}
+bool RaceRun::apply_start_clock(unsigned release,unsigned go,std::string& error,
+                                unsigned road_scene_slots,unsigned scene_end) {
+    if(!release || go<=release || go>10000 || road_scene_slots>=16 ||
+       (scene_end&&(scene_end<go||scene_end>10000)) ||
+       free_drive_ || race_type_==RaceType::drag || race_type_==RaceType::drift) {
         error="authored start clock domain or session already started";return false;
     }
     authored_cinematic_=float(double(release)/30);
     authored_countdown_=float((double(go)/30-double(release)/30)*double(1.F/3.F));
+    road_scene_slots_=road_scene_slots;
+    road_start_clock_.reset();
+    authored_scene_end_=float(double(scene_end)/30);
     authored_start_=true;error.clear();return true;
+}
+bool RaceRun::set_start_clock(const RaceStartClock& clock,std::string& error) {
+    if(!set_start_clock(clock.release,clock.go,error,clock.animated_slots,clock.end))return false;
+    road_start_clock_=clock;
+    return true;
 }
 bool RaceRun::set_crash_camera(unsigned intensity,std::string& error) {
     if(metadata_ready_||session_||intensity>255){error="crash camera must be configured before metadata/start";return false;}
@@ -151,15 +167,16 @@ bool RaceRun::read_metadata(const std::filesystem::path& front, const std::files
         if(catchup_traffic_selector_>3){error="catch-up traffic selector invalid";return false;}
         unsigned throttle_selector=0;
         std::memcpy(&throttle_selector,event_image.data()+descriptor->offset+0x148,4);
-        if(!race_rival_throttle_cap(throttle_selector,rival_throttle_cap_)){error="event rival throttle selector invalid";return false;}
         if(quick_race_) {
             if(!free_drive_&&!(race.track.mode_mask&quick_race_track_mask(quick_race_->mode))) {
                 error="track does not support the selected quick race mode";return false;
             }
             catchup_traffic_selector_=race_type_==RaceType::drift?0:quick_race_->traffic;
             catchup_weight_=quick_race_->catch_up&&!free_drive_?1.F:0.F;
-            rival_throttle_cap_=1.F;
+            // 4B58B0/4B5951 select the Quick Drag cap from difficulty.
+            throttle_selector=quick_race_->mode==QuickRaceMode::drag?difficulty_:2;
         }
+        if(!race_rival_throttle_cap(throttle_selector,rival_throttle_cap_)){error="rival throttle selector invalid";return false;}
         if(!free_drive_&&race_type_==RaceType::time_trial) {
             float seconds=0;std::memcpy(&seconds,event_image.data()+descriptor->offset+0x1c+4*difficulty_,4);
             if(!std::isfinite(seconds)||seconds<=0||double(seconds)*4000+.5>kRaceTicksLimit) {
@@ -184,6 +201,7 @@ bool RaceRun::read_metadata(const std::filesystem::path& front, const std::files
             rivals_[i].start_road=race.track.rival_start_roads[4*unsigned(direction_)+road_index_for_grid[grid-1]];
         }
         lap_skip_ = free_drive_ ? 0 : race.track.lap_skip;
+        ai_decision_start_ = race.track.ai_decision_start;
     }
     if (observer) observer->checkpoint("race metadata released");
     metadata_ready_ = true;
@@ -195,7 +213,10 @@ bool RaceRun::prepare_metadata(const std::filesystem::path& root, std::string& e
     return read_metadata(root / "Frontend/FRONTB.LZC", root / "Global/GLOBALB.BUN", error, observer);
 }
 bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, std::string& error,
-                    TrackSliceLoadObserver* observer, const std::string& player_name) {
+                    TrackSliceLoadObserver* observer, const std::string& player_name,const RoadSceneLoader* road_scene) {
+    if(road_scene && (!road_scene->load||authored_start_||free_drive_||race_type_==RaceType::drag||race_type_==RaceType::drift)) {
+        error="road playlist requires a fresh ordinary race";return false;
+    }
     if (session_ || track.assets.verdict != AssetVerdict::complete) {
         error = "race requires a fresh session and a complete first-lap asset check"; return false;
     }
@@ -301,7 +322,7 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
                 unsigned(event_number_),difficulty_,i,rivals_[i].car_type.c_str(),rival_contexts_[i],rating,slip);
         }
         if(!intro_ai_.load(root,rival_contexts_,hulls,true,track_number_,direction_,race_type_==RaceType::drag,catchup_weight_,laps_,lap_skip_!=0,catchup_traffic_selector_,
-            !quick_race_||quick_race_->catch_up)) {error="intro planner data refused";return false;}
+            !quick_race_||quick_race_->catch_up,ai_decision_start_)) {error="intro planner data refused";return false;}
         if(!session_->set_planned_rivals(rivals_,low_slip,error,player_grid_))return false;
         session_->enable_rival_physics_switching();
         if(!session_->prepare_leaderboard(root,car_,error))return false;
@@ -311,10 +332,12 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
         // Solo drag needs lane steering. Drift and time trials need a road
         // context for the human's finish driver (43531A, action17).
         std::array<const VehicleHull*,4> hulls{};hulls[3]=&hull;
-        if(!intro_ai_.load(root,rival_contexts_,hulls,true,track_number_,direction_,race_type_==RaceType::drag,catchup_weight_,laps_,course_.route.point_to_point,catchup_traffic_selector_)) {
+        if(!intro_ai_.load(root,rival_contexts_,hulls,true,track_number_,direction_,race_type_==RaceType::drag,catchup_weight_,laps_,course_.route.point_to_point,catchup_traffic_selector_,true,ai_decision_start_)) {
             error="solo finish/drag planner data refused";return false;
         }
     }
+    if(initial_world_random_)
+        if(auto* random=intro_ai_.world_random())*random=*initial_world_random_;
     // A live track world owns props even when its traffic selection is empty.
     // Solver-only replay runs keep their explicitly empty object world.
     if((quick_race_||free_drive_||traffic_configured_||!rivals_.empty()||race_type_==RaceType::time_trial||race_type_==RaceType::drift)&&
@@ -329,6 +352,16 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
     if (observer) observer->checkpoint("race session constructed");
     float countdown=kRaceCountdownStepSeconds,cinematic=0;
     if(!free_drive_&&(event_number_==0||race_type_==RaceType::drift) && !load_race_start_timing(root,event_number_,countdown,cinematic,error,race_index_))return false;
+    if(road_scene) {
+        if(!session_->prepare_road_grid(traffic_grid_spacing_,traffic_grid_clearance_,error))return false;
+        unsigned scene=0;
+        auto& random=session_->world_random_state();
+        RaceStartClock clock;
+        if(!draw_road_start_scene(road_scene->files,root,unsigned(rivals_.size()+1),player_grid_,random,scene,error)||
+           !road_scene->load(scene,clock,error)||
+           !apply_start_clock(clock.release,clock.go,error,clock.animated_slots,clock.end))return false;
+        road_start_clock_=std::move(clock);
+    }
     if(authored_start_){countdown=authored_countdown_;cinematic=authored_cinematic_;}
     VehiclePose start;
     const bool drift_start=!free_drive_&&race_type_==RaceType::drift;
@@ -337,8 +370,23 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
         if(!supported_race_selection(event_number_,race_index_,selection)||
            !load_drift_start_pose(root,course_,start,error,selection.region))return false;
     }
-    if(!session_->start(error,drift_start?&start:nullptr,countdown,cinematic))return false;
-    if(traffic_grid_spacing_>0&&!session_->stage_traffic_grid(traffic_grid_spacing_,traffic_grid_clearance_,error))
+    if(!session_->start(error,drift_start?&start:nullptr,countdown,cinematic,
+                        road_scene_slots_,authored_scene_end_))return false;
+    if(road_start_clock_&&road_start_clock_->car_keys) {
+        auto motion=make_road_start_motion(course_,road_start_clock_->car_keys,error);
+        if(!motion)return false;
+        session_->set_road_start_motion(std::move(motion));
+    }
+    if(road_start_clock_)for(unsigned actor=0;actor<=rivals_.size();++actor) {
+        const unsigned grid=actor?actor+(actor>=player_grid_):player_grid_;
+        if(!(road_scene_slots_&(1U<<(grid-1))))continue;
+        const auto& car=actor?session_->rival(actor-1):*session_;
+        VehicleVec3 position;
+        PlayerRigidMatrix axes;
+        if(!place_road_start_car(course_,car.spec(),road_start_clock_->release_cars[grid-1],position,axes,error))return false;
+        session_->set_road_release_pose(actor,position,axes);
+    }
+    if(!road_scene&&traffic_grid_spacing_>0&&!session_->stage_traffic_grid(traffic_grid_spacing_,traffic_grid_clearance_,error))
         return false;
     if (observer) observer->checkpoint("race session started");
     return true;
@@ -355,8 +403,12 @@ bool RaceRun::apply(const TrackResidencyStep& step, std::string& error) {
     }
     return true;
 }
-bool RaceRun::set_intro_traffic(const std::vector<RaceTrafficSetup>& setup,std::string& error) {
+bool RaceRun::set_intro_traffic(const std::vector<RaceTrafficSetup>& setup,std::string& error,
+                                std::optional<std::uint32_t> global_random_before_world) {
     if(metadata_ready_||session_||(race_type_==RaceType::drift)||setup.size()>kRaceTrafficCapacity||(event_number_==0&&setup.size()!=6)) {error="intro traffic configuration invalid";return false;}
+    // 41F81B passes the remainder of the external draw to WORLD+2D0.
+    initial_world_random_=global_random_before_world;
+    if(initial_world_random_)*initial_world_random_%=0x7fffffffU;
     traffic_=setup;traffic_configured_=true;error.clear();return true;
 }
 bool RaceRun::skip_start_cinematic() {
@@ -373,6 +425,10 @@ bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
     if (!session_ || pending_) { error = "race simulation/commit order violated"; return false; }
     if(session_->timing().outcome!=RaceOutcome::running&&
        !(session_->timing().outcome==RaceOutcome::finished&&session_->has_finish_driver())) {error="race session is not running";return false;}
+    session_->update_start_stage();
+    AiRoadCursor human_road;
+    if(!session_->recycle_traffic_before_controllers(
+        intro_ai_.human_road_cursor(human_road)?&human_road:nullptr,error))return false;
     if(!rivals_.empty()&&!intro_ai_.observe_human(*session_)){error="human difficulty history refused";return false;}
     int held_lane=0;
     if(race_type_==RaceType::drag) {
@@ -386,12 +442,10 @@ bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
         RaceRivalPlans plans;
         const auto before=profile?timer->now_us():0;
         if(!intro_ai_.plan(*session_,plans,held_lane)) {error="intro path planner refused";return false;}
-        // Retained driver+1FC also applies before GO. Traffic and the human
-        // are separate actors and do not receive this racer constructor cap.
-        for(std::size_t i=0;i<plans.count;++i) {
+        // 422523 publishes the event cap to the rival driver. The held-grid
+        // pedal override is applied separately in RaceSession.
+        for(std::size_t i=0;i<plans.count;++i)
             plans.cars[i].throttle_cap=std::min(plans.cars[i].throttle_cap,rival_throttle_cap_);
-            plans.cars[i].grid_throttle=std::min(plans.cars[i].grid_throttle,rival_throttle_cap_);
-        }
         if(profile)profile->planner=(timer->now_us()-before)/1000.0;
         if(!session_->advance_planned(pad,plans,error,profile,timer))return false;
     } else if (!session_->advance(pad, error,profile,timer)) return false;

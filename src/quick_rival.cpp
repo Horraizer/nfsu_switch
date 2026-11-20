@@ -1,4 +1,5 @@
 #include "nfsu/quick_rival.h"
+#include "nfsu/race_random.h"
 #include "nfsu/texture.h"
 #include <algorithm>
 #include <cmath>
@@ -6,8 +7,7 @@
 #include <cstring>
 namespace nfsu {
 std::uint32_t quick_rival_random(std::uint32_t& state,unsigned bound) noexcept {
-    const auto result=bound?state%bound:0U,x=state^0x1d872b41U,y=(x>>5)^x;
-    state=(y<<27)^y^x;return result;
+    return race_random_index(state,bound);
 }
 int quick_rival_context(const unsigned char* ai,unsigned difficulty,std::uint32_t& rng) noexcept {
     if(!ai||difficulty>2)return 0;

@@ -30,7 +30,8 @@ public:
     bool load(const std::filesystem::path&,const CarAssets&,std::string&);
     void reset() noexcept;
     void advance(const RaceSession&) noexcept;
-    bool append(RecordedCommands&,std::string&);
+    bool append(RecordedCommands&,std::string&,bool second_player=false);
+    bool set_wheel_widths(const std::filesystem::path&,const CarAssets&,std::string&);
     void place(RecordedCommands&,std::size_t first);
     std::size_t segment_count() const noexcept {return count_;}
     std::size_t resident_bytes() const noexcept;

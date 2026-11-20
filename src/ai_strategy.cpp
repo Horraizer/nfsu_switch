@@ -136,7 +136,7 @@ float reaction_elapsed(std::uint32_t now,std::uint32_t then) noexcept {
 }
 bool ai_strategy_react(const AiReactionInput& in,AiReactionState& state,std::uint32_t& rng) noexcept {
     if(!std::isfinite(in.relative))return false;
-    if(in.target_disabled||in.target_role==3||(!in.racing&&in.target_role!=1)||
+    if(in.target_disabled||in.target_role==3||(!in.flow_state_nine&&in.target_role!=1)||
        (in.self_selector==3?!in.eligible:in.self_selector!=4))return true;
     AiReactionState next;next.tick=in.tick;
     next.first=(reaction_random(rng,.4F)+.3F)-.2F;

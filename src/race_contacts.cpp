@@ -268,10 +268,11 @@ static bool resolve_pair_impl(VehicleState& sa,const VehicleSpec& as,const RaceC
             if(failed_b){nb.drag_totalled=true;nb.engine.heat=1.5F;}
         }
         if(repeat) {
-            // 46C601 repeats from 46BB94 with the cached velocities; the
-            // preceding impulse writes changed momentum and the prop mass.
+            // 46C601 reuses both arms after the first pass shortened the
+            // car's arm at 46C310/46C3A9. The prop now has its moving mass.
+            const auto prior_pass=response;
             if(!calculate_car_contact_response(ba,bbod,geometry,response,1.F,material,
-                pinned_upright&&activation>0,own_material,pinned_upright_b&&own_activation>0))return false;
+                pinned_upright&&activation>0,own_material,pinned_upright_b&&own_activation>0,&prior_pass))return false;
             if(response.closing) {
                 if((!prop||activation==0)&&!apply_car_contact_impulse(bbod,response.impulse_b,response.arm_b))return false;
                 if((!own_prop||own_activation==0)&&!apply_car_contact_impulse(ba,response.current_impulse,response.arm_a))return false;
@@ -495,10 +496,14 @@ bool search_race_contact(const VehicleState& sa,const VehicleSpec& as,const Race
     const RaceContactPose& pa,const RaceContactPose& pb,RaceContactJob& result,RaceHullCache* persistent_cache,
     RaceContactPartner partner,RaceContactPartner own) {
     result={};if(&sa==&sb)return false;
-    double depth=0;VehicleVec3 normal{};
-    const int overlap=overlap_boxes(placed(sa,as,ab),placed(sb,bs,bb),depth,normal,vehicle_sqrt(double(.001F)));
-    if(overlap<0)return false;
-    if(!overlap)return true;
+    // 468060 updates the closest hull features on every registered pair,
+    // even before impact. The next step uses those features for admission.
+    if(!persistent_cache) {
+        double depth=0;VehicleVec3 normal{};
+        const int overlap=overlap_boxes(placed(sa,as,ab),placed(sb,bs,bb),depth,normal,vehicle_sqrt(double(.001F)));
+        if(overlap<0)return false;
+        if(!overlap)return true;
+    }
     RaceHullCache local_cache;
     auto& cache=persistent_cache?*persistent_cache:local_cache;
     RaceHullQuery query;

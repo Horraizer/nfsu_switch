@@ -118,9 +118,13 @@ bool ai_driver_target(const AiDriverPath& path,const AiDriverPoint& position,
     }else {
     // 459710: choose the first sufficiently distant point ahead of velocity;
     // if none qualifies, the original returns the final path point.
-    AiDriverPoint direction{1,0,0};
-    const float norm=length(velocity);
-    if(norm!=0) for(unsigned k=0;k<3;++k)direction[k]=velocity[k]/norm;
+    // 5672B0 normalizes the horizontal velocity, even while airborne.
+    std::array<float,2> direction{1,0};
+    const float norm=std::sqrt(velocity[1]*velocity[1]+velocity[0]*velocity[0]);
+    if(norm!=0) {
+        const float inverse=1.F/norm;
+        direction={velocity[0]*inverse,velocity[1]*inverse};
+    }
     std::size_t first=path.count-1;
     for(std::size_t j=0;j<path.count;++j) {
         const auto delta=difference(path.points[j],position);
@@ -142,9 +146,16 @@ bool ai_driver_target(const AiDriverPath& path,const AiDriverPoint& position,
     if(end_distance<distance) {
         const auto last=difference(path.points[end],path.points[end-1]);
         const float norm3=std::sqrt((last[0]*last[0]+last[1]*last[1])+last[2]*last[2]);
-        if(norm3==0) return false;
-        const float scale=1.F/(norm3/(distance-end_distance));
-        for(unsigned k=0;k<3;++k)next.point[k]=path.points[end][k]+last[k]*scale;
+        const float remaining=distance-end_distance;
+        const float denominator=norm3/remaining;
+        if(denominator==0) {
+            // 45922A/56743A extends a coincident final pair along world X.
+            next.point=path.points[end];
+            next.point[0]+=remaining;
+        } else {
+            const float scale=1.F/denominator;
+            for(unsigned k=0;k<3;++k)next.point[k]=path.points[end][k]+last[k]*scale;
+        }
     } else {
         const float span=end_distance-start_distance;
         if(span==0) return false;
@@ -165,9 +176,9 @@ bool ai_driver_target(const AiDriverPath& path,const AiDriverPoint& position,
 }
 
 bool ai_driver_slip_limit(bool hold, std::uint32_t role, float race_seconds,
-                          bool has_status, std::int16_t finish_place) noexcept {
+                          bool has_status, std::int16_t racer_status) noexcept {
     return !hold && role != 3 && race_seconds > 10 &&
-        (!has_status || finish_place == 0);
+        (!has_status || racer_status == 0);
 }
 
 bool ai_driver_pedals(const AiDriverPedalInput& in,
@@ -310,7 +321,7 @@ std::uint16_t steering_slew(float requested,float speed,float dt,std::uint16_t w
 }
 static bool ground_steering(float heading_error, float velocity_error,
                               float speed, int category, float dt,
-                              AiDriverSteeringState& state,bool reverse_command,bool moving_reverse,unsigned traffic_mode,float yaw_scale=1.F) noexcept {
+                              AiDriverSteeringState& state,bool reverse_command,bool moving_reverse,unsigned traffic_mode,float yaw_scale=1.F,bool wall_contact=false) noexcept {
     if (!std::isfinite(heading_error) || !std::isfinite(velocity_error) ||
         !std::isfinite(speed) || speed < 0 || category < 0 || category > 3 ||
         !std::isfinite(dt) || dt <= 0) return false;
@@ -338,7 +349,9 @@ static bool ground_steering(float heading_error, float velocity_error,
     const float kp=traffic ? (traffic_mode==4?.8500000238418579F:.699999988079071F) : uniform_curve(p,axis_scale,speed)*uniform_curve(pc,category_scale,float(category));
     const float kd=traffic ? (traffic_mode==4?.11999999731779099F:0.F) : uniform_curve(d,axis_scale,speed)*uniform_curve(dc,category_scale,float(category));
     const float ki=traffic ? (traffic_mode==4?.7900000214576721F:1.4199999570846558F) : uniform_curve(i,axis_scale,speed)*uniform_curve(ic,category_scale,float(category));
-    const float requested=std::clamp((-kp*error-derivative*kd)-integral*ki,
+    // 45F1E2..45F2AF replaces the requested angle, not the histories or
+    // steering word. It still passes through the shared clamp and slew.
+    const float requested=std::clamp(wall_contact?-100.F*error:(-kp*error-derivative*kd)-integral*ki,
         -.7853981852531433F,.7853981852531433F);
     const float maximum=traffic?traffic_steering_maximum(moving_reverse?-speed:speed):45.F;
     next.word=steering_slew(reverse_command?-requested:requested,moving_reverse?-speed:speed,dt,state.word,maximum,yaw_scale);
@@ -349,6 +362,10 @@ static bool ground_steering(float heading_error, float velocity_error,
 bool ai_driver_ground_steering(float h,float v,float speed,int category,float dt,
                               AiDriverSteeringState& state,bool reverse_command,bool moving_reverse) noexcept {
     return ground_steering(h,v,speed,category,dt,state,reverse_command,moving_reverse,false);
+}
+bool ai_driver_wall_contact(float normal_up,std::int32_t elapsed_ticks,float magnitude) noexcept {
+    return std::isfinite(normal_up)&&std::isfinite(magnitude)&&std::abs(normal_up)<.1F&&
+        float(elapsed_ticks)*.00025F<.2F&&magnitude>10.F;
 }
 //45EA80 selector2 -> mode3. Original constant steering coefficients and
 // special pedal branch; no racer slip clamp or selector3 tuning substituted.
@@ -402,7 +419,7 @@ bool driver_step(const AiDriverForwardInput& in,float dt,
     if(in.contact[0]||in.contact[1]) {
         if(!ground_steering(next.target.heading_error,next.target.velocity_error,
                                       in.absolute_speed,in.category,dt,next.steering,invert,in.forward_speed<0,
-                                      traffic?4U:0U,yaw_scale))return false;
+                                      traffic?4U:0U,yaw_scale,in.physical_selector==1&&in.recent_wall_contact))return false;
     } else {
         //45F2B4..45F360: front wheels unsupported. Do not advance the two
         // grounded steering histories. Counter the heading/velocity mismatch
@@ -428,7 +445,7 @@ bool driver_step(const AiDriverForwardInput& in,float dt,
         AiDriverPedalInput p;p.mode=traffic?4U:drag?1U:0U;
         p.desired_speed=in.desired_speed;p.absolute_speed=in.absolute_speed;
         p.throttle_cap=in.throttle_cap;p.speed_error=next.speed.error();p.slip_error=next.slip.error();
-        p.slip_limit=ai_driver_slip_limit(false,traffic?3U:2U,in.race_seconds,false,0);
+        p.slip_limit=ai_driver_slip_limit(false,traffic?3U:2U,in.race_seconds,true,in.racer_status);
         // Ordinary desired-speed near-zero branch in 45F790 is distinct from
         // the low-target branch inside 45FC90.
         if((signed_control&&std::fabs(in.desired_speed)<2)||
@@ -444,6 +461,15 @@ bool driver_step(const AiDriverForwardInput& in,float dt,
         next.speed.clear_error_samples();
     }
     if(!in.enabled)next.pedals={};
+    if(in.nitrous_active)next.nitrous_pedal_latch=true;
+    if(next.nitrous_pedal_latch) {
+        // 45F959..45F9BF retains the latch after depletion until the
+        // target speed falls. Drag never applies this pedal override.
+        if(!drag&&in.desired_speed>=next.previous_desired_speed)
+            next.pedals={in.throttle_cap,0.F};
+        else next.nitrous_pedal_latch=false;
+    }
+    next.previous_desired_speed=in.desired_speed;
     //45FAC8..45FAE9, including the exact2.0 boundary (native witness).
     if(in.route_distance<=2)next.steering.word=0;
     state=next;return true;
@@ -463,6 +489,14 @@ bool ai_driver_traffic_impact_step(const AiDriverForwardInput& in,float dt,AiDri
     //same histories across the traffic-mover transition; ordinary support
     //and direction gates now apply, with role3 excluding the racer slip cap.
     return driver_step(in,dt,state,true,false,true,yaw_scale);
+}
+void ai_driver_placement_reset(AiDriverForwardState& state) noexcept {
+    //427D87..427DB3: direct steering store, virtual58/68 and virtual34.
+    state.steering.word=0;
+    state.steering.heading.clear_error_samples();
+    state.steering.velocity_heading.clear_error_samples();
+    state.speed.clear_error_samples();
+    state.gear_request=-1;
 }
 bool ai_driver_recovery_reset(const AiDriverForwardInput& in,AiDriverForwardState& state) noexcept {
     if(!finite(state.target.point)||!finite(in.position)||!finite(in.velocity)||

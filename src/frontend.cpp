@@ -1,5 +1,6 @@
 #include "nfsu/frontend.h"
 #include "nfsu/fps_history.h"
+#include "nfsu/lz4_block.h"
 #include "nfsu/frontend_scene.h"
 #include "nfsu/career_garage.h"
 #include "nfsu/frontend_motion.h"
@@ -13,6 +14,7 @@
 #include <cstring>
 #include <map>
 #include <functional>
+#include <fstream>
 #include <stdexcept>
 namespace nfsu {
 bool open_underground(FrontendAction action,const std::filesystem::path& root,
@@ -337,6 +339,34 @@ bool texture(const std::vector<unsigned char>& bytes,unsigned hash,Image& image,
         image.width=rec.width;image.height=rec.height;image.blend=texture_alpha_blend(rec);return true;
     }return false;
 }
+
+void load_enhanced_art(const std::filesystem::path& root,unsigned hash,Image& image) {
+    char name[13]{};
+    for(unsigned i=0;i<8;++i)
+        name[i]="0123456789abcdef"[(hash>>(28-4*i))&15U];
+    std::memcpy(name+8,".nfa",5);
+    try {
+        std::ifstream file(root/"ArtworkHD"/name,std::ios::binary);
+        unsigned char header[24]{};
+        if(!file.read(reinterpret_cast<char*>(header),sizeof header)||
+           std::memcmp(header,"NFA1",4)||dword(header+4)!=hash||
+           word(header+8)!=image.width||word(header+10)!=image.height)return;
+        const auto width=word(header+12),height=word(header+14);
+        const auto packed=dword(header+16);
+        const auto source=dword(header+20);
+        if(!width||!height||width>1536||height>1536||
+           width<=image.width||height<=image.height||
+           width>image.width*2||height>image.height*2||source!=image.rgba.size())return;
+        const std::size_t bytes=std::size_t(width)*height*4;
+        if(!packed||packed>bytes+bytes/255+16)return;
+        std::vector<unsigned char> coded(packed),pixels(bytes);
+        if(!file.read(reinterpret_cast<char*>(coded.data()),coded.size())||
+           file.peek()!=std::char_traits<char>::eof()||!expand_lz4_block(coded,pixels))return;
+        image.width=width;image.height=height;image.rgba=std::move(pixels);
+    }catch(const std::bad_alloc&) {
+        // Enhanced art is optional. The already decoded retail image is intact.
+    }
+}
 }
 namespace {
 void read_ui_font(const std::vector<unsigned char>& bytes,const char* name,RaceLapHudFont& f,unsigned& hash) {
@@ -504,6 +534,7 @@ bool RaceLoadingArt::load(const std::filesystem::path& root,std::string& error,u
         for(unsigned i=0;i<3;++i)if(!texture(global,bin_hash(names[i]),out.textures[i],error) &&
                                    !texture(a,bin_hash(names[i]),out.textures[i],error))
             throw std::runtime_error(std::string("loading sprite absent: ")+names[i]);
+        load_enhanced_art(root,bin_hash(names[0]),out.textures[0]);
         // PC_Loading.fng in authenticated GLOBALB, including the authored
         // retail tip group, picture and two message fields.
         const auto first=global.begin()+0x230208;
@@ -546,6 +577,7 @@ bool RaceLoadingArt::load(const std::filesystem::path& root,std::string& error,u
                 std::vector<unsigned char> dynamic;
                 if(!load_race_image(root/"Global/DYNTEX.BIN",dynamic,issues,limits)||
                    !texture(dynamic,tip->image,out.tip_texture,error))throw std::runtime_error("loading tip image absent");
+                load_enhanced_art(root,tip->image,out.tip_texture);
                 out.tip_lines[0].text=career_language(language,tip->id==4?0x70c47a47:tip->text,"");
                 out.tip_lines[1].text=tip->second?career_language(language,tip->second,""):"";
             }else {
@@ -645,7 +677,7 @@ struct FrontendArt::Impl {
     std::vector<unsigned char> splash_prompt_script;
     Object splash_picture,splash_prompt;
     FrontendUiAtlas atlas;
-    void draw(Canvas image,const FrontendMenu& menu) const;
+    void draw(Canvas image,const FrontendMenu& menu,bool song_only=false) const;
     std::map<unsigned,Image> textures;
     std::vector<Object> objects;
     std::array<std::vector<Object>,5> post_objects;
@@ -702,7 +734,8 @@ struct FrontendArt::Impl {
     void draw_magazine(Canvas,const CareerMagazineRecipe&,const std::string&,bool background)const;
     std::vector<Object> magazine_front,magazine_back;
     std::vector<unsigned> magazine_textures,magazine_mask_resources;
-    void pack_atlas(bool compact=false);
+    void pack_atlas(bool compact=false,unsigned width=2048);
+    void copy_song_card_to(Impl&)const;
     void draw_career(Canvas,const CareerCatalog&,const CareerProfile&,unsigned,const std::string&,bool controls=true,const CareerGarage* garage=nullptr)const;
     void draw_post_race(Canvas,const PostRaceMenu&,const PostRaceValues&)const;
     void draw_free_drive(Canvas,const CareerCatalog&,const CareerProfile&,unsigned,unsigned,const std::string&,const QuickRaceOptions*,bool)const;
@@ -871,8 +904,8 @@ struct FrontendArt::Impl {
         draw_ui_text(target,o,m,value,color,font,tex->second);
     }
 };
-void FrontendArt::Impl::pack_atlas(bool compact) {
-        atlas.width=2048;
+void FrontendArt::Impl::pack_atlas(bool compact,unsigned width) {
+        atlas.width=width;
         unsigned x=0,y=0,row_height=0;
         std::vector<Image*> images;for(auto& item:textures)images.push_back(&item.second);
         // Keep the accepted main-menu packing. Career adds large map planes;
@@ -973,7 +1006,7 @@ bool FrontendArt::load_assets(const std::filesystem::path& root,std::string& err
         if(startup) {
             decode_welcome(front,language,global,error);
             decode_profiles(front,language,error);
-            if(splash)decode_startup_splash(front,error);
+            if(splash)decode_startup_splash(root,front,error);
         } else out.pack_atlas();
         out.background.width=1280;out.background.height=720;
         if(background && !load_frontend_scene(root,out.background.rgba,1280,720,error)) return false;
@@ -1133,7 +1166,26 @@ bool FrontendArt::load_post_race(const std::filesystem::path& root,std::string& 
         impl_->post_objects=std::move(pages);impl_->post_scripts=std::move(scripts);error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
-bool FrontendArt::prepare_post_race(FrontendArt& target,std::string& error) const {
+void FrontendArt::Impl::copy_song_card_to(Impl& next) const {
+    next.large=large;next.large_hash=large_hash;
+    for(const auto& object:objects)if(object.chyron)next.objects.push_back(object);
+    if(next.objects.empty())throw std::runtime_error("EA Trax package not loaded");
+    for(unsigned id:{large_hash,0x5ed3f261U,0xe2a5c626U,0x1abedeb1U}) {
+        const auto texture=textures.find(id);
+        if(texture==textures.end())throw std::runtime_error("EA Trax texture not loaded");
+        next.textures.try_emplace(id,texture->second);
+    }
+}
+bool FrontendArt::prepare_song_card(FrontendArt& target,unsigned width,std::string& error) const {
+    try {
+        if(this==&target)throw std::runtime_error("EA Trax target must be independent");
+        auto next=std::make_unique<Impl>();
+        impl_->copy_song_card_to(*next);
+        next->pack_atlas(true,width);
+        target.impl_=std::move(next);error.clear();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+bool FrontendArt::prepare_post_race(FrontendArt& target,std::string& error,bool include_song_card) const {
     try {
         if(this==&target)throw std::runtime_error("post-race target must be independent");
         for(const auto& page:impl_->post_objects)
@@ -1143,12 +1195,13 @@ bool FrontendArt::prepare_post_race(FrontendArt& target,std::string& error) cons
         next->large_hash=impl_->large_hash;next->small_hash=impl_->small_hash;
         for(unsigned i=0;i<4;++i)next->dialogs[i]=impl_->dialogs[i];
         next->post_objects=impl_->post_objects;next->post_scripts=impl_->post_scripts;next->style_thresholds=impl_->style_thresholds;
-        // draw_post_race uses these two fonts, White16x16 and45Corner only.
+        // The results and song card share both fonts and the common sprites.
         for(unsigned hash:{next->large_hash,next->small_hash,0xe2a5c626U,0x1abedeb1U,bin_hash("NFSU_LOGO")}) {
             const auto texture=impl_->textures.find(hash);
             if(texture==impl_->textures.end())throw std::runtime_error("post-race texture not loaded");
             next->textures.emplace(hash,texture->second);
         }
+        if(include_song_card)impl_->copy_song_card_to(*next);
         next->pack_atlas(true);
         target.impl_=std::move(next);error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
@@ -1428,9 +1481,15 @@ void FrontendArt::append_fps(unsigned width,unsigned height,const RaceFpsHistory
     pose.a=pose.d=std::min(.8F,(panel_width-12.F)/std::max(label_width,1.F));
     impl_->text(canvas,text,pose,label,{{255,255,255,255}},8);
 }
-void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
+void FrontendArt::append_song_card(unsigned width,unsigned height,const FrontendMenu& menu,FrontendUiFrame& frame)const {
+    if(!menu.title().empty())impl_->draw(Canvas{width,height,impl_->atlas,frame},menu,true);
+}
+void FrontendArt::draw_song_card(ScreenImage image,const FrontendMenu& menu)const {
+    if(!menu.title().empty())impl_->draw(Canvas{image},menu,true);
+}
+void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu,bool song_only) const {
     const auto& p=*this;
-    p.select(menu);
+    if(!song_only)p.select(menu);
     const auto selected=menu.selected_action();
     const auto song_tick=static_cast<std::uint32_t>(p.chyron_ticks);
     if(p.song_revision!=menu.song_revision()) {
@@ -1442,12 +1501,14 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
     }
     if(p.chyron.update(song_tick)==FrontendChyron::Action::hide)
         for(const auto& object:p.objects)if(object.chyron)p.start_named_state(object,"Hide",p.ui_ticks);
+    if(song_only&&!p.chyron.visible())return;
 
     ++p.sample_generation;
     std::vector<std::size_t> order(p.objects.size());for(std::size_t i=0;i<order.size();++i) order[i]=i;
     std::stable_sort(order.begin(),order.end(),[&](std::size_t a,std::size_t b) {return p.transform(p.objects[a]).z>p.transform(p.objects[b]).z;});
     const unsigned hashes[]={0xe2a5c626,0x1f3bdb88,0x1abedeb1,0,bin_hash("ARROW3"),bin_hash("CIRCLE"),0x868a1fcf,bin_hash("NFSU_LOGO")};
     for(auto i:order) {
+        if(song_only&&!p.objects[i].chyron)continue;
         const auto& o=p.sample(p.objects[i]);if((o.chyron && !p.chyron.visible()) || !p.visible(o,selected) || o.type==5 || o.name=="NFSU_logo") continue;
         auto color=o.color;
         // Original steady states from UnHighlight/Highlight, after Init fades.
@@ -1506,6 +1567,7 @@ void FrontendArt::Impl::draw(Canvas image,const FrontendMenu& menu) const {
             quad(image,tex->second,m,-o.w/2,-o.h/2,o.w,o.h,o.uv,color,o.type==9?&corners:nullptr);
         }
     }
+    if(song_only)return;
     // The identity logo is the final foreground image over its angular backing.
     for(const auto& o:p.objects) if(o.name=="NFSU_logo") {
         const auto tex=p.textures.find(bin_hash("NFSU_LOGO"));

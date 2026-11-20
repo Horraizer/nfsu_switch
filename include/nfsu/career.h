@@ -36,6 +36,10 @@ struct CareerMagazine {
     std::array<unsigned,9> performance{};
     std::array<bool,9> unique{};
 };
+// Tutorial speech groups 62..88; briefings and rewards do not use this mask.
+constexpr std::uint32_t career_hint_bit(int group) noexcept {
+    return group>=62 && group<=88 ? 1U<<unsigned(group-62) : 0U;
+}
 struct CareerProfile {
     // Display identity is supplied by the selected profile directory.
     std::string name;
@@ -51,6 +55,7 @@ struct CareerProfile {
     // Transient Quick Race identity, never serialized into an Underground save.
     std::string bonus_preset;
     bool customization_seen=false;
+    std::uint32_t frontend_hints=0;
     CareerTournament tournament;
     unsigned pending_unique=0;
     // Durable original event movie request; zero phase means no request.

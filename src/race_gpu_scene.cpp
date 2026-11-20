@@ -116,60 +116,95 @@ const std::array<std::uint16_t,6*kRaceParticleAtlasCells>& particle_indices() {
     return indices;
 }
 
+// All original cells retain their texel centers. Alpha and additive draws
+// can each span multiple textures without changing their particle order.
+constexpr unsigned kParticleSheetWidth=512, kParticleSheetHeight=512;
+constexpr std::array<std::array<unsigned,2>,8> kSheetOrigin{{
+    {0,128},{0,256},{256,0},{0,384},{0,0},{64,384},{128,128},{256,256}
+}};
+void pack_particle_sheet(const RaceParticleTextures& textures,std::vector<unsigned char>& image) {
+    image.resize(kParticleSheetWidth*kParticleSheetHeight*4);
+    for(std::size_t i=0;i<textures.size();++i) {
+        const auto& t=textures[i];
+        const auto origin=kSheetOrigin[i];
+        for(unsigned y=0;y<t.height;++y)
+            std::copy_n(t.rgba.data()+y*t.width*4,t.width*4,
+                        image.data()+((origin[1]+y)*kParticleSheetWidth+origin[0])*4);
+    }
+}
+
+const auto& water_indices() {
+    static const auto indices=[] {
+        std::array<std::uint16_t,kRaceWaterPool*6> out{};
+        for(std::size_t i=0;i<kRaceWaterPool;++i)
+            for(unsigned j=0;j<6;++j)out[i*6+j]=std::uint16_t(i*4+particle_indices()[j]);
+        return out;
+    }();
+    return indices;
+}
+
 bool append_particle_commands(RecordedCommands& commands, const RaceParticleTextures& textures,
-                              std::size_t environment_draws, std::string& error) {
+                              std::size_t environment_draws, std::string& error,
+                              std::size_t reuse_resources,const RaceParticleStreams& streams,
+                              const std::vector<unsigned char>& sheet) {
     auto& table=commands.owning_uploads();
-    const auto first=table.resources.size();
+    const auto first=reuse_resources==kNoHandle?table.resources.size():reuse_resources;
     const auto& vertices=particle_vertices();
     const auto& indices=particle_indices();
-    UploadResource vertex;
-    vertex.kind=UploadResourceKind::vertex_buffer;
-    vertex.name="particle/quad-vertices";
-    vertex.data=reinterpret_cast<const unsigned char*>(vertices.data());
-    vertex.bytes=sizeof vertices; vertex.alignment=kCarVertexAlignment;
-    vertex.element_bytes=sizeof(MeshVertex); vertex.elements=vertices.size();
-    table.resources.push_back(vertex);
-    UploadResource index;
-    index.kind=UploadResourceKind::index_buffer;
-    index.name="particle/quad-indices";
-    index.data=reinterpret_cast<const unsigned char*>(indices.data());
-    index.bytes=sizeof indices; index.alignment=kIndexAlignment;
-    index.element_bytes=sizeof(std::uint16_t); index.elements=indices.size();
-    table.resources.push_back(index);
-    auto& totals=table.totals;
-    const auto atlas_count=environment_draws?textures.size():kRaceVehicleAtlasCount;
-    totals.resources+=2+atlas_count; totals.vertex_buffers+=1; totals.index_buffers+=1;
-    totals.textures+=atlas_count;
-    totals.vertex_bytes+=sizeof vertices; totals.index_bytes+=sizeof indices;
-    for (std::size_t i=0; i<atlas_count; ++i) {
-        const auto* atlas = &textures[i];
-        UploadResource texture;
-        texture.kind=UploadResourceKind::texture;
-        texture.memory=UploadMemory::image;
-        texture.name=std::string("particle/")+kRaceParticleAtlases[i].name;
-        texture.data=atlas->rgba.data();
-        texture.bytes=atlas->rgba.size();
-        texture.texture_hash=atlas->hash;
-        texture.alignment=kTextureStagingAlignment;
-        if (!check_texture_upload_format(TextureUploadFormat::rgba8,atlas->width,atlas->height,
-                                         texture.bytes,texture.texture,error)) return false;
-        texture.element_bytes=texture.texture.texel_bytes;
-        texture.elements=texture.bytes / texture.element_bytes;
-        totals.texture_bytes+=texture.bytes;
-        totals.largest_texture_bytes=std::max(totals.largest_texture_bytes,texture.bytes);
-        table.resources.push_back(std::move(texture));
+    if(reuse_resources==kNoHandle) {
+        UploadResource vertex;
+        vertex.kind=UploadResourceKind::vertex_buffer;
+        vertex.name="particle/quad-vertices";
+        vertex.data=reinterpret_cast<const unsigned char*>(vertices.data());
+        vertex.bytes=sizeof vertices; vertex.alignment=kCarVertexAlignment;
+        vertex.element_bytes=sizeof(MeshVertex); vertex.elements=vertices.size();
+        table.resources.push_back(vertex);
+        UploadResource index;
+        index.kind=UploadResourceKind::index_buffer;
+        index.name="particle/quad-indices";
+        index.data=reinterpret_cast<const unsigned char*>(indices.data());
+        index.bytes=sizeof indices; index.alignment=kIndexAlignment;
+        index.element_bytes=sizeof(std::uint16_t); index.elements=indices.size();
+        table.resources.push_back(index);
+        auto& totals=table.totals;
+        const auto atlas_count=environment_draws?textures.size():kRaceVehicleAtlasCount;
+        totals.resources+=2+atlas_count; totals.vertex_buffers+=1; totals.index_buffers+=1;
+        totals.textures+=atlas_count;
+        totals.vertex_bytes+=sizeof vertices; totals.index_bytes+=sizeof indices;
+        for (std::size_t i=0; i<atlas_count; ++i) {
+            const auto* atlas = &textures[i];
+            UploadResource texture;
+            texture.kind=UploadResourceKind::texture;
+            texture.memory=UploadMemory::image;
+            texture.name=std::string("particle/")+kRaceParticleAtlases[i].name;
+            texture.data=atlas->rgba.data();
+            texture.bytes=atlas->rgba.size();
+            texture.texture_hash=atlas->hash;
+            texture.alignment=kTextureStagingAlignment;
+            if (!check_texture_upload_format(TextureUploadFormat::rgba8,atlas->width,atlas->height,
+                                             texture.bytes,texture.texture,error)) return false;
+            texture.element_bytes=texture.texture.texel_bytes;
+            texture.elements=texture.bytes / texture.element_bytes;
+            totals.texture_bytes+=texture.bytes;
+            totals.largest_texture_bytes=std::max(totals.largest_texture_bytes,texture.bytes);
+            table.resources.push_back(std::move(texture));
+        }
     }
     const shader_manifest::Program* program=nullptr;
     for (const auto& candidate : shader_manifest::kPrograms)
         if (std::strcmp(candidate.name,"car_textured")==0) program=&candidate;
     if (!program) { error="particle shader program missing"; return false; }
-    for (std::size_t slot=0; slot<kRaceParticleLimit+environment_draws; ++slot) {
-        const bool environment=slot>=kRaceParticleLimit;
-        const bool spark=environment?slot>=kRaceParticleLimit+kRaceEnvironmentAlphaLimit:
-                                     slot>=kRaceSmokeLimit;
+    std::size_t batch_indices=kNoHandle;
+    std::array<std::size_t,3> stream_handles{kNoHandle,kNoHandle,kNoHandle};
+    const auto water_first=kRaceParticleLimit+environment_draws;
+    for (std::size_t slot=0; slot<water_first+!streams[2].vertices.empty(); ++slot) {
+        const bool water=slot==water_first;
+        const bool environment=!water && slot>=kRaceParticleLimit;
+        const bool spark=environment?(slot-kRaceParticleLimit)%2!=0:!water && slot>=kRaceSmokeLimit;
         RecordedDraw draw;
-        draw.name="particle/"+std::string(environment?"environment/":spark?"spark/":"smoke/")+std::to_string(slot);
-        draw.group=0x186000+slot;
+        draw.name="particle/"+std::string(water?"water/":environment?"environment/":spark?"spark/":"smoke/")+std::to_string(slot);
+        draw.group=(reuse_resources==kNoHandle?0x186000:0x188000)+slot;
+        if(reuse_resources!=kNoHandle)draw.name="second/"+draw.name;
         draw.vertex_resource=first; draw.index_resource=first+1;
         draw.texture_resource=first+(spark?3:2);
         draw.vertex_count=vertices.size(); draw.index_count=6;
@@ -186,14 +221,118 @@ bool append_particle_commands(RecordedCommands& commands, const RaceParticleText
         // Textured shaders use fallback.w == 2 for an unlit particle draw.
         draw.material.fallback[3]=2.0F;
         draw.material.alpha[0]=0;
+        if(water || environment) {
+            const std::size_t batch=water?2:static_cast<std::size_t>(spark);
+            const auto& stream=streams[batch];
+            auto& buffer=stream_handles[batch];
+            if(buffer==kNoHandle) {
+                buffer=table.resources.size();
+                UploadResource v=table.resources[first];
+                v.name=draw.name+"/vertices";v.streamed_vertices=true;v.streamed_elements=&stream.used;
+                v.data=reinterpret_cast<const unsigned char*>(stream.vertices.data());
+                v.elements=stream.vertices.size();v.bytes=v.elements*sizeof(MeshVertex);
+                table.resources.push_back(v);
+                ++table.totals.resources;++table.totals.vertex_buffers;table.totals.vertex_bytes+=v.bytes;
+            }
+            if(reuse_resources==kNoHandle && batch_indices==kNoHandle) {
+                batch_indices=table.resources.size();
+                UploadResource ix=table.resources[first+1];
+                ix.name="particle/batch-indices";
+                ix.data=reinterpret_cast<const unsigned char*>(water_indices().data());
+                ix.elements=water_indices().size();ix.bytes=sizeof(water_indices());
+                table.resources.push_back(ix);
+                UploadResource tex;
+                tex.name="particle/batch-atlas";tex.kind=UploadResourceKind::texture;tex.memory=UploadMemory::image;
+                tex.data=sheet.data();tex.bytes=sheet.size();tex.alignment=kTextureStagingAlignment;
+                tex.element_bytes=4;tex.elements=tex.bytes/4;
+                if(!check_texture_upload_format(TextureUploadFormat::rgba8,kParticleSheetWidth,kParticleSheetHeight,
+                                                tex.bytes,tex.texture,error))return false;
+                table.resources.push_back(tex);
+                table.totals.resources+=2;++table.totals.index_buffers;++table.totals.textures;
+                table.totals.index_bytes+=ix.bytes;table.totals.texture_bytes+=tex.bytes;
+                table.totals.largest_texture_bytes=std::max(table.totals.largest_texture_bytes,tex.bytes);
+            }
+            draw.vertex_resource=buffer;
+            // The second player shares the first player's immutable indices and atlas.
+            draw.index_resource=batch_indices;
+            if(reuse_resources!=kNoHandle) {
+                const auto it=std::find_if(table.resources.begin()+first,table.resources.end(),
+                    [](const auto& r){return r.name=="particle/batch-indices";});
+                if(it==table.resources.end()){error="missing water batch index buffer";return false;}
+                draw.index_resource=std::size_t(it-table.resources.begin());
+            }
+            draw.texture_resource=draw.index_resource+1;draw.vertex_count=stream.vertices.size();
+            draw.material.fallback[3]=9; // world.efx with packed vertex RGBA.
+            draw.placement.rows[0]=draw.placement.rows[5]=draw.placement.rows[10]=draw.placement.rows[15]=1;
+        }
         commands.owning_draws().push_back(std::move(draw));
     }
     return true;
 }
 
 void place_particle_commands(RecordedCommands& commands, std::size_t first,
-                             const RaceParticles& particles, const CameraFrame& camera) {
-    for (std::size_t slot=0; slot<kRaceParticleLimit+particles.environment_draw_limit(); ++slot) {
+                             const RaceParticles& particles, const CameraFrame& camera,RaceParticleStreams& streams) {
+    const auto first_batch=first+kRaceParticleLimit;
+    auto& draws=commands.owning_draws();
+    for(auto& stream:streams)stream.used=0;
+    const auto emit_quad=[&](const RaceParticle& p,RaceParticleStream& stream) {
+        VehicleVec3 at;double diameter=0,opacity=0;std::array<unsigned,3> tint{};
+        if(!particles.visual(p,at,diameter,opacity,tint) || opacity<=0)return false;
+        const auto clip=project_point(camera,{at.x,at.z,-at.y});
+        if(clip.w<=camera.near_plane || clip.w>camera.far_plane ||
+           std::abs(clip.x)>clip.w+.5*diameter*camera.focal_x ||
+           std::abs(clip.y)>clip.w+.5*diameter*camera.focal_y)return false;
+        const auto atlas=static_cast<unsigned>(p.atlas);
+        const auto& layout=kRaceParticleAtlases[atlas];
+        const auto origin=kSheetOrigin[atlas];
+        const unsigned cell=race_particle_atlas_cell(p,particles.step());
+        for(unsigned c=0;c<4;++c) {
+            const auto& src=particle_vertices()[cell*4+c];
+            const double x=src.px*diameter,y=src.py*diameter;
+            auto& v=stream.vertices[stream.used++];
+            v.px=float(at.x+camera.right.x*x+camera.up.x*y);
+            v.pz=float(at.y-camera.right.z*x-camera.up.z*y);
+            v.py=float(at.z+camera.right.y*x+camera.up.y*y);
+            v.u=(origin[0]+src.u*layout.width)/kParticleSheetWidth;
+            v.v=(origin[1]+src.v*layout.height)/kParticleSheetHeight;
+            std::copy_n(tint.begin(),3,v.color);
+            v.color[3]=std::uint8_t(std::lround(opacity*255));
+        }
+        return true;
+    };
+    const auto environment_slots=particles.environment_draw_limit();
+    for(std::size_t slot=0;slot<environment_slots;++slot) {
+        auto& draw=draws[first_batch+slot];
+        draw.material.alpha[0]=0;
+        draw.first_index=0;
+        draw.index_count=6;
+    }
+    // Commands alternate fixed blend modes, and successive runs refer to
+    // disjoint ranges of the same two vertex buffers. Culled children do
+    // not split a run or require uploads.
+    std::size_t run=0;
+    particles.visit_environment([&](const RaceParticle& p) {
+        const bool additive=p.kind==RaceParticleKind::spark;
+        auto& stream=streams[additive];
+        const auto first_quad=stream.used/4;
+        if(!emit_quad(p,stream))return;
+        if((run%2!=0)!=additive)++run;
+        auto& draw=draws.at(first_batch+run);
+        if(draw.material.alpha[0]==0) {
+            draw.first_index=static_cast<std::uint32_t>(6*first_quad);
+            draw.index_count=0;
+            draw.material.alpha[0]=1;
+        }
+        draw.index_count+=6;
+    });
+    auto& water=streams[2];
+    if(!water.vertices.empty()) {
+        for(std::size_t i=0;i<particles.water_count();++i)emit_quad(particles.water(i),water);
+        auto& draw=draws[first_batch+environment_slots];
+        draw.index_count=static_cast<std::uint32_t>(6*std::max<std::size_t>(water.used/4,1));
+        draw.material.alpha[0]=water.used?1.F:0.F;
+    }
+    for(std::size_t slot=0;slot<kRaceParticleLimit;++slot) {
         auto& draw=commands.owning_draws()[first+slot];
         std::fill(std::begin(draw.placement.rows),std::end(draw.placement.rows),0.0F);
         draw.placement.rows[15]=1;
@@ -201,17 +340,12 @@ void place_particle_commands(RecordedCommands& commands, std::size_t first,
         draw.first_index=0;
         draw.material.environment_range[3]=0;
         for (unsigned c=0; c<3; ++c) draw.material.environment_color[c]=0;
-        const bool environment=slot>=kRaceParticleLimit;
-        const bool spark=environment?slot>=kRaceParticleLimit+kRaceEnvironmentAlphaLimit:
-                                     slot>=kRaceSmokeLimit;
-        draw.texture_resource = draw.index_resource+1+(spark ? 1 : 0);
-        const auto offset=environment?slot-kRaceParticleLimit-(spark?kRaceEnvironmentAlphaLimit:0):
-                                      slot-(spark?kRaceSmokeLimit:0);
-        const auto count=environment?(spark?particles.environment_additive_count():particles.environment_alpha_count()):
-                                     (spark?particles.spark_count():particles.smoke_count());
-        if (offset>=count) continue;
-        const auto& particle=environment?(spark?particles.environment_additive(offset):particles.environment_alpha(offset)):
-                                          (spark?particles.spark(offset):particles.smoke(offset));
+        const bool spark=slot>=kRaceSmokeLimit;
+        draw.material.alpha[3]=0;
+        draw.texture_resource=draw.index_resource+1+(spark?1:0);
+        const auto offset=spark?slot-kRaceSmokeLimit:slot;
+        if(offset>=(spark?particles.spark_count():particles.smoke_count()))continue;
+        const auto& particle=spark?particles.spark(offset):particles.smoke(offset);
         VehicleVec3 at;
         double diameter=0, opacity=0;
         std::array<unsigned,3> tint;
@@ -225,7 +359,9 @@ void place_particle_commands(RecordedCommands& commands, std::size_t first,
         const double depth=delta.x*camera.forward.x+delta.y*camera.forward.y+
                            delta.z*camera.forward.z;
         if (depth <= camera.near_plane || depth > camera.far_plane) continue;
-        diameter=std::min(diameter,48.0*2.0*depth/(camera.focal_y*720.0));
+        draw.material.alpha[3]=particle.life_ticks?8.F:0.F;
+        if (!particle.environment_preset && !is_driving_water_effect(particle.effect))
+            diameter=std::min(diameter,48.0*2.0*depth/(camera.focal_y*720.0));
         const Vec3 right=camera.right, up=camera.up;
         draw.placement.rows[0]=static_cast<float>(right.x*diameter);
         draw.placement.rows[1]=static_cast<float>(-right.z*diameter);
@@ -408,8 +544,14 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
                 totals.largest_texture_bytes=std::max(totals.largest_texture_bytes,shape.bytes);
             }
         }
-        if (particles_enabled_ && !particles_.load_presets(
-                inputs.file(StockFrameFile::global_bun).bytes,error)) return false;
+        if (particles_enabled_) {
+            const auto& globals=inputs.file(StockFrameFile::global_bun).bytes;
+            if(!particles_.load_presets(globals,error))return false;
+            if(local_second_player_) {
+                second_particles_=std::make_unique<RaceParticles>();
+                if(!second_particles_->load_presets(globals,error))return false;
+            }
+        }
         if (loading) loading->checkpoint("car prepared");
         skin_source_ = stock.skin_binding.source;
         car_ = std::move(stock.scene); base_ = car_.instances;
@@ -431,12 +573,35 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         const auto packs = load_texture_pack_set(root / "Global/INGAMEB.BUN", bytes);
         if (!decode_race_particle_textures(bytes,packs,particle_textures_,error,
                 particles_.environment_emitter_count()!=0)) return false;
-        car_bytes_ += sizeof(particles_) + sizeof(particle_vertices()) + sizeof(particle_indices())+
+        car_bytes_ += sizeof(particles_) + kRaceWaterPool*sizeof(RaceParticle) + sizeof(particle_vertices()) + sizeof(particle_indices())+
                       particles_.environment_bytes();
+        if (second_particles_) car_bytes_ += sizeof(RaceParticles) + kRaceWaterPool*sizeof(RaceParticle);
         for (const auto& atlas : particle_textures_) car_bytes_ += atlas.rgba.capacity();
     }
     if (!load_track_slice(files, root, track_, error, observer, loading, event_number, world_mips,race_index,
                          complete_zone_backing_?TrackStreamSet::zones:TrackStreamSet::permanent)) return false;
+    if (particles_enabled_ && std::any_of(track_.contacts.collision.polygons.begin(),
+        track_.contacts.collision.polygons.end(),[](const auto& p) {
+            return p.unknown0[2]==13 || p.unknown0[2]==14;
+        })) {
+        water_draws_=1;
+    }
+    if(particles_enabled_ && (water_draws_ || particles_.environment_draw_limit())) {
+        pack_particle_sheet(particle_textures_,particle_sheet_);
+        car_bytes_+=particle_sheet_.capacity()+sizeof(water_indices());
+        const auto allocate=[this](RaceParticleStream& stream) {
+            stream.vertices.resize(4*kRaceWaterPool);
+            car_bytes_+=stream.vertices.capacity()*sizeof(MeshVertex);
+        };
+        if(particles_.environment_draw_limit()) {
+            allocate(particle_streams_[0]);
+            allocate(particle_streams_[1]);
+        }
+        if(water_draws_) {
+            allocate(particle_streams_[2]);
+            if(second_particles_)allocate(second_particle_streams_[2]);
+        }
+    }
     if (car_bytes_ + track_.contacts.memory.resident_bytes > kPersistentBudgetPlaceholder) {
         error = "race car and collision exceed the persistent payload plan"; return false;
     }
@@ -471,6 +636,11 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
         skids_=std::make_unique<RaceSkidMarks>();
         if(!skids_->load(root,selection,error))return false;
         car_bytes_+=skids_->resident_bytes();
+        if(local_second_player_) {
+            second_skids_=std::make_unique<RaceSkidMarks>();
+            if(!second_skids_->load(root,selection,error))return false;
+            car_bytes_+=second_skids_->resident_bytes();
+        }
     }
     if (loading) loading->checkpoint("render preparation");
     if (!prepare_templates(error)) return false;
@@ -495,12 +665,8 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     const bool drift_start=supported_race_selection(event_number,race_index,start_selection)&&start_selection.type==RaceType::drift;
     if(start_scenes_enabled_ && (start_scene_ || event_number==0 || drift_start)) {
         if(loading)loading->checkpoint("start crowd");
-        if(!crowd_.load(files,root,error,start_scene_?start_scene_:drift_start?kFirstDriftStartScene:2338,track_.track_number,
-            start_region_.empty()?drift_start?start_selection.region:"L1RA":start_region_))return false;
-        const auto offset=combined_uploads_.resources.size();
-        append_car_resources(combined_uploads_,crowd_.commands().owning_uploads(),"start-crowd/");
-        crowd_.rebase(offset);car_bytes_+=crowd_.bytes();
-        combined_uploads_.resources.shrink_to_fit();
+        if(!append_start_crowd(files,root,start_scene_?start_scene_:drift_start?kFirstDriftStartScene:2338,
+            start_region_.empty()?drift_start?start_selection.region:"L1RA":start_region_,error))return false;
     }
     if (loading) loading->checkpoint("render prepared");
     if (cache_bytes() > cache_limit()) { error = "race command cache exceeds backing plan"; return false; }
@@ -511,6 +677,32 @@ bool RaceGpuScene::load(FileSystemService& files, const std::filesystem::path& r
     if (cache_bytes() > cache_limit()) { error = "wet race command cache exceeds backing plan"; return false; }
     ready_ = true;
     // Track parsing temporaries die here; car source copies died before it.
+    return true;
+}
+bool RaceGpuScene::append_start_crowd(FileSystemService& files,const std::filesystem::path& root,unsigned id,
+                                      const std::string& region,std::string& error) {
+    if(!crowd_.load(files,root,error,id,track_.track_number,region))return false;
+    const auto offset=combined_uploads_.resources.size();
+    append_car_resources(combined_uploads_,crowd_.commands().owning_uploads(),"start-crowd/");
+    crowd_.rebase(offset);car_bytes_+=crowd_.bytes();
+    combined_uploads_.resources.shrink_to_fit();
+    return true;
+}
+
+bool RaceGpuScene::load_road_start_scene(FileSystemService& files,const std::filesystem::path& root,
+                                         unsigned id,const std::string& region,RaceStartClock& clock,std::string& error) {
+    if(!ready_||generation_||!start_scenes_enabled_||crowd_.actor_count()) {
+        error="road scene requires a loaded track before its first frame";return false;
+    }
+    if(!append_start_crowd(files,root,id,region,error))return false;
+    if(lamps_loaded_&&wet_road_reflections_) {
+        wet_uploads_=combined_uploads_;
+        if(!append_wet_lamp_uploads(lamps_,wet_uploads_,error))return false;
+    }
+    if(cache_bytes()>cache_limit()&&!reflection_corners_.empty())
+        std::vector<TrackReflectionCorners>{}.swap(reflection_corners_);
+    if(cache_bytes()>cache_limit()){error="road scene command cache exceeds backing plan";return false;}
+    start_scene_=id;start_region_=region;clock=crowd_.clock();
     return true;
 }
 std::uint64_t RaceGpuScene::cache_bytes() const {
@@ -553,7 +745,7 @@ std::uint64_t RaceGpuScene::cache_bytes() const {
         if(r.neon)bytes+=sizeof(CarNeonAsset)+r.neon->ground.texture.rgba.capacity();
         for(const auto& d:r.commands.owning_draws())bytes+=d.name.capacity()+1;
     }
-    bytes+=actor_glows_.capacity()*sizeof(RecordedDraw);
+    bytes+=(actor_glows_.capacity()+second_flames_.capacity())*sizeof(RecordedDraw);
     for(const auto& a:glow_anchors_)bytes+=a.capacity()*sizeof(CarGlowAnchor);
     bytes+=light_sprites_.capacity()*sizeof(OriginalCarGlow)+glow_selected_.capacity()*sizeof(RecordedDraw);
     for(const auto& r:rivals_) {
@@ -731,14 +923,18 @@ bool RaceGpuScene::prepare_templates(std::string& error) {
     if (!build_track_draw_list(track_.scene,witnesses,list_options,list,error) ||
         !record_track_commands(track_.scene,list,options,{},track_templates_,error,world_models) ||
         !validate_recorded_commands(track_templates_,error)) return false;
-    sky_draws_ = 0;
-    std::stable_partition(track_templates_.owning_draws().begin(), track_templates_.owning_draws().end(),
+    auto& templates = track_templates_.owning_draws();
+    // A world object can use the same mesh and group as placed scenery.
+    // Its unplaced template belongs only to the dynamic draw list.
+    const auto static_end = std::stable_partition(templates.begin(), templates.end(),
+        [](const RecordedDraw& d) { return d.instance != kNoHandle; });
+    static_track_definitions_ = static_end - templates.begin();
+    const auto sky_end = std::stable_partition(templates.begin(), static_end,
         [&](const RecordedDraw& d) { return d.mesh == track_.scene.sky_mesh; });
-    for (const auto& draw : track_templates_.owning_draws())
-        if (draw.mesh == track_.scene.sky_mesh) ++sky_draws_;
+    sky_draws_ = sky_end - templates.begin();
     template_of_group_.assign(track_.scene.region.draws.size(),kNoHandle);
-    for (std::size_t i = 0; i < track_templates_.owning_draws().size(); ++i)
-        template_of_group_[track_templates_.owning_draws()[i].group] = i;
+    for (std::size_t i = 0; i < static_track_definitions_; ++i)
+        template_of_group_[templates[i].group] = i;
     return true;
 }
 bool RaceGpuScene::prepare_frame_cache(std::string& error) {
@@ -789,8 +985,11 @@ bool RaceGpuScene::prepare_frame_cache(std::string& error) {
     if (car_shading_) car_options.material_state=MaterialStateMode::retail;
     if (!record_car_commands(car_, car_options, {}, skin_source_, car_templates_, error)) return false;
     car_draw_count_=car_templates_.owning_draws().size();
-    if (particles_enabled_ && !append_particle_commands(car_templates_,particle_textures_,particles_.environment_draw_limit(),error)) return false;
+    const auto particle_resources=car_templates_.owning_uploads().resources.size();
+    if (particles_enabled_ && !append_particle_commands(car_templates_,particle_textures_,particles_.environment_draw_limit(),error,kNoHandle,particle_streams_,particle_sheet_)) return false;
+    if (second_particles_&&!append_particle_commands(car_templates_,particle_textures_,0,error,particle_resources,second_particle_streams_,particle_sheet_))return false;
     if(skids_&&!skids_->append(car_templates_,error))return false;
+    if(second_skids_&&!second_skids_->append(car_templates_,error,true))return false;
     if (!validate_recorded_commands(car_templates_,error)) return false;
     if (!record_car_shadow_commands(shadow_asset_, {}, race_render_options(sky_), shadow_templates_, error)) return false;
     if(neon_asset_.enabled) {
@@ -1002,7 +1201,7 @@ RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
         const auto at=i-ordinary;
         const auto& d=at<world_draws_.size()?world_draws_[at]:
             crowd_.commands().owning_draws().at(at-world_draws_.size());
-        return {d,d.instance,d.placement,d.material,false};
+        return {d,d.instance,d.placement,d.material,false,at<world_draws_.size()||crowd_.visible()};
     }
     if (i >= sky_position_ && i < sky_position_ + sky_draws_) {
         const auto& d = track_templates_.owning_draws().at(i - sky_position_);
@@ -1038,11 +1237,17 @@ RecordedDrawView RaceGpuScene::selected_draw(std::size_t i) const {
             i<glow_selected_.size()+road_glows_.size()?road_glows_.at(i-glow_selected_.size()):
             i<glow_selected_.size()+road_glows_.size()+nitrous_count_?
             nitrous_selected_.at(i-glow_selected_.size()-road_glows_.size()):
-            actor_glows_.at(i-glow_selected_.size()-road_glows_.size()-nitrous_count_);
-        return {glow, kNoHandle, glow.placement, glow.material, false};
+            i<glow_selected_.size()+road_glows_.size()+nitrous_count_+second_flame_count_?
+            second_flames_.at(i-glow_selected_.size()-road_glows_.size()-nitrous_count_):
+            actor_glows_.at(i-glow_selected_.size()-road_glows_.size()-nitrous_count_-second_flame_count_);
+        return {glow, kNoHandle, glow.placement, glow.material, false,!local_second_player_||glow.material.alpha[0]>0};
     }
     const auto& draw = car_templates_.owning_draws().at(i);
-    return {draw, draw.instance, draw.placement, draw.material, false};
+    const auto first_water=car_draw_count_+kRaceParticleLimit+particles_.environment_draw_limit();
+    const bool particle=particles_enabled_ && i>=car_draw_count_ &&
+        (local_second_player_ ? i<first_water+kRaceParticleLimit+2*water_draws_ :
+                                i>=car_draw_count_+kRaceParticleLimit && i<first_water+water_draws_);
+    return {draw, draw.instance, draw.placement, draw.material, false,!particle||draw.material.alpha[0]>0};
 }
 
 bool RaceGpuScene::select_track(const TrackCullReport& visible, RaceGpuFrame& out,
@@ -1154,8 +1359,8 @@ bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const Vehicle
     hf.projection[0]=float(light.focal_x);hf.projection[1]=float(light.focal_y);
     hf.options[0]=0;
     commands.headlight_texture=headlight_resource_;commands.frame.options[2]|=16U;
-    commands.race_environment=car_shading_;
-    if(!car_shading_)return true;
+    commands.race_environment=car_shading_&&!local_second_player_;
+    if(!commands.race_environment)return true;
     commands.frame.options[2]|=32U;
     // Native 40AF2B: low quality cycles one logical face; high updates all six.
     // Initialize the full atlas before the first partial refresh.
@@ -1203,16 +1408,39 @@ bool RaceGpuScene::prepare_visual_frame(const RaceSession& session,const Vehicle
 bool RaceGpuScene::frame(const RaceSession& session, RaceGpuFrame& out, std::string& error, RaceFrameProfile* profile, bool reference, TimingService* timer) {
     return frame_view(session,out,error,profile,reference,timer,nullptr,0);
 }
-bool RaceGpuScene::frame_split_view(const RaceSession& session,const ChaseCameraView& camera,unsigned player,
-                                    RaceGpuFrame& out,std::string& error) {
-    if(player>1||session.rival_count()!=1||race_visuals_||wet_road_reflections_) {
+bool RaceGpuScene::set_local_second_car(const CarAssets& car,const StockFrame& stock,std::string& error) {
+    if(!local_second_player_||!second_skids_||generation_) {
+        error="second player effects must be added before the first view";return false;
+    }
+    second_exhaust_=collect_car_exhaust_anchors(stock);
+    second_flames_.resize(std::count_if(second_exhaust_.begin(),second_exhaust_.end(),
+        [](const auto& anchor){return anchor.marker.present;}));
+    return second_skids_->set_wheel_widths(root_,car,error);
+}
+void RaceGpuScene::advance_particles(const RaceSession& world) noexcept {
+    if(particles_enabled_) {
+        if(second_particles_) {
+            const auto& second=world.rival(0);
+            particles_.advance(world,&second);
+            second_particles_->advance(second,&world,true);
+        } else particles_.advance(world);
+    }
+    if(local_second_player_) {
+        skids_->advance(world);
+        second_skids_->advance(world.rival(0));
+    }
+}
+bool RaceGpuScene::frame_split_view(const RaceSession& session,unsigned player,RaceGpuFrame& out,std::string& error,
+                                    SplitLayout layout,RaceFrameProfile* profile,TimingService* timer) {
+    if(player>1||!session.human_rival()||!local_second_player_) {
         error="invalid split-screen draw configuration";return false;
     }
-    return frame_view(session,out,error,nullptr,false,nullptr,&camera,player);
+    const auto& actor=player?session.rival(0):session;
+    return frame_view(session,out,error,profile,false,timer,&actor.camera(),player,layout);
 }
 bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::string& error,
                               RaceFrameProfile* profile,bool reference,TimingService* timer,
-                              const ChaseCameraView* split_camera,unsigned split_player) {
+                              const ChaseCameraView* split_camera,unsigned split_player,SplitLayout layout) {
     if(reference && (!rivals_.empty() || crowd_.actor_count())) {
         error="multi-car reference recording is not implemented; use prepared four-car commands";return false;
     }
@@ -1242,7 +1470,7 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
         if (cache_bytes() > cache_limit()) { error = "wet race command cache exceeds backing plan"; return false; }
         lamps_loaded_ = true;
     }
-    if(skids_)skids_->advance(session);
+    if(skids_&&!split_camera)skids_->advance(session);
     if (profile) *profile = {};
     if (profile && !timer) { error = "race profiling requires a timing service"; return false; }
     if (!reference && generation_ == std::numeric_limits<std::uint64_t>::max()) {
@@ -1264,22 +1492,26 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
     std::optional<std::array<VehicleState,3>> finish_rivals;
     if(finish_scene_)finish_rivals.emplace();
     const auto& chase=split_camera?*split_camera:session.camera();
-    const bool hide_player=chase.pov==2&&(!split_camera||split_player==0)&&!session.crash_camera_event()&&
+    const auto& view_driver=split_camera&&split_player?session.rival(0):session;
+    const bool hide_player=chase.pov==2&&(!split_camera||split_player==0)&&!view_driver.crash_camera_event()&&
         !session.start_cinematic()&&!start_car&&!finish_scene_;
-    const bool hide_guest=split_camera&&split_player==1&&chase.pov==2;
+    const bool hide_guest=split_camera&&split_player==1&&chase.pov==2&&!view_driver.crash_camera_event();
     if (!drive_place_instances(base_, presented, session.spec(), car_.instances,
                                &presented_animation)) {
         error = "race car placement failed"; return false;
     }
     if(world_draws_.empty())for(unsigned w=0;w<session.course().world_objects.size();++w) {
         const auto& source=session.course().world_objects[w];
-        if(!source.motion_collision||!session.world_object_state(w))continue;
+        if(!session.world_object_state(w)||
+           std::find(track_.world_models.begin(),track_.world_models.end(),source.model)==track_.world_models.end())continue;
         bool found=false;
-        for(const auto& model:track_templates_.owning_draws()) {
-            if(model.instance!=kNoHandle||track_.scene.region.meshes[model.mesh].mesh_hash!=source.model)continue;
+        const auto& templates=track_templates_.owning_draws();
+        for(std::size_t i=static_track_definitions_;i<templates.size();++i) {
+            const auto& model=templates[i];
+            if(track_.scene.region.meshes[model.mesh].mesh_hash!=source.model)continue;
             found=true;world_draws_.push_back(model);world_draw_sources_.push_back(w);
         }
-        if(!found){error="animated world model absent from track backing";return false;}
+        if(!found){error="world model absent from track backing";return false;}
     }
     for(std::size_t d=0;d<world_draws_.size();++d) {
         const auto* state=session.world_object_state(world_draw_sources_[d]);
@@ -1385,7 +1617,11 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
         options.wet_road_reflections = wet_road_reflections_;
         options.wet_lamps = wet_road_reflections_ ? &lamps_ : nullptr;
         // The texture comparison and replay tools use the unpatched lens.
-        if(split_camera)options.height/=2;
+        const auto target_width=options.width,target_height=options.height;
+        if(split_camera) {
+            const auto view=split_viewport(target_width,target_height,layout,split_player);
+            options.width=view.width;options.height=view.height;
+        }
         const auto projection = (race_visuals_||split_camera) ? ChaseFovMode::retail_widescreen
                                                                : ChaseFovMode::retail;
         if (!drive_render_camera(chase, projection,
@@ -1418,7 +1654,7 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
                 }
             }
         }
-        glow_count_ = 0;nitrous_count_=0;actor_glow_count_=0;
+        glow_count_=nitrous_count_=second_flame_count_=actor_glow_count_=0;
         if (glows_enabled_ && race_visuals_) {
             place_original_car_glows(glow_anchors_,car_,basis,options.width,session.light_service_brake(),false,light_sprites_);
             for(const auto& sprite:light_sprites_) {
@@ -1436,18 +1672,23 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
                 draw.material.alpha[0]=float(sprite.rgba[3])/255;
             }
             glow_count_+=road_glows_.size();
-            const auto flames=place_nitrous_flames(exhaust_anchors_,car_,basis,
-                session.nitrous_boosting() || session.nitrous_purging(),session.world_visual_frame());
-            // Renderer open freezes the dynamic count and definition addresses.
             // Keep one slot for each authored pipe, even with nitrous off.
-            for(std::size_t i=0;i<flames.size();++i)if(exhaust_anchors_[i].marker.present) {
-                const auto& flame=flames[i];
-                auto& draw=nitrous_selected_[nitrous_count_++];draw=nitrous_template_;
-                draw.first_index=6*flame.texture;
-                std::copy(std::begin(flame.transform),std::end(flame.transform),draw.placement.rows);
-                for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=flame.rgba[c];
-                draw.material.alpha[0]=float(flame.rgba[3])/255;
-            }
+            const auto emit_flames=[&](const CarExhaustAnchors& anchors,const PreparedCarScene& model,
+                                       const RaceSession& driver,auto& selected,std::size_t& count) {
+                const auto flames=place_nitrous_flames(anchors,model,basis,
+                    driver.nitrous_boosting()||driver.nitrous_purging(),session.world_visual_frame());
+                for(std::size_t i=0;i<flames.size();++i)if(anchors[i].marker.present) {
+                    const auto& flame=flames[i];
+                    auto& draw=selected[count++];draw=nitrous_template_;
+                    draw.first_index=6*flame.texture;
+                    std::copy(std::begin(flame.transform),std::end(flame.transform),draw.placement.rows);
+                    for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=flame.rgba[c];
+                    draw.material.alpha[0]=float(flame.rgba[3])/255;
+                }
+            };
+            emit_flames(exhaust_anchors_,car_,session,nitrous_selected_,nitrous_count_);
+            if(split_camera)emit_flames(second_exhaust_,rivals_.front().scene,session.rival(0),
+                second_flames_,second_flame_count_);
             const auto purge=place_nitrous_purge(glow_anchors_,car_,basis,
                 !particles_enabled_&&session.nitrous_purging(),session.world_visual_frame());
             for(std::size_t i=0;i<purge.size();++i)if(!glow_anchors_[i].empty()) {
@@ -1457,7 +1698,7 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
                 for(unsigned c=0;c<3;++c)draw.material.environment_color[c]=puff.rgba[c];
                 draw.material.alpha[0]=float(puff.rgba[3])/255;
             }
-            glow_count_+=nitrous_count_;
+            glow_count_+=nitrous_count_+second_flame_count_;
             for(auto& actor:rivals_) {
                 place_original_car_glows(actor.anchors,actor.scene,basis,options.width,actor.service_brake,actor.traffic,actor.light_sprites);
                 for(const auto& light:actor.light_sprites) {
@@ -1527,15 +1768,22 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
                         std::fill(std::begin(draw.placement.rows),std::end(draw.placement.rows),0.F);
                 }
             }
-            if (particles_enabled_)
-                place_particle_commands(car_templates_,car_draw_count_,particles_,basis);
-            if(skids_)skids_->place(car_templates_,car_draw_count_+(particles_enabled_?kRaceParticleLimit+particles_.environment_draw_limit():0));
+            std::size_t effects=car_draw_count_;
+            if (particles_enabled_) {
+                place_particle_commands(car_templates_,effects,particles_,basis,particle_streams_);
+                effects+=water_draws_+kRaceParticleLimit+particles_.environment_draw_limit();
+            }
+            if (second_particles_) {
+                place_particle_commands(car_templates_,effects,*second_particles_,basis,second_particle_streams_);
+                effects+=water_draws_+kRaceParticleLimit;
+            }
+            if(skids_)skids_->place(car_templates_,effects);
+            if(second_skids_)second_skids_->place(car_templates_,effects+3);
             if (!record_frame_state(options,{},out.commands,error)) return false;
-            // Preserve the full target extent while using the half-height lens.
-            if(split_camera)out.commands.height*=2;
+            if(split_camera){out.commands.width=target_width;out.commands.height=target_height;}
             stage(&RaceFrameProfile::car_ms);
             out.track_draws = sky_draws_ + selection_.size(); out.car_draws = car_draw_count_+rival_draws_;
-            out.particle_draws = particles_enabled_ ? kRaceParticleLimit+particles_.environment_draw_limit() : 0;
+            out.particle_draws = effects-car_draw_count_;
             out.glow_draws = glow_count_;
             out.visible = culler_.result().visible.size(); out.far_plane = far;
             stage(&RaceFrameProfile::track_ms);
@@ -1565,7 +1813,7 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
             }
             const auto visual_start = profile ? timer->now_us() : 0;
             if (profile) profile->road_reflections_ms = (visual_start-reflection_start)/1000.0;
-            if(race_visuals_ && !prepare_visual_frame(session,finish_scene_?presented:session.car(),basis,out.commands,error))return false;
+            if(race_visuals_ && !prepare_visual_frame(view_driver,finish_scene_?presented:view_driver.car(),basis,out.commands,error))return false;
             if (profile) profile->race_visuals_ms = (timer->now_us()-visual_start)/1000.0;
             out.commands.source_ = this; out.commands.generation_ = generation_;
             stage(&RaceFrameProfile::combine_ms);
@@ -1588,11 +1836,11 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
             for(auto& draw:car_commands.owning_draws())
                 std::fill(std::begin(draw.placement.rows),std::end(draw.placement.rows),0.F);
         if (particles_enabled_) {
-            if (!append_particle_commands(car_commands,particle_textures_,particles_.environment_draw_limit(),error)) return false;
-            place_particle_commands(car_commands,car_draw_count_,particles_,basis);
+            if (!append_particle_commands(car_commands,particle_textures_,particles_.environment_draw_limit(),error,kNoHandle,particle_streams_,particle_sheet_)) return false;
+            place_particle_commands(car_commands,car_draw_count_,particles_,basis,particle_streams_);
         }
         if(skids_) {if(!skids_->append(car_commands,error))return false;
-            skids_->place(car_commands,car_draw_count_+(particles_enabled_?kRaceParticleLimit+particles_.environment_draw_limit():0));}
+            skids_->place(car_commands,car_draw_count_+(particles_enabled_?water_draws_+kRaceParticleLimit+particles_.environment_draw_limit():0));}
         RecordedCommands shadow_commands;
         if (!record_car_shadow_commands(shadow_asset_, shadow, options, shadow_commands, error)) return false;
         if(neon_asset_.enabled) {
@@ -1621,7 +1869,7 @@ bool RaceGpuScene::frame_view(const RaceSession& session,RaceGpuFrame& out,std::
         stage(&RaceFrameProfile::track_ms);
         RaceGpuFrame result;
         result.car_draws = car_draw_count_; result.track_draws = track_commands.owning_draws().size();
-        result.particle_draws = particles_enabled_ ? kRaceParticleLimit+particles_.environment_draw_limit() : 0;
+        result.particle_draws = particles_enabled_ ? water_draws_+kRaceParticleLimit+particles_.environment_draw_limit() : 0;
         result.glow_draws = glow_count_;
         result.visible = visible.visible.size(); result.unplaced = list.cost.visible_unplaced;
         result.far_plane = far; result.triangles = 0;

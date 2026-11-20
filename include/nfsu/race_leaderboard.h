@@ -16,6 +16,9 @@ struct RaceGapMap {
     float time(float progress) const noexcept;
 };
 struct RaceGapActor {float progress=0;bool finished=false;int lap=0;std::int32_t finish_ticks=0;};
+// 433E20 display-only estimate for a racer still running at closure.
+std::int32_t race_result_estimate_ticks(const RaceGapMap&,const RaceGapActor&,
+    const RaceGapActor& player,int race_laps,std::int32_t elapsed_ticks) noexcept;
 std::int32_t race_gap_ticks(const RaceGapMap&,const RaceGapActor& row,const RaceGapActor& player,
                            std::int32_t since_go) noexcept;
 std::string race_gap_text(std::int32_t ticks);

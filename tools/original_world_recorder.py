@@ -1,5 +1,5 @@
 """Bounded chronological PC world telemetry, without shadow-emulation pauses."""
-import argparse,hashlib,json,queue,struct,threading,time,uuid,zipfile
+import argparse,ctypes,hashlib,json,queue,struct,threading,time,uuid,zipfile
 from datetime import datetime,timezone
 from pathlib import Path
 import original_recorder as base
@@ -12,6 +12,42 @@ MAX_SECONDS=1800
 PRIMARY_VIEW=0x740500
 CURRENT_TRACK=0x78A2F0
 CHASE_VTABLE=0x6C7FC8
+PAD=struct.Struct('<IHBBhhhh')
+PAD_PERIOD=.004
+CURRENT_EVENT=0x7677A8
+
+
+class Gamepad:
+    def __init__(self,index):
+        self.index=index
+        self.get_state=ctypes.WinDLL('xinput1_4.dll').XInputGetState
+        self.get_state.argtypes=(ctypes.c_uint32,ctypes.c_void_p)
+        self.get_state.restype=ctypes.c_uint32
+        self.buffer=ctypes.create_string_buffer(PAD.size)
+        self.previous=None
+        self.changed=0
+        self.packet_gaps=0
+        self.disconnected=0
+
+    def poll(self,elapsed,sampler):
+        error=self.get_state(self.index,self.buffer)
+        state=PAD.unpack(self.buffer.raw) if not error else None
+        if state is None:self.disconnected+=1
+        if self.previous==state:return None
+        if self.previous is not None and state is not None:
+            self.packet_gaps+=max(0,((state[0]-self.previous[0])&0xffffffff)-1)
+        self.previous=state
+        self.changed+=1
+        return dict(elapsed_s=elapsed,frame=base.field(sampler.process.read(base.FRAME,4),0,'I'),
+                    clock=base.field(sampler.process.read(base.CLOCK,4),0,'I'),
+                    xinput_error=error,state=state)
+
+
+def sample_event(process):
+    event=base.field(process.read(CURRENT_EVENT,4),0,'I')
+    track=base.field(process.read(CURRENT_TRACK,4),0,'I')
+    identity=base.field(process.read(event+0x58a0,4),0,'I') if base.pointer(event) else None
+    return dict(event=identity,track=track)
 
 
 def sample_chase_movers(sampler, sample):
@@ -125,6 +161,23 @@ def decode_snapshot(blob):
     if valid&128:
         result['controller']={'route_index_raw':w[608+0x478//4],
             'route_scale':base.field(blob,2432+0x4b8,'f')}
+    if valid&16384:
+        road=632
+        count=w[road]
+        if w[608]!=0x6b8968 or w[1184]<0x54 or count>40:
+            raise ValueError('Invalid human road publication')
+        cells=[]
+        for i in range(count):
+            start=road+7+5*i
+            packed=w[start]
+            distance,offset,lower,upper=struct.unpack_from('<4f',blob,4*(start+1))
+            cells.append(dict(route=packed&0xff,point=packed>>16,
+                distance=distance,offset=offset,lower=lower,upper=upper))
+        def raw_point(first):
+            route,point=w[road+first:road+first+2]
+            return None if route==0xffffffff or point==0xffffffff else [route,point]
+        result['human_road']=dict(seed=raw_point(1),published=raw_point(4),category=signed(w[road+6]),
+            progress=base.field(blob,4*(road+3),'f'),cells=cells)
     if valid&256:
         action=blob[3732:4232]
         result['action']={'vtable':base.field(action,0,'I'),'desired_speed':base.field(action,0x1e4,'f'),
@@ -161,8 +214,9 @@ class BinaryWriter:
         for file in self.files.values():file.close()
 
 class Recorder:
-    def __init__(self,output,note='',status_file=None,max_bytes=MAX_BYTES,landing_camera=False):
+    def __init__(self,output,note='',status_file=None,max_bytes=MAX_BYTES,landing_camera=False,gamepad_index=None):
         self.landing_camera=landing_camera
+        self.gamepad_index=gamepad_index
         if type(max_bytes)is not int or max_bytes<=0:raise ValueError('Invalid capture byte ceiling')
         self.max_bytes=max_bytes
         self.output=Path(output);self.note=note;self.status_file=Path(status_file)if status_file else None
@@ -191,8 +245,9 @@ class Recorder:
             writer.accept(payload,data)
             if script is not None:script.exports_sync.acknowledge(payload['batch'])
     def run(self):
-        folder=process=session=script=writer=polls=raw=events=None
+        folder=process=session=script=writer=polls=raw=events=pad_file=gamepad=None
         state=None;reason='Stopped by user';clean=False;samples=0;cross_frames=0;missed_polls=0
+        pad_polls=0;max_pad_interval=0.
         try:
             import frida
             api=base.WindowsAPI();self.status('Waiting for original PC 1.4 USA speed.exe')
@@ -204,13 +259,17 @@ class Recorder:
                 if pids:
                     process=base.Process(api,pids[0]);identity=process.authenticate();break
             if process is None:return
+            if self.gamepad_index is not None:gamepad=Gamepad(self.gamepad_index)
             name='world-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ-')+uuid.uuid4().hex[:8]
             folder=self.output/name;base.make_directory(folder,exclusive=True)
             sources=(Path(__file__),AGENT,Path(base.__file__))
             metadata=dict(schema='nfsu-world-trace-1',created_utc=base.utc(),source=identity,note=self.note,
                 files={p.name:base.digest(p)for p in sources},frida=frida.__version__,poll_hz=60,clock_hz=4000,
-                landing_camera=self.landing_camera,
+                landing_camera=self.landing_camera,gamepad_index=self.gamepad_index,
+                gamepad_poll_hz=1/PAD_PERIOD if gamepad else None,
+                gamepad_fields=['packet','buttons','lt','rt','lx','ly','rx','ry'] if gamepad else None,
                 synthetic_fixture=bool(identity.get('synthetic_fixture')),call_words=40,snapshot_words=1344,byte_ceiling=self.max_bytes,time_ceiling_seconds=MAX_SECONDS,
+                human_road_publication='ordinary human driver entry',
                 boundary='Chronological relevant driver/controller/outer-physics/path/action/RNG calls and vehicle states; native stages2..5 plus whole-world polling',
                 limitations=['Not an all-instruction/all-function trace or a complete deterministic world replay.',
                     'Instrumentation affects timing; this is not an FPS benchmark.',
@@ -221,6 +280,7 @@ class Recorder:
             base.write_json(folder/'metadata.json',metadata)
             writer=BinaryWriter(folder,self.max_bytes);polls=(folder/'samples.jsonl').open('x',encoding='ascii')
             raw=(folder/'memory.bin').open('xb');events=(folder/'events.jsonl').open('x',encoding='ascii')
+            if gamepad:pad_file=(folder/'gamepad.jsonl').open('x',encoding='ascii')
             session=frida.get_local_device().attach(process.pid);session.on('detached',lambda *args:self.detached.set())
             check=base.Process(api,process.pid)
             try:assert check.created==process.created and process.alive(),'PID changed before attachment'
@@ -229,15 +289,23 @@ class Recorder:
             script.on('message',self.receive);script.load();descriptor=script.exports_sync.start(False)
             base.write_json(folder/'instrumentation.json',descriptor)
             sampler=base.Sampler(process);started=time.monotonic();next_poll=started;last_raw=-30.;last_notice=-1.;last_stage=object()
+            next_pad=started;last_pad=started
             self.status('Recording world calls, controls, acceleration, lane paths and traffic',folder=str(folder),pid=process.pid)
             while not self.stopping.is_set():
                 if self.overflow.is_set():raise RuntimeError('Host queue overflow; capture incomplete')
                 if self.detached.is_set()or not process.alive():reason='Original game exited; final in-flight records may be absent';break
                 self.drain(script,writer,events);now=time.monotonic();elapsed=now-started
                 if elapsed>=MAX_SECONDS:reason='Recording time ceiling reached';break
+                if gamepad and now>=next_pad:
+                    pad_polls+=1
+                    max_pad_interval=max(max_pad_interval,now-last_pad)
+                    row=gamepad.poll(elapsed,sampler)
+                    if row is not None:pad_file.write(base.encoded(row)+'\n')
+                    last_pad=now;next_pad=now+PAD_PERIOD
                 if now>=next_poll:
                     if now-next_poll>1/60:missed_polls+=int((now-next_poll)*60)
                     sample=sampler.sample(samples,elapsed);samples+=1;cross_frames+=int(sample['cross_frame'])
+                    if gamepad:sample.update(sample_event(process))
                     if self.landing_camera and sample['stage'] in (2,3,4,5):
                         sample['camera']=sample_landing_camera(sampler,sample)
                     polls.write(base.encoded(sample)+'\n')
@@ -248,11 +316,13 @@ class Recorder:
                     next_poll=now+1/60
                 if elapsed-last_notice>=1:
                     state=script.exports_sync.status();writer.flush();polls.flush();raw.flush();events.flush()
+                    if pad_file:pad_file.flush()
                     if not state['enabled']or state['overflows']or state['errors']:raise RuntimeError('Native capture disabled: '+base.encoded(state))
                     if sum(p.stat().st_size for p in folder.iterdir()if p.is_file())>self.max_bytes:raise RuntimeError('Session byte ceiling reached')
                     self.status('Recording: '+str(writer.counts['calls'])+' calls, '+str(writer.counts['snapshots'])+' states; '+str(writer.bytes//(1024*1024))+' / '+str(self.max_bytes//(1024*1024))+' MiB',folder=str(folder),pid=process.pid,state=state)
                     last_notice=elapsed
-                self.stopping.wait(min(.005,max(0,next_poll-time.monotonic())))
+                deadline=min(next_poll,next_pad) if gamepad else next_poll
+                self.stopping.wait(min(.005,max(0,deadline-time.monotonic())))
             if not self.detached.is_set()and process.alive():
                 state=script.exports_sync.stop();deadline=time.monotonic()+5
                 while time.monotonic()<deadline:
@@ -282,12 +352,15 @@ class Recorder:
                 try:session.detach()
                 except Exception:pass
             if process is not None:process.close()
-            for f in(polls,raw,events):
+            for f in(polls,raw,events,pad_file):
                 if f is not None:f.close()
             if writer is not None:writer.close()
             summary=dict(reason=reason,complete_stop=clean,counts=writer.counts if writer else {},capture_state=state,
                 coverage='Relevant call boundaries plus per-step vehicle states; not a complete deterministic world replay.',
                 world_polls=samples,cross_frame_polls=cross_frames,missed_poll_intervals=missed_polls)
+            if gamepad:summary['gamepad']=dict(index=gamepad.index,polls=pad_polls,changed=gamepad.changed,
+                maximum_poll_interval_ms=max_pad_interval*1000,packet_gaps=gamepad.packet_gaps,
+                disconnected_polls=gamepad.disconnected)
             self.summary=summary
             if folder is not None:
                 base.write_json(folder/'summary.json',summary)
@@ -319,12 +392,14 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__);ap.add_argument('--output',type=Path);ap.add_argument('--headless',action='store_true');ap.add_argument('--note',default='');ap.add_argument('--status-file',type=Path);ap.add_argument('--stop-file',type=Path)
     ap.add_argument('--max-gib',type=int,default=16,help='Capture size ceiling, 1..32 GiB (default: 16)')
     ap.add_argument('--landing-camera',action='store_true',help='Include the primary rendered view with each world poll')
+    ap.add_argument('--gamepad-index',type=int,choices=range(4),help='Record raw XInput state in headless mode')
     a=ap.parse_args()
     if not 1<=a.max_gib<=32:ap.error('--max-gib must be between 1 and 32')
+    if a.gamepad_index is not None and not a.headless:ap.error('--gamepad-index requires --headless')
     max_bytes=a.max_gib*1024*1024*1024
     output=a.output or base.special_folder(5)/'NFSU-Recordings';base.make_directory(output)
     if a.headless:
-        recorder=Recorder(output,a.note,a.status_file,max_bytes,a.landing_camera);recorder.start()
+        recorder=Recorder(output,a.note,a.status_file,max_bytes,a.landing_camera,a.gamepad_index);recorder.start()
         try:
             while recorder.thread.is_alive():
                 if a.stop_file and a.stop_file.exists():recorder.stop()

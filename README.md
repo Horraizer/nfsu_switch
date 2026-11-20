@@ -5,10 +5,10 @@ An experimental native Nintendo Switch port / engine reimplementation of
 The engine and deko3d renderer are rebuilt in C++; the Windows executable
 is not run on the console.
 
-**[Download r42 prerelease](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r42)** |
+**[Download R99-R72 prerelease](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r99-r72)** |
 **[LAN r7 archive](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-lan-r7)** |
 **[Install, controls and build](docs/GETTING_STARTED.md)** |
-**[r42 changes and limits](docs/RELEASE_0_2_R42.md)** |
+**[R99-R72 changes and limits](docs/RELEASE_0_2_R99_R72.md)** |
 **[Historical 0.1 release](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.1)**
 
 ## Bring your own game
@@ -30,26 +30,21 @@ not supported inputs. See the installation guide for the required SD layout.
 - Original-data vehicle assembly, rendering, reflections, headlights,
   shadows, audio, nitrous, particles and post-processing.
 - Local two-player Quick Race in split-screen, with the Switch controller
-  picker, separate cameras and HUDs, and no computer racers. Circuit and
-  Sprint are supported. See [Switch race setup](docs/SWITCH_RACE.md#quick-race-split-screen).
+  picker, separate cameras and HUDs, and no computer racers. Circuit, Sprint, Drag and
+  Drift support both split layouts, per-player steering and garage setup. See [Switch race setup](docs/SWITCH_RACE.md#quick-race-split-screen).
 - Experimental two-player router LAN room: create/join, race settings,
   all playable cars, shared Stock/Street/Pro/Extreme performance tier,
   and each player's appearance garage. See [LAN_MULTIPLAYER](docs/LAN_MULTIPLAYER.md).
-- Display settings include 540p/720p race rendering, motion blur, road
+- Display settings include 540p/720p and docked 1080p race rendering, motion blur, road
   reflections, and MPH/km/h. Diagnostic file logging is opt-in.
-- The r74 source snapshot also includes updates to the garage, race cameras,
-  vehicle physics, traffic, track effects and the Underground startup checks.
+- National Rail has animated channel water and revised spray. Testing against
+  the originals also covers the placement and motion of scenery particles.
 
-These are implemented paths, not a claim that every original behavior is
-finished. Campaign startup/finish automation does not replace a full driven
-campaign. Handheld play is the priority; frame-time drops and remaining
-physics, AI, traffic, audio and interface differences need further work.
-
-**Source and download versions.** The main branch contains the newer r74
-source snapshot. The r42 release above is an earlier downloadable build.
-Local split-screen and Underground startup have PC regression coverage.
-Controller assignment, rendering and frame pacing for split-screen still
-need a Switch playthrough.
+The R99-R72 download and tagged sources are on the same release page.
+The full desktop test suites have known failures. Opponent behavior after
+collisions and frame pacing in demanding scenes are still under investigation.
+The previous downloadable build remains available in the
+[r42 archive](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r42).
 
 ## Progress images
 

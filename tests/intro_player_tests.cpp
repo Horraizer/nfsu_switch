@@ -1,6 +1,8 @@
 #include "nfsu/intro_movie.h"
 #include "nfsu/audio_output.h"
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -66,8 +68,20 @@ void display_geometry() {
                     const bool inside=x>=left&&x<left+dw&&y>=top&&y<top+dh;
                     require(q[3]==255,"display alpha");
                     if(inside) {
-                        const auto source=(std::size_t(y-top)*f.height/dh*f.width+std::size_t(x-left)*f.width/dw)*4;
-                        for(unsigned c=0;c<4;++c)require(q[c]==f.rgba[source+c],"display source mapping");
+                        const auto axis=[](unsigned n,unsigned source,unsigned target) {
+                            return std::clamp((n+.5)*source/target-.5,0.,double(source-1));
+                        };
+                        const double sx=axis(x-left,f.width,dw),sy=axis(y-top,f.height,dh);
+                        const unsigned x0=unsigned(sx),y0=unsigned(sy);
+                        const unsigned x1=std::min(x0+1,f.width-1),y1=std::min(y0+1,f.height-1);
+                        const auto get=[&](unsigned px,unsigned py,unsigned c) {
+                            return f.rgba[(std::size_t(py)*f.width+px)*4+c];
+                        };
+                        for(unsigned c=0;c<4;++c) {
+                            const double u=get(x0,y0,c)+(sx-x0)*(get(x1,y0,c)-get(x0,y0,c));
+                            const double l=get(x0,y1,c)+(sx-x0)*(get(x1,y1,c)-get(x0,y1,c));
+                            require(std::abs(q[c]-std::lround(u+(sy-y0)*(l-u)))<=1,"display filtered source mapping");
+                        }
                     } else require(q[0]==0&&q[1]==0&&q[2]==0,"display black bars");
                 }
                 for(std::size_t i=w*4;i<stride;++i)require(dest[16+y*stride+i]==23,"display stride padding");

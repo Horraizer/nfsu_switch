@@ -4,6 +4,7 @@
 #include "nfsu/geometry.h"
 #include "nfsu/track.h"
 #include "nfsu/drive_session.h"
+#include "nfsu/race_random.h"
 #include "nfsu/player_powertrain.h"
 #include "nfsu/track_ground.h"
 #include <functional>
@@ -14,8 +15,17 @@
 #include <tuple>
 #include <fstream>
 #include <stdexcept>
+#include <string_view>
 
 namespace nfsu {
+struct RoadStartCarKeys {
+    std::array<std::vector<eagl::Pose>,4> slots;
+    std::size_t bytes() const {
+        std::size_t size=sizeof(*this);
+        for(const auto& slot:slots)size+=sizeof(eagl::Pose)*slot.capacity();
+        return size;
+    }
+};
 namespace {
 using Bytes=std::vector<unsigned char>;
 using Matrix=std::array<float,16>;
@@ -26,6 +36,17 @@ using eagl::channel;
 void need(bool ok,const char* why) { if(!ok)throw std::runtime_error(why); }
 std::size_t align(std::size_t n,std::size_t a){return (n+a-1)&~(a-1);}
 std::uint32_t hash(const std::string& s){std::uint32_t h=0xffffffffU;for(unsigned char c:s)h=h*33+c;return h;}
+struct CarMotionChannel {
+    View data{nullptr,0};
+    std::size_t clip=0;
+};
+using CarMotionChannels=std::array<std::array<CarMotionChannel,3>,4>;
+void record_car_channel(const std::string& name,View data,std::size_t clip,CarMotionChannels& cars) {
+    if(name.size()!=10||name.compare(0,7,"ZPM_Car")!=0||name[7]<'1'||name[7]>'4'||name[8]!='_')return;
+    const auto channel_index=std::string_view("sqt").find(name[9]);
+    if(channel_index!=std::string_view::npos)
+        cars[unsigned(name[7]-'1')][channel_index]={data,clip};
+}
 Bytes read_crowd_file(FileSystemService& fs,const std::filesystem::path& path,std::size_t limit) {
     std::uint64_t n=0;std::string e;need(fs.file_size(path,n,e),"crowd file unavailable");
     need(n && n<=limit,"crowd input size limit");Bytes b(static_cast<std::size_t>(n));std::size_t got=0;
@@ -104,6 +125,43 @@ Matrix pose_matrix(const Pose& p) {
         (2*x*y-2*z*w)*p[1]*p[3],(1-2*x*x-2*z*z)*p[1],(2*y*z+2*x*w)*p[1],0,
         (2*x*z+2*y*w)*p[2]*p[3],(2*y*z-2*x*w)*p[2],(1-2*x*x-2*y*y)*p[2],0,p[8],p[9],p[10],1}};
 }
+Pose sample_car_keys(const std::vector<Pose>& keys,float frame) {
+    frame=std::clamp(frame,0.F,float(keys.size()-1));
+    const auto first=std::size_t(frame),second=std::min(first+1,keys.size()-1);
+    Pose pose;
+    need(eagl::blend_pose(keys[first],keys[second],frame-float(first),pose),"start NIS car quaternion");
+    return pose;
+}
+void sample_release_cars(const CarMotionChannels& cars,RaceStartClock& timing) {
+    auto tracks=std::make_shared<RoadStartCarKeys>();
+    for(unsigned i=0;i<cars.size();++i) {
+        const auto& channels=cars[i];
+        const auto& translation=channels[2];
+        if(!channels[1].data.p||!translation.data.p)continue;
+        const auto frames=translation.data.word(translation.clip+10);
+        need(frames && frames<=1024,"start NIS car frame count");
+        const auto decode_pose=[&](unsigned frame) {
+            const Pose identity{{1,1,1,1,0,0,0,1,0,0,0,0}};
+            std::vector<Pose> pose(2,identity);
+            for(const auto& key:channels) {
+                if(!key.data.p)continue;
+                const auto n=key.data.word(key.clip+10);
+                need(n&&key.data.word(key.clip+8)==1,"start NIS car channel");
+                channel(key.data,key.data.u32(key.clip+12),std::min(frame,n-1),pose);
+            }
+            return pose[1];
+        };
+        // 47C580 plays car channels at half speed and holds the last key.
+        auto& keys=tracks->slots[i];
+        const auto count=std::min(frames,(timing.release+1)/2+1);
+        keys.reserve(count);
+        for(unsigned frame=0;frame<count;++frame)keys.push_back(decode_pose(frame));
+        const auto m=pose_matrix(sample_car_keys(keys,timing.release*.5F));
+        timing.release_cars[i]={{m[12],m[13],m[14]},{m[0],m[1],m[2]}};
+        timing.animated_slots|=1U<<i;
+    }
+    if(timing.animated_slots)timing.car_keys=std::move(tracks);
+}
 struct Skeleton {std::vector<Pose> pose;std::vector<Matrix> inverse;std::vector<int> parent;};
 Skeleton skeleton(const Elf& e,std::size_t at) {
     const auto n=e.data.u32(at+8);need(n && n<=64,"crowd bone count");e.data.range(at+16,n*112);
@@ -179,20 +237,34 @@ Matrix start_anchor(const VehicleTrackCourse& course,bool finish=false) {
         for(const auto& m:course.track.markers)if(m.name_hash==marker_hash && m.param==0){marker=&m;break;}
     }
     need(marker!=nullptr,"start line marker absent");
-    // 47CCEA applies the opposite quarter turn for an ending NIS.
+    // 47CAC0 adds a quarter turn. 47CCEA subtracts it at the start or
+    // adds it again at the finish. 40B930 builds a yaw-only matrix.
     const auto angle_word=std::uint16_t(marker->angle+(finish?0x8000:0));
-    const float angle=float(vehicle_track_heading(angle_word)),cs=std::cos(angle),sn=std::sin(angle);
-    //47CAC0 supplies XY only;47CB50 initializes query Z to0 and asks440A40
-    // for its ordered road height/normal. Marker Z is not a search window:
-    //1102 time-trial starts lie outside the former +2/-8 column.
+    const float cs=player_angle_sin(std::uint16_t(angle_word+0x4000));
+    const float sn=player_angle_sin(angle_word);
+    // 440A40 supplies world Z. Each car is grounded separately at 427C50.
     TrackGroundCache cache;TrackContact contact;
     need(query_track_ground(course.world,{marker->position[0],marker->position[1],0},cache,contact),"start line road absent");
-    const auto& n=contact.normal;const float dot=cs*n[0]+sn*n[1];
-    float r[3]={cs-dot*n[0],sn-dot*n[1],-dot*n[2]};const float length=std::sqrt(r[0]*r[0]+r[1]*r[1]+r[2]*r[2]);
-    need(length>.001F,"start line basis degenerate");for(auto& v:r)v/=length;
-    const float f[3]={n[1]*r[2]-n[2]*r[1],n[2]*r[0]-n[0]*r[2],n[0]*r[1]-n[1]*r[0]};
-    return {{r[0],r[1],r[2],0,f[0],f[1],f[2],0,n[0],n[1],n[2],0,marker->position[0],marker->position[1],contact.point[2],1}};
+    return {{cs,sn,0,0,-sn,cs,0,0,0,0,1,0,marker->position[0],marker->position[1],contact.point[2],1}};
 }
+void ground_scene_car(const Matrix& m,const VehicleTrackCourse& course,const VehicleSpec& spec,
+                      std::array<TrackGroundCache,kVehicleWheelCount>& ground,
+                      VehicleVec3& position,PlayerRigidMatrix& axes) {
+    // 47C71B passes a 564DB0 angle word to 427C50. 4273D0 also
+    // retains the authored position and yaw when any ground query misses.
+    position={m[12],m[13],m[14]};
+    const auto hubs=vehicle_placement_hubs(spec.handling,track_angle(m[0],m[1]),position,axes);
+    std::array<VehicleGroundHit,kVehicleWheelCount> hits{};
+    for(unsigned k=0;k<hubs.size();++k) {
+        TrackContact hit;
+        if(query_track_ground(course.world,hubs[k],ground[k],hit)) {
+            hits[k].hit=hits[k].has_plane=true;
+            hits[k].plane=vehicle_track_ground_plane(course.world,hit.polygon);
+        }
+    }
+    vehicle_placement_ground(spec.handling,hubs,hits,position,axes);
+}
+
 struct SkinVertex {MeshVertex vertex;std::array<float,3> weight;std::array<unsigned,3> bone;};
 struct CrowdMesh {std::vector<SkinVertex> vertices;std::vector<std::uint16_t> indices;std::vector<MeshMaterial> materials;std::vector<std::uint32_t> textures;};
 CrowdMesh mesh(View b,Chunk root) {
@@ -263,8 +335,11 @@ struct StartCrowd::Data {
     struct Actor {Matrix local;std::size_t clip=0,first_draw=0,draws=0;float speed=1;bool starter=false;};
     std::vector<Clip> clips;std::vector<Actor> actors;RenderTextureSet textures;RecordedCommands commands;
     std::size_t active=0,upload_base=0;std::uint64_t resident=0;
-    Matrix anchor{};bool anchored=false;
+    Matrix anchor{};bool anchored=false,visible=false;
     std::uint32_t post_go_frames=0, release_frame=0, go_frame=0;
+    unsigned animated_slots=0;
+    std::array<RoadStartCarTransform,4> release_cars{};
+    std::shared_ptr<const RoadStartCarKeys> car_keys;
     std::vector<Pose> camera_poses,car_poses;
     std::array<std::vector<Pose>,4> finish_cars;
     std::array<std::vector<double>,4> finish_travel;
@@ -273,11 +348,19 @@ struct StartCrowd::Data {
     // Signed authored root travel, prepared once, sampled by the same clock.
     std::vector<double> car_travel;
     std::vector<std::size_t> camera_cuts;
+    std::uint64_t motion_bytes() const {
+        std::uint64_t size=(camera_poses.capacity()+car_poses.capacity())*sizeof(Pose)
+            +car_travel.capacity()*sizeof(double)+camera_cuts.capacity()*sizeof(std::size_t);
+        for(unsigned slot=0;slot<finish_cars.size();++slot)
+            size+=finish_cars[slot].capacity()*sizeof(Pose)+finish_travel[slot].capacity()*sizeof(double);
+        return size+(car_keys?car_keys->bytes():0);
+    }
 };
 StartCrowd::StartCrowd():data_(std::make_unique<Data>()){}
 StartCrowd::~StartCrowd()=default;
 const RecordedCommands& StartCrowd::commands()const{return data_->commands;}
 std::size_t StartCrowd::draw_count()const{return data_->active;}
+bool StartCrowd::visible()const{return data_->visible;}
 std::size_t StartCrowd::actor_count()const{return data_->actors.size();}
 std::uint64_t StartCrowd::bytes()const{return data_->resident;}
 void StartCrowd::rebase(std::size_t offset) {
@@ -293,22 +376,33 @@ unsigned road_start_playlist(unsigned racers,unsigned grid) {
     return grid==3?0:grid==1?1:grid==2?2:3;
 }
 static bool select_scene_from_playlist(FileSystemService& fs,const std::filesystem::path& root,
-                                       unsigned list,unsigned variant,unsigned& scene,std::string& error) {
+                                       unsigned list,unsigned variant,unsigned& scene,std::string& error,std::uint32_t* random=nullptr) {
     try {
         const auto path=root/"Global/INGAMEB.BUN";
         bool found=false;unsigned selected=0;
+        auto next=random?*random:0U;
         for(const auto& c:file_chunks(fs,path))if(c.id==0x34036) {
             need(!found,"duplicate start playlist");const auto bytes=read_range(fs,path,c.at,std::size_t(c.end-c.at));const View b(bytes);
             std::size_t offset=96;for(unsigned i=0;i<list;++i)offset+=4*b.u32(4*i);
             const auto count=b.u32(4*list);need(count && count<=64,"start playlist size");
-            b.range(offset,4*count);selected=b.u32(offset+4*(variant%count));found=true;
+            b.range(offset,4*count);
+            const auto index=random?race_random_index(next,count):variant%count;
+            selected=b.u32(offset+4*index);found=true;
         }
-        need(found,"start playlist absent");scene=selected;error.clear();return true;
+        need(found,"start playlist absent");
+        if(random)*random=next;
+        scene=selected;error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
 bool select_road_start_scene(FileSystemService& fs,const std::filesystem::path& root,
                             unsigned racers,unsigned grid,unsigned variant,unsigned& scene,std::string& error) {
     try {return select_scene_from_playlist(fs,root,road_start_playlist(racers,grid),variant,scene,error);}
+    catch(const std::exception& e) {error=e.what();return false;}
+}
+
+bool draw_road_start_scene(FileSystemService& fs,const std::filesystem::path& root,
+                           unsigned racers,unsigned grid,std::uint32_t& random,unsigned& scene,std::string& error) {
+    try {return select_scene_from_playlist(fs,root,road_start_playlist(racers,grid),0,scene,error,&random);}
     catch(const std::exception& e) {error=e.what();return false;}
 }
 
@@ -370,7 +464,7 @@ bool StartCrowd::load_camera_clip(FileSystemService& fs,const std::filesystem::p
         need(scene_begin,"race camera scene absent");
         std::array<std::array<unsigned,3>,4> car_hashes{};
         auto wanted_hashes=hashes;
-        if(finish)for(unsigned i=0;i<car_hashes.size();++i) {
+        for(unsigned i=0;i<car_hashes.size();++i) {
             const auto name="ZPM_Car"+std::to_string(i+1);
             car_hashes[i]={{hash(name+"_s"),hash(name+"_q"),hash(name+"_t")}};
             wanted_hashes.insert(wanted_hashes.end(),car_hashes[i].begin(),car_hashes[i].end());
@@ -384,14 +478,20 @@ bool StartCrowd::load_camera_clip(FileSystemService& fs,const std::filesystem::p
         need(root_found && base.pose.size()==2,"start camera ROOT shape");
         std::vector<Bytes> banks;std::vector<Elf> elves;std::map<unsigned,std::pair<std::size_t,std::size_t>> clips;
         std::size_t resident=0;
+        CarMotionChannels car_channels;
         for(const auto& c:parts)if(c.id==0xe34010 && (!finish||(c.at>scene_begin&&(!scene_end||c.at<scene_end)))) {
             const auto at=(c.at+15)&~std::uint64_t(15);auto bytes=read_range(fs,path,at,std::size_t(c.end-at));Elf e{View(bytes)};
             std::vector<std::pair<unsigned,std::size_t>> wanted;
+            const bool in_scene=c.at>scene_begin&&(!scene_end||c.at<scene_end);
             for(const auto& symbol:e.symbols)if(symbol.first=="__AnimationBank:::bank") {
                 const auto n=e.data.u32(symbol.second+4),ptr=e.data.u32(symbol.second+12),names=e.data.u32(symbol.second+16);need(n<1024,"start camera bank size");
                 for(unsigned i=0;i<n;++i) {
-                    const auto h=hash(e.data.text(e.data.u32(names+4*i)));
-                    if(std::find(wanted_hashes.begin(),wanted_hashes.end(),h)!=wanted_hashes.end())wanted.emplace_back(h,e.data.u32(ptr+4*i));
+                    const auto name=e.data.text(e.data.u32(names+4*i));
+                    const auto clip=e.data.u32(ptr+4*i);
+                    if(in_scene&&!finish)record_car_channel(name,e.data,clip,car_channels);
+                    const auto h=hash(name);
+                    const auto& selection=in_scene?wanted_hashes:hashes;
+                    if(std::find(selection.begin(),selection.end(),h)!=selection.end())wanted.emplace_back(h,clip);
                 }
             }
             if(wanted.empty())continue;
@@ -412,15 +512,13 @@ bool StartCrowd::load_camera_clip(FileSystemService& fs,const std::filesystem::p
             }
             next->camera_cuts.push_back(next->camera_poses.size());
         }
-        if(finish)for(unsigned i=0;i<car_hashes.size();++i) {
+        if(!finish)sample_release_cars(car_channels,timing);
+        else for(unsigned i=0;i<car_hashes.size();++i) {
             const auto translation=clips.find(car_hashes[i][2]);
             need(translation!=clips.end(),"ending NIS car position absent");
             const auto frames=elves[translation->second.first].data.word(translation->second.second+10);
             need(frames && frames<=1024,"ending NIS car frame count");
-            auto& poses=next->finish_cars[i];
-            auto& travel=next->finish_travel[i];
-            poses.reserve(frames);travel.reserve(frames);
-            for(unsigned f=0;f<frames;++f) {
+            const auto decode_pose=[&](unsigned f) {
                 const Pose identity{{1,1,1,1,0,0,0,1,0,0,0,0}};
                 std::vector<Pose> pose(2,identity);
                 for(auto h:car_hashes[i]) {
@@ -432,7 +530,13 @@ bool StartCrowd::load_camera_clip(FileSystemService& fs,const std::filesystem::p
                     need(n && e.data.word(at+8)==1,"ending NIS car channel");
                     channel(e.data,e.data.u32(at+12),std::min(f,unsigned(n)-1),pose);
                 }
-                poses.push_back(pose[1]);
+                return pose[1];
+            };
+            auto& poses=next->finish_cars[i];
+            auto& travel=next->finish_travel[i];
+            poses.reserve(frames);travel.reserve(frames);
+            for(unsigned f=0;f<frames;++f) {
+                poses.push_back(decode_pose(f));
                 double distance=0;
                 if(f) {
                     const auto previous=pose_matrix(poses[f-1]),current=pose_matrix(poses[f]);
@@ -443,7 +547,12 @@ bool StartCrowd::load_camera_clip(FileSystemService& fs,const std::filesystem::p
         }
         //47B290 flag20 holds the last sample when a clip ends before release.
         need(!next->camera_poses.empty(),"start camera has no samples");
+        next->animated_slots=timing.animated_slots;
+        next->release_cars=timing.release_cars;
+        next->car_keys=timing.car_keys;
         next->go_frame=timing.go;next->release_frame=timing.release;next->post_go_frames=timing.end-timing.go;
+        next->resident=next->motion_bytes();
+        need(next->resident<=16*1024*1024,"camera motion payload exceeds budget");
         data_=std::move(next);clock=timing;error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
@@ -483,7 +592,9 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
             const auto delta=std::size_t((at-stream.size())&127);
             if(delta) {const auto n=delta>=8?delta:delta+128;const auto p=stream.size();stream.resize(p+n,0);const auto payload=std::uint32_t(n-8);std::memcpy(stream.data()+p+4,&payload,4);}
             need(stream.size()+bytes.size()<=32*1024*1024,"selected crowd stream budget");
+            const auto position=stream.size();
             stream.insert(stream.end(),bytes.begin(),bytes.end());
+            return position;
         };
         for(const auto& c:parts)if(c.id==0x80134010) {
             bool wanted=false;
@@ -499,10 +610,16 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
             const auto m=mesh(View(probe),{c.id,prefix,probe.size()});
             crowd_textures.insert(crowd_textures.end(),m.textures.begin(),m.textures.end());append(header,bytes);
         }
+        bool in_scene=false;
+        std::vector<std::size_t> scene_banks;
         for(const auto& c:parts)if(c.id==0xe34010 || c.id==0x34035) {
             const auto header=c.at-8;auto bytes=read_range(fs,stream_path,header,std::size_t(c.end-header));
-            if(c.id==0x34035 && (bytes.size()<16 || View(bytes).u32(12)!=scene))continue;
-            append(header,bytes);
+            if(c.id==0x34035) {
+                in_scene=bytes.size()>=16&&View(bytes).u32(12)==scene;
+                if(!in_scene)continue;
+            }
+            const auto position=append(header,bytes);
+            if(c.id==0xe34010&&in_scene)scene_banks.push_back(position);
         }
         for(const auto& c:parts)if(c.id==kTexturePackRootId) {
             bool indexed=false,wanted=false;
@@ -531,6 +648,7 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
         View sb(stream);
         std::map<std::uint32_t,Chunk> meshes;std::vector<std::pair<Elf,std::size_t>> animations;std::map<std::uint32_t,std::size_t> anim_index;
         bool scene_timing_found=false;
+        CarMotionChannels car_channels;
         std::vector<std::uint32_t> camera_hashes;
         for(auto c:chunks(sb,0,sb.size,true))if(c.id==0x34035 && c.end-c.at>=0x84 && sb.u32(c.at+12)==scene) {
             const auto a=c.at+8;
@@ -560,6 +678,8 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
                     const auto n=e.data.u32(s.second+4),ptr=e.data.u32(s.second+12),names=e.data.u32(s.second+16);need(n<1024,"crowd bank size");
                     for(unsigned i=0;i<n;++i) {
                         auto name=e.data.text(e.data.u32(names+4*i));auto h=hash(name);
+                        if(std::binary_search(scene_banks.begin(),scene_banks.end(),c.at))
+                            record_car_channel(name,e.data,e.data.u32(ptr+4*i),car_channels);
                         if(!anim_index.count(h) && (std::find(camera_hashes.begin(),camera_hashes.end(),h)!=camera_hashes.end() || std::any_of(records.begin(),records.end(),[&](const Record& r){return r.animation==h;}))) {
                             anim_index[h]=animations.size();animations.emplace_back(e,e.data.u32(ptr+4*i));
                         }
@@ -568,6 +688,14 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
             }
         }
         need(scene_timing_found,"crowd scene timing absent");
+        if(next->release_frame) {
+            RaceStartClock timing;
+            timing.release=next->release_frame;
+            sample_release_cars(car_channels,timing);
+            next->animated_slots=timing.animated_slots;
+            next->release_cars=timing.release_cars;
+            next->car_keys=timing.car_keys;
+        }
         if(scene==kFirstDriftStartScene) {
             next->car_poses=drift_car_motion(root,region);
             next->car_travel.assign(next->car_poses.size(),0);
@@ -657,6 +785,7 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
             next->resident+=c.skeleton.pose.size()*sizeof(Pose)+c.skeleton.parent.size()*sizeof(int);
             for(const auto& frame:c.frames)next->resident+=frame.size()*sizeof(Pose);
         }
+        next->resident+=next->motion_bytes();
         need(next->resident<48*1024*1024,"crowd animation payload exceeds budget");
         for(auto& a:next->actors) {
             const auto& c=next->clips[a.clip];a.first_draw=next->commands.owning_draws().size();
@@ -672,17 +801,21 @@ bool StartCrowd::load(FileSystemService& fs,const std::filesystem::path& root,st
         data_=std::move(next);error.clear();return true;
     }catch(const std::exception& e) {error=e.what();return false;}
 }
-RaceStartClock StartCrowd::clock() const {return {data_->release_frame,data_->go_frame,data_->go_frame+data_->post_go_frames};}
+RaceStartClock StartCrowd::clock() const {
+    return {data_->release_frame,data_->go_frame,data_->go_frame+data_->post_go_frames,
+            data_->animated_slots,data_->release_cars,data_->car_keys};
+}
 void StartCrowd::frame(const RaceSession& session) {
     const auto& timing=session.timing();
     // 47F4C0 completes at the scene end; 423611 then destroys the NIS
     // controller and its crowd. GO alone does not retire these actors.
     // Both clocks include the authored cinematic when enabled.
-    const auto elapsed=std::int64_t(timing.now_ticks)-timing.go_ticks;
-    const bool ended=timing.go_valid && elapsed*30>=
-        std::int64_t(data_->post_go_frames)*kRaceTicksPerSecond;
+    const bool ended=session.start_scene_finished(data_->post_go_frames);
     data_->active=!ended && timing.outcome==RaceOutcome::running?
         data_->commands.owning_draws().size():0;
+    // Keep the dynamic definitions from upload through scene retirement.
+    // During the initial world interval they have no visible geometry.
+    data_->visible=data_->active&&timing.stage!=RaceStage::none;
     if(!data_->active && data_->camera_poses.empty())return;
     if(!data_->anchored) {
         // 47CAC0 selects ForwardStartLine(0), not the player's grid slot.
@@ -707,7 +840,7 @@ void StartCrowd::frame(const RaceSession& session) {
         data_->anchored=true;
     }
     const double seconds=double(session.start_scene_ticks())/kRaceTicksPerSecond;
-    if(data_->active)for(auto& c:data_->clips) {
+    if(data_->visible)for(auto& c:data_->clips) {
         const double phase=std::fmod(std::max(0.0,seconds)*30*c.speed,double(c.frames.size()));
         if(phase==c.sampled)continue;
         const auto first=std::size_t(phase),second=std::min(first+1,c.frames.size()-1);
@@ -717,6 +850,49 @@ void StartCrowd::frame(const RaceSession& session) {
         skin_pose(c.pose,c.skeleton,c.world,c.skin);skin_mesh(c.mesh,c.skin,c.vertices);c.sampled=phase;
     }
 }
+namespace {
+class AuthoredStartCarMotion final : public RaceStartCarMotion {
+public:
+    AuthoredStartCarMotion(const VehicleTrackCourse& course,std::shared_ptr<const RoadStartCarKeys> keys)
+        : course_(course),keys_(std::move(keys)),anchor_(start_anchor(course)) {}
+    bool sample(unsigned slot,float seconds,const VehicleSpec& spec,VehicleVec3& position,
+                PlayerRigidMatrix& axes,std::string& error) override {
+        try {
+            need(slot<keys_->slots.size()&&!keys_->slots[slot].empty()&&std::isfinite(seconds),
+                 "unbound start NIS car or invalid time");
+            const auto pose=sample_car_keys(keys_->slots[slot],seconds*15.F);
+            ground_scene_car(multiply(pose_matrix(pose),anchor_),course_,spec,ground_[slot],position,axes);
+            return true;
+        }catch(const std::exception& e){error=e.what();return false;}
+    }
+private:
+    const VehicleTrackCourse& course_;
+    std::shared_ptr<const RoadStartCarKeys> keys_;
+    Matrix anchor_;
+    std::array<std::array<TrackGroundCache,kVehicleWheelCount>,4> ground_{};
+};
+}
+std::unique_ptr<RaceStartCarMotion> make_road_start_motion(const VehicleTrackCourse& course,
+        std::shared_ptr<const RoadStartCarKeys> keys,std::string& error) {
+    try { return std::make_unique<AuthoredStartCarMotion>(course,std::move(keys)); }
+    catch(const std::exception& e){error=e.what();return {};}
+}
+bool place_road_start_car(const VehicleTrackCourse& course,const VehicleSpec& spec,
+                          const RoadStartCarTransform& local,VehicleVec3& position,
+                          PlayerRigidMatrix& axes,std::string& error) {
+    try {
+        Matrix transform{};
+        std::copy(local.forward.begin(),local.forward.end(),transform.begin());
+        std::copy(local.position.begin(),local.position.end(),transform.begin()+12);
+        transform[15]=1;
+        const auto m=multiply(transform,start_anchor(course));
+        std::array<TrackGroundCache,kVehicleWheelCount> ground{};
+        ground_scene_car(m,course,spec,ground,position,axes);
+        error.clear();
+        return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+
 bool load_drift_start_pose(const std::filesystem::path& root,const VehicleTrackCourse& course,VehiclePose& out,std::string& error,const std::string& region) {
     try {
         const auto motion=drift_car_motion(root,region);const auto m=multiply(pose_matrix(motion.back()),start_anchor(course));
@@ -773,49 +949,9 @@ bool StartCrowd::finish_car(unsigned slot,double seconds,const VehicleTrackCours
     Pose pose;
     if(!eagl::blend_pose(poses[a],poses[b],fraction,pose))return false;
     const auto m=multiply(pose_matrix(pose),data_->anchor);
-    const double heading=std::atan2(m[1],m[0]),s=std::sin(heading),c=std::cos(heading);
-    // 47C580 gives 427C50 the clip's XY and yaw. 4273D0 samples a
-    // four-wheel footprint and computes the body axes and COM height.
-    out.position={m[12],m[13],m[14]};
-    out.orientation={std::cos(heading*.5),0,0,std::sin(heading*.5)};
-    std::array<PlayerRigidVector,kVehicleWheelCount> feet{};
-    float heights=0,ride=0;
-    bool supported=true;
-    for(unsigned i=0;i<feet.size();++i) {
-        const auto& wheel=spec.handling.wheels[i];
-        auto& foot=feet[i];
-        foot={float(m[12]+c*wheel.longitudinal-s*wheel.lateral),
-              float(m[13]+s*wheel.longitudinal+c*wheel.lateral),m[14]+wheel.vertical};
-        TrackContact hit;
-        if(!query_track_ground(course.world,{foot[0],foot[1],foot[2]},data_->finish_ground[slot][i],hit)) {
-            supported=false;
-            break;
-        }
-        foot[2]=hit.point[2];
-        heights+=foot[2];
-        ride+=wheel.radius-wheel.vertical;
-    }
-    if(supported) {
-        const auto axle_direction=[&](unsigned a,unsigned b,unsigned c_index,unsigned d) {
-            PlayerRigidVector axis{};
-            for(unsigned k=0;k<axis.size();++k)axis[k]=(feet[a][k]-feet[b][k])+(feet[c_index][k]-feet[d][k]);
-            const float length=std::sqrt(axis[0]*axis[0]+axis[1]*axis[1]+axis[2]*axis[2]);
-            if(length>0)for(float& component:axis)component/=length;
-            return axis;
-        };
-        const auto forward=axle_direction(0,2,1,3);
-        const auto& wheels=spec.handling.wheels;
-        const unsigned front_left=wheels[0].lateral>wheels[1].lateral?0:1;
-        const unsigned rear_left=wheels[2].lateral>wheels[3].lateral?2:3;
-        const auto lateral=axle_direction(front_left,1-front_left,rear_left,5-rear_left);
-        const PlayerRigidVector up{forward[1]*lateral[2]-forward[2]*lateral[1],
-                                   forward[2]*lateral[0]-forward[0]*lateral[2],
-                                   forward[0]*lateral[1]-forward[1]*lateral[0]};
-        if(up[2]>0.01F) {
-            out.position.z=heights*.25F+(ride*.25F+spec.handling.centre_of_mass[2])/up[2];
-            out.orientation=vehicle_orientation_from_axes({forward,lateral,up});
-        }
-    }
+    PlayerRigidMatrix axes;
+    ground_scene_car(m,course,spec,data_->finish_ground[slot],out.position,axes);
+    out.orientation=vehicle_orientation_from_axes(axes);
     out.steer_angle=0;
     out.velocity={};
     animation.braking=false;

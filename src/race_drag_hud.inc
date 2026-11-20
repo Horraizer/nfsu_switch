@@ -18,12 +18,14 @@ bool drag_visible_object(const std::string& n) {
         "3rdperson_Turbolines","3rdperson_TurboRed_1","3rdperson_TurboRed_2",
         "3rdperson_TurboDial","3rdperson_Turbofill","TurboPSI","TurboPlus","TurboMinus"})
         if(n==name)return true;
-    return n.rfind("NOS_bar_",0)==0 || (n.size()==6&&n.rfind("heat_",0)==0&&n[5]>='1'&&n[5]<='8');
+    return n.rfind("NOS_bar_6_",0)==0 || (n.size()==6&&n.rfind("heat_",0)==0&&n[5]>='1'&&n[5]<='8');
 }
 }
 bool load_race_drag_hud(const std::filesystem::path& root,const std::string& car,const VehicleHandling& handling,
-                        RaceHudAtlas& atlas,std::string& error) {
+                        RaceHudAtlas& atlas,std::string& error,const std::string* second_car,
+                        const VehicleHandling* second_handling) {
     try {
+        if(bool(second_car)!=bool(second_handling))throw std::runtime_error("incomplete second drag HUD car");
         std::vector<unsigned char> bytes,dynt,language;
         std::vector<RaceTableIssue> language_issues;
         if(!load_race_image(root/"Languages/English.bin",language,language_issues)||language.size()<24)
@@ -102,15 +104,27 @@ bool load_race_drag_hud(const std::filesystem::path& root,const std::string& car
                                 localized(0x2303d76c),localized(0x27d75cd8)};
         //4A7D60 selects these messages for terminal drag reasons6 and7.
         next.drag_failure_labels={localized(0xa4c878f6),localized(0xe1279c38)};
+        // 4A7EA3 selects the label from the native one-based place table.
+        next.drag_finish_places={localized(0x6d8c9ed2),localized(0x63e9977b),
+                                 localized(0x86fbe3da),localized(0x329e4953)};
+        next.drag_finish_time=localized(0xb713f571);
         std::vector<unsigned char> global;std::vector<RaceTableIssue> issues;
         if(!load_race_image(root/"Global/GLOBALB.BUN",global,issues))throw std::runtime_error("drag car table unavailable");
         const auto cars=parse_car_type_table(global.data(),global.size());
-        const auto selected=std::find_if(cars.records.begin(),cars.records.end(),[&](const auto& v){return v.name==car;});
-        if(!cars.ok()||selected==cars.records.end()||selected->offset+0xc14>global.size())throw std::runtime_error("drag car angles absent");
-        //4A57D0 uses CarType+C0C/C10, rather than ordinary4A0EA0 RPM bands.
-        next.drag_rpm_angles={drag_float(global.data()+selected->offset+0xc0c),drag_float(global.data()+selected->offset+0xc10)};
-        for(float v:next.drag_rpm_angles)if(!std::isfinite(v))throw std::runtime_error("drag car angle invalid");
-        next.height=1024;next.rgba.resize(kRaceHudAtlasWidth*next.height*4);next.drag_objects.clear();
+        const auto rpm_angles=[&](const std::string& model) {
+            const auto selected=std::find_if(cars.records.begin(),cars.records.end(),[&](const auto& v){return v.name==model;});
+            if(!cars.ok()||selected==cars.records.end()||selected->offset+0xc14>global.size())
+                throw std::runtime_error("drag car angles absent");
+            // 4A57D0 uses CarType+C0C/C10 rather than the ordinary RPM bands.
+            std::array<float,2> angles{drag_float(global.data()+selected->offset+0xc0c),
+                                       drag_float(global.data()+selected->offset+0xc10)};
+            for(float v:angles)if(!std::isfinite(v))throw std::runtime_error("drag car angle invalid");
+            return angles;
+        };
+        next.drag_rpm_angles=rpm_angles(car);
+        if(second_car)next.second_drag_rpm_angles=rpm_angles(*second_car);
+        next.height=1024;next.rgba.resize(kRaceHudAtlasWidth*next.height*4);
+        next.drag_objects.clear();next.second_drag_objects.clear();
         // ShiftMessage uses Conduit38, including the early/late label alphabet.
         // Repack this font before reserving shared glyphs for drag textures.
         if(!load_lap_fonts(root,next,error,true))return false;
@@ -131,7 +145,9 @@ bool load_race_drag_hud(const std::filesystem::path& root,const std::string& car
                 }
             throw std::runtime_error("drag HUD texture absent: "+std::to_string(hash));
         };
-        std::vector<std::uint32_t> hashes;
+        std::array<std::vector<std::uint32_t>,2> hashes;
+        const std::array<std::vector<RaceDragHudObject>*,2> dials{{&next.drag_objects,&next.second_drag_objects}};
+        const auto build_dial=[&](unsigned dial,const VehicleHandling& tune) {
         for(const auto& raw:objects)if(drag_visible_object(raw.object.name)) {
             auto object=raw.object;object.width=raw.w;object.height=raw.h;
             object.position={raw.x,raw.y};object.pivot={raw.px,raw.py};
@@ -163,20 +179,23 @@ bool load_race_drag_hud(const std::filesystem::path& root,const std::string& car
             std::uint32_t hash=0;
             if(object.type==1) {
                 //432A30 selects the same RPM bands, with the drag prefix.
-                if(object.name=="3rdPersonTach")name="3RDPERSONDRAG_"+std::string(handling.max_rpm>=9500?"10500LINES":handling.max_rpm>=8500?"9500LINES":handling.max_rpm>=7500?"8500LINES":"7500LINES");
+                if(object.name=="3rdPersonTach")name="3RDPERSONDRAG_"+std::string(tune.max_rpm>=9500?"10500LINES":tune.max_rpm>=8500?"9500LINES":tune.max_rpm>=7500?"8500LINES":"7500LINES");
                 if(object.name=="Redline") {
-                    const char* suffix=handling.max_rpm>=9500?(handling.redline_rpm>=9000?"9000RED":"8500RED"):
-                        handling.max_rpm>=8500?(handling.redline_rpm>=8000?"8000RED":"7500RED"):
-                        handling.max_rpm>=7500?(handling.redline_rpm>=7000?"7000RED":handling.redline_rpm>=6500?"6500RED2":nullptr):
-                        handling.redline_rpm>=6500?"6500RED":"6000RED";
+                    const char* suffix=tune.max_rpm>=9500?(tune.redline_rpm>=9000?"9000RED":"8500RED"):
+                        tune.max_rpm>=8500?(tune.redline_rpm>=8000?"8000RED":"7500RED"):
+                        tune.max_rpm>=7500?(tune.redline_rpm>=7000?"7000RED":tune.redline_rpm>=6500?"6500RED2":nullptr):
+                        tune.redline_rpm>=6500?"6500RED":"6000RED";
                     if(!suffix)continue;
                     name="3RDPERSONDRAG_"+std::string(suffix);
                 }
                 if(object.name=="rpm_fill")name="3RDPERSONDRAG_RPMFILL";
                 hash=bin_hash(name);texture(hash);
             }else object.font=name=="LCD_LET48"?2:name=="FONT_CONDUITMDITCTT38BI"?1:0;
-            hashes.push_back(hash);next.drag_objects.push_back(std::move(object));
+            hashes[dial].push_back(hash);dials[dial]->push_back(std::move(object));
         }
+        };
+        build_dial(0,handling);
+        if(second_handling)build_dial(1,*second_handling);
         std::stable_sort(images.begin(),images.end(),[](const Image& a,const Image& b){return a.h>b.h;});
         // Drag replaces the ordinary dial, so reclaim its texel rectangles.
         // Retain shared glyphs and the white finish backing; no extra image heap.
@@ -188,34 +207,65 @@ bool load_race_drag_hud(const std::filesystem::path& root,const std::string& car
         reserve(kLapWhite.x,kLapWhite.y,kLapWhite.w,kLapWhite.h);
         for(const auto& font:next.lap_fonts)for(const auto& g:font)if(g.width&&g.height)
             reserve(g.x,g.y,g.width+2,g.height+2);
+        const unsigned height_limit=second_car?2048:1024;
+        unsigned used_height=next.height;
         for(auto& image:images) {
-            unsigned bestx=0,besty=next.height+1;
+            unsigned bestx=0,besty=height_limit+1;
             for(unsigned x=0;x+image.w<=kRaceHudAtlasWidth;++x) {
                 unsigned y=0;for(unsigned k=0;k<image.w;++k)y=std::max(y,skyline[x+k]);
                 if(y<besty){besty=y;bestx=x;}
             }
-            if(besty+image.h>next.height) {
+            if(besty+image.h>height_limit) {
                 std::string detail;
                 for(const auto& v:images)detail+=" "+std::to_string(v.hash)+":"+std::to_string(v.w)+"x"+std::to_string(v.h);
                 throw std::runtime_error("drag HUD atlas capacity:"+detail);
             }
             image.rect={int(bestx),int(besty),int(image.w),int(image.h)};
             for(unsigned x=0;x<image.w;++x)skyline[bestx+x]=besty+image.h;
-            for(unsigned y=0;y<image.h;++y)std::memcpy(next.rgba.data()+((besty+y)*kRaceHudAtlasWidth+bestx)*4,image.rgba.data()+y*image.w*4,image.w*4);
+            used_height=std::max(used_height,besty+image.h);
         }
-        for(unsigned i=0;i<next.drag_objects.size();++i)if(hashes[i]) {
-            const auto image=std::find_if(images.begin(),images.end(),[&](const Image& v){return v.hash==hashes[i];});
-            next.drag_objects[i].texture=image->rect;
+        next.height=(used_height+31)&~31U;
+        next.rgba.resize(kRaceHudAtlasWidth*next.height*4);
+        for(const auto& image:images) {
+            const auto x=unsigned(image.rect[0]),y=unsigned(image.rect[1]);
+            for(unsigned row=0;row<image.h;++row)
+                std::memcpy(next.rgba.data()+((y+row)*kRaceHudAtlasWidth+x)*4,
+                            image.rgba.data()+row*image.w*4,image.w*4);
         }
-        std::stable_sort(next.drag_objects.begin(),next.drag_objects.end(),[](const RaceDragHudObject& a,const RaceDragHudObject& b){return a.depth>b.depth;});
+        for(unsigned dial=0;dial<dials.size();++dial) {
+            auto& entries=*dials[dial];
+            for(unsigned i=0;i<entries.size();++i)if(hashes[dial][i]) {
+                const auto image=std::find_if(images.begin(),images.end(),[&](const Image& v){return v.hash==hashes[dial][i];});
+                entries[i].texture=image->rect;
+            }
+            std::stable_sort(entries.begin(),entries.end(),[](const RaceDragHudObject& a,const RaceDragHudObject& b){return a.depth>b.depth;});
+        }
         atlas=std::move(next);error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
 }
-void append_race_drag_hud(const RaceSession& session,const RaceHudAtlas& atlas,unsigned width,unsigned height,RaceHudFrame& frame) noexcept {
+void append_race_drag_hud(const RaceSession& world,const RaceHudAtlas& atlas,unsigned width,unsigned height,
+                          RaceHudFrame& frame,unsigned player) noexcept {
+    const auto& session=player?world.rival(player-1):world;
+    const auto& objects=player?atlas.second_drag_objects:atlas.drag_objects;
+    const auto& rpm_angles=player?atlas.second_drag_rpm_angles:atlas.drag_rpm_angles;
+    const unsigned place=player?world.standings().position(player):world.player_position();
     const float scale=std::min(width/1280.F,height/720.F)*5.F/3.F;
     const float ox=float(width)*.5F,oy=float(height)*.5F;
     const bool turbo=has_turbo(session.spec());
-    const auto& nitrous=session.nitrous();
+    const auto nitrous=session.nitrous();
+    unsigned full_nitrous_bars=0;
+    unsigned char partial_nitrous_alpha=0;
+    if(nitrous.capacity) {
+        // 4A64B0 normalizes live charge across six authored bars, filled 6 to 1.
+        constexpr float tick_seconds=1.F/4000.F;
+        const float capacity=float(double(nitrous.capacity)*tick_seconds);
+        double remaining=double(nitrous.remaining)*tick_seconds;
+        if(nitrous.active)remaining=float(remaining);
+        full_nitrous_bars=unsigned(std::min(remaining/capacity*6.0,6.0));
+        const double bar_seconds=double(capacity)*(1.F/6.F);
+        const float partial=float((remaining-full_nitrous_bars*bar_seconds)/bar_seconds);
+        partial_nitrous_alpha=static_cast<unsigned char>(double(std::clamp(partial,0.F,1.F))*192.0);
+    }
     const auto& car=session.car();const auto now=session.timing().now_ticks;
     if(frame.drag_gear!=car.gear) {
         if(frame.drag_gear>=1&&car.gear>frame.drag_gear) {
@@ -247,7 +297,7 @@ void append_race_drag_hud(const RaceSession& session,const RaceHudAtlas& atlas,u
     // Original argument+23 is the HUD view mode, not lap-record status.
     // This adapter renders the authored chase-camera HUD, including countdown.
     const bool lamp_visible=rpm>up-.95F*window;
-    for(const auto& authored:atlas.drag_objects) {
+    for(const auto& authored:objects) {
         auto o=authored;const auto& name=o.name;
         if(name=="ShiftMessage"||name=="konopaoverheat(119)") {
             const bool shift=name=="ShiftMessage";
@@ -287,12 +337,12 @@ void append_race_drag_hud(const RaceSession& session,const RaceHudAtlas& atlas,u
         }
         if(name=="321_Go"&&!race_countdown_value(session.timing_config(),session.timing()))continue;
         if((name.find("Turbo")!=std::string::npos)&&!turbo)continue;
-        if((name.rfind("NOS_bar_",0)==0||name.rfind("nos_",0)==0)&&!session.spec().nitrous.installed)continue;
-        if(name.rfind("NOS_bar_",0)==0) {
-            const unsigned count=unsigned(name[8]-'0'),index=unsigned(name.back()-'0');
-            if(count!=unsigned(session.spec().nitrous.count)||!index)continue;
-            const float segments=nitrous.capacity?float(count)*float(nitrous.remaining)/float(nitrous.capacity):0;
-            o.color[3]=static_cast<unsigned char>(150*std::clamp(segments-float(index-1),0.F,1.F));
+        const bool nitrous_bar=name.rfind("NOS_bar_6_",0)==0;
+        if((nitrous_bar||name.rfind("nos_",0)==0)&&!nitrous.capacity)continue;
+        if(nitrous_bar) {
+            const unsigned slot=unsigned('6'-name.back());
+            if(slot>full_nitrous_bars)continue;
+            if(slot==full_nitrous_bars)o.color[3]=partial_nitrous_alpha;
         }
         //4A5B60: truncating heat*8 selects the authored segments.
         if(name.size()==6&&name.rfind("heat_",0)==0&&name[5]>='1'&&name[5]<='8'&&
@@ -307,7 +357,7 @@ void append_race_drag_hud(const RaceSession& session,const RaceHudAtlas& atlas,u
                p[4]+p[0]*x+p[2]*y,p[5]+p[1]*x+p[3]*y};
         };
         if(name=="3rdPersonNeedle") {
-            const float first=atlas.drag_rpm_angles[0],last=atlas.drag_rpm_angles[1];
+            const float first=rpm_angles[0],last=rpm_angles[1];
             const float arc=first<last?last-first:360.F-first+last;
             float angle=first+arc*std::clamp(float(frame.readout.engine_rpm/frame.readout.max_rpm),0.F,1.F);
             if(angle>360.F)angle-=360.F;
@@ -339,12 +389,12 @@ void append_race_drag_hud(const RaceSession& session,const RaceHudAtlas& atlas,u
             } else if(name=="ShiftMessage")std::snprintf(text,sizeof text,"%s",atlas.drag_shift_labels[frame.drag_quality<0?3:frame.drag_quality==0?2:frame.drag_quality<=.5F?0:1].c_str());
             else if(name=="konopaoverheat(119)")std::snprintf(text,sizeof text,"%s",o.text.c_str());
             else if(name=="RaceTime") {
-                const auto& timing=session.timing();const auto& racer=timing.racers[0];
+                const auto& timing=world.timing();const auto& racer=timing.racers[player];
                 const int ticks=racer.finish_valid?racer.finish_ticks:timing.go_valid?std::max(0,timing.now_ticks-timing.go_ticks):0;
                 const unsigned cs=unsigned(ticks)/40;std::snprintf(text,sizeof text,"%u:%02u.%02u",cs/6000,cs/100%60,cs%100);
-            } else if(name=="RacePositionNumber")std::snprintf(text,sizeof text,"%u",session.player_position());
-            else if(name=="RacePositionNth")std::snprintf(text,sizeof text,"%s",session.player_position()==1?"st":session.player_position()==2?"nd":session.player_position()==3?"rd":"th");
-            else if(name=="NumberRacers")std::snprintf(text,sizeof text,"/%u",unsigned(session.rival_count()+1));
+            } else if(name=="RacePositionNumber")std::snprintf(text,sizeof text,"%u",place);
+            else if(name=="RacePositionNth")std::snprintf(text,sizeof text,"%s",place==1?"st":place==2?"nd":place==3?"rd":"th");
+            else if(name=="NumberRacers")std::snprintf(text,sizeof text,"/%u",unsigned(world.rival_count()+1));
             else if(name=="3rdPersonSpeed")std::snprintf(text,sizeof text,"%d",frame.metric_speed?frame.readout.kph:frame.readout.mph);
             else if(name=="3rdPersonSpeedUnits")std::snprintf(text,sizeof text,"%s",frame.metric_speed?"KM/H":"MPH");
             else if(name=="3rdPersonGear") {

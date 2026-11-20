@@ -3,7 +3,13 @@
 #include <unistd.h>
 #include "deko_renderer.h"
 #include "lan_menu.h"
+#include "race_input.h"
+#include "drag_input.h"
+#include "gyro_steering.h"
+#include "split_diagnostics.h"
 #include "nfsu/lan_scene.h"
+#include "nfsu/deko_scene_target.h"
+#include "nfsu/memory_budget.h"
 #include "nfsu/lan_link.h"
 #include "nfsu/stock_view.h"
 #include "nfsu/screen_text.h"
@@ -122,8 +128,9 @@ LanRide chosen_ride(const std::string& car,const std::map<std::string,CareerRide
     return result;
 }
 using LocalPads=std::array<PadState,2>;
-u64 local_buttons(const PadState& pad,u64 buttons) {
-    const auto style=padGetStyleSet(&pad);
+using LocalRides=std::array<std::map<std::string,CareerRide>,2>;
+constexpr u32 local_pad_styles=HidNpadStyleSet_NpadStandard&~HidNpadStyleTag_NpadHandheld;
+u64 local_buttons(u32 style,u64 buttons) {
     const bool left=style==HidNpadStyleTag_NpadJoyLeft;
     if(!left&&style!=HidNpadStyleTag_NpadJoyRight)return buttons;
     const auto has=[buttons](u64 bit){return (buttons&bit)!=0;};
@@ -146,10 +153,38 @@ u64 local_buttons(const PadState& pad,u64 buttons) {
     if(has(left?up:down))out|=HidNpadButton_Left;
     return out;
 }
-GamepadState sample_local(const PadState& pad) {
-    auto input=sample(pad);
-    input.buttons=gamepad_buttons_from_npad(local_buttons(pad,padGetButtons(&pad)));
+u64 local_buttons(const PadState& pad,u64 buttons) { return local_buttons(padGetStyleSet(&pad),buttons); }
+u64 local_garage_buttons(const PadState& pad,u64 buttons) {
+    auto folded=local_buttons(pad,buttons);
     const auto style=padGetStyleSet(&pad);
+    if(style==HidNpadStyleTag_NpadJoyLeft||style==HidNpadStyleTag_NpadJoyRight) {
+        if(buttons&HidNpadButton_AnySL)folded|=HidNpadButton_L;
+        if(buttons&HidNpadButton_AnySR)folded|=HidNpadButton_R;
+    }
+    return folded;
+}
+HidAnalogStickState local_garage_stick(const PadState& pad) {
+    const auto style=padGetStyleSet(&pad);
+    if(style==HidNpadStyleTag_NpadJoyLeft) {
+        const auto stick=padGetStickPos(&pad,0);
+        return {std::clamp(-stick.y,kAxisMin,kAxisMax),stick.x};
+    }
+    if(style==HidNpadStyleTag_NpadJoyRight) {
+        const auto stick=padGetStickPos(&pad,1);
+        return {stick.y,std::clamp(-stick.x,kAxisMin,kAxisMax)};
+    }
+    return padGetStickPos(&pad,0);
+}
+GamepadState local_race_input(u32 style,u64 buttons,HidAnalogStickState left,HidAnalogStickState right,bool drag) {
+    auto folded=local_buttons(style,buttons);
+    if(drag&&(style==HidNpadStyleTag_NpadJoyLeft||style==HidNpadStyleTag_NpadJoyRight)) {
+        // The solo horizontal Joy-Con has no right stick or R/L pair.
+        if(folded&HidNpadButton_X)folded=(folded&~u64(HidNpadButton_X))|HidNpadButton_R;
+        if(folded&HidNpadButton_Y)folded=(folded&~u64(HidNpadButton_Y))|HidNpadButton_L;
+    }
+    GamepadState input;
+    input.buttons=switch_race_buttons(folded);
+    input.axes[0]=left.x;input.axes[1]=left.y;input.axes[2]=right.x;input.axes[3]=right.y;
     if(style==HidNpadStyleTag_NpadJoyLeft||style==HidNpadStyleTag_NpadJoyRight) {
         const auto steer=style==HidNpadStyleTag_NpadJoyLeft?
             std::clamp(-input.axes[1],kAxisMin,kAxisMax):input.axes[3];
@@ -162,42 +197,57 @@ GamepadState sample_local(const PadState& pad) {
     }
     return input;
 }
-bool choose_local_controllers(LocalPads& pads,std::string& error) {
+GamepadState local_drag_input(u32 style,u64 buttons,HidAnalogStickState left,HidAnalogStickState right) {
+    return local_race_input(style,buttons,left,right,true);
+}
+bool choose_local_controllers(LocalPads& pads,std::string& error,bool use_assigned=false) {
     error.clear();
-    padConfigureInput(2,HidNpadStyleSet_NpadStandard);
+    const HidNpadIdType ids[]={HidNpadIdType_No1,HidNpadIdType_No2};
+    Result rc=hidSetSupportedNpadStyleSet(local_pad_styles);
+    if(R_SUCCEEDED(rc))rc=hidSetSupportedNpadIdType(ids,2);
+    if(R_SUCCEEDED(rc))rc=hidSetNpadJoyHoldType(HidNpadJoyHoldType_Horizontal);
     HidLaControllerSupportArg settings{};
     hidLaCreateControllerSupportArg(&settings);
     settings.hdr.player_count_min=2;
     settings.hdr.player_count_max=2;
     HidLaControllerSupportResultInfo result{};
-    const Result rc=hidLaShowControllerSupport(&result,&settings);
-    if(R_FAILED(rc)) {
+    if(R_SUCCEEDED(rc)) {
+        if(!use_assigned)rc=hidLaShowControllerSupport(&result,&settings);
+        for(unsigned i=0;i<pads.size();++i) {
+            padInitialize(&pads[i],ids[i]);
+            padUpdate(&pads[i]);
+        }
+        const bool assigned=padIsConnected(&pads[0])&&padIsConnected(&pads[1]);
+        if(assigned&&R_SUCCEEDED(rc)&&(use_assigned||result.player_count==2))return true;
+    }
+    if(rc==MAKERESULT(Module_Libnx,LibnxError_LibAppletBadExit)) {
+        error="Controller selection closed (2345-0046).";
+    } else if(R_FAILED(rc)) {
         char message[96];
         std::snprintf(message,sizeof message,"Controller selection closed (%04u-%04u). Press A to retry.",
                       2000+unsigned(R_MODULE(rc)),unsigned(R_DESCRIPTION(rc)));
         error=message;
-        return false;
-    }
-    if(result.player_count!=2) {
-        error="Two controllers are required. Press A to retry.";
-        return false;
-    }
-    padInitialize(&pads[0],HidNpadIdType_No1);
-    padInitialize(&pads[1],HidNpadIdType_No2);
-    for(auto& pad:pads)padUpdate(&pad);
-    return true;
+    } else error="Assign two controllers in HOME > Controllers.";
+    return false;
 }
 
 bool local_lobby(const std::string& root,LocalPads& pads,LanScreen& screen,
                  const std::map<std::string,CareerRide>& rides,LanRaceOptions& options,
-                 FreeDriveCourse& course,std::string& error) {
+                 FreeDriveCourse& course,QuickRaceMode& selected_mode,unsigned& traffic_density,
+                 std::array<bool,2>& gyro_enabled,SplitLayout& layout,SplitEffects& effects,
+                 const LanGarageEditor& edit,LocalRides& edited_rides,std::string& error) {
     auto catalog=std::make_unique<CareerCatalog>();
     std::vector<std::string> cars;
     if(!catalog->load_free_drive(root,error)||!load_lan_car_names(root,cars,error))return false;
-    const std::array<QuickRaceMode,2> modes{{QuickRaceMode::circuit,QuickRaceMode::sprint}};
-    std::array<std::vector<unsigned>,2> courses{{catalog->quick_courses(modes[0]),catalog->quick_courses(modes[1])}};
-    require(!courses[0].empty()&&!courses[1].empty()&&!cars.empty(),"Quick Race roster unavailable");
-    unsigned row=0,mode=0,track=0,laps=2,tier=0;
+    constexpr std::array modes{QuickRaceMode::circuit,QuickRaceMode::sprint,QuickRaceMode::drag,QuickRaceMode::drift};
+    std::array<std::vector<unsigned>,modes.size()> courses;
+    for(unsigned i=0;i<modes.size();++i)courses[i]=catalog->quick_courses(modes[i]);
+    require(std::none_of(courses.begin(),courses.end(),[](const auto& choices){return choices.empty();})&&
+        !cars.empty(),"Quick Race roster unavailable");
+    enum Row { mode_row,track_row,laps_row,tier_row,car1_row,car2_row,traffic_row,
+               gyro1_row,gyro2_row,layout_row,particles_row,reflection_row,start_row,row_count };
+    unsigned row=mode_row,mode=0,track=0,laps=2,tier=0;
+    constexpr const char* traffic_levels[]={"Off","Low","Medium","High"};
     std::array<unsigned,2> car_indices{{0,unsigned(cars.size()>1)}};
     const auto label=[&](unsigned i,const std::string& line){return std::string(row==i?"> ":"  ")+line;};
     const auto cycle=[](unsigned value,unsigned count,int direction){
@@ -213,38 +263,74 @@ bool local_lobby(const std::string& root,LocalPads& pads,LanScreen& screen,
         }
         const auto buttons=local_buttons(pads[0],padGetButtonsDown(&pads[0]));
         if(buttons&HidNpadButton_B)throw RoomExit{};
-        if((buttons&HidNpadButton_Plus)||(row==6&&(buttons&HidNpadButton_A))) {
-            options.laps=std::uint8_t(mode==0?laps:1);
+        if(edit) {
+            const auto second=local_buttons(pads[1],padGetButtonsDown(&pads[1]));
+            if((buttons|second)&HidNpadButton_Y) {
+                const unsigned player=buttons&HidNpadButton_Y?0:1;
+                const auto& car=cars[car_indices[player]];
+                auto [entry,inserted]=edited_rides[player].try_emplace(car);
+                if(inserted)if(const auto original=rides.find(car);original!=rides.end())
+                    entry->second=original->second;
+                LocalGarageSlot slot{pads[player],entry->second,local_garage_buttons,local_garage_stick};
+                screen.close();
+                edit(car,tier,{},&slot);
+                continue;
+            }
+        }
+        const bool select_laps=modes[mode]==QuickRaceMode::circuit||modes[mode]==QuickRaceMode::drift;
+        const bool no_traffic=modes[mode]==QuickRaceMode::drift;
+        if((buttons&HidNpadButton_Plus)||(row==start_row&&(buttons&HidNpadButton_A))) {
+            options.laps=std::uint8_t(select_laps?laps:1);
+            if(no_traffic)traffic_density=0;
             options.tier=std::uint8_t(tier);
-            for(unsigned i=0;i<2;++i)options.rides[i]=chosen_ride(cars[car_indices[i]],rides);
+            for(unsigned i=0;i<2;++i) {
+                const auto& car=cars[car_indices[i]];
+                options.rides[i]=chosen_ride(car,edited_rides[i].count(car)?edited_rides[i]:rides);
+            }
             course=catalog->free_courses().at(courses[mode].at(track));
+            selected_mode=modes[mode];
             return true;
         }
-        if(buttons&HidNpadButton_Up)row=cycle(row,7,-1);
-        if(buttons&HidNpadButton_Down)row=cycle(row,7,1);
+        if(buttons&HidNpadButton_Up)row=cycle(row,row_count,-1);
+        if(buttons&HidNpadButton_Down)row=cycle(row,row_count,1);
         const auto adjust=[&](unsigned player){
             const auto down=local_buttons(pads[player],padGetButtonsDown(&pads[player]));
             return (down&HidNpadButton_Right)?1:(down&HidNpadButton_Left)?-1:0;
         };
         const int change=adjust(0);
         if(change)switch(row) {
-        case 0: mode=cycle(mode,2,change);track=0;break;
-        case 1: track=cycle(track,unsigned(courses[mode].size()),change);break;
-        case 2: if(mode==0)laps=1+cycle(laps-1,6,change);break;
-        case 3: tier=cycle(tier,4,change);break;
-        case 4: car_indices[0]=cycle(car_indices[0],unsigned(cars.size()),change);break;
-        case 5: car_indices[1]=cycle(car_indices[1],unsigned(cars.size()),change);break;
+        case mode_row: mode=cycle(mode,unsigned(modes.size()),change);track=0;break;
+        case track_row: track=cycle(track,unsigned(courses[mode].size()),change);break;
+        case laps_row: if(select_laps)laps=1+cycle(laps-1,6,change);break;
+        case tier_row: tier=cycle(tier,4,change);break;
+        case car1_row: car_indices[0]=cycle(car_indices[0],unsigned(cars.size()),change);break;
+        case car2_row: car_indices[1]=cycle(car_indices[1],unsigned(cars.size()),change);break;
+        case traffic_row: if(!no_traffic)traffic_density=cycle(traffic_density,4,change);break;
+        case gyro1_row: gyro_enabled[0]=!gyro_enabled[0];break;
+        case gyro2_row: gyro_enabled[1]=!gyro_enabled[1];break;
+        case layout_row: layout=layout==SplitLayout::stacked?SplitLayout::side_by_side:SplitLayout::stacked;break;
+        case particles_row: effects.particles=!effects.particles;break;
+        case reflection_row: effects.reflections=!effects.reflections;break;
         default:break;
         }
         if(const int change_p2=adjust(1))
             car_indices[1]=cycle(car_indices[1],unsigned(cars.size()),change_p2);
         const auto& selected=catalog->free_courses().at(courses[mode].at(track));
         screen.show({"QUICK RACE / SPLIT SCREEN","",
-            label(0,quick_race_mode_name(modes[mode])),label(1,selected.name),
-            label(2,"Laps: "+std::to_string(mode==0?laps:1)),
-            label(3,std::string("Performance: ")+kLanPerformance[tier]),
-            label(4,"Player 1: "+cars[car_indices[0]]),label(5,"Player 2: "+cars[car_indices[1]]),
-            label(6,"Start race"),"","Left/Right: Change   +: Start   B: Back"});
+            label(mode_row,quick_race_mode_name(modes[mode])),
+            label(track_row,selected.name+(selected.direction?" (Reverse)":"")),
+            label(laps_row,"Laps: "+std::to_string(select_laps?laps:1)),
+            label(tier_row,std::string("Performance: ")+kLanPerformance[tier]),
+            label(car1_row,"Player 1: "+cars[car_indices[0]]),label(car2_row,"Player 2: "+cars[car_indices[1]]),
+            label(traffic_row,std::string("Traffic: ")+traffic_levels[no_traffic?0:traffic_density]),
+            label(gyro1_row,gyro_enabled[0]?"P1 steering: Tilt":"P1 steering: Stick"),
+            label(gyro2_row,gyro_enabled[1]?"P2 steering: Tilt":"P2 steering: Stick"),
+            label(layout_row,layout==SplitLayout::stacked?"Split: Top / Bottom":"Split: Left / Right"),
+            label(particles_row,effects.particles?"Particle FX: On":"Particle FX: Off"),
+            label(reflection_row,effects.reflections?"Wet Road Reflections: On":"Wet Road Reflections: Off"),
+            label(start_row,"Start race"),edit?"Y: Open your garage on either controller":"",
+            gyro_enabled[0]||gyro_enabled[1]?"Hold controllers straight at the countdown.":"",
+            "Left/Right: Change   +: Start   B: Back"});
     }
     throw RoomExit{};
 }
@@ -259,31 +345,53 @@ void update_multiplayer_audio(audio::RaceAudioService& sound,const RaceSession& 
 }
 
 void run_local(const std::string& root,bool metric_speed,const std::map<std::string,CareerRide>& rides,
-               std::string& error) {
+               std::string& error,bool use_assigned,std::uint32_t race_height,const LanGarageEditor& edit,LocalRides& edited_rides) {
     LanScreen screen;
-    struct RestorePads {~RestorePads(){padConfigureInput(1,HidNpadStyleSet_NpadStandard);}} restore;
+    struct RestorePads {
+        HidNpadJoyHoldType hold{};
+        bool restore_hold=R_SUCCEEDED(hidGetNpadJoyHoldType(&hold));
+        ~RestorePads(){
+            if(restore_hold)hidSetNpadJoyHoldType(hold);
+            padConfigureInput(1,HidNpadStyleSet_NpadStandard);
+        }
+    } restore;
     try {
         LocalPads pads{};
-        if(!choose_local_controllers(pads,error))return;
-        LanRaceOptions options;FreeDriveCourse course;
-        require(local_lobby(root,pads,screen,rides,options,course,error),error);
-        screen.show({"QUICK RACE / SPLIT SCREEN","","Loading "+course.name+"..."});
+        if(!choose_local_controllers(pads,error,use_assigned))return;
+        LanRaceOptions options;FreeDriveCourse course;unsigned traffic_density=0;
+        auto mode=QuickRaceMode::circuit;
+        std::array<bool,2> gyro_enabled{};
+        auto layout=SplitLayout::stacked;
+        SplitEffects effects;
+        require(local_lobby(root,pads,screen,rides,options,course,mode,traffic_density,gyro_enabled,layout,effects,edit,edited_rides,error),error);
+        screen.show({"QUICK RACE / SPLIT SCREEN","","Loading "+course.name+
+            (course.direction?" (Reverse)":"")+"..."});
         auto world=std::make_unique<LanRaceWorld>();
-        require(world->load_local(root,course.event,course.round,options,error),error);
-        std::array<LanRaceView,2> views;
-        for(unsigned i=0;i<views.size();++i) {
-            require(views[i].open(world->session(),world->cameras(i),i,error,&world->host_hull()),error);
-            require(views[i].apply(world->snapshot(),1./60,error),error);
-        }
+        LocalRaceTraffic traffic;
+        require(traffic.load(root,course.event,course.round,traffic_density,error),error);
+        require(world->load_local(root,course.event,course.round,mode,options,error,traffic.density,traffic.physics),error);
         // RaceGpuScene owns large fixed render scratch buffers. Keep them
         // off the main thread's stack, including during controller selection.
         auto scene=std::make_unique<LanScene>();
-        RaceGpuFrame frame;auto hud=std::make_unique<RaceHudFrame>();
-        require(scene->load_local(root,course.event,course.round,options,world->models(),error),error);
-        require(scene->split_frame(world->session(),views[0],0,frame,*hud,error,metric_speed),error);
+        RaceGpuFrame frame;auto hud=std::make_unique<std::array<RaceHudFrame,2>>();
+        require(scene->load_local(root,course.event,course.round,mode,options,world->models(),error,std::move(traffic.visuals),effects),error);
+        require(scene->split_frame(world->session(),0,frame,(*hud)[0],error,metric_speed,layout),error);
+        const bool drag=world->session().is_drag();
         screen.close();
         DekoRenderer renderer;
-        require(renderer.open_split(frame.commands,scene->atlas(),scene->draw_capacity(),error),error);
+        bool docked=appletGetOperationMode()==AppletOperationMode_Console;
+        const auto resolution=[&](bool docked_now) {
+            return docked_now&&race_height==1080?1080U:race_height==540?540U:720U;
+        };
+        auto scene_height=resolution(docked);
+#ifdef NFSU_SPLIT_DIAGNOSTICS
+        const auto capture=std::make_unique<SplitDiagnostics>();
+        auto* const profile=capture.get();
+#else
+        SplitDiagnostics* profile=nullptr;
+#endif
+        require(renderer.open_race_target(frame.commands,error,scene->draw_capacity(),bool(profile),false,
+                                          scene_height,&scene->atlas(),true),error);
 
         audio::RaceAudioService sound;
         auto audio_snapshot=std::make_unique<audio::RaceAudioSnapshot>();
@@ -296,46 +404,104 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
         sound.start(root,audio_note,{},[audio_core]{
             return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),audio_core,1U<<audio_core))&&
                 R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(),0x30));
-        },true,world->models()[0],levels.engine_a,levels.nitrous,levels.tyres,other,levels.induction,0,0);
+        },true,world->models()[0],levels.engine_a,levels.nitrous,levels.tyres,other,levels.induction,
+                    unsigned(traffic.physics.size()),world->session().props()?world->session().props()->sound_materials():0);
+        require(scene->check_local_budget(world->session(),sound.resident_bytes(),error),error);
+        if(profile)require(profile->open(course,options,traffic_density,layout,effects,scene_height,
+                                          renderer,sound.resident_bytes(),error),error);
 
-        std::array<bool,2> next_camera{};
+        std::array<std::uint32_t,2> pending_buttons{};
         std::array<GamepadFrame,2> input{};
+        std::array<DragPadInput,2> drag_input;
+        GyroSteering gyro[]{GyroSteering(HidNpadIdType_No1),GyroSteering(HidNpadIdType_No2)};
+        const auto release_gyro=[&]{for(auto& steering:gyro)steering.release();};
+        bool reset_drag_input=true;
         auto last=micros();std::uint64_t debt=0;
-        const DekoRenderer::SplitViewSource render_view=[&](unsigned player,const RecordedCommands*& commands,
+        const DekoRenderer::SplitViewSource render_view=[&,profile](unsigned player,const RecordedCommands*& commands,
                                                            const RaceHudFrame*& view_hud,std::string& frame_error){
-            if(!scene->split_frame(world->session(),views[player],player,frame,*hud,frame_error,metric_speed))return false;
-            commands=&frame.commands;view_hud=hud.get();return true;
+            auto& player_hud=(*hud)[player];
+            if(!scene->split_frame(world->session(),player,frame,player_hud,frame_error,metric_speed,layout,
+                                   profile?&profile->cpu_view[player]:nullptr,profile))return false;
+            if(profile)profile->view(player,frame,player_hud);
+            commands=&frame.commands;view_hud=&player_hud;return true;
         };
         while(appletMainLoop()) {
-            if(appletGetFocusState()!=AppletFocusState_InFocus){last=micros();debt=0;continue;}
+            if(appletGetFocusState()!=AppletFocusState_InFocus){
+                release_gyro();
+                if(profile)profile->suspend();
+                last=micros();debt=0;pending_buttons={};reset_drag_input=true;continue;
+            }
+            const bool now_docked=appletGetOperationMode()==AppletOperationMode_Console;
+            if(now_docked!=docked) {
+                docked=now_docked;
+                auto next_height=resolution(docked);
+                if(next_height!=scene_height) {
+                    require(scene->split_frame(world->session(),0,frame,(*hud)[0],error,metric_speed,layout),error);
+                    require(renderer.reconfigure_target(frame.commands,error,scene->draw_capacity(),bool(profile),false,
+                                                        next_height,&scene->atlas(),true),error);
+                    scene_height=next_height;
+                }
+                last=micros();debt=0;pending_buttons={};reset_drag_input=true;
+                continue;
+            }
+            const auto input_begin=profile?micros():0;
             for(auto& pad:pads)padUpdate(&pad);
             const auto buttons=local_buttons(pads[0],padGetButtonsDown(&pads[0]))|
                 local_buttons(pads[1],padGetButtonsDown(&pads[1]));
             if(buttons&HidNpadButton_Plus)break;
             if(!padIsConnected(&pads[0])||!padIsConnected(&pads[1])) {
                 sound.set_suspended(true);
+                release_gyro();
                 if(!choose_local_controllers(pads,error))break;
                 sound.set_suspended(false);
-                last=micros();debt=0;continue;
+                last=micros();debt=0;pending_buttons={};reset_drag_input=true;continue;
             }
             const auto now=micros();
+            if(profile)profile->begin((now-last)/1000.0);
             debt+=std::min<std::uint64_t>(now-last,133333)*60;
-            const double dt=std::clamp(double(now-last)*1e-6,.001,.1);
             last=now;
             for(unsigned i=0;i<pads.size();++i) {
-                input[i].pads[0]=sample_local(pads[i]);
-                next_camera[i]=(local_buttons(pads[i],padGetButtonsDown(&pads[i]))&HidNpadButton_X)!=0;
+                const auto& pad=pads[i];
+                if(gyro_enabled[i])gyro[i].poll(pad,now);
+                if(drag)drag_input[i].poll(pad,reset_drag_input,local_drag_input);
+                else {
+                    input[i].pads[0]=local_race_input(padGetStyleSet(&pad),padGetButtons(&pad),
+                        padGetStickPos(&pad,0),padGetStickPos(&pad,1),false);
+                    input[i].pads[0].connected=true;
+                    pending_buttons[i]|=switch_race_buttons(local_buttons(pad,padGetButtonsDown(&pad)));
+                }
             }
+            reset_drag_input=false;
+            if(profile)profile->input_ms=(micros()-input_begin)/1000.0;
             while(debt>=1000000) {
                 debt-=1000000;
                 if(world->session().timing().outcome!=RaceOutcome::running)continue;
-                require(world->advance(input,error),error);
+                auto sampled=input;
+                for(unsigned i=0;i<pads.size();++i) {
+                    if(drag)sampled[i]=drag_input[i].take(world->session().timing().step);
+                    else {
+                        sampled[i].pads[0].buttons|=pending_buttons[i];
+                        pending_buttons[i]=0;
+                    }
+                    if(gyro_enabled[i])gyro[i].steer(sampled[i].pads[0],drag);
+                }
+                RaceSimulationProfile step;
+                step.detailed_contacts=bool(profile);
+                auto stage=profile?micros():0;
+                require(world->advance(sampled,error,profile?&step:nullptr,profile),error);
+                if(profile) {
+                    const auto done=micros();profile->simulation_ms+=(done-stage)/1000.0;stage=done;
+                    profile->add_simulation(step);
+                }
+                scene->advance_local_effects(world->session());
+                if(profile){const auto done=micros();profile->particle_ms+=(done-stage)/1000.0;stage=done;}
                 update_multiplayer_audio(sound,world->session(),*audio_snapshot);
+                if(profile)profile->audio_ms+=(micros()-stage)/1000.0;
             }
-            const auto state=world->snapshot();
-            for(unsigned i=0;i<views.size();++i)
-                require(views[i].apply(state,dt,error,(input[i].pads[0].buttons&gamepad_button_bit(GamepadButton::stick_right))!=0,next_camera[i]),error);
-            require(renderer.present_split(render_view,error),error);
+            DekoSplitTiming present;
+            require(renderer.present_split(render_view,error,layout,profile?&present:nullptr),error);
+            if(profile)require(profile->write(world->session(),scene_height,present,renderer),
+                               "Cannot write the split diagnostics CSV");
         }
         sound.stop();
         require(renderer.close(error),error);
@@ -377,7 +543,7 @@ void room_lobby(PadState& pad,LanScreen& screen,LanLink& link,bool host,
             if(host)update_host(false);
         }
         if(!locked&&edit&&(down&HidNpadButton_Y)){
-            screen.close();edit(cars[car],options.tier,poll);
+            screen.close();edit(cars[car],options.tier,poll,nullptr);
             if(host)update_host(false);
         }
         if((down&HidNpadButton_A)&&link.paired()){
@@ -556,15 +722,16 @@ void run_switch_lan(const std::string& root,PadState& pad,bool write_logs,
     run_lan(root,pad,false,false,{},write_logs,rides,edit);
 }
 
-void run_switch_multiplayer(const std::string& root,PadState& pad,bool write_logs,bool metric_speed,
+void run_switch_multiplayer(const std::string& root,PadState& pad,bool write_logs,bool metric_speed,std::uint32_t race_height,
                             const std::map<std::string,CareerRide>& rides,const LanGarageEditor& edit) {
     LanScreen screen;
     std::string notice;
-    constexpr u64 actions=HidNpadButton_A|HidNpadButton_B|HidNpadButton_X|HidNpadButton_Plus;
+    LocalRides edited_rides;
+    constexpr u64 actions=HidNpadButton_A|HidNpadButton_B|HidNpadButton_X|HidNpadButton_Y|HidNpadButton_Plus;
     bool armed=false;
     while(appletMainLoop()) {
         if(appletGetFocusState()!=AppletFocusState_InFocus){armed=false;continue;}
-        screen.show({"MULTIPLAYER","","A: Quick Race / Split Screen","X: LAN","B: Back","",notice});
+        screen.show({"MULTIPLAYER","","A: Quick Race / Split Screen","Y: Split Screen with assigned controllers","X: LAN","B: Back","",notice});
         padUpdate(&pad);
         if(!armed) {
             // A from the main menu or Leave from the previous session.
@@ -573,10 +740,10 @@ void run_switch_multiplayer(const std::string& root,PadState& pad,bool write_log
         }
         const auto buttons=padGetButtonsDown(&pad);
         if(buttons&(HidNpadButton_B|HidNpadButton_Plus))return;
-        if(buttons&HidNpadButton_A) {
+        if(buttons&(HidNpadButton_A|HidNpadButton_Y)) {
             screen.close();notice.clear();
             try {
-                run_local(root,metric_speed,rides,notice);
+                run_local(root,metric_speed,rides,notice,(buttons&HidNpadButton_A)==0,race_height,edit,edited_rides);
             } catch(const std::exception& e) {
                 notice=e.what();
             }

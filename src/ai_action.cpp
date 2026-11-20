@@ -4,6 +4,60 @@
 #include <cstring>
 
 namespace nfsu {
+bool ai_rival_nitrous_road(const Route* route,unsigned point,int category,
+                          const AiRoadChain& chain,unsigned first,AiRivalNitrousRoad& result) noexcept {
+    if(category< -1||category>=23||chain.count>chain.cells.size()||
+       (route&&point>=route->points.size()))return false;
+    AiRivalNitrousRoad next;next.traffic_lane=category>=11&&category<=16;
+    if(route) {
+        next.speed=route_raw_speed(route->points[point],category,route->category_columns_reversed);
+        if(!std::isfinite(next.speed))return false;
+    }
+    next.nondecreasing=true;
+    const auto speed=[category](const AiPathRoadPoint& cell) {
+            const int mapped=cell.reverse?(category<5?category+5:
+                category>=11&&category<17?category+6:category):category;
+            return route_raw_speed(cell.point,mapped,cell.category_columns_reversed);
+        };
+    for(unsigned j=first;j+1<chain.count;++j) {
+            const auto a=speed(chain.cells[j]),b=speed(chain.cells[j+1]);
+            if(!std::isfinite(a)||!std::isfinite(b))return false;
+            if(a>b){next.nondecreasing=false;break;}
+    }
+    result=next;return true;
+}
+bool ai_nitrous_road_window(bool nondecreasing,std::uint32_t clock,
+                           std::uint32_t& since) noexcept {
+    const auto valid=[](std::uint32_t tick){return tick!=0&&tick!=0x7fffffffU;};
+    if(!nondecreasing)since=0;
+    else if(!valid(since))since=clock;
+    const auto bits=clock-since;std::int32_t elapsed;std::memcpy(&elapsed,&bits,4);
+    return valid(since)&&float(elapsed)*.0002500000118743628F>1.F;
+}
+namespace {
+float nitrous_elapsed(std::uint32_t clock,std::uint32_t since) noexcept {
+    const auto bits=clock-since;std::int32_t ticks;std::memcpy(&ticks,&bits,4);
+    return float(ticks)*.0002500000118743628F;
+}
+}
+bool ai_rival_nitrous_request(const AiRivalNitrousInput& in,const AiRivalNitrousTuning& tuning,
+                             AiRivalNitrousState& state) noexcept {
+    if(in.selector==4)return false;
+    if(!in.drag) {
+        if(tuning.save_for_finish&&in.remaining<=4000U&&!in.finish_approach)return false;
+        if(in.active&&nitrous_elapsed(in.clock,state.started)>=tuning.maximum_burst_secs)return false;
+        const float delay=in.finish_approach?0.F:in.last_lap?tuning.final_lap_secs:tuning.earliest_secs;
+        if(!in.active&&nitrous_elapsed(in.clock,state.stopped)<=delay)return false;
+        const bool window=ai_nitrous_road_window(in.road.nondecreasing,in.clock,state.road_since);
+        const bool below=in.road.speed>.001F&&in.speed/in.road.speed<.8F;
+        if(!in.road.traffic_lane&&!below&&!window)return false;
+    }
+    return in.physical;
+}
+bool ai_rival_nitrous_can_stop(const AiRivalNitrousInput& in,const AiRivalNitrousTuning& tuning,
+                              const AiRivalNitrousState& state) noexcept {
+    return in.drag||nitrous_elapsed(in.clock,state.started)>tuning.minimum_burst_secs;
+}
 bool ai_speed_configuration(const unsigned char* data,std::size_t size,int context,
                              AiSpeedConfiguration& output) noexcept {
     if(!data||size!=0x82c||context< -1||context>=10)return false;
@@ -22,13 +76,17 @@ bool ai_speed_configuration(const unsigned char* data,std::size_t size,int conte
     //476E0D..476E2E: C8/CC are UP bounds (+2C/+30); D0/D4
     //are DOWN bounds (+24/+28). Serialized order is not consumer order.
     next.drag_shift_offsets={scalar(row+0x2c),scalar(row+0x30),scalar(row+0x24),scalar(row+0x28)};
+    next.nitrous={scalar(row+0x34),scalar(row+0x38),unsigned(data[row+0x51])+1U,data[row+0x52]!=0,
+        scalar(row+0x3c),scalar(row+0x40)};
     for(float p:next.drag_shift_offsets)if(!std::isfinite(p))return false;
     if(next.drag_shift_offsets[0]>next.drag_shift_offsets[1] ||
        next.drag_shift_offsets[2]>next.drag_shift_offsets[3])return false;
     for(float p:next.road_probabilities)if(!std::isfinite(p))return false;
     if(!std::isfinite(next.maneuver_probability)||!std::isfinite(next.context_scale)||!std::isfinite(next.offset_interval)||
        !std::isfinite(next.drag_launch_min)||!std::isfinite(next.drag_launch_max)||
-       next.drag_launch_min>next.drag_launch_max)return false;
+       next.drag_launch_min>next.drag_launch_max||!std::isfinite(next.nitrous.earliest_secs)||
+       !std::isfinite(next.nitrous.final_lap_secs)||!std::isfinite(next.nitrous.minimum_burst_secs)||
+       !std::isfinite(next.nitrous.maximum_burst_secs))return false;
     output=next;return true;
 }
 bool ai_action_offset_step(const AiActionOffsetInput& in,float& result) noexcept {
@@ -70,10 +128,14 @@ bool ai_action_forward_path(const AiPlannedPath& previous,const AiPathRoadPoint*
 }
 bool ai_action_plan_path(const AiContactManeuver& descriptor,const AiActionPathInput& in,
                           AiManeuverResult& result) noexcept {
-    if(descriptor.kind<1||descriptor.kind>3||!std::isfinite(descriptor.parameter))return false;
+    if(descriptor.kind<0||descriptor.kind>3||!std::isfinite(descriptor.parameter))return false;
+    // 45B860 initializes candidate scratch descriptors to kind 0. 45AE10
+    // accepts that empty descriptor and emits a forward fallback on rebuild.
+    // 45B150 separately replaces an unavailable retained descriptor with kind 1.
+    const bool available=descriptor.kind!=0&&in.category_available;
     auto next=in.previous;
     if(in.rebuild) {next={};next.transition_end=255;}
-    if(in.rebuild&&in.category_available&&descriptor.kind!=1) {
+    if(in.rebuild&&available&&descriptor.kind!=1) {
         if(!in.target||descriptor.target==0||descriptor.target!=in.resolved_target)return false;
         auto maneuver=*in.target;
         maneuver.side=descriptor.kind;maneuver.extra_clearance=descriptor.flag;
@@ -82,8 +144,8 @@ bool ai_action_plan_path(const AiContactManeuver& descriptor,const AiActionPathI
         auto extension=in.extension;extension.target_offset=descriptor.parameter;
         if(!ai_action_forward_path(in.previous.path,in.roads,in.road_count,in.selected,
             in.initial_offset,in.policy,extension,in.signed_speed,in.tick,in.retain_parameters,
-            next.path,in.rebuild,in.category_available))return false;
-        next.maneuver=!in.rebuild||in.category_available;
+            next.path,in.rebuild,available))return false;
+        next.maneuver=!in.rebuild||available;
     }
     result=next;return true;
 }
@@ -94,19 +156,19 @@ bool ai_action_publish_speed(const AiSpeedPolicyInput& in,AiSpeedPolicyState& st
         if(!std::isfinite(v))return false;
     auto next=state;auto random=rng;AiSpeedPublication output;
     if(in.route) {
-        if(in.point>=in.route->points.size()||in.category<0||in.category>=23||
+        if(in.point>=in.route->points.size()||in.category< -1||in.category>=23||
            in.context>=10||in.offset_amplitude>255)return false;
         const int slot=in.direction==0?in.category:
             (in.category<5?in.category+5:((in.category>=11&&in.category<17)?in.category+6:in.category));
         if(slot>=23)return false;
         if(in.debug_constant){output.speed=15;output.auxiliary=in.debug_auxiliary;}
-        else if(in.debug_route)output.speed=in.route->points[in.point].speed[slot];
+        else if(in.debug_route)output.speed=route_raw_speed(in.route->points[in.point],slot,in.route->category_columns_reversed);
         else {
             output.auxiliary=in.auxiliary;output.enabled=in.enabled;
             if(!in.route_speed){output.speed=in.action_speed;output.duration=in.duration;}
             else {
                 float speed;
-                if(in.marker_point)speed=in.marker_point->speed[in.category];
+                if(in.marker_point)speed=route_raw_speed(*in.marker_point,in.category,in.marker_columns_reversed);
                 else if(in.queued_override)speed=99999;
                 else {
                     const std::uint32_t elapsed_bits=in.tick-next.offset_tick;
@@ -120,7 +182,7 @@ bool ai_action_publish_speed(const AiSpeedPolicyInput& in,AiSpeedPolicyState& st
                     }
                     const auto index=std::clamp(static_cast<long long>(in.point)+next.point_offset,
                                               0LL,static_cast<long long>(in.route->points.size()-1));
-                    speed=in.route->points[static_cast<std::size_t>(index)].speed[slot];
+                    speed=route_raw_speed(in.route->points[static_cast<std::size_t>(index)],slot,in.route->category_columns_reversed);
                     if(speed==0)speed=30;
                     speed*=in.context_scale;
                 }

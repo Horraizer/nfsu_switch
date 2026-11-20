@@ -1,10 +1,12 @@
 #include "nfsu/vehicle_track.h"
+#include "nfsu/ai_path.h"
 #include "nfsu/player_powertrain.h"
 #include "nfsu/car_contact.h"
 #include "nfsu/race_contacts.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace nfsu {
 namespace {
@@ -21,220 +23,141 @@ void publish(const AiPhysicsState& a,VehicleState& s) {
         out.previous_compression=out.compression;out.compression=w.compression;
         out.spin=w.spin;out.contact=w.contact;out.brake_locked=w.locked;
         out.prepared_slip=w.slip[0];out.prepared_sliding=w.sliding;
+        s.published_wheel_slip[k]=w.slip;
         out.prepared_force_long=w.feedback[0];
     }
     s.published_support=0;for(const auto& w:a.engine.wheels)s.published_support+=w.contact?1U:0U;
     s.owner_speeds=player_publish_owner_speeds(s.velocity,
         {a.body.axes[0][0],a.body.axes[0][1],a.body.axes[0][2]});
-    player_publish_owner_motion(s.owner_motion,a.body.velocity,a.body.angular_velocity,a.body.axes);
+    s.owner_motion.velocity=a.body.velocity;
+    s.owner_motion.angular_velocity=a.body.angular_velocity;
+    s.owner_motion.axes=a.body.axes;
+    // 474801 passes the two float components directly to 564DB0.
+    s.owner_motion.heading=track_angle(a.body.axes[0][0],a.body.axes[0][1]);
 }
-}
-
-namespace {
-struct RivalPathSample {
-    VehicleVec3 point, tangent;
-};
-
-RivalPathSample sample_rival_path(const AiDriverPath& path,float parameter) {
-    const unsigned last=path.count-1;
-    const unsigned i=std::min(static_cast<unsigned>(std::max(0.F,parameter)),last-1);
-    const float t=parameter-float(i);
-    const auto coordinate=[&](unsigned k) {
-        const float b=path.points[i][k],c=path.points[i+1][k];
-        if(t<0.F)return std::array<float,2>{b+t*(c-b),c-b};
-        if(t>1.F)return std::array<float,2>{c+(t-1.F)*(c-b),c-b};
-        const float a=i?path.points[i-1][k]:2.F*b-c;
-        const float d=i+2<=last?path.points[i+2][k]:2.F*c-b;
-        const float linear=c-a,quadratic=2.F*a-5.F*b+4.F*c-d,cubic=3.F*(b-c)+d-a;
-        return std::array<float,2>{b+.5F*t*(linear+t*(quadratic+t*cubic)),
-                                  .5F*(linear+t*(2.F*quadratic+3.F*t*cubic))};
-    };
-    const auto x=coordinate(0),y=coordinate(1),z=coordinate(2);
-    return {{x[0],y[0],z[0]},{x[1],y[1],z[1]}};
-}
-
-float project_rival_path(const AiDriverPath& path,const VehicleVec3& position) {
-    // 59D430 starts at node zero and stops when the distance first grows.
-    const auto distance=[&](unsigned i) {
-        const auto& p=path.points[i];
-        const double dx=position.x-p[0],dy=position.y-p[1],dz=position.z-p[2];
-        return dx*dx+dy*dy+dz*dz;
-    };
-    unsigned nearest=0;
-    for(double best=distance(0);nearest+1<path.count;++nearest) {
-        const double candidate=distance(nearest+1);
-        if(candidate>=best)break;
-        best=candidate;
+void vehicle_effect_telemetry(const VehicleState& s, double frame_dt, VehicleTelemetry& t) {
+    t.simulation_seconds=s.simulation_seconds;
+    t.solver_dt=frame_dt;
+    t.owner_speeds=s.owner_speeds;
+    for(unsigned i=0;i<s.wheels.size();++i) {
+        auto& w=t.wheels[i];
+        w.contact=s.wheels[i].contact;
+        w.compression=s.wheels[i].compression;
+        w.effect_slip_velocity=s.published_wheel_slip[i];
     }
-    // 59D540 finds the perpendicular on the 3D spline by secant iteration.
-    float parameter=float(nearest),step=1.F,previous_move=0.F,previous_along=0.F;
-    for(unsigned iteration=0;iteration<32;++iteration) {
-        const auto sample=sample_rival_path(path,parameter);
-        const auto& p=sample.point;
-        const auto& d=sample.tangent;
-        const float slope=float(vehicle_sqrt(d.x*d.x+d.y*d.y+d.z*d.z));
-        if(!(slope>0.F))break;
-        const float along=float(((position.z-p.z)*d.z+(position.y-p.y)*d.y+
-                                (position.x-p.x)*d.x)/slope);
-        if(std::abs(along)<.005F)break;
-        const float rate=previous_move==0.F?slope:-(along-previous_along)/previous_move;
-        if(rate==0.F)break;
-        const float move=std::clamp(along/rate,-step,step);
-        parameter+=move;
-        if(move*previous_move<0.F)step*=.5F;
-        previous_move=move;
-        previous_along=along;
-    }
-    return parameter;
-}
-
-float rival_path_length(const AiDriverPath& path) {
-    float length=0;
-    for(unsigned i=1;i<path.count;++i) {
-        const auto& a=path.points[i-1];const auto& b=path.points[i];
-        const float dx=b[0]-a[0],dy=b[1]-a[1],dz=b[2]-a[2];
-        length+=float(vehicle_sqrt((dz*dz+dx*dx)+dy*dy));
-    }
-    return length;
 }
 }
 
 bool VehicleTrackSession::step_rival_path(const AiDriverPath& path,float desired_speed,float speed_duration,bool publication,
-                                         const VehicleInput& input,VehicleTrackTelemetry& telemetry) {
+                                         const VehicleInput& input,VehicleTrackTelemetry& telemetry,
+                                         bool& departure_predicted) {
     const float dt=input.world_frame_seconds;
     if(!started_||!ai_configured_||ai_active_||!std::isfinite(dt)||dt<=0||dt>.1F||
        !std::isfinite(desired_speed)||!std::isfinite(speed_duration))return false;
     const auto& h=model_->spec().handling;
     auto next=rival_path_;
     if(publication||!next.path.count) {
-        if(path.count<3||path.count>path.points.size())return false;
-        for(unsigned i=0;i<path.count;++i)
-            for(float value:path.points[i])if(!std::isfinite(value))return false;
-        const float length=rival_path_length(path);
-        next.path=path;
-        next.parameter=project_rival_path(path,state_.position);
-        if(!(length>0.F))return false;
-        next.metres_per_point=length/float(path.count-1);
-        const auto sample=sample_rival_path(path,next.parameter);
-        const double tx=sample.tangent.x,ty=sample.tangent.y;
-        const double horizontal=vehicle_sqrt(tx*tx+ty*ty);
-        if(!(horizontal>0.00001))return false;
-        const double ox=state_.position.x-sample.point.x,oy=state_.position.y-sample.point.y;
-        next.vertical_offset=state_.position.z-sample.point.z;
-        // Reject disconnected geometry before publishing a new path.
-        if(ox*ox+oy*oy>25.0||std::abs(next.vertical_offset)>3.0)return false;
-        // 463910 seeds the signed lateral channel with the projected offset
-        // and velocity. 464244 advances its cubic toward zero over .5 s.
-        next.lateral_offset=float((tx*oy-ty*ox)/horizontal);
-        next.lateral_derivative=float(.5*(tx*state_.velocity.y-ty*state_.velocity.x)/horizontal);
-        next.lateral_phase=0.F;
-        next.speed=std::max(0.F,state_.owner_speeds.forward);
-        // 463910 uses 456830's acceleration descriptor for the limit.
-        constexpr float maximum_speed=98.34600067138672F;
-        const float x=std::clamp(next.speed/ai_scale_/maximum_speed,0.F,1.F)*63.F;
-        const unsigned i=std::min(static_cast<unsigned>(x),62U);
-        const float engine=ai_acceleration_[i]+(x-float(i))*(ai_acceleration_[i+1]-ai_acceleration_[i]);
-        const float drag=(1.F-input.drafting)*h.drag*next.speed*next.speed/h.mass;
-        const float duration=speed_duration>0.F?speed_duration:.5F;
-        next.acceleration=std::min(engine-drag,std::max(-20.F,(desired_speed-next.speed)/duration));
+        AiPlannedPath resampled;
+        resampled.path=path;
+        // 463B30 resamples the already published driver path again and
+        // 463910 uses that operation's length, before point redistribution.
+        if(path.count<3||!ai_path_publish(resampled)||!(resampled.length>0.F))return false;
+        next.path=resampled.path;
+        next.parameter=ai_path_body_project(next.path,
+            {{float(state_.position.x),float(state_.position.y),float(state_.position.z)}});
+        next.points_per_metre=float(path.count-1)/resampled.length;
+        next.elapsed=0;
+        ai_path_body_publish(next,{{float(state_.position.x),float(state_.position.y),float(state_.position.z)}},
+            {{float(state_.velocity.x),float(state_.velocity.y),float(state_.velocity.z)}});
+        ai_path_body_speed_target(next,h,ai_acceleration_,
+            {state_.owner_speeds.forward,desired_speed,speed_duration,ai_scale_,
+             input.drafting,ai_gearing_speed_limit_});
     }
 
-    const float new_speed=std::max(0.F,next.speed+dt*next.acceleration);
-    const float new_parameter=next.parameter+(next.speed+new_speed)*.5F*dt/next.metres_per_point;
-    const float limit=float(next.path.count-1);
-    if(new_parameter>=limit)return false;
-    const auto sample=sample_rival_path(next.path,new_parameter);
-    const auto& base=sample.point;
-    const auto [dx,dy,dz]=sample.tangent;
-    const double horizontal=vehicle_sqrt(dx*dx+dy*dy);
-    const double norm=vehicle_sqrt(horizontal*horizontal+dz*dz);
-    if(!(horizontal>0.00001))return false;
-    next.lateral_phase=std::min(1.F,next.lateral_phase+dt/.5F);
-    const float phase=next.lateral_phase,remaining=1.F-phase;
-    const float lateral=remaining*remaining*
-        (next.lateral_offset*(1.F+2.F*phase)+next.lateral_derivative*phase);
+    const bool departure=ai_path_body_departure(next,h);
+    const auto motion=ai_path_body_step(next,h,dt);
+    const float new_speed=motion.speed;
     auto s=state_;
-    s.position={base.x-lateral*dy/horizontal,base.y+lateral*dx/horizontal,
-                base.z+next.vertical_offset};
-    // The retail check looks ahead for a departure from the current
-    // vertical tangent, not just a discontinuity at the current tick.
-    const float parameter_rate=(next.speed+new_speed)*.5F/next.metres_per_point;
-    const auto future=sample_rival_path(next.path,
-        std::min(limit,new_parameter+parameter_rate*9.F*dt)).point;
-    const double linear_height=base.z+(dz/horizontal)*vehicle_sqrt(
-        (future.x-base.x)*(future.x-base.x)+(future.y-base.y)*(future.y-base.y));
-    if(future.z-linear_height>1.F||
-       std::abs(s.position.z-state_.position.z-state_.velocity.z*dt)>1.F)return false;
-    const auto& old=state_.position;
-    const auto tx=s.position.x-old.x,ty=s.position.y-old.y,tz=s.position.z-old.z;
-    const auto moved=vehicle_sqrt(tx*tx+ty*ty+tz*tz);
-    // Keep position and momentum continuous when a new path crosses a
-    // junction or changes its local point spacing abruptly.
-    const double correction_speed=2.0*std::abs(next.lateral_derivative);
-    if(moved>(std::max(next.speed,new_speed)+correction_speed+5.F)*dt)return false;
-    s.velocity={tx/dt,ty/dt,tz/dt};
-    const PlayerRigidVector forward{float(dx/norm),float(dy/norm),float(dz/norm)};
-    const PlayerRigidVector side{float(-dy/horizontal),float(dx/horizontal),0};
-    const PlayerRigidVector up{-side[1]*forward[2],side[0]*forward[2],
-                                forward[0]*side[1]-forward[1]*side[0]};
-    const auto heading=track_angle(forward[0],forward[1]);
-    const auto previous=track_angle(s.rigid_body.axes[0][0],s.rigid_body.axes[0][1]);
-    const auto turn=static_cast<std::int16_t>(heading-previous);
-    // This adapter uses the spline tangent directly. Do not feed a
-    // discontinuous heading and its derived yaw into the contact solver.
-    // Keep the current body and let the caller continue with selector3.
-    constexpr double maximum_heading_rate=8.0;
-    const double turn_radians=double(turn)*(6.28318530717958647692/65536);
-    if(std::abs(turn_radians)>maximum_heading_rate*dt)return false;
-    s.angular_velocity={0,0,turn_radians/dt};
-    s.orientation=vehicle_orientation_from_axes({{forward,side,up}});
-    s.owner_speeds=player_publish_owner_speeds(s.velocity,{forward[0],forward[1],forward[2]});
+    s.position={motion.position[0],motion.position[1],motion.position[2]};
+    const auto heading=motion.heading;
+    PlayerRigidMatrix axes;
+    std::array<VehicleTrackCast,4> casts;
+    fit_road_pose(heading,s.position,axes,casts);
+    VehicleTrackTelemetry t;
+    for(unsigned k=0;k<casts.size();++k) {
+        if(casts[k].surface==VehicleTrackSurface::refused)return false;
+        t.wheel_surface[k]=casts[k].surface;
+    }
+    s.dynamic_ground_candidate=casts.back().hit.dynamic_candidate;
+    for(unsigned i=0;i<casts.size();++i)t.model.wheels[i].surface=casts[i].hit.surface;
+    const auto published_motion=ai_path_body_motion(
+        {{float(state_.position.x),float(state_.position.y),float(state_.position.z)}},
+        {{float(s.position.x),float(s.position.y),float(s.position.z)}},
+        state_.owner_motion.heading,heading,new_speed,dt);
+    const auto& velocity=published_motion.velocity;
+    s.velocity={velocity[0],velocity[1],velocity[2]};
+    const float yaw=published_motion.yaw;
+    s.angular_velocity={0,0,yaw};
+    s.orientation=vehicle_orientation_from_axes(axes);
+    s.owner_speeds=player_publish_owner_speeds(s.velocity,{axes[0][0],axes[0][1],axes[0][2]});
+    s.owner_speeds.forward=new_speed; //4643F3: target speed, not projected displacement.
+    s.owner_speeds.magnitude=published_motion.magnitude;
     s.owner_slip_angle=player_owner_slip_angle(s.velocity,heading);
     s.steering_word=input.road_angle_word;s.steering_word_ready=true;s.steer_angle=input.road_angle;
-    s.published_support=4;s.body_rest_state=0;s.forces_prepared=false;
+    // 464470..46455B updates wheel motion/load/slip but retains Actor350
+    // contact bytes and Actor38C support from the previous physical owner.
+    s.body_rest_state=0;s.forces_prepared=false;
+    const auto path_slip=ai_path_wheel_slip(new_speed,
+        {{float(s.velocity.x),float(s.velocity.y),float(s.velocity.z)}},axes);
     for(unsigned i=0;i<s.wheels.size();++i) {
         auto& wheel=s.wheels[i];
-        wheel.spin=new_speed/h.wheels[i].radius;wheel.contact=true;
+        wheel.spin=new_speed/h.wheels[i].radius;
         wheel.prepared_slip=0;wheel.prepared_sliding=false;wheel.prepared_force_long=0;
+        s.published_wheel_slip[i]=path_slip;
     }
-    unsigned gear=std::clamp(unsigned(std::max(kVehicleGearFirst,s.gear)),
-        unsigned(kVehicleGearFirst),h.forward_gears+1);
-    const float final=h.final_drive_front*h.rear_drive_fraction+h.final_drive_rear*(1.F-h.rear_drive_fraction);
-    const float angular_speed=float(s.wheels[0].spin*(1.F-h.rear_drive_fraction)+
-        s.wheels[3].spin*h.rear_drive_fraction)*final;
-    const float rpm=angular_speed*h.gear_ratios[gear]*kPlayerRadSToRpm;
-    if(rpm>=ai_tables_.up[gear]&&gear<h.forward_gears+1)++gear;
-    else if(rpm<ai_tables_.down[gear]&&gear>unsigned(kVehicleGearFirst))--gear;
-    s.gear=int(gear);s.published_gear=s.gear;
-    s.engine_rpm=std::clamp(angular_speed*h.gear_ratios[gear]*kPlayerRadSToRpm,h.idle_rpm,h.max_rpm);
+    AiPathPowertrainState publication_state{s.path_powertrain_speed,s.published_gear,float(s.engine_rpm)};
+    if(!ai_path_powertrain(s.owner_speeds.magnitude,publication_state))return false;
+    s.path_powertrain_speed=publication_state.filtered_speed;
+    s.gear=publication_state.gear;s.published_gear=s.gear;
+    s.engine_rpm=publication_state.rpm;
     s.engine.angular_speed=float(s.engine_rpm)*kPlayerRpmToRadS;
-    vehicle_import_rigid(h,s);
-    player_publish_owner_motion(s.owner_motion,s.rigid_body.velocity,s.rigid_body.angular_velocity,s.rigid_body.axes);
+    //Retain the raw ground-fitted basis. A quaternion round trip would
+    //orthogonalize it and change the next contact/full-physics import.
+    player_rigid_body_import(h,s.rigid_body,
+        {{float(s.position.x),float(s.position.y),float(s.position.z)}},axes,velocity,{{0,0,yaw}});
+    s.rigid_body.velocity=velocity;s.rigid_body.angular_velocity={0,0,yaw};
+    s.rigid_body.snapshot_axes=axes;s.rigid_body_ready=true;s.rigid_orientation=s.orientation;
+    player_publish_owner_motion(s.owner_motion,velocity,{{0,0,yaw}},axes);
+    s.owner_motion.heading=heading;
 
-    next.parameter=new_parameter;next.speed=new_speed;
     ++s.step;s.simulation_seconds+=dt==1.F/60.F?1.0/60.0:double(dt);
-    VehicleTrackTelemetry t;
     ++steps_;++ticks_;t.step=steps_;t.tick=true;
-    run_tick(s,input,t);
-    rival_path_=t.reset==VehicleTrackReset::none?next:RivalPathMotion{};
+    const auto previous_resets=resets_;
+    run_tick(s,input,t,4);
+    // A refused placement publishes a reason but retains the live solver.
+    // A successful placement already reconstructed it in run_tick.
+    if(resets_==previous_resets)rival_path_=next;
     state_=s;last_input_=input;
     t.pending=pending_;t.resets=resets_;t.position=s.position;t.orientation=s.orientation;
     t.velocity=s.velocity;t.angular_velocity=s.angular_velocity;
     t.model.rigid_body=s.rigid_body;t.model.rigid_body_ready=s.rigid_body_ready;
     t.model.rigid_orientation=s.rigid_orientation;t.model.steering_word=s.steering_word;
     t.model.steering_word_ready=s.steering_word_ready;
+    vehicle_effect_telemetry(s,dt,t.model);
     t.lap=progress_.lap;t.percent=progress_.coordinate.fraction*100.F;
     t.zone=progress_.zone;t.off_path=progress_.off_path;telemetry=t;
+    departure_predicted=departure;
     return true;
 }
 
 // Original440A40 road and577060 object support shared with player struts.
 class VehicleTrackSession::AiWorld final:public AiPhysicsGround {
 public:
-    AiWorld(const VehicleTrackSession& owner,VehicleState& car,VehicleTrackTelemetry& telemetry)
-        :owner_(owner),car_(car),telemetry_(telemetry){}
+    AiWorld(const VehicleTrackSession& owner,VehicleState& car,VehicleTrackTelemetry& telemetry,bool publish=true)
+        :owner_(owner),car_(car),telemetry_(telemetry),publish_(publish){}
     bool query(const VehicleHandling& h,const PlayerRigidBodyState& b,
                std::array<AiWheelGround,4>& samples) const override {
+        for(auto& w:telemetry_.model.wheels){w.surface=0;w.ground_normal={};w.ground_point={};}
         if(owner_.ground_.uses_cached_struts()) {
         std::array<VehicleVec3,4> hubs;
         std::array<VehicleTrackCast,4> samples_out;
@@ -243,6 +166,7 @@ public:
             const auto& p=samples[k].hub;hubs[k]={p[0],p[1],p[2]};
         }
         owner_.ground_.probe_strut_heights(hubs,samples_out);
+        car_.dynamic_ground_candidate=samples_out.back().hit.dynamic_candidate;
         for(unsigned k=0;k<4;++k) {
             auto& s=samples[k];const auto& sample=samples_out[k];
             telemetry_.wheel_surface[k]=sample.surface;
@@ -256,6 +180,10 @@ public:
             if(plane[2]==0) {ai_ground_clear(s);continue;}
             s.height=-((plane[1]*s.hub[1]+plane[0]*s.hub[0]-plane[3])/plane[2]);
             std::copy_n(plane.begin(),3,s.normal.begin());
+            auto& w=telemetry_.model.wheels[k];
+            w.surface=sample.hit.surface;
+            w.ground_normal={s.normal[0],s.normal[1],s.normal[2]};
+            w.ground_point={s.hub[0],s.hub[1],s.height};
         }
         } else {
         std::array<std::array<float,3>,4> origins,endpoints;
@@ -287,12 +215,19 @@ public:
             }
             s.height=-((plane[1]*s.hub[1]+plane[0]*s.hub[0]-plane[3])/plane[2]);
             std::copy_n(plane.begin(),3,s.normal.begin());
+            auto& w=telemetry_.model.wheels[k];
+            w.surface=owner_.course_->world.collision.polygons[hit.polygon].unknown0[2];
+            w.ground_normal={s.normal[0],s.normal[1],s.normal[2]};
+            w.ground_point={s.hub[0],s.hub[1],s.height};
             telemetry_.wheel_surface[k]=VehicleTrackSurface::road;
         }
         }
         return true;
     }
     bool resolve(const VehicleHandling& h,AiPhysicsState& candidate) const override {
+        //426110 has not installed Actor34 while4740D0 constructs components.
+        //42A860 returns before publication/world contact during both refreshes.
+        if(!publish_)return true;
         publish(candidate,car_);
         if(owner_.approx_.body_contact && !owner_.deferred_body_contacts_) {
             const auto before=candidate.body;
@@ -314,6 +249,7 @@ private:
     const VehicleTrackSession& owner_;
     VehicleState& car_;
     VehicleTrackTelemetry& telemetry_;
+    bool publish_;
     mutable std::string failure_;
 };
 
@@ -326,26 +262,115 @@ bool VehicleTrackSession::configure_ai(float low_slip) {
     AiPowertrainTables tables;
     const auto& h=model_->spec().handling;
     if(!player_request_shift_tables(h,tables.up,tables.down)||
-       !ai_setup_acceleration_curve(h,ai_acceleration_))return false;
+       !ai_setup_acceleration_curve(h,ai_acceleration_,&ai_gearing_speed_limit_))return false;
     ai_tables_=tables;ai_low_slip_=low_slip;ai_configured_=true;ai_active_=true;return true;
 }
 
-void VehicleTrackSession::select_rival_physics(unsigned selector) noexcept {
-    if(!ai_configured_)return;
-    ai_active_=selector==3;
-    ai_started_=false;
-    rival_path_={};
-    if(selector==1) {
-        // 426110 replaces the component solver while keeping the actor pose.
-        // Force a refresh of selector1's private force and gearbox state.
-        state_.forces_prepared=false;
-        state_.aero_ready=false;
-        state_.transmission.requested_gear=state_.gear;
-        state_.transmission.mode=3;
-        state_.transmission.clutch=1.F;
-        state_.transmission.shift_pending=false;
-        state_.engine.feedback_torque=0.F;
+void VehicleTrackSession::select_rival_physics(unsigned selector,std::int32_t clock) {
+    if(!ai_configured_&&selector!=1)return;
+    if(selector==3&&started_) {
+        auto placed=state_;VehicleTrackTelemetry telemetry;
+        if(!reconstruct_ai_physics(placed,last_input_,last_ai_gear_request_,clock,telemetry))
+            throw std::runtime_error(error_);
+        state_=placed;
+    } else {
+        ai_started_=false;ai_import_={};
+        if(selector==1)reconstruct_full_physics(state_,clock);
     }
+    ai_active_=ai_configured_&&selector==3;
+    rival_path_={};
+    if(selector==4)ai_path_body_seed(rival_path_,state_.owner_motion.heading,
+        state_.owner_speeds.magnitude,state_.owner_motion.angular_velocity[2]);
+}
+
+bool VehicleTrackSession::reconstruct_ai_physics(VehicleState& s,const VehicleInput& input,
+                                                int gear_request,std::int32_t clock,VehicleTrackTelemetry& t) {
+    const auto& spec=model_->spec();const auto& h=spec.handling;
+    AiPhysicsState next;
+    next.engine.low_slip=ai_low_slip_;next.engine.grip=0;
+    next.engine.rpm=float(s.engine_rpm);next.engine.gear=s.published_gear;
+    next.engine.throttle=float(input.throttle);next.engine.brake=float(input.brake);
+    next.engine.steering=input.road_angle_word;next.engine.gear_request=gear_request;
+    next.engine.world_time=clock;
+    //4754E0 imports spin alone. New struts do not inherit old compression.
+    const auto preload=player_aero_preloads(h,s.owner_speeds.forward,true);
+    for(unsigned k=0;k<4;++k) {
+        next.engine.wheels[k].spin=float(s.wheels[k].spin);
+        next.engine.wheels[k].preload=preload[k];
+    }
+    player_rigid_body_import(h,next.body,
+        {{float(s.position.x),float(s.position.y),float(s.position.z)}},s.owner_motion.axes,
+        {{float(s.velocity.x),float(s.velocity.y),float(s.velocity.z)}},
+        {{float(s.angular_velocity.x),float(s.angular_velocity.y),float(s.angular_velocity.z)}});
+    next.body.yaw_torque_limit=0;
+    next.collision_context_valid=true;
+    next.collision_context={s.collision_state,s.published_support,s.owner_motion.axes,
+        s.owner_motion.velocity,s.published_gear,float(input.throttle),preparing_grid_||owner_recovery_active(clock)};
+    AiWorld world(*this,s,t,false);
+    //474640 tail-calls474CA0;4743E0 calls it once more. Each refresh owns
+    //struts/rest/bump/feedback/aero, without advancing or publishing the actor.
+    for(unsigned pass=0;pass<2;++pass)
+        if(!ai_physics_advance(h,ai_tables_,spec.aero,0,world,next,true)) {
+            error_=world.failure().empty()?"selector3 constructor refused":"selector3 constructor "+world.failure();
+            return false;
+        }
+    ai_import_={true,s.position,s.velocity,s.angular_velocity,s.orientation};
+    s.rigid_body=next.body;s.rigid_body_ready=true;s.rigid_orientation=s.orientation;
+    ai_=next;ai_started_=true;return true;
+}
+
+void VehicleTrackSession::reconstruct_full_physics(VehicleState& s,std::int32_t clock) const noexcept {
+    // 426110 constructs fresh components.478383/47839B restore only the
+    // published RPM/gear, not the old solver's cutoff or clutch history.
+    // This also applies to the human when47C9E0 releases the road NIS.
+    s.forces_prepared=false;
+    s.aero_ready=false;
+    const auto& h=model_->spec().handling;
+    //4782C0 imports published wheel speeds, but constructs new struts and
+    //wheel torque history. Old compression rates must not damp the new body.
+    for(auto& wheel:s.wheels) {
+        const float spin=float(wheel.spin);
+        const bool contact=wheel.contact; // published Actor350, read by Driver
+        wheel={};wheel.spin=spin;wheel.contact=contact;
+    }
+    s.body_rest_state=0;s.body_gravity=true;s.grip_recovery=1.F;
+    s.rigid_body={};s.alternate_yaw_active=false;
+    player_rigid_body_import(h,s.rigid_body,
+        {{float(s.position.x),float(s.position.y),float(s.position.z)}},
+        s.owner_motion.axes,
+        {{float(s.velocity.x),float(s.velocity.y),float(s.velocity.z)}},
+        {{float(s.angular_velocity.x),float(s.angular_velocity.y),float(s.angular_velocity.z)}});
+    player_rigid_body_refresh(h,s.rigid_body);
+    const auto& v=s.rigid_body.velocity;const auto& w=s.rigid_body.angular_velocity;
+    s.velocity={v[0],v[1],v[2]};s.angular_velocity={w[0],w[1],w[2]};
+    s.rigid_body_ready=true;s.rigid_orientation=s.orientation;
+    player_engine_reset(s.engine,float(s.engine_rpm));
+    s.engine.angular_speed=std::clamp(s.engine.angular_speed,
+        h.idle_rpm*kPlayerRpmToRadS,h.max_rpm*kPlayerRpmToRadS);
+    s.engine.heat_time=float(clock)*.00025F;
+    s.gear=s.published_gear;
+    s.transmission={};
+    s.transmission.requested_gear=s.gear;
+    s.transmission.mode=3;
+    s.transmission.clutch=1.F;
+    // 476F13 refreshes the new engine before its first derivative.
+    player_engine_cutoff_update(h,s.gear,s.engine,float(clock)*.00025F);
+
+}
+
+bool VehicleTrackSession::rival_nitrous_rpm_allowed(bool drag) const noexcept {
+    const auto gear=unsigned(state_.published_gear);
+    if(gear>=kVehicleGearSlots)return false;
+    const auto& handling=model_->spec().handling;
+    const float down=ai_active_?ai_tables_.down[gear]:
+        model_->request_downshift_rpm()[gear]+state_.transmission.down_offset;
+    const float up=ai_active_?ai_tables_.up[gear]:
+        std::min(drag?handling.max_rpm:handling.redline_rpm,
+            model_->request_upshift_rpm()[gear]+state_.transmission.up_offset);
+    // 44CB90 refuses the engine outside the lower shift threshold and
+    // 95 percent of the way to the upper threshold.
+    const float rpm=float(state_.engine_rpm);
+    return rpm>=down&&rpm<=(up-down)*.949999988079071F+down;
 }
 
 bool VehicleTrackSession::step_ai_body(VehicleState& external,const VehicleInput& input,
@@ -367,25 +392,32 @@ bool VehicleTrackSession::step_ai(const VehicleInput& input,VehicleTrackTelemetr
     if(!valid_||!started_||!ai_configured_||!input.road_steering||!input.road_angle_word_valid||
        !std::isfinite(input.throttle)||input.throttle<0||input.throttle>1||
        !std::isfinite(input.brake)||input.brake<0||input.brake>1||
-       input.shift!=VehicleShift::none||input.nitrous_active||(gear_request!=-1&&gear_request!=0))return false;
+       input.shift!=VehicleShift::none||(input.nitrous_active&&!model_->spec().nitrous.installed)||
+       (gear_request!=-1&&gear_request!=0))return false;
     const auto& spec=model_->spec();const auto& h=spec.handling;
     auto s=state_;auto next=ai_;VehicleTrackTelemetry t;
     if(!refresh_only)update_car_collision_state(s.collision_state,s.collision_support_since,
         s.published_support,s.collision_body_flag,double(input.world_clock_valid?input.world_clock:static_cast<std::int32_t>((ticks_*4000)/60))*double(.00025F));
+    const auto world_tick=input.world_clock_valid?input.world_clock:static_cast<std::int32_t>((ticks_*4000)/60);
     if(!ai_started_) {
-        next={};next.engine.low_slip=ai_low_slip_;
-        //475000 leaves grip zero until474D40 in the first outer update.
-        //A traffic body activated by contact is refreshed before that update.
-        next.engine.grip=0;
-        next.engine.rpm=float(s.engine_rpm);next.engine.gear=s.gear;
-        for(unsigned k=0;k<4;++k) {
-            next.engine.wheels[k].spin=float(s.wheels[k].spin);
-            next.engine.wheels[k].compression=float(s.wheels[k].compression);
-            next.engine.wheels[k].contact=s.wheels[k].contact;
-        }
+        if(!reconstruct_ai_physics(s,input,gear_request,world_tick,t))return false;
+        next=ai_;
     }
+    const auto actor_snapshot=published_actor?*published_actor:s;
     const auto old=s.rigid_body;
-    vehicle_import_rigid(h,s);
+    const auto same=[](const VehicleVec3& a,const VehicleVec3& b) {
+        return a.x==b.x&&a.y==b.y&&a.z==b.z;
+    };
+    const auto& q=s.orientation;const auto& prior_q=ai_import_.orientation;
+    const bool unchanged_import=ai_import_.pending&&!published_actor&&
+        same(s.position,ai_import_.position)&&same(s.velocity,ai_import_.velocity)&&
+        same(s.angular_velocity,ai_import_.angular_velocity)&&
+        q.w==prior_q.w&&q.x==prior_q.x&&q.y==prior_q.y&&q.z==prior_q.z;
+    //474A90 begins with the constructor's prepared derivative, without
+    //publishing/restoring the old actor velocity. Explicit contact poses and
+    //real external edits still pass through the ordinary public-body adapter.
+    if(unchanged_import)s.rigid_body=next.body;
+    else vehicle_import_rigid(h,s);
     next.body=s.rigid_body;
     //The selector3 constructor/outer path leaves rigid+1E0 at zero.
     //477C32's player-only yaw torque cap must not leak through the shared
@@ -394,8 +426,7 @@ bool VehicleTrackSession::step_ai(const VehicleInput& input,VehicleTrackTelemetr
     next.collision_context_valid=true;
     //469390 rewinds the rigid body alone.474DD0 still reads actor+70/+90
     //from the endpoint, until474730 publishes the completed continuation.
-    const auto& actor=published_actor?*published_actor:s;
-    const auto world_tick=input.world_clock_valid?input.world_clock:static_cast<std::int32_t>((ticks_*4000)/60);
+    const auto& actor=actor_snapshot;
     if(continuation_dt<0)extend_owner_recovery(world_tick);
     next.collision_context={s.collision_state,s.published_support,race_contact_axes(actor),
         {{float(actor.velocity.x),float(actor.velocity.y),float(actor.velocity.z)}},s.published_gear,float(input.throttle),
@@ -403,11 +434,14 @@ bool VehicleTrackSession::step_ai(const VehicleInput& input,VehicleTrackTelemetr
     if(continuation_dt<0)ai_collision_policy(next.collision_context,next.body,next.aero);
     s.alternate_yaw_active=next.body.alternate_yaw;
     // Pair impulses and teleports occur outside this component's completion.
-    if(old.position!=next.body.position||old.momentum!=next.body.momentum||
+    if(!unchanged_import&&(old.axes!=next.body.axes||ai_.body.axes!=next.body.axes||
+       old.position!=next.body.position||ai_.body.position!=next.body.position||old.momentum!=next.body.momentum||
        old.angular_momentum!=next.body.angular_momentum||
-       ai_.body.momentum!=next.body.momentum||ai_.body.angular_momentum!=next.body.angular_momentum)
+       ai_.body.momentum!=next.body.momentum||ai_.body.angular_momentum!=next.body.angular_momentum))
         next.prepared=false;
     next.engine.throttle=float(input.throttle);
+    next.engine.extra_torque=input.nitrous_active;
+    next.engine.extra_torque_scale=input.nitrous_active?spec.nitrous.rate:0.F;
     //474B45..474B72 gives the service brake full range and halves the parking brake.
     next.engine.brake=std::max(float(input.brake),input.handbrake?.5F:0.F);
     next.engine.steering=input.road_angle_word;
@@ -433,20 +467,6 @@ bool VehicleTrackSession::step_ai(const VehicleInput& input,VehicleTrackTelemetr
     //465D00 has changed actor state, until the resumed outer update.
     if(!ai_started_||continuation_dt<0)latch_preloads();
     AiWorld world(*this,s,t);
-    if(!ai_started_) {
-        //4743D9 calls474640, which ends in the component refresh46ABD0.
-        //4743E0 then calls474CA0, whose first operation refreshes again.
-        // The first query seeds strut compression before the second computes
-        // the force used for integration. A single zero-dt refresh at spawn
-        // turns the initial terrain-height difference into a damper impulse.
-        std::array<AiWheelGround,4> samples;
-        if(!world.query(h,next.body,samples)) {
-            error_="selector3 initial "+world.failure();return false;
-        }
-        next.ground_queries+=4;
-        ai_powertrain_struts(h,next.body,samples,0,next.engine);
-        ai_powertrain_complete(h,ai_tables_,next.engine);
-    }
     if(continuation_dt>=0) {
         //469460 component refresh precedes474A90's policy change. Its forces
         //are retained for the first resumed derivative, including state1.
@@ -459,7 +479,7 @@ bool VehicleTrackSession::step_ai(const VehicleInput& input,VehicleTrackTelemetr
             //running the outer policy. Preserve wheel history for the next
             //refresh after the impulse; do not advance time or normalize axes.
             auto refreshed=state_;refreshed.rigid_body=next.body;vehicle_publish_rigid(refreshed);
-            ai_=next;ai_started_=true;state_=refreshed;telemetry=t;return true;
+            ai_=next;ai_started_=true;ai_import_={};state_=refreshed;telemetry=t;return true;
         }
         latch_aero();
         ai_collision_policy(next.collision_context,next.body,next.aero);
@@ -473,7 +493,7 @@ bool VehicleTrackSession::step_ai(const VehicleInput& input,VehicleTrackTelemetr
     }
     publish(next,s);
     if(continuation_dt>=0) {
-        ai_=next;ai_started_=true;state_=s;t.position=s.position;t.orientation=s.orientation;
+        ai_=next;ai_started_=true;ai_import_={};state_=s;t.position=s.position;t.orientation=s.orientation;
         t.velocity=s.velocity;t.angular_velocity=s.angular_velocity;telemetry=t;return true;
     }
     const unsigned slices=unsigned(frame_dt/.00839999970048666F)+1;
@@ -481,20 +501,24 @@ bool VehicleTrackSession::step_ai(const VehicleInput& input,VehicleTrackTelemetr
     last_input_=input;last_ai_gear_request_=gear_request;
     // Reuse the port's route, reset zones and timing publication once per frame.
     steps_+=slices;++ticks_;t.step=steps_;t.tick=true;
-    if(ai_route_tracking_)run_tick(s,input,t);
+    const auto generation=resets_;
+    if(ai_route_tracking_)run_tick(s,input,t,3);
     if(ai_route_tracking_ && progress_.finished) {
         // Route location still feeds the live driver after timing has latched
         // the finish; do not emit another lap or overwrite the race result.
         const float xy[]={float(s.position.x),float(s.position.y)};
         update_track_path_coordinate(course_->route.spline,course_->track,progress_.coordinate,xy);
     }
-    ai_started_=t.reset==VehicleTrackReset::none;
-    ai_=next;state_=s;
+    if(resets_==generation) {ai_started_=true;ai_=next;ai_import_={};}
+    // A successful run_tick placement constructed its own prepared components.
+    // Do not overwrite them with the solver that just left the old location.
+    state_=s;
     t.pending=pending_;t.resets=resets_;t.position=s.position;t.orientation=s.orientation;
     t.velocity=s.velocity;t.angular_velocity=s.angular_velocity;
     t.model.rigid_body=s.rigid_body;t.model.rigid_body_ready=s.rigid_body_ready;
     t.model.rigid_orientation=s.rigid_orientation;t.model.steering_word=s.steering_word;
     t.model.steering_word_ready=s.steering_word_ready;
+    vehicle_effect_telemetry(s,frame_dt,t.model);
     t.lap=progress_.lap;t.percent=progress_.coordinate.fraction*100.F;t.zone=progress_.zone;
     t.off_path=progress_.off_path;telemetry=t;return true;
 }

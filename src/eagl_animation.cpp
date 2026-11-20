@@ -28,8 +28,10 @@ void channel(View b,std::size_t at,unsigned frame,std::vector<Pose>& pose) {
             const auto h=data+4+12*k;float value=b.f32(h+8);
             for(unsigned f=0;f<frame;++f) {
                 const auto at=data+4+12*count+(f*count+k)*(bits/8);
-                const double delta=double(bits==8?b.byte(at):b.word(at))*b.f32(h+4);
-                value=float(k%4 && k<count/4*4?delta+b.f32(h)+value:delta+value+b.f32(h));
+                // 634180 runs with 24-bit x87 precision in the race. Each
+                // add rounds, including the unrolled four-channel groups.
+                const float delta=float(bits==8?b.byte(at):b.word(at))*b.f32(h+4);
+                value=k%4 && k<count/4*4?(delta+b.f32(h))+value:(delta+value)+b.f32(h);
             }
             pose[offset/12][offset%12]=value;
         }

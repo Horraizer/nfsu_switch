@@ -22,7 +22,7 @@ def check(root,renderer,main):
     assert 'fxaa_enabled=presentation && source.race_environment && !split_screen;' in renderer
     frame=renderer[renderer.index('bool record_frame('):renderer.index('bool present(std::string& error')]
     assert frame.index('if(fxaa_enabled) {')<frame.index('if (hud) emit_overlay(')
-    assert frame.index('if (hud) emit_overlay(')<frame.index('query_memory.getGpuAddr()+slot*160+16')
+    assert frame.index('if (hud) emit_overlay(')<frame.index('query_memory.getGpuAddr()+slot*query_stride+16')
     assert 'sprites_end<car_end || words[17]<sprites_end' in renderer
     assert 'main_sprites=%.3f upscale=%.3f' in renderer
     assert 'consume_frontend_query(slot);' in renderer
@@ -30,7 +30,7 @@ def check(root,renderer,main):
     startup=main[main.index('const auto intro=play_original_intro('):main.index('const auto run_career_action=[&]')]
     splash=startup[startup.index('const auto show_startup_splash='):startup.index('show_startup_splash(true);')]
     assert splash.index('screen.startup_splash(art,0);')<splash.index('music.start(')<splash.index('padGetButtonsDown(&pad)')
-    assert splash.index('if(alpha!=prompt_alpha)')<splash.index('screen.startup_splash(art,tick);')
+    assert splash.index('if(alpha!=prompt_alpha || draw_song || drew_song)')<splash.index('screen.startup_splash(art,tick,')
     assert startup.count('music.start(')==1 and 'if(start_music)' in splash
     profile_loop=startup.index('!choose_profile(true)')
     assert startup.index('show_startup_splash(true);')<profile_loop

@@ -28,13 +28,12 @@ struct Shape {
         else {const auto& v=hull.points[index];p={v[0],v[1],v[2]};}
         // 472E40 shifts selected shape vertices by the COM in binary32.
         p={float(p.x-com.x),float(p.y-com.y),float(p.z-com.z)};
-        //5ABDB5 scalar transform: each product/add has binary32 precision,
-        //in Z,Y,X order before the translation. World-coordinate cancellation
-        //must not silently use the port's double vector expression.
+        // 5ABDAF dispatches to 5EBCE3 on the reference PC. It adds the
+        // translation to the Z term before combining it with X and Y.
         const auto component=[&](double x,double y,double z,double translation) {
-            const float zy=float(p.z*z)+float(p.y*y);
-            const float xyz=zy+float(p.x*x);
-            return xyz+float(translation);
+            const float xy=float(p.x*x)+float(p.y*y);
+            const float zt=float(p.z*z)+float(translation);
+            return xy+zt;
         };
         return {component(axes[0].x,axes[1].x,axes[2].x,origin.x),
                 component(axes[0].y,axes[1].y,axes[2].y,origin.y),
@@ -58,8 +57,9 @@ struct Shape {
             return best;
         }
         const auto product=[&](V axis) {
-            return (float(direction.z)*float(axis.z)+float(direction.y)*float(axis.y))
-                +float(direction.x)*float(axis.x);
+            // 472FA9 uses the same packed transform with zero translation.
+            return (float(direction.x)*float(axis.x)+float(direction.y)*float(axis.y))
+                +float(direction.z)*float(axis.z);
         };
         const ContactVector local{product(axes[0]),product(axes[1]),product(axes[2])};
         if(hull.points.empty()) return (local[0]>=0?1:0)|(local[1]>=0?2:0)|(local[2]>=0?4:0);

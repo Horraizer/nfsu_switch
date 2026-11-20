@@ -5,6 +5,10 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 namespace {
 struct Pin {
     const char* name;std::size_t video_frames;std::uint64_t audio_frames;
@@ -27,6 +31,36 @@ constexpr Pin pins[]={
   "A12B73FE73444A3DE6FD6106E0290D8EA4730D91AFCBACDE6C9F447B2626F2AA",
   "26C31B1A89942C6768A55071C32FC3EDE462CCFA2867CC9FDFDCFD0449E9BD58"}
 };
+void dump_yuv(const std::string& path) {
+#ifdef _WIN32
+    if(_setmode(_fileno(stdout),_O_BINARY)==-1)throw std::runtime_error("binary stdout unavailable");
+#endif
+    nfsu::MovieReader reader(path);nfsu::MovieFrame frame;
+    unsigned width=0,height=0;
+    while(reader.next_video(frame)) {
+        if(!width){width=frame.width;height=frame.height;}
+        if(frame.width!=width||frame.height!=height)
+            throw std::runtime_error("encoded movie changes sample dimensions");
+        if(std::fwrite(frame.yuv.data(),1,frame.yuv.size(),stdout)!=frame.yuv.size())
+            throw std::runtime_error("movie export write failed");
+    }
+    if(!width||std::fflush(stdout))throw std::runtime_error("movie export failed");
+}
+void check_enhanced(const std::string& original,const std::string& cache) {
+    nfsu::MovieReader native(original),enhanced(original,cache);
+    nfsu::MovieFrame base,high;
+    std::size_t frames=0;
+    while(native.next_video(base)) {
+        if(!enhanced.next_video(high)||high.width!=960||high.height!=720||
+           high.timestamp_units!=base.timestamp_units||high.duration_units!=base.duration_units)
+            throw std::runtime_error("enhanced movie differs from the native timeline");
+        ++frames;
+    }
+    if(!frames||enhanced.next_video(high))throw std::runtime_error("enhanced movie frame count differs");
+    if(native.audio_frames()!=enhanced.audio_frames()||native.audio_rate()!=enhanced.audio_rate())
+        throw std::runtime_error("enhanced movie audio header differs");
+    std::printf("PASS enhanced movie frames=%zu\n",frames);
+}
 void check(const std::string& path,const Pin* pin) {
     nfsu::MovieReader reader(path);nfsu::MovieFrame frame;
     nfsu::Sha256 video,audio,reference_audio;
@@ -55,8 +89,10 @@ void check(const std::string& path,const Pin* pin) {
 int main(int argc,char** argv) {
  try {
     if(argc==3&&std::string(argv[1])=="--inspect")check(argv[2],nullptr);
+    else if(argc==3&&std::string(argv[1])=="--export-yuv"){dump_yuv(argv[2]);return 0;}
+    else if(argc==4&&std::string(argv[1])=="--verify-enhanced")check_enhanced(argv[2],argv[3]);
     else if(argc==2)for(const auto& pin:pins){std::puts(pin.name);check(std::string(argv[1])+"/Movies/"+pin.name,&pin);}
-    else throw std::runtime_error("usage: nfsu_intro_movie_tests retail-root | --inspect movie.mad");
+    else throw std::runtime_error("usage: nfsu_intro_movie_tests retail-root | --inspect movie.mad | --export-yuv movie.mad | --verify-enhanced movie.mad movie.nfm");
     std::puts("PASS intro movie decode");return 0;
  } catch(const std::exception& e) {std::fprintf(stderr,"FAIL %s\n",e.what());return 1;}
 }

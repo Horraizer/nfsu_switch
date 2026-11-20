@@ -72,13 +72,15 @@ struct RaceDragHudObject {
 struct RaceHudAtlas {
     std::vector<unsigned char> rgba;
     unsigned height=kRaceHudAtlasSize;
-    std::vector<RaceDragHudObject> drag_objects;
+    std::vector<RaceDragHudObject> drag_objects,second_drag_objects;
     RaceDragHudObject countdown,drift_comment;
     bool countdown_ready=false;
     std::vector<DriftHudAnimation> drag_animations;
-    std::array<float,2> drag_rpm_angles{};
+    std::array<float,2> drag_rpm_angles{},second_drag_rpm_angles{};
     std::array<std::string,4> drag_shift_labels;
     std::array<std::string,2> drag_failure_labels;
+    std::array<std::string,4> drag_finish_places;
+    std::string drag_finish_time;
     // English FNTF metrics, with glyph texels packed into unused atlas space.
     // Small time font, large lap label/total font, LCD lap number.
     std::array<std::array<RaceHudTextGlyph,128>,3> lap_fonts{};
@@ -142,7 +144,7 @@ void update_race_minimap_direction(MapPoint target, std::int32_t ticks,
 // Player and explicit port rivals, first track. Rendering only.
 bool append_race_minimap(const RaceSession& session, const RaceHudAtlas& atlas,
                          unsigned width, unsigned height, RaceMinimapState& state,
-                         RaceHudFrame& frame) noexcept;
+                         RaceHudFrame& frame,unsigned player=0) noexcept;
 
 struct RaceHudDial {
     std::uint32_t lines_hash = 0;
@@ -162,8 +164,9 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
                          bool boost = false, bool drift = false, unsigned map_track = 0,
                          bool knockout = false);
 bool load_race_drag_hud(const std::filesystem::path&,const std::string& car,const VehicleHandling&,
-                        RaceHudAtlas&,std::string&);
-void append_race_drag_hud(const RaceSession&,const RaceHudAtlas&,unsigned,unsigned,RaceHudFrame&) noexcept;
+                        RaceHudAtlas&,std::string&,const std::string* second_car=nullptr,
+                        const VehicleHandling* second_handling=nullptr);
+void append_race_drag_hud(const RaceSession&,const RaceHudAtlas&,unsigned,unsigned,RaceHudFrame&,unsigned player=0) noexcept;
 void append_race_boost_hud(const RaceHudAtlas& atlas, const NitrousSnapshot& nitrous,
                           bool turbo_installed, float turbo_pressure, unsigned width,
                           unsigned height, RaceHudFrame& frame, unsigned nitrous_count = 6) noexcept;
@@ -175,8 +178,9 @@ void build_race_hud_frame(const RaceSession& session,
 // English single-player circuit/free-lap presentation. Does not advance time.
 void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                           std::uint32_t width, std::uint32_t height,
-                          RaceHudFrame& frame, bool metric_speed=false) noexcept;
+                          RaceHudFrame& frame, bool metric_speed=false,unsigned player=0) noexcept;
 // Original HUD_SingleRace animate state, sampled at 1200 Hz after finish.
+std::string drag_finish_message(const RaceHudAtlas&,unsigned place,std::int32_t finish_ticks);
 void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,unsigned height,RaceHudFrame& frame,std::string_view message="Race Over") noexcept;
 // Pure geometry entry point for synthetic gear, speed and RPM checks.
 void build_race_hud_frame_for_car(const VehicleState& car,

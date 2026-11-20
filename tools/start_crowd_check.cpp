@@ -62,6 +62,20 @@ int main(int argc,char** argv) {
     }
     nfsu::RaceSession session(course);
     if(!session.start(error)) {std::cerr<<"FAIL: start "<<error<<"\n";return 1;}
+    // Native 47CB50, marker angle zero. The 564B10 quarter-turn value
+    // survives matrix composition. A local Z offset cannot alter world XY.
+    auto& line=course.track.markers.at(course.route.boundaries.at(course.route.start).marker);
+    const auto saved_angle=line.angle;
+    line.angle=0;
+    nfsu::RoadStartCarTransform local;
+    local.position={512.F,0.F,16.F};local.forward={1.F,0.F,0.F};
+    nfsu::VehicleVec3 placed;
+    nfsu::PlayerRigidMatrix axes;
+    if(!nfsu::place_road_start_car(course,session.spec(),local,placed,axes,error) ||
+       placed.x!=float(line.position[0]+512.F*1.000003457069397F) || placed.y!=line.position[1]) {
+        std::cerr<<"FAIL: native yaw-only start placement "<<error<<"\n";return 1;
+    }
+    line.angle=saved_angle;
     crowd.frame(session);const auto initial=crowd_pose_hash(crowd.commands());
     if(!crowd.draw_count()) {std::cerr<<"FAIL: crowd missing before countdown\n";return 1;}
     const auto* stable=commands.resource_table().resources[0].data;
@@ -104,15 +118,48 @@ int main(int argc,char** argv) {
     // Production road camera path, both marker directions, every grid family.
     for(const auto& row:kNativeStartPlaylist)
         if(nfsu::road_start_playlist(row[0],row[1])!=row[2]){std::cerr<<"FAIL: native playlist family\n";return 1;}
+    // Original 47BD0E, five PC starts. These pairs bracket the scene draw,
+    // before 420C8A promotes the three rivals to full physics.
+    constexpr std::uint32_t launches[][4]={
+        {1,0xcd4eb88cU,0x9e864c9eU,2303},{1,0xe64ea6f8U,0xa7de4c6dU,2303},
+        {4,0xa3119166U,0xb5f4b5d1U,2309},{3,0x96681d63U,0x9c5f79b1U,2317},
+        {4,0x6ebf4d0fU,0xe399c332U,2319}};
+    for(const auto& row:launches) {
+        auto state=row[1];unsigned scene=0;
+        if(!nfsu::draw_road_start_scene(files,std::filesystem::u8path(argv[1]),4,row[0],state,scene,error) ||
+           state!=row[2] || scene!=row[3]) {std::cerr<<"FAIL: live road scene RNG\n";return 1;}
+    }
     for(const auto& row:kNativeStartLens)
         if(2U*nfsu::player_velocity_angle(2*float(row[0]),36.0099983215332F)!=row[1]){std::cerr<<"FAIL: native authored lens\n";return 1;}
+    {
+        nfsu::StartCrowd opening;
+        nfsu::RaceStartClock clock;
+        if(!opening.load_camera(files,std::filesystem::u8path(argv[1]),2303,"L1RA",clock,error)) {
+            std::cerr<<"FAIL: four-car opening "<<error<<"\n";return 1;
+        }
+        // 634180 on the final position keys of all four slots, x87 PC=24.
+        constexpr float release_xy[][2]={{-1.8139054775238037F,-2.6597046852111816F},
+            {1.7299213409423828F,-2.576282262802124F},{-5.280231475830078F,-2.635817050933838F},
+            {4.967737197875977F,-2.626124143600464F}};
+        for(unsigned slot=0;slot<4;++slot) {
+            const auto& p=clock.release_cars[slot].position;
+            if(p[0]!=release_xy[slot][0] || p[1]!=release_xy[slot][1]) {
+                std::cerr<<"FAIL: native release translation for slot "<<slot<<"\n";return 1;
+            }
+        }
+    }
     for(unsigned grid=1;grid<=4;++grid)for(unsigned variant=0;variant<3;++variant) {
         unsigned selected=0;nfsu::StartCrowd camera;nfsu::RaceStartClock clock;
         if(!nfsu::select_road_start_scene(files,std::filesystem::u8path(argv[1]),4,grid,variant,selected,error) ||
            !camera.load_camera(files,std::filesystem::u8path(argv[1]),selected,"L1RA",clock,error)) {
             std::cerr<<"FAIL: road camera grid="<<grid<<" variant="<<variant<<": "<<error<<"\n";return 1;
         }
-        if(camera.bytes() || camera.actor_count() || !camera.commands().resource_table().resources.empty()) {std::cerr<<"FAIL: camera adds GPU resources\n";return 1;}
+        if(camera.actor_count() || camera.draw_count() || !camera.commands().resource_table().resources.empty()) {
+            std::cerr<<"FAIL: camera adds GPU resources\n";return 1;
+        }
+        if(!camera.bytes() || camera.bytes()>16U*1024U*1024U) {
+            std::cerr<<"FAIL: camera motion payload missing or over budget\n";return 1;
+        }
         for(unsigned reverse=0;reverse<2;++reverse) {
             // Production creates a fresh scene for each course/direction.
             // Reload here too, so the cached forward anchor cannot mask a

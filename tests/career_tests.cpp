@@ -1031,6 +1031,7 @@ int main(int argc,char** argv) {
         {
             auto folder=base;folder+="-profiles";std::filesystem::create_directories(folder);
             auto retained=resumed;retained.races_won=7;retained.races_lost=3;retained.restarts=2;
+            retained.frontend_hints=career_hint_bit(67)|career_hint_bit(84);
             check(save_career(folder/"career",catalog,retained,error),"legacy profile fixture");
             CareerProfiles profiles(folder);std::vector<CareerProfileEntry> entries;unsigned selected=0;
             check(profiles.list(entries,selected,error)&&entries.size()==1&&entries[0].id==0,"legacy career stays selectable");
@@ -1044,12 +1045,14 @@ int main(int argc,char** argv) {
             CareerProfile fresh,legacy;
             check(load_career(first.base,catalog,fresh,error)&&fresh.page==CareerPage::intro&&fresh.car.empty(),"new career has fresh original introduction");
             check(load_career(folder/"career",catalog,legacy,error)&&legacy.bank==resumed.bank&&legacy.car==resumed.car&&legacy.races_won==7&&legacy.races_lost==3&&legacy.restarts==2,"profile creation preserves legacy progress");
+            check(legacy.frontend_hints==retained.frontend_hints&&fresh.frontend_hints==0,
+                "frontend speech flags survive reload and stay with their profile");
             {
                 auto file=first.base;file+=".0";std::ifstream in(file,std::ios::binary);
                 std::string bytes((std::istreambuf_iterator<char>(in)),{});in.close();
                 auto body=bytes.substr(0,bytes.rfind("SHA256 "));
                 body.erase(body.find("STATS "));
-                body.replace(0,std::string("NFSU_CAREER 11").size(),"NFSU_CAREER 8");
+                body.replace(0,std::string("NFSU_CAREER 12").size(),"NFSU_CAREER 8");
                 const auto final=body.rfind('\n',body.size()-2);body.erase(final+1);
                 {std::ofstream out(file,std::ios::binary|std::ios::trunc);out<<body<<"SHA256 "<<sha256_hex(sha256(body.data(),body.size()))<<'\n';}
                 check(load_career(first.base,catalog,fresh,error)&&fresh.page==CareerPage::intro&&fresh.races_won==0&&fresh.races_lost==0,"existing schema8 profiles remain readable");

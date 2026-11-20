@@ -34,7 +34,7 @@ int main() {
             "native limit, target, rate, angle word and assist pin");
     }
     // Native word sequence covers turn-in, sustained input, reversal,
-    // release and a shift. Input history wraps repeatedly at 120 Hz.
+    // release and a fresh collision-body timestamp. History wraps at 120 Hz.
     for (bool bypass : {false,true}) {
         SteeringState s; std::vector<std::uint8_t> words;
         for (int k=0;k<240;++k) {
@@ -120,7 +120,7 @@ int main() {
     for (auto mode:{RaceSteering::recovered_predicate0,RaceSteering::recovered_predicate1}) {
         RaceSession a(course,stock_240sx_vehicle_spec(),mode), b(course,stock_240sx_vehicle_spec(),mode);
         check(a.start(error) && b.start(error),"recovered sessions start");
-        bool saw_steer=false, saw_shift=false; int last_gear=2;
+        bool saw_steer=false, saw_shift=false, check_after_shift=false, checked_shift=false; int last_gear=2;
         for (int k=0;k<1200;++k) {
             const auto gas=gamepad_button_bit(GamepadButton::trigger_right);
             const auto buttons=k==900 ? gamepad_button_bit(GamepadButton::select) :
@@ -132,13 +132,18 @@ int main() {
             const auto& telemetry=a.telemetry().model;
             check(std::isfinite(telemetry.angular_velocity.z) && std::isfinite(telemetry.lateral_speed) &&
                 std::isfinite(telemetry.forward_speed),"yaw slip and speed finite");
+            if(check_after_shift) {
+                check(a.steering_result().shift_factor==0,"gear change alone does not reduce steering lock");
+                checked_shift=true;
+            }
+            check_after_shift=k>170 && k<390 && a.car().gear!=last_gear && a.telemetry().contacts==0;
             saw_steer=saw_steer || std::abs(telemetry.steer_angle)>.01;
             saw_shift=saw_shift || a.car().gear!=last_gear; last_gear=a.car().gear;
             if (k==900) check(a.telemetry().reset==VehicleTrackReset::manual &&
                 a.steering_state().input.count==0 && a.steering_state().rate.count==0 &&
                 a.steering_state().angle==0,"reset clears both histories and angle");
         }
-        check(saw_steer && saw_shift,"integrated corner and automatic gear transition exercised");
+        check(saw_steer && saw_shift && checked_shift,"isolated automatic gear transition and corner exercised");
     }
     // Exercise the production recovered1 path through actual pad binding,
     // both fixed substeps, wheels and engine. A cosmetic HUD lag cannot

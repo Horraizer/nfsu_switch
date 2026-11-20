@@ -47,6 +47,14 @@
 #include <string>
 #include <vector>
 
+namespace nfsu {
+struct RaceWorldContactProbe {
+    static void set_frame_interval(RaceSession& race, double seconds) {
+        race.external_frame_seconds_ = seconds;
+    }
+};
+}
+
 namespace {
 
 void check(bool condition, const char* message) {
@@ -1117,11 +1125,67 @@ void test_remote_ratio_snapshot() {
     check(snapshot.rivals[0].active&&input.gear==gear&&input.gear_ratio==setup.spec.handling.gear_ratios[unsigned(gear)]&&
         input.first_gear_ratio==setup.spec.handling.gear_ratios[2],"remote gain receives actual selected current/first gear ratios");
     check(input.first_gear_ratio!=1&&input.gear_ratio!=1,"live ratio publication differs from synthetic identity defaults");
+    RaceWorldContactProbe::set_frame_interval(race, .02);
+    check(race.advance(race_input_frame({1,0,0},0),error),error.c_str());
+    const auto live=nfsu::audio::race_audio_snapshot(race);
+    check(race.world_frame_seconds()==.02&&live.rivals[0].engine.dt==.02F,
+        "remote rev script receives the world frame interval");
     check(!snapshot.rivals[0].turbo_installed,"zero selected induction has no remote Turbo actor");
     setup.spec.induction[4]=.1F;RaceSession boosted(course);
     check(boosted.set_rivals({setup},error)&&boosted.start(error),error.c_str());
     check(nfsu::audio::race_audio_snapshot(boosted).rivals[0].turbo_installed,
         "remote Turbo admission uses positive selected RideInfo curve at upgrade0");
+}
+
+void test_scenery_sound(const std::filesystem::path* root) {
+    using namespace nfsu::audio;
+    const std::array<float,3> origin{}, eye{{6,0,0}}, forward{{1,0,0}};
+    const auto bridge=scenery_audio_position(false,{{100,0,0}},origin,eye,forward);
+    const auto plane=scenery_audio_position(true,{{100,0,0}},origin,eye,forward);
+    check(bridge.pan==0&&std::abs(bridge.gain-4512)<=1,"native bridge positional gain");
+    check(plane.pan==0&&std::abs(plane.gain-25630)<=1,"native plane positional gain");
+    if(!root)return;
+
+    Mixer mixer;
+    RaceScenerySound sound;
+    RaceAudioSnapshot snapshot;
+    TrafficAudioRandom random;
+    std::string error;
+    check(!RaceScenerySound::supported(1003),"unrelated track has no emitter");
+    for(unsigned track:{1001U,1104U}) {
+        check(sound.load(*root,track,error),error.c_str());
+        sound.update(snapshot,mixer,32767,random);
+        check(!mixer.active(113)&&!mixer.active(114),"bridge is silent outside positional range");
+        snapshot.listener_eye=snapshot.human_position={{1413,-910,50}};
+        sound.update(snapshot,mixer,32767,random);
+        check(mixer.active(113)&&mixer.active(114),"both native bridge emitters have a voice");
+        std::array<std::int16_t,8192> pcm{};
+        mixer.render(pcm.data(),pcm.size()/2);
+        check(std::any_of(pcm.begin(),pcm.end(),[](auto v){return v!=0;}),"bridge produces PCM");
+        sound.stop(mixer);
+        snapshot={};
+    }
+    check(sound.load(*root,1004,error),error.c_str());
+    snapshot.plane_position={{100,0,0}};
+    sound.update(snapshot,mixer,32767,random);
+    check(!mixer.active(113),"plane cannot play without a bound model");
+    snapshot.plane_present=true;
+    random.state=0;
+    std::vector<std::int16_t> flight(48000*2*16);
+    constexpr std::array<std::uint32_t,4> native_states{{3639359834U,1579899024U,2048746398U,2125848520U}};
+    for(auto state:native_states) {
+        snapshot.plane_position[0]=100;
+        sound.update(snapshot,mixer,32767,random);
+        check(mixer.active(113),"plane trigger starts retail stream");
+        check(random.state==state,"native special-stream variant draw order");
+        mixer.render(flight.data(),flight.size()/2);
+        check(std::any_of(flight.begin(),flight.end(),[](auto v){return v!=0;}),"plane produces PCM");
+        check(!mixer.active(113),"plane stream is one-shot");
+        sound.update(snapshot,mixer,32767,random);
+        check(!mixer.active(113)&&random.state==state,"continuous proximity does not replay the plane");
+        snapshot.plane_position[0]=200;
+        sound.update(snapshot,mixer,32767,random);
+    }
 }
 void test_grid_engine_snapshot() {
     using namespace nfsu;
@@ -1580,6 +1644,7 @@ int main(int argc, char** argv) {
             argc == 2 ? nfsu::argument_path(argv[1]) : std::filesystem::path();
         test_engine_envelope_playback(argc == 2 ? &root : nullptr);
         test_traffic_sound(argc == 2 ? &root : nullptr);
+        test_scenery_sound(argc == 2 ? &root : nullptr);
         test_engine_pan_playback(argc == 2 ? &root : nullptr);
         test_remote_engine_playback(argc == 2 ? &root : nullptr);
         test_remote_shift_playback(argc == 2 ? &root : nullptr);

@@ -1,4 +1,5 @@
 #include "nfsu/ai_powertrain.h"
+#include "nfsu/nitrous.h"
 #include "nfsu/player_powertrain.h"
 
 #include <algorithm>
@@ -6,13 +7,54 @@
 #include <limits>
 
 namespace nfsu {
+bool ai_path_powertrain(float speed,AiPathPowertrainState& state,float forced_speed,float forced_rpm) noexcept {
+    if(!std::isfinite(speed)||!std::isfinite(state.filtered_speed)||!std::isfinite(state.rpm)||
+       !std::isfinite(forced_speed)||!std::isfinite(forced_rpm))return false;
+    constexpr float bounds[]={25.3799991607666F,40.88999938964844F,56.470001220703125F,
+        72.05999755859375F,80.F,89.51000213623047F};
+    constexpr float rpm_bands[][2]={{6500,8500},{5500,9000},{6500,7200},{6600,7000},{-2,25.3799991607666F}};
+    float filtered=forced_speed>0?forced_speed:speed;
+    if(filtered>=bounds[5])filtered=bounds[5]-.009999999776482582F;
+    filtered=std::clamp(filtered,state.filtered_speed-1.F,state.filtered_speed+1.F);
+    int gear=state.gear;
+    float rpm=0;
+    if(filtered<bounds[0]) {
+        gear=filtered< -2.F?0:2;
+        rpm=(8500.F-1000.F)*(std::min(std::abs(filtered),bounds[0])/bounds[0])+1000.F;
+    } else {
+        for(unsigned i=1;i<6;++i)if(filtered<bounds[i]) {
+            gear=int(std::min(i+2,6U));
+            const float t=(filtered-bounds[i-1])/(bounds[i]-bounds[i-1]);
+            rpm=(rpm_bands[i-1][1]-rpm_bands[i-1][0])*t+rpm_bands[i-1][0];
+            break;
+        }
+    }
+    if(gear==state.gear) {
+        const float previous=forced_rpm==100.F?state.rpm:forced_rpm;
+        rpm=std::clamp(rpm,previous-50.F,previous+50.F);
+    }
+    state={filtered,gear,forced_rpm==100.F?rpm:forced_rpm};
+    return true;
+}
+std::array<float,2> ai_path_wheel_slip(float speed,const PlayerRigidVector& v,
+                                     const PlayerRigidMatrix& axes) noexcept {
+    const auto dot=[&](const PlayerRigidVector& axis) {
+        return (v[2]*axis[2]+v[1]*axis[1])+v[0]*axis[0];
+    };
+    return {speed-dot(axes[0]),-dot(axes[1])};
+}
 namespace {
 float norm(const PlayerRigidVector& v) noexcept {
     return std::sqrt((v[0]*v[0]+v[1]*v[1])+v[2]*v[2]);
 }
 PlayerRigidVector rotate(const PlayerRigidMatrix& m,const PlayerRigidVector& v) noexcept {
     PlayerRigidVector out{};
-    for(unsigned k=0;k<3;++k) out[k]=((v[2]*m[2][k]+v[1]*m[1][k])+v[0]*m[0][k])+0.F;
+    // 475D00 uses the PC packed matrix dispatch at 5EBCE3 for both the
+    // wheel arm and the feedback force. Its translation row is zero here.
+    for(unsigned k=0;k<3;++k) {
+        const float xy=v[0]*m[0][k]+v[1]*m[1][k];
+        out[k]=xy+(v[2]*m[2][k]+0.F);
+    }
     return out;
 }
 PlayerRigidVector arm(const VehicleHandling& h,unsigned k,const PlayerRigidMatrix& m) noexcept {
@@ -45,7 +87,8 @@ float feedback_speed_curve(float speed) noexcept {
 }
 }
 
-bool ai_setup_acceleration_curve(const VehicleHandling& h,std::array<float,64>& acceleration) noexcept {
+bool ai_setup_acceleration_curve(const VehicleHandling& h,std::array<float,64>& acceleration,
+                                 float* gearing_speed_limit) noexcept {
     if(h.forward_gears<1||h.forward_gears+2>kVehicleGearSlots||!(h.mass>0))return false;
     AiPowertrainTables tables;
     if(!player_request_shift_tables(h,tables.up,tables.down))return false;
@@ -69,6 +112,7 @@ bool ai_setup_acceleration_curve(const VehicleHandling& h,std::array<float,64>& 
         if(!std::isfinite(force))return false;
         samples[count++]=force;speed+=step;
     }
+    if(gearing_speed_limit)*gearing_speed_limit=speed; //581C5A publishes RideInfo+42C.
     //581C64 decrements the count before clearing the remaining table.
     if(count)for(unsigned i=count-1;i<samples.size();++i)samples[i]=0;
     for(unsigned i=0;i<acceleration.size();++i) {
@@ -215,8 +259,7 @@ std::array<float,4> ai_powertrain_derivative(const VehicleHandling& h,
         const float torque=curve(h.torque,h.idle_rpm,h.max_rpm,rpm)*state.throttle;
         float net=torque-(1.F-state.throttle)*curve(h.engine_brake,h.idle_rpm,h.max_rpm,rpm);
         if(state.extra_torque) {
-            constexpr std::array<float,9> extra{{.3F,.4F,.45F,.5F,.55F,.6F,.7F,1.F,.7F}};
-            net+=curve(extra,h.idle_rpm,h.redline_rpm,rpm)*state.extra_torque_scale;
+            net+=curve(kNitrousTorqueCurve,h.idle_rpm,h.redline_rpm,rpm)*state.extra_torque_scale;
         }
         if(state.throttle<.05F&&state.rpm==h.idle_rpm)net=0;
         const float axle=k<2?h.final_drive_front:h.final_drive_rear;

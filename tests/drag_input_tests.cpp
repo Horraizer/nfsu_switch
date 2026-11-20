@@ -1,4 +1,5 @@
 #include "drag_input.h"
+#include "gyro_steering.h"
 #include "nfsu/drive_controls.h"
 #include <algorithm>
 #include <iostream>
@@ -9,6 +10,17 @@ namespace {
 std::vector<HidNpadCommonState> history;
 std::size_t requested=0;
 u32 read_style=0;
+struct MotionSource {
+    HidSixAxisSensorState state{};
+    bool running=false;
+};
+std::array<MotionSource,4> motion;
+void tilt(unsigned index,u64 sample,float turns,float ax,float ay,float az=0.F) {
+    auto& state=motion[index].state;
+    state.sampling_number=sample;state.angle.z=turns;
+    state.attributes=HidSixAxisSensorAttribute_IsConnected;
+    state.acceleration={ax,ay,az};
+}
 HidNpadIdType read_id=HidNpadIdType_No1;
 constexpr u64 up=1ULL<<7; // Npad R (mapping verified below by behavior).
 constexpr u64 down=1ULL<<6; // Npad L.
@@ -52,6 +64,22 @@ struct Rig {
         return value<0?-1:value>0?1:0;
     }
 };
+}
+Result hidGetSixAxisSensorHandles(HidSixAxisSensorHandle* handles,s32 count,HidNpadIdType id,HidNpadStyleTag) {
+    if(id>HidNpadIdType_No2)return 1;
+    for(s32 side=0;side<count;++side)handles[side].index=unsigned(id)*2+unsigned(side);
+    return 0;
+}
+Result hidStartSixAxisSensor(HidSixAxisSensorHandle handle) {
+    motion.at(handle.index).running=true;return 0;
+}
+Result hidStopSixAxisSensor(HidSixAxisSensorHandle handle) {
+    motion.at(handle.index).running=false;return 0;
+}
+std::size_t hidGetSixAxisSensorStates(HidSixAxisSensorHandle handle,HidSixAxisSensorState* out,std::size_t count) {
+    const auto& source=motion.at(handle.index);
+    if(!count||!source.running||!source.state.sampling_number)return 0;
+    *out=source.state;return 1;
 }
 std::size_t hidGetNpadStatesFullKey(HidNpadIdType i,HidNpadFullKeyState* s,std::size_t n){return read(i,s,n,HidNpadStyleTag_NpadFullKey);}
 std::size_t hidGetNpadStatesHandheld(HidNpadIdType i,HidNpadHandheldState* s,std::size_t n){return read(i,s,n,HidNpadStyleTag_NpadHandheld);}
@@ -191,6 +219,22 @@ int main(){try{
         check(r.step()==VehicleShift::up,"short R works for each configured common style");
     }
     {
+        Rig first,second;
+        for(auto* rig:{&first,&second}) {
+            rig->pad.active_handheld=false;rig->pad.style_set=HidNpadStyleTag_NpadFullKey;
+            rig->pad.active_id_mask=rig==&first?1:2;
+            stick_states({{100,0}});rig->input.poll(rig->pad);rig->step();
+        }
+        stick_states({{102,0},{101,32767},{100,0}});
+        second.input.poll(second.pad);
+        check(read_id==HidNpadIdType_No2&&second.step()==VehicleShift::up&&
+              second.step()==VehicleShift::none,"P2 keeps a short stick shift in its own HID queue");
+        stick_states({{102,0},{101,0},{100,0}});
+        first.input.poll(first.pad);
+        check(read_id==HidNpadIdType_No1&&first.step()==VehicleShift::none,
+              "P1 never receives P2 history");
+    }
+    {
         Rig r;r.pad.active_id_mask=1; // merged Handheld + No1 uses snapshot fallback
         r.input.poll(r.pad);r.step();r.pad.buttons_cur=up;r.input.poll(r.pad);
         r.pad.buttons_cur=0;r.input.poll(r.pad);
@@ -243,6 +287,55 @@ int main(){try{
         for(unsigned i=0;i<64;++i){f.pads[0].buttons^=nfsu::gamepad_button_bit(nfsu::GamepadButton::shoulder_right);q.observe(f);}
         check(q.overflows()==1&&q.pending()<=64,"bounded queue reports overflow without unbounded allocation");
     }
+    {
+        nfsu::GyroSteering first(HidNpadIdType_No1),second(HidNpadIdType_No2);
+        PadState p1{},p2{};
+        p1.style_set=HidNpadStyleTag_NpadFullKey;
+        p2.style_set=HidNpadStyleTag_NpadJoyRight;
+        nfsu::GamepadState a{},b{};a.connected=b.connected=true;
+        tilt(0,1,.93F,0,1);tilt(2,1,0,1,0);
+        first.poll(p1,0);second.poll(p2,0);
+        tilt(0,2,.01F,0,1);tilt(2,2,0,1,0);
+        first.poll(p1,10000);second.poll(p2,10000);
+        first.steer(a,false);second.steer(b,false);
+        check(a.axes[0]==0&&b.axes[0]==0,"fresh samples set the center for each grip");
+        tilt(0,3,.9683333F,-.258819F,.965926F);
+        tilt(2,3,.0416667F,.965926F,-.258819F);
+        first.poll(p1,26000);second.poll(p2,26000);
+        first.steer(a,false);second.steer(b,false);
+        check(a.axes[0]<-6800&&a.axes[0]>-7000&&b.axes[0]>6800&&b.axes[0]<7000,
+              "tilt direction and scale are separate even across one turn and sideways grips");
+        a.axes[0]=-17000;first.steer(a,false);
+        check(a.axes[0]==-17000,"physical stick overrides tilt");
+        tilt(2,4,.0666667F,.913545F,-.406737F);second.poll(p2,42000);
+        b.axes[0]=0;second.steer(b,true);
+        check(b.axes[0]==30000,"drag accepts a decisive tilt for one lane request");
+        tilt(2,5,.03888889F,.970296F,-.241922F);
+        second.poll(p2,50000);b.axes[0]=0;second.steer(b,true);
+        check(b.axes[0]==30000,"drag holds its lane request until returning toward center");
+        tilt(2,6,0,1,0);second.poll(p2,58000);b.axes[0]=0;second.steer(b,true);
+        check(b.axes[0]==0,"drag re-arms at neutral");
+        p1.buttons_down=HidNpadButton_StickL;
+        tilt(0,4,.9683333F,-.258819F,.965926F);
+        first.poll(p1,58000);a.axes[0]=0;first.steer(a,false);
+        check(a.axes[0]==0,"manual recenter cancels the old tilt");
+        p1.buttons_down=0;
+        tilt(0,5,.90F,-.642788F,.766044F);
+        first.poll(p1,74000);first.steer(a,false);
+        check(a.axes[0]<-10000,"steering resumes from the new center");
+        a.axes[0]=0;first.poll(p1,250000);first.steer(a,false);
+        check(a.axes[0]==0,"stale motion returns control to the stick");
+        first.release();second.release();
+        check(!motion[0].running&&!motion[2].running,"both sensors stop when the race releases them");
+        p2.style_set=HidNpadStyleTag_NpadJoyDual;
+        p2.attributes|=HidNpadAttribute_IsRightConnected;
+        second.poll(p2,300000);
+        check(!motion[2].running&&motion[3].running,"paired Joy-Cons select the connected right sensor");
+        p2.attributes&=~u32(HidNpadAttribute_IsRightConnected);
+        second.poll(p2,310000);
+        check(motion[2].running&&!motion[3].running,"Joy-Con side changes reopen the sensor");
+    }
+    std::cout<<"PASS gyro steering calibration, two slots, drag and sensor lifecycle\n";
     std::cout<<"PASS drag lane/shift HID transitions, held magnitudes, reversals, zero-world-step polls, pause, reconnect and HID styles\n";
     return 0;
 }catch(const std::exception& e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}}

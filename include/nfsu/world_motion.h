@@ -4,6 +4,12 @@
 #include <filesystem>
 
 namespace nfsu {
+constexpr std::uint32_t kPlaneWorldObject=0x98dc9b88U; // XO_PlaneA_1b_01
+constexpr bool world_decor_motion(std::uint32_t type,std::uint32_t shape,
+    std::uint32_t model,std::uint32_t rotation,std::uint32_t skeleton) noexcept {
+    return type==0x3e83cbdeU && !shape && model && !skeleton &&
+        (rotation==0x7799e3f6U || rotation==0x4271aa38U);
+}
 //47B290 animation clock; endpoint units are samples, not seconds.
 struct WorldMotionClock {
     std::uint32_t flags=0;

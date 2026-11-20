@@ -29,7 +29,7 @@ def main():
     im=Image(data);pair=PairedController(im,inputs(args.root),event_rides=True);m=pair.m
     md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32)
     # Already observed original branch arms in the moving controller witness.
-    ranges=list(EXEC_RANGES)+[(0x45c640,0x45c75e),(0x4594d0,0x4596a4),(0x459710,0x459865),(0x45a7d0,0x45a8b2),(0x45a8c0,0x45a918)]+[(a,a+n) for a,n in ((0x57b358,0x11),(0x45c74c,0xc),
+    ranges=list(EXEC_RANGES)+[(0x45c550,0x45c636),(0x45c640,0x45c75e),(0x4594d0,0x4596a4),(0x459710,0x459865),(0x45a7d0,0x45a8b2),(0x45a8c0,0x45a918)]+[(a,a+n) for a,n in ((0x57b358,0x11),(0x45c74c,0xc),
        (0x45c739,6),(0x44ace8,6),(0x44d0cf,0x24),(0x5a7007,0xd))]
     for a,b in ranges:m.instructions.update({i.address:i.size for i in md.disasm(im.read(a,b-a),a)})
     path=0x1150000;records=[];captured=[];candidates=[];retained=[];retain_lines=[]
@@ -54,7 +54,8 @@ def main():
     h2=m.uc.hook_add(UC_HOOK_CODE,observe,begin=0x4594d0,end=0x4594d0)
     lines=['// Original speed.exe SHA256 '+identity,'// tools/ai_path_vectors.py; original initialized road context, 007F x87.']
     for name,mode,step,margin in [('ordinary',0,99999.,1.),('return',0,1.25,1.),
-                                 ('left',3,.5,1.),('right',4,.5,1.),('tight',4,.5,10.)]:
+                                 ('left',3,.5,1.),('right',4,.5,1.),('tight',4,.5,10.),
+                                 ('escape_left',3,99999.,0.),('escape_right',4,99999.,0.)]:
         m.run(0x44CF30,(CTX,CONTROLLER),budget=3000000)
         m.run(0x450210,(CTX,),ecx=ACTION,budget=3000000)
         m.uc.mem_write(path,bytes(0x1c0));captured.clear();candidates.clear()

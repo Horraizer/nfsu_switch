@@ -13,7 +13,9 @@
 #include <iostream>
 #include <sstream>
 #include <limits>
+#include <stdexcept>
 namespace nfsu {
+using AiStopCheck=RaceRivalNitrousPlan::StopCheck;
 static_assert(kAiPathWorldActors>=4+kRaceTrafficCapacity,"AI snapshot covers the complete traffic pool");
 class IntroAiPlanner::State {
     RacingLineTrack lines;
@@ -24,6 +26,18 @@ class IntroAiPlanner::State {
     std::array<AiRivalActionController,3> actions_{};
     std::array<std::uint32_t,3> controller_tick_{};
     std::array<RaceRivalPlan,3> retained_plan_{};
+    std::array<bool,3> no_road_stop_{}; // original Controller+410, cleared by placement/reset
+    std::array<std::uint64_t,3> observed_resets_{};
+    std::array<bool,3> road_placement_published_{};
+    struct ResetCategoryFrame {
+        AiPathPlannerInput planner;
+        AiPathCollisionWorld world;
+        AiNeighborhood neighbors;
+        AiRoadChain chain;
+        const RaceSession* race=nullptr; // valid through this plan's physics/placement phase
+    };
+    std::array<std::unique_ptr<ResetCategoryFrame>,3> reset_category_{};
+    float route_length_=0;
     std::array<unsigned,3> full_updates_{},partial_updates_{},retained_updates_{};
     std::array<AiPlannedPath,4> published{};
     AiPlannedPath human_drag_path_{};
@@ -32,14 +46,13 @@ class IntroAiPlanner::State {
     std::uint32_t rng=0x60000000U;
     unsigned frames=0,rival_count_=0;
     struct RailQuery {
-        const RaceSession* world=nullptr;unsigned actor=0;
+        const RaceSession* world=nullptr;const RaceSession* driver=nullptr;
         const AiRoadContext* road=nullptr;
         WorldObstacleBinding binding;WorldObstacleStatus status;unsigned reads=0;
     };
     std::array<RailQuery,4> rail_{};
-    static const RaceSession& rail_actor(const RailQuery& q){return q.actor==3?*q.world:q.world->rival(q.actor);}
     static bool rail_read(void* opaque,WorldObstacleStatus& out) {
-        auto& q=*static_cast<RailQuery*>(opaque);const auto& actor=rail_actor(q);
+        auto& q=*static_cast<RailQuery*>(opaque);const auto& actor=*q.driver;
         if(!q.world->world_obstacle_status(q.binding,actor.car(),actor.progress().coordinate.distance,out))return false;
         out.available=out.available&&q.road&&q.road->flags.first_obstacle>=0;
         q.status=out;++q.reads;return true;
@@ -56,6 +69,7 @@ class IntroAiPlanner::State {
     int direction_=0;
     unsigned track_number_=1003;
     bool drag_=false;
+    int road_decision_start_=0;
     float catchup_weight_=0;
     bool catchup_enabled_=true;
     unsigned traffic_selector_=0;
@@ -85,6 +99,149 @@ class IntroAiPlanner::State {
     static std::uint32_t u32(const unsigned char* p) {
         return std::uint32_t(p[0])|(std::uint32_t(p[1])<<8)|(std::uint32_t(p[2])<<16)|(std::uint32_t(p[3])<<24);
     }
+    bool reset_category(unsigned i,const VehicleState& car,std::int32_t clock) {
+        auto& context=contexts[i];
+        const auto* route=context.selected?lines.find(context.road.route):nullptr;
+        if(!route||context.road.point>=route->points.size())return false;
+        int category=int(rival_grades_[i]);
+        if(actions_[i].road_category_probe(drag_)==AiRoadCategoryProbe::nearest_lane) {
+            AiPathPlannerInput empty_planner;AiRoadChain empty_chain;AiNeighborhood empty_neighbors;
+            AiRivalActionInput probe;
+            auto* retained=reset_category_[i].get();
+            probe.planner=retained?&retained->planner:&empty_planner;
+            probe.road=retained?&retained->chain:&empty_chain;
+            probe.neighbors=retained?&retained->neighbors:&empty_neighbors;
+            probe.world=retained?&retained->world:nullptr;
+            probe.ride_category=category;probe.force_traffic_action=drag_;
+            const AiDriverPoint position{float(car.position.x),float(car.position.y),float(car.position.z)};
+            probe.nearest_lane=ai_road_nearest_lane(*route,context.road.point,position);
+            if(retained) {
+                if(!retained->race)return false;
+                //4576B0 dereferences live bodies through retained neighbor IDs.
+                //Keep neighbor order/cells and cached paths, not stale body poses.
+                auto& world=retained->world;const auto& race=*retained->race;
+                //57A300 filters only a newly built list.5832A0 parks the
+                //same Actor and59A7C0 reuses it on relocation; registration
+                //is spawn order, not object identity.4576B0/57B520 keep
+                //retained entries until the next neighborhood rebuild.
+                for(unsigned j=0;j<world.count;++j) {
+                    if(j<3&&j>=rival_count_)continue;
+                    const VehicleState* body=nullptr;
+                    if(j<4)body=j==i?&car:j==3?&race.car():&race.rival(j).car();
+                    else {
+                        if(!race.traffic()||j-4>=race.traffic()->actors().size())return false;
+                        body=&race.traffic()->actors()[j-4].car;
+                    }
+                    auto& a=world.actors[j];
+                    a.position={float(body->position.x),float(body->position.y),float(body->position.z)};
+                    a.velocity=j==i?body->owner_motion.velocity:
+                        AiDriverPoint{float(body->velocity.x),float(body->velocity.y),float(body->velocity.z)};
+                    a.forward=body->owner_motion.axes[0];a.heading=body->owner_motion.heading;
+                    a.signed_speed=body->owner_speeds.forward;a.absolute_speed=body->owner_speeds.magnitude;
+                    if(j<3)a.action=actions_[j].current().kind;
+                    if(j==i) {
+                        a.acceleration=body->owner_motion.acceleration;
+                        a.selector=race.rival(i).physical_selector();
+                    }
+                    if(j>=4) {
+                        const auto& traffic=race.traffic()->actors()[j-4];
+                        const auto& q=body->orientation;
+                        a.forward=body->rigid_body_ready?body->rigid_body.axes[0]:
+                            AiDriverPoint{{float(1-2*(q.y*q.y+q.z*q.z)),float(2*(q.x*q.y+q.w*q.z)),float(2*(q.x*q.z-q.w*q.y))}};
+                        a.heading=track_angle(a.forward[0],a.forward[1]);
+                        a.action=traffic.action_owner.current.kind;
+                        a.traffic_prediction_ready=true;
+                        if(!race.traffic()->world_prediction(j-4,a,std::uint32_t(clock),
+                            world.prediction_horizon,a.path))return false;
+                    }
+                }
+                auto& path=retained->planner.path;
+                path.previous.path=published[i];
+                path.rebuild=ai_strategy_rebuild_path(drag_?AiStrategyKind::drag:AiStrategyKind::ordinary,false);
+                path.roads=retained->chain.cells.data();path.road_count=retained->chain.count;
+                path.target=nullptr;
+                path.extension.actor_position=position;
+                path.extension.actor_velocity=car.owner_motion.velocity;
+                path.extension.actor_forward=car.owner_motion.axes[0];
+                path.extension.absolute_speed=car.owner_speeds.magnitude;
+                path.signed_speed=car.owner_speeds.forward;
+                path.policy.absolute_speed=car.owner_speeds.magnitude;
+                path.tick=std::uint32_t(clock);
+                path.extension.raw_road_available=true;
+                path.category_available=ai_road_category_available(lines,context.road,category);
+                auto& actor=retained->world.actors[i];
+                actor.position=position;actor.velocity=path.extension.actor_velocity;
+                actor.forward=path.extension.actor_forward;actor.heading=car.owner_motion.heading;
+                actor.signed_speed=car.owner_speeds.forward;actor.absolute_speed=car.owner_speeds.magnitude;
+                retained->world.road_selected=true;retained->world.tick=std::uint32_t(clock);
+                auto& fitness=retained->planner.fitness;
+                fitness.position=position;fitness.velocity=car.owner_motion.velocity;
+                fitness.signed_speed=car.owner_speeds.forward;fitness.absolute_speed=car.owner_speeds.magnitude;
+                fitness.tick=std::uint32_t(clock);
+                for(unsigned j=0;j<retained->planner.target_count;++j) {
+                    const auto id=retained->planner.target_ids[j];
+                    if(!id||id>world.count)return false;
+                    const auto& other=world.actors[id-1];
+                    auto& target=retained->planner.targets[j];
+                    target.self.position=position;target.self.velocity=actor.velocity;
+                    target.target.position=other.position;target.target.velocity=other.velocity;
+                    target.target_path=other.path;
+                    if(!ai_path_cursor(target.target_path,other.signed_speed,other.position,other.velocity,
+                        std::uint32_t(clock),16,0,0))return false;
+                    target.target_cursor=target.target_path.cursor;
+                }
+            }
+            if(!actions_[i].reselect_category(probe,category))return false;
+        }
+        context.category=category;lanes[i].category=category;return true;
+    }
+    static bool resolve_reset(void* opaque,unsigned i,const VehicleState& car,
+                              const RaceProgress& progress,std::int32_t clock,VehicleRoadResetPoint& out) {
+        auto& self=*static_cast<State*>(opaque);auto& context=self.contexts[i];
+        //44ABC0/44AC10 lazily44C250 only when the retained road is absent.
+        if(!context.selected) {
+            AiRoadSelectionInput selection;
+            selection.position={float(car.position.x),float(car.position.y),float(car.position.z)};
+            selection.progress=self.direction_?self.route_length_-progress.coordinate.distance:progress.coordinate.distance;
+            selection.maximum_distance=999999;selection.allow_outside_width=true;
+            selection.require_enabled_lane=self.actions_[i].road_requires_lane(self.drag_);
+            for(auto& slot:self.policies[i].cache)slot&=~1U;
+            if(!ai_road_select(self.lines,selection,context.selected,context.road))
+                throw std::runtime_error("rival reset road selection refused");
+            if(!context.selected)return false; //427F70 does not use human nearest-node fallback.
+            if(!self.reset_category(i,car,clock))throw std::runtime_error("rival reset category refused");
+            self.policies[i].marker=-1;context.nearest=-1;
+        }
+        const auto* route=self.lines.find(context.road.route);
+        if(!route||context.road.point>=route->points.size())throw std::runtime_error("rival reset road invalid");
+        const auto& point=route->points[context.road.point];
+        const float sign=self.direction_?-1.F:1.F;
+        const auto* raw_forward=self.direction_?point.backward:point.forward;
+        float lateral=0;
+        //427FB0 only lane-special worlds use442590. Ordinary rivals reset
+        //to raw road centre, independently of their performance category.
+        if(self.drag_) {
+            const int category=context.category;
+            if(category>=0&&category<5)lateral=point.driving_offset[unsigned(category)];
+            else if(category>=11&&category<=16)lateral=point.lane_offset[unsigned(category-11)];
+            //442590 projects the reverse lane into the raw forward basis;
+            //on a bend the two basis vectors are not exact negatives.
+            if(self.direction_)lateral*=point.forward[0]*point.backward[0]+point.forward[1]*point.backward[1];
+        }
+        out.position={point.position[0]+raw_forward[1]*lateral,
+                      point.position[1]-raw_forward[0]*lateral,
+                      point.height+sign*point.unknown_2c*lateral};
+        out.forward={raw_forward[0]*sign,raw_forward[1]*sign};return true;
+    }
+    static void publish_reset(void* opaque,unsigned i,const VehicleState& car,const RaceProgress&,std::int32_t clock) {
+        auto& self=*static_cast<State*>(opaque);
+        //42802F/44AB50 recalculates category with the current action and
+        //retained neighbors BEFORE44AD00 clears compact derived storage.
+        if(!self.reset_category(i,car,clock))throw std::runtime_error("rival placed category refused");
+        self.contexts[i].chain={};self.contexts[i].nearest=-1;
+        for(auto& slot:self.policies[i].cache)slot&=~1U;
+        self.no_road_stop_[i]=false;self.road_placement_published_[i]=true;
+    }
 public:
     bool rail_snapshot(unsigned i,IntroRailSnapshot& out)const {
         if(i>=rival_count_)return false;
@@ -103,9 +260,9 @@ public:
     }
     std::array<float,3> minimum_speed{{1e9F,1e9F,1e9F}},maximum_speed{};
     bool load(const std::filesystem::path& root,const std::array<int,3>& selected,
-              const std::array<const VehicleHull*,4>& hulls,bool retail_speed,unsigned track_number,int direction,bool drag,float catchup_weight,int laps,bool point_to_point,unsigned traffic_selector,bool catchup_enabled) {
+              const std::array<const VehicleHull*,4>& hulls,bool retail_speed,unsigned track_number,int direction,bool drag,float catchup_weight,int laps,bool point_to_point,unsigned traffic_selector,bool catchup_enabled,int decision_start) {
         if((direction!=0 && direction!=1)||traffic_selector>3)return false;
-        catchup_enabled_=catchup_enabled;
+        catchup_enabled_=catchup_enabled;road_decision_start_=decision_start;
         track_number_=track_number;traffic_selector_=traffic_selector;direction_=direction;retail_speed_=retail_speed;drag_=drag;catchup_weight_=catchup_weight;
         if(!std::isfinite(catchup_weight_))return false;
         std::array<unsigned char,0x82c> configuration{};
@@ -157,15 +314,6 @@ public:
         }
         for(unsigned i=0;i<rival_count_;++i)for(unsigned rank=0;rank<4;++rank)
             if(!ai_catchup_tuning(configuration.data(),configuration.size(),selected[i],laps,point_to_point,traffic_selector_,rank,catchup_tuning_[i][rank]))return false;
-        if(drag_) for(unsigned i=0;i<rival_count_;++i) {
-            //44B1FF..44B238 /4216F0: signed launch lead from the selected
-            //difficulty row. Share the world RNG with path decisions.
-            const auto sample=rng%0x7fffffffU;
-            const auto x=rng^0x1d872b41U,y=(x>>5)^x;rng=(y<<27)^y^x;
-            const auto& cfg=speed_config[i];
-            drag_launch[i]=((float(sample)*4.656612873077393e-10F)*
-                (cfg.drag_launch_max-cfg.drag_launch_min)+cfg.drag_launch_min)+.001F;
-        }
         return true;
     }
     bool camera_road(const AiRoadContextInput& input,const AiRoadPolicyInput& policy,AiRoadContext& context)const {
@@ -174,6 +322,11 @@ public:
         auto decisions=policies[3];auto random=rng;
         AiRoadContextResult result;
         return ai_road_update_context(lines,events,reverse,input,policy,decisions,random,context,result);
+    }
+    bool human_road_cursor(AiRoadCursor& out)const noexcept {
+        if(!contexts[3].selected)return false;
+        out=contexts[3].road;
+        return true;
     }
     bool drag_human_snapshot(IntroDragSnapshot& out)const {
         if(!drag_||!contexts[3].selected)return false;
@@ -241,9 +394,11 @@ public:
         if(!ai_catchup_history_step(dt,speed,authored_speed,enabled,found,human_history_))return false;
         observed_tick_=tick;return true;
     }
-    bool plan(const RaceSession& race,RaceRivalPlans& batch,int held_lane) {
+    bool plan(const RaceSession& race,RaceRivalPlans& batch,int held_lane,const RaceSession* obstacle_world,
+              IntroAiWorldObserver observer,RaceSession* physical_world=nullptr) {
         const bool solo_finish=race.has_finish_driver()&&race.timing().outcome==RaceOutcome::finished;
-        if((!rival_count_&&!drag_&&!solo_finish)||race.rival_count()!=rival_count_||!observe_human(race))return false;
+        const auto opponents=race.human_rival()&&drag_?0U:race.rival_count();
+        if((!rival_count_&&!drag_&&!solo_finish)||opponents!=rival_count_||!observe_human(race))return false;
         AiPathCollisionWorld world;world.count=4;world.tick=std::uint32_t(race.timing().now_ticks);
         world.retain_parameters={16,0,0};world.prediction_horizon=.75F;
         world.normal_scale=world.human_scale=world.slow_scale=1;world.slow_speed=2;
@@ -251,13 +406,16 @@ public:
         std::array<AiActionPathInput,4> path_inputs;
         std::array<AiRoadLocation,4> locations;
         std::array<bool,4> road_resets{};
+        std::array<bool,4> road_ready{};
         const auto& timing=race.timing();
+        route_length_=race.course().route.spline.path_length;
+        for(unsigned i=0;i<rival_count_;++i)batch.cars[i].road_reset={this,i,resolve_reset,publish_reset};
         const float seconds=timing.race_start_valid?float(timing.now_ticks-timing.race_start_ticks)*.00025F:-1.F;
         for(unsigned i=0;i<4;++i) {
             if(i<3&&i>=rival_count_){actors[i].enabled=false;continue;}
             const auto& session=i==3?race:race.rival(i);const auto& s=session.car();const auto& q=s.orientation;
             auto& a=world.actors[i];a.id=i+1;a.role=i==3?1:2;
-            a.selector=drag_?1:3;
+            a.selector=session.physical_selector();
             if(i<3)a.action=actions_[i].current().handle?actions_[i].current().kind:drag_?8:7;
             a.position={float(s.position.x),float(s.position.y),float(s.position.z)};
             a.velocity={float(s.velocity.x),float(s.velocity.y),float(s.velocity.z)};
@@ -284,20 +442,36 @@ public:
             }
             if(!ai_path_cursor(a.path,a.signed_speed,a.position,a.velocity,world.tick,16,0,0))return false;
         }
-        for(unsigned i=0;i<4;++i){rail_[i].world=&race;rail_[i].actor=i;rail_[i].road=&contexts[i];}
+        for(unsigned i=0;i<4;++i) {
+            if(i<3&&i>=rival_count_)continue;
+            rail_[i].world=obstacle_world?obstacle_world:&race;
+            rail_[i].driver=i==3?&race:&race.rival(i);
+            rail_[i].road=&contexts[i];
+        }
+        const auto road_time_held=[&](unsigned actor) {
+            const auto tick=std::uint32_t(timing.now_ticks);
+            const auto start=timing.race_start_valid?std::uint32_t(timing.race_start_ticks):tick;
+            const int id=actor==3?1:race.rival_actor_id(actor);
+            return ai_recovery_race_hold(tick,start,id,int(track_number_),drag_);
+        };
         const auto prepare_context=[&](unsigned i) {
             auto& a=world.actors[i];auto& n=actors[i];
+            const bool initial_rival=i<rival_count_&&!actions_[i].current().handle;
             const float raw_progress=direction_?race.course().route.spline.path_length-n.progress:n.progress;
             AiRoadContextInput input;input.track_number=int(track_number_);input.selection.position=a.position;input.selection.progress=raw_progress;
             // Geometry and enabled lanes are already direction-oriented.
             input.selection.direction=0;
-            input.selection.require_enabled_lane=drag_;
+            input.selection.require_enabled_lane=i<rival_count_?
+                actions_[i].road_requires_lane(drag_):drag_;
             input.selection.maximum_distance=999999;input.selection.allow_outside_width=true;
             input.body_width=a.bound_max[1]-a.bound_min[1];input.back_margin=24;
             input.controller_kind=i==3?(drag_?2:1):3;
             //5A5730 compact slot0 uses RideInfo424, independently of the
             //selected11..16 lane. The six other slots carry lane bounds.
             input.ride_category=int(i==3?human_grade_:rival_grades_[i]);
+            if(i<rival_count_)input.category_probe=initial_rival?
+                (drag_?AiRoadCategoryProbe::nearest_lane:AiRoadCategoryProbe::ride):
+                actions_[i].road_category_probe(drag_);
             input.initial_horizon=input.retained_horizon=60;
             if(i<3||(drag_&&i==3)) {
                 AiRoadHorizons horizons;
@@ -306,14 +480,19 @@ public:
                 if(i==3)human_drag_horizons_=horizons;
             }
             AiRoadPolicyInput policy;policy.direction=direction_;policy.role=i==3?1:2;
-            policy.decision_start=0;policy.race_seconds=seconds;policy.probabilities={0,0,1};
+            // 4628C2 reads signed TrackInfo+B8 in both modes. 435CA0
+            // bypasses the sentinel's ordinary opening hold in drag.
+            policy.decision_start=road_decision_start_;
+            policy.race_time_hold=road_time_held(i);
+            policy.race_seconds=seconds;
+            policy.probabilities={0,0,1};
             policy.obstacle_context=&rail_[i];policy.obstacle_decision=rail_decide;
             if(retail_speed_&&i<3)policy.probabilities=speed_config[i].road_probabilities;
             AiRoadContextResult result;
             //458CC0 before new context decisions; current retail6B753C=10.
             // Without expiry the eighth consumed junction exhausts the cache.
             if(!ai_road_expire(events,raw_progress,race.course().route.spline.path_length,!race.course().route.point_to_point,!direction_,10,policies[i]))return false;
-            if(!frames&&i<rival_count_) {
+            if(initial_rival) {
                 const auto start_road=race.rival_start_road(i);
                 if(start_road>=0) {
                     const auto* route=lines.find(start_road);
@@ -345,11 +524,10 @@ public:
                     human_bootstrap=human_drag_rebuild=true;
                 }
                 const auto prior_lane=lanes[i];
-                const auto* road=lines.find(context.road.route);if(!road)return false;
                 //4605E0/45D800 select on the RETAINED road, then45D908 calls
                 //462430/44CF30. Do not reapply manual selection after common
                 //admission: that would undo its unavailable-lane escape.
-                if(!drag_lane_step(*road,context.road.point,a.position,context.chain,
+                if(!drag_lane_step(lines,context.road,a.position,context.chain,
                     context.flags.enabled,held_lane,race.travelled_distance(),lanes[i],
                     {int(track_number_),direction_,raw_progress,2}))return false;
                 human_drag_rebuild=human_drag_rebuild||prior_lane.mode!=lanes[i].mode||
@@ -357,34 +535,24 @@ public:
                 context.category=lanes[i].category;
             }
             if(!ai_road_update_context(lines,events,reverse,input,policy,policies[i],rng,contexts[i],result)||
-               !contexts[i].selected||!ai_road_locate_actor(contexts[i].chain,a.position,contexts[i].category,locations[i])) {
+               !ai_road_context_ready(contexts[i],a.position,road_ready[i],locations[i])) {
                 std::cerr<<"context refused actor "<<i<<" frame "<<frames<<" progress "<<n.progress
                     <<" road "<<contexts[i].road.route<<":"<<contexts[i].road.point<<" cache";
                 for(auto slot:policies[i].cache)std::cerr<<' '<<std::hex<<slot<<std::dec;
                 std::cerr<<'\n';return false;
             }
             human_drag_rebuild=human_drag_rebuild||result.reselected||result.reset_maneuver;
-            road_resets[i]=human_bootstrap||result.reselected||result.reset_maneuver;
+            // 44BAF0 saves/restores the descriptor across road reselection.
+            // Only successful adjacent-lane admission at 44D337 clears it.
+            road_resets[i]=human_bootstrap||result.reset_maneuver;
             if(drag_&&i==3) {
                 human_drag_rebuild=human_drag_rebuild||lanes[i].category!=contexts[i].category;
                 lanes[i].category=contexts[i].category;
             }
-            if(drag_&&i<3) {
-                auto& context=contexts[i];const auto* road=lines.find(context.road.route);
-                if(!road)return false;
-                if(!frames) {
-                    //4528B0/45CFF0 initializes the rival lane from its pose.
-                    const int initial=ai_road_nearest_lane(*road,context.road.point,a.position);
-                    if(initial<0)return false;
-                    lanes[i].category=initial;
-                }else lanes[i].category=context.category;
-                if(context.category!=lanes[i].category) {
-                    context.category=lanes[i].category;
-                    if(!ai_road_refresh(lines,events,reverse,context.road,context.category,a.position,false,
-                        input.initial_horizon,input.retained_horizon,policy,policies[i],rng,context.chain)||
-                       !ai_road_flags(lines,events,context.chain,context.category,context.flags)||
-                       !ai_road_locate_actor(context.chain,a.position,context.category,locations[i]))return false;
-                }
+            if(drag_&&i<3&&road_ready[i]) {
+                // 45CFF0 commits a nearest lane only after path admission.
+                // Do not preselect it before the rival action runs.
+                lanes[i].category=contexts[i].category;
             }
             auto& p=path_inputs[i];p.roads=contexts[i].chain.cells.data();p.road_count=contexts[i].chain.count;
             p.selected=locations[i].cell;p.initial_offset=locations[i].lateral;p.signed_speed=a.signed_speed;
@@ -401,12 +569,15 @@ public:
             p.previous.path=published[i];
             p.rebuild=i==3||ai_strategy_rebuild_path(drag_?AiStrategyKind::drag:AiStrategyKind::ordinary,
                 result.reselected||!published[i].path.count);
-            p.category_available=ai_road_category_available(lines,contexts[i].road,contexts[i].category);
+            p.category_available=contexts[i].selected&&ai_road_category_available(lines,contexts[i].road,contexts[i].category);
+            p.extension.raw_road_available=contexts[i].selected;
             if(drag_&&i==3) {
                 p.rebuild=human_drag_rebuild||!human_drag_path_.path.count;
                 p.previous.path=human_drag_path_;
             }
-            if(!frames||i==3) {
+            // 424F60 starts with an empty rival Driver path. The first
+            // publication belongs to44C56E, after strategy selection/update.
+            if(i==3&&road_ready[i]) {
                 AiManeuverResult seed;
                 if(!ai_action_plan_path({},p,seed))return false;
                 if(drag_&&i==3) {
@@ -429,7 +600,11 @@ public:
             for(unsigned i=0;i<traffic.size();++i) {
                 const auto& t=traffic[i];const auto& s=t.car;const auto& q=s.orientation;
                 auto& a=world.actors[4+i];auto& n=actors[4+i];a.id=n.id=5+i;n.enabled=t.active;
-                a.role=3;a.selector=t.impacted?1:2;
+                a.role=3;a.selector=4;
+                a.action=t.action_owner.current.kind;a.maneuver=t.maneuver;
+                // World traffic maneuver IDs use the player-first registry.
+                if(a.maneuver.target>=1&&a.maneuver.target<=4)
+                    a.maneuver.target=a.maneuver.target==1?4:a.maneuver.target-1;
                 a.position={float(s.position.x),float(s.position.y),float(s.position.z)};
                 a.velocity={float(s.velocity.x),float(s.velocity.y),float(s.velocity.z)};
                 a.forward=s.rigid_body_ready?s.rigid_body.axes[0]:AiDriverPoint{{float(1-2*(q.y*q.y+q.z*q.z)),float(2*(q.x*q.y+q.w*q.z)),float(2*(q.x*q.z-q.w*q.y))}};
@@ -463,8 +638,15 @@ public:
             AiRoadHorizons horizons;if(!ai_road_horizons(a.absolute_speed,2.F,3.F,horizons))return false;
             ni.horizon=horizons.retained;ni.track_length=race.course().route.spline.path_length;ni.category=contexts[i].category;ni.ride_category=int(rival_grades_[i]);ni.circuit=!race.course().route.point_to_point;
             auto& neighbors=neighborhoods[i];
-            if(!ai_neighbors(contexts[i].chain,ni,actors.data(),world.count,neighbors)||neighbors.self_index<0)return false;
+            if(!ai_neighbors(contexts[i].chain,ni,actors.data(),world.count,neighbors))return false;
+            if(!contexts[i].chain.count)return neighbors.count==0&&neighbors.self_index==-1;
+            if(neighbors.self_index<0)return false;
             const auto& self=neighbors.entries[unsigned(neighbors.self_index)];
+            //45C370/57A8E0 consume the owner's neighborhood sample. The
+            //first-ahead cell from5A6700 would skip an extra path point.
+            in.path.selected=self.cell;
+            in.path.initial_offset=contexts[i].category<0?0.F:contexts[i].category<5?self.lateral:
+                self.lane_lateral[unsigned(contexts[i].category-11)];
             for(unsigned j=0;j<neighbors.count;++j) {
                 const auto& n=neighbors.entries[j];if(n.id==a.id)continue;
                 const unsigned other=n.id-1;if(other>=world.count)return false;
@@ -475,10 +657,10 @@ public:
                 if(admitted)eligible[i][counts[i]++]=other;
                 if(in.target_count>=in.targets.size())return false;
                 const unsigned index=in.target_count++;auto& m=in.targets[index];
-                in.target_ids[index]=n.id;in.target_available[index]=in.path.category_available;
-                m.self={a.position,a.velocity,self.lateral,self.half_extent[0],self.distance,int(self.cell),2,true,false};
-                m.target={b.position,b.velocity,n.lateral,n.half_extent[0],n.distance,int(n.cell),b.role,true,false};
-                m.policy={4,5,5,2,1.5F,5,2,.707099974155426F};m.self_signed_speed=a.signed_speed;
+                in.target_ids[index]=n.id;
+                if(!ai_path_maneuver_vehicle(a,self,contexts[i].category,m.self)||
+                   !ai_path_maneuver_vehicle(b,n,contexts[i].category,m.target))return false;
+                m.policy={4,5,5,2,1.5F,5,2,.707099974155426F};
                 m.target_path=b.path;m.target_cursor=b.path.cursor;
             }
             //45AD30: side descriptors require their target in the CURRENT
@@ -492,42 +674,126 @@ public:
         };
         {
             batch.step=race.timing().step;batch.count=rival_count_;
-            batch.drag_steering=drag_;batch.drag_world_random=drag_?&rng:nullptr;
-            // Original world controllers publish in actor order. A later
-            // controller observes the paths already published by earlier ones.
+            batch.drag_steering=drag_;batch.gearbox_world_random=&rng;
+            // 420B80/57A530 snapshot every neighbor path before controllers.
+            // Live action kinds change in actor order, but45FAF0 only writes
+            // Driver. Other actors see that new path on the next world epoch.
             for(unsigned i=0;i<rival_count_;++i) {
+                const auto resets=race.rival(i).placement_generation();
+                if(resets!=observed_resets_[i]) {
+                    // 427E93/428037 dispatch 44AD00 only after placement,
+                    // not when a reset is merely requested or a lane changes.
+                    observed_resets_[i]=resets;no_road_stop_[i]=false;
+                    if(!road_placement_published_[i])contexts[i].selected=false;
+                    road_placement_published_[i]=false;contexts[i].chain={};
+                    for(auto& slot:policies[i].cache)slot&=~1U;
+                }
+                if(drag_) {
+                    if(drag_launch[i]==0.F) {
+                        // 44B1FF..44B238 draws on the first controller call,
+                        // after the world has placed the traffic grid.
+                        const auto sample=rng%0x7fffffffU;
+                        const auto x=rng^0x1d872b41U,y=(x>>5)^x;rng=(y<<27)^y^x;
+                        const auto& cfg=speed_config[i];
+                        drag_launch[i]=((float(sample)*4.656612873077393e-10F)*
+                            (cfg.drag_launch_max-cfg.drag_launch_min)+cfg.drag_launch_min)+.001F;
+                    }
+                    const float elapsed=timing.go_valid?float(timing.now_ticks-timing.go_ticks)*.00025F:-1.F;
+                    const float remaining=timing.stage==RaceStage::countdown?
+                        race.timing_config().countdown_step_seconds*3.F-
+                            float(timing.now_ticks-timing.countdown_start_ticks)*.00025F:1.F;
+                    const bool start_hold=drag_launch[i]>=0.F&&elapsed<drag_launch[i];
+                    const bool start_rev=drag_launch[i]<0.F&&race_car_held(timing)&&remaining< -drag_launch[i];
+                    if(start_hold||start_rev||race_car_held(timing)) {
+                        // 44B27E/44B2E8 set speed demand and heading. Even
+                        // outside those windows 44B3F0 gates full action
+                        // selection before GO in single-player drag.
+                        auto& plan=batch.cars[i];
+                        plan.desired_speed=start_rev?100.F:0.F;
+                        plan.enabled=start_rev;
+                        plan.driver_category=int(rival_grades_[i]);
+                        plan.route_distance=race.rival(i).travelled_distance();
+                        continue;
+                    }
+                }
+                if(physical_world)physical_world->begin_rival_controller(i,&rng,race.next_world_frame_seconds());
+                world.actors[i].selector=race.rival(i).physical_selector();
+                const auto finish_controller=[&](RaceRivalPlan& p) {
+                    p.road_reset={this,i,resolve_reset,publish_reset};
+                    if(physical_world)physical_world->end_rival_controller(i,p);
+                    world.actors[i].selector=race.rival(i).physical_selector();
+                };
                 bool full=false;
-                if(!ai_rival_full_update(std::uint32_t(race.world_visual_frame()),world.tick,
+                // 44B53F runs before the cadence gate, including retained-plan frames.
+                policies[i].advance_speed_override(race.next_world_frame_seconds());
+                if(!ai_rival_full_update(std::uint32_t(race.timing().step),world.tick,
                     controller_tick_[i],i,rival_count_,actions_[i].current().handle!=0,full))return false;
                 const bool newly_finished=race.timing().racers[i+1].status!=RacerStatus::not_finished&&actions_[i].current().kind!=17;
                 full=full||newly_finished; // race owner installs finish action17
                 const bool blocking=actions_[i].current().handle&&actions_[i].current().kind==5;
                 const auto& retained_maneuver=actions_[i].maneuver();
                 const bool human_side=(retained_maneuver.kind==2||retained_maneuver.kind==3)&&retained_maneuver.target==4;
-                if(!full&&!blocking&&!human_side) {
+                // 44B754 skips blocking and human-side refreshes for path
+                // physics (actor+28 == 4). A full update can still run.
+                const bool retain=!full&&(race.rival(i).physical_selector()==4||(!blocking&&!human_side));
+                if(retain) {
                     auto& p=batch.cars[i];p=retained_plan_[i];p.path=published[i].path;
                     p.recovery_cleanup=false;
                     p.physics_full_update=false;
+                    p.nitrous.evaluate=false;
+                    p.nitrous.published_action=0;
+                    p.nitrous.tuning=speed_config[i].nitrous;
+                    p.nitrous.stop_check=AiStopCheck::physical;
                     p.reset_car=stalled_reset_[i];
                     // 45FAC8 reads current actor3B8 even on retained-plan frames.
                     p.route_distance=race.rival(i).travelled_distance();
-                    if(!p.path.count)return false;
+                    finish_controller(p);
                     ++retained_updates_[i];continue;
                 }
                 if(full){controller_tick_[i]=world.tick;++full_updates_[i];}
                 else ++partial_updates_[i];
-                if(!prepare_context(i)||!prepare_input(i))return false;
+                const auto stop_without_path_publication=[&] {
+                    auto& p=batch.cars[i];p=retained_plan_[i];p.path=published[i].path;
+                    p.desired_speed=0;p.enabled=true;p.speed_duration=0;
+                    p.driver_category=int(rival_grades_[i]);
+                    p.route_distance=race.rival(i).travelled_distance();
+                    p.recovery_cleanup=false;p.reset_car=stalled_reset_[i];
+                    // Stop branches bypass 44B060's physical-selector switch.
+                    p.physics_full_update=false;p.nitrous.evaluate=false;p.nitrous.stop_check=AiStopCheck::none;
+                    p.nitrous.published_action=0;
+                    retained_plan_[i]=p;finish_controller(p);
+                };
+                // 44B679 checks the latched stop before a full road refresh.
+                // Partial blocking/human-side updates deliberately bypass it.
+                if(full&&no_road_stop_[i]){stop_without_path_publication();continue;}
+                if(!prepare_context(i))return false;
+                if(road_resets[i])actions_[i].reset_road_maneuver();
+                if(full&&!actions_[i].initialize(world.tick,drag_))return false;
+                if(full&&!road_ready[i]) {
+                    // 44C9C0 leaves Driver's last path intact. 45E970 derives
+                    // the steering target from it on the following driver step.
+                    no_road_stop_[i]=true;stop_without_path_publication();continue;
+                }
+                if(!prepare_input(i))return false;
                 auto view=world;view.self=i;view.eligible=eligible[i];view.eligible_count=counts[i];view.pair_queries=0;
                 const auto& actor=view.actors[i];auto& context=contexts[i];
+                view.road_selected=context.selected;
                 const auto* route=lines.find(context.road.route);
-                if(!route||context.road.point>=route->points.size())return false;
-                const auto& road=route->points[context.road.point];auto& stored=recovery[i];
+                if(context.selected&&(!route||context.road.point>=route->points.size()))return false;
+                if(!context.selected)route=nullptr;
+                auto& stored=recovery[i];
+                const auto nitrous_road=[&](AiRivalNitrousRoad& result) {
+                    const auto self=neighborhoods[i].self_index;
+                    const unsigned first=self>=0?neighborhoods[i].entries[unsigned(self)].cell:context.chain.count;
+                    return ai_rival_nitrous_road(route,context.road.point,context.category,context.chain,first,result);
+                };
+                AiRivalNitrousRoad nos_before_action;if(!nitrous_road(nos_before_action))return false;
                 AiRecoveryInput recover;recover.tick=std::uint32_t(race.timing().now_ticks);
-                const auto start_tick=timing.race_start_valid?std::uint32_t(timing.race_start_ticks):recover.tick;
-                recover.race_time_hold=ai_recovery_race_hold(recover.tick,start_tick,race.rival_actor_id(i),
-                    int(track_number_),drag_);
-                recover.road=&road;
+                recover.race_time_hold=road_time_held(i);
+                recover.selected_road=context.selected;
+                recover.road=route?&route->points[context.road.point]:nullptr;
                 recover.supported=race.rival(i).car().published_support>=3;
+                recover.physics_selector=int(race.rival(i).physical_selector());
                 recover.minimum_x=actor.bound_min[1];recover.maximum_x=actor.bound_max[1];
                 recover.motion.position={actor.position[0],actor.position[1]};
                 recover.motion.prediction_vector={actor.velocity[0],actor.velocity[1]};
@@ -557,13 +823,30 @@ public:
                 AiRivalActionInput frame;frame.tick=recover.tick;frame.random=&rng;
                 frame.drag_strategy=drag_;frame.force_traffic_action=drag_;
                 frame.wall_contact=race.driver_wall_contact(i+1).active;
-                frame.nearest_lane=ai_road_nearest_lane(*route,context.road.point,actor.position);
+                frame.nearest_lane=route?ai_road_nearest_lane(*route,context.road.point,actor.position):-1;
+                if(neighborhoods[i].self_index>=0) {
+                    const auto cell=neighborhoods[i].entries[unsigned(neighborhoods[i].self_index)].cell;
+                    if(cell>=context.chain.count)return false;
+                    const auto& sample=context.chain.cells[cell];
+                    const auto* owner_route=lines.find(sample.point.route_index);
+                    if(!owner_route)return false;
+                    frame.nearest_owner_lane=ai_road_nearest_lane(*owner_route,sample.point_index,actor.position);
+                }
+                const float distance=race.rival(i).progress().coordinate.distance;
+                frame.lane_flags=&context.flags;
+                frame.lane_transition={int(track_number_),direction_,
+                    direction_?race.course().route.spline.path_length-distance:distance,3};
                 frame.planner=&inputs[i];frame.world=&view;frame.neighbors=&neighborhoods[i];frame.road=&context.chain;
                 frame.contacts=stored.strategy_contacts.data();frame.contact_count=stored.strategy_contacts.size();
                 frame.recovery=&recover;
                 frame.recovery_hold_seconds=ai_recovery_hold(recover.road,recover.motion.position,recovery_history_[i]);
-                frame.recovery_ahead=&ai_recovery_lookahead(*route,context.road.point);
-                frame.ride_category=int(rival_grades_[i]);frame.hold=race_car_held(timing);frame.race_seconds=seconds;
+                frame.recovery_ahead=route?&ai_recovery_lookahead(*route,context.road.point):nullptr;
+                AiPathRoadPoint recovery_selected;
+                if(route) {
+                    recovery_selected.point=*recover.road;recovery_selected.point_index=context.road.point;
+                    frame.recovery_selected=&recovery_selected;
+                }
+                frame.ride_category=int(rival_grades_[i]);frame.hold=recover.race_time_hold;frame.race_seconds=seconds;
                 frame.road_reset=road_resets[i];
                 AiBlockingMode mode;
                 if(!ai_strategy_blocking_mode(race.rival_ai_mode(i),mode))return false;
@@ -596,19 +879,114 @@ public:
                     const auto& other=view.actors[id-1];
                     //44ED70 requires actor1C (a race row); traffic has no racer row.
                     frame.actors[j]={other.role==1||other.role==2,other.role==1,other.absolute_speed};
+                    const bool recovering=other.role==3?race.traffic()->actor_recovering(id-5,timing.now_ticks):
+                        race.actor_recovering(other.role==1?0:id);
                     frame.motion[j]={id,other.role==1||other.role==2,other.role,other.velocity,
-                        other.role==3?AiStrategyKind::traffic:drag_?AiStrategyKind::drag:AiStrategyKind::ordinary};
+                        other.role==3?AiStrategyKind::traffic:drag_?AiStrategyKind::drag:AiStrategyKind::ordinary,recovering};
                 }
+                const auto set_category=[&](int category) {
+                    context.category=category;lanes[i].category=category;
+                    auto& path=inputs[i].path;
+                    path.extension.category=context.category;
+                    path.category_available=context.selected&&ai_road_category_available(lines,context.road,context.category);
+                    const auto& self=neighborhoods[i].entries[unsigned(neighborhoods[i].self_index)];
+                    path.initial_offset=context.category<0?0.F:context.category>=11&&context.category<=16?
+                        self.lane_lateral[unsigned(context.category-11)]:self.lateral;
+                    for(unsigned j=0;j<inputs[i].target_count;++j) {
+                        auto& target=inputs[i].targets[j];
+                        for(unsigned k=0;k<neighborhoods[i].count;++k) {
+                            const auto& other=neighborhoods[i].entries[k];
+                            if(other.id!=inputs[i].target_ids[j])continue;
+                            if(!ai_path_maneuver_vehicle(actor,self,context.category,target.self)||
+                               !ai_path_maneuver_vehicle(view.actors[other.id-1],other,context.category,target.target))return false;
+                        }
+                    }
+                    for(unsigned j=0;j<inputs[i].choice.count;++j) {
+                        auto& choice=inputs[i].choice.neighbors[j];
+                        for(unsigned k=0;k<neighborhoods[i].count;++k) {
+                            const auto& other=neighborhoods[i].entries[k];
+                            if(other.id!=choice.id)continue;
+                            bool admitted=false;unsigned sides=0;
+                            if(!ai_path_neighbor_policy(context.chain,neighborhoods[i],k,context.category,
+                                {other.id==4?-.5F:0.F,5,1,2,50,5,.11999999731779099F},admitted,sides))return false;
+                            choice.eligible=admitted;choice.sides=sides;
+                        }
+                    }
+                    return true;
+                };
+                frame.category_context=const_cast<void*>(static_cast<const void*>(&set_category));
+                frame.set_category=[](void* opaque,int category) {
+                    return (*static_cast<const decltype(set_category)*>(opaque))(category);
+                };
+                //451C95 and452190 call44C250 inside the action owner, not
+                //after its update. Preserve compact cells and neighbor paths.
+                const auto reset_raw_road=[&]() {
+                    context.selected=false;context.road={};context.category=-1;
+                    for(auto& slot:policies[i].cache)slot&=~1U;
+                    AiRoadSelectionInput selection;selection.position=actor.position;
+                    selection.progress=direction_?race.course().route.spline.path_length-distance:distance;
+                    selection.maximum_distance=999999;selection.allow_outside_width=true;
+                    selection.require_enabled_lane=actions_[i].road_requires_lane(drag_);
+                    if(!ai_road_select(lines,selection,context.selected,context.road))return false;
+                    route=context.selected?lines.find(context.road.route):nullptr;
+                    if(context.selected&&(!route||context.road.point>=route->points.size()))return false;
+                    view.road_selected=context.selected;recover.selected_road=context.selected;
+                    recover.road=route?&route->points[context.road.point]:nullptr;
+                    frame.recovery_ahead=route?&ai_recovery_lookahead(*route,context.road.point):nullptr;
+                    frame.recovery_selected=nullptr;
+                    if(route) {
+                        recovery_selected.point=*recover.road;recovery_selected.point_index=context.road.point;
+                        frame.recovery_selected=&recovery_selected;
+                    }
+                    frame.nearest_lane=route?ai_road_nearest_lane(*route,context.road.point,actor.position):-1;
+                    auto& path=inputs[i].path;
+                    path.extension.raw_road_available=context.selected;
+                    if(context.selected) {
+                        context.category=frame.ride_category;
+                        path.extension.category=context.category;
+                        path.category_available=ai_road_category_available(lines,context.road,context.category);
+                        if(!actions_[i].reselect_category(frame,context.category))return false;
+                    }
+                    if(!set_category(context.category))return false;
+                    frame.recovery_hold_seconds=ai_recovery_hold(recover.road,recover.motion.position,recovery_history_[i]);
+                    policies[i].marker=-1;context.nearest=-1;
+                    lanes[i].category=context.category;
+                    return true;
+                };
+                frame.road_context=const_cast<void*>(static_cast<const void*>(&reset_raw_road));
+                frame.reset_road=[](void* opaque) {
+                    return (*static_cast<const decltype(reset_raw_road)*>(opaque))();
+                };
                 const auto previous_kind=actions_[i].current().kind;
                 AiRivalActionOutput action;
+                if(observer.read)observer.read(observer.context,view);
+                // Diagnostic collision queries must not count as controller work.
+                view.pair_queries=0;
                 if(!(full?actions_[i].step(frame,action):actions_[i].refresh(frame,action))) {
                     std::cerr<<"action refused frame "<<frames<<" rival "<<i<<" kind "<<actions_[i].current().kind<<'\n';return false;
                 }
+                if(actions_[i].road_category_probe(drag_)==AiRoadCategoryProbe::nearest_lane) {
+                    if(!reset_category_[i])reset_category_[i]=std::make_unique<ResetCategoryFrame>();
+                    auto& saved=*reset_category_[i];
+                    saved.planner=inputs[i];saved.world=view;saved.race=&race;
+                    saved.neighbors=neighborhoods[i];saved.chain=context.chain;
+                    saved.planner.path.roads=saved.chain.cells.data();saved.planner.path.target=nullptr;
+                }
+                if(!full&&!action.path_published) {
+                    // 44B800 missing human side target skips both publications
+                    // and the common tail. Road-side descriptor resets survive.
+                    auto& p=batch.cars[i];p=retained_plan_[i];p.path=published[i].path;
+                    p.physics_full_update=false;p.nitrous.evaluate=false;p.recovery_cleanup=false;
+                    p.nitrous.published_action=0;
+                    p.nitrous.tuning=speed_config[i].nitrous;p.nitrous.stop_check=AiStopCheck::physical;
+                    p.reset_car=stalled_reset_[i];p.route_distance=race.rival(i).travelled_distance();
+                    finish_controller(p);continue;
+                }
                 if(trace_recovery&&action.action.kind!=previous_kind)
                     std::cout<<"AI_ACTION frame="<<frames<<" actor="<<i<<" kind="<<action.action.kind
-                        <<" priority="<<action.action.priority<<" target="<<action.target<<" speed="<<action.speed.speed
+                        <<" priority="<<action.action.priority<<" target="<<action.target<<" lane="<<action.lane_category
+                        <<" speed="<<action.speed.speed
                         <<" route_speed="<<action.speed.route_speed<<'\n';
-                if(action.clear_road){context.selected=false;context.chain={};}
                 if(action.lane_category>=11&&action.lane_category<=16) {
                     context.category=action.lane_category;lanes[i].category=action.lane_category;
                 }
@@ -622,6 +1000,18 @@ public:
                 const auto kind=action.action.kind;
                 p.path_physics_allowed=action.action.handle&&kind!=9&&kind!=10&&kind!=11&&
                     kind!=12&&kind!=14&&selected_context[i]!=-2&&track_number_!=1099;
+                p.nitrous={};
+                p.nitrous.tuning=speed_config[i].nitrous;
+                p.nitrous.stop_check=full?AiStopCheck::road:AiStopCheck::physical;
+                p.nitrous.before_action=nos_before_action;
+                if(full||blocking)p.nitrous.published_action=action.action.handle;
+                if(action.check_nitrous&&race.rival(i).spec().nitrous.installed) {
+                    // 462B30 reads raw speeds before road jitter.
+                    auto& nos=p.nitrous;
+                    AiRivalNitrousRoad demand;if(!nitrous_road(demand))return false;nos.evaluate=true;
+                    nos.road_speed=demand.speed;nos.traffic_lane=demand.traffic_lane;
+                    nos.nondecreasing_road_speed=demand.nondecreasing;
+                }
                 //44B707 fast human-side refresh only publishes a path. Its
                 //previous desired speed, catchup scale and RNG jitter survive.
                 if(full||blocking) {
@@ -631,11 +1021,17 @@ public:
                     catchup.elapsed_ticks=race.timing().race_ticks;catchup.difficulty=selected_context[i];
                     catchup.special_context=drag_;
                     catchup.self_rank=int(std::max(1U,race.standings().position(i+1))-1U);catchup.target_rank=int(rank);
-                    catchup.finished=frame.finished;catchup.action_allows=action.speed.catchup;
-                    catchup.suppressed=!catchup_enabled_;
+                    // 44BD37 tests the actor's player-view pointer. These AI rivals
+                    // have no player view, including while their finish action runs.
+                    catchup.action_allows=action.speed.catchup;
+                    // Quick Race writes the comparison flag at 78A400.
+                    // 44C010 skips distance and rank; 44BD10 still samples the human.
+                    catchup.comparison_enabled=catchup_enabled_;
                     catchup.self_progress=race.competitive_progress(i+1);catchup.target_progress=race.competitive_progress(0);
                     catchup.route_length=race.course().route.spline.path_length;
-                    catchup.self_speed=actor.absolute_speed;catchup.target_speed=world.actors[3].absolute_speed;
+                    // 44C17E reads forward speed only for a path-driven rival.
+                    catchup.self_speed=actor.selector==4?actor.signed_speed:actor.absolute_speed;
+                    catchup.target_speed=world.actors[3].absolute_speed;
                     catchup.target_weight=catchup_weight_;catchup.target_history=human_history_.average;
                     const auto prior=catchup_[i].updated_tick;
                     if(!ai_catchup_update(catchup,catchup_tuning_[i][rank],catchup_[i]))return false;
@@ -645,15 +1041,18 @@ public:
                     p.physical_scale=catchup_[i].physical_scale;
                     const auto& cfg=speed_config[i];AiSpeedPolicyInput speed;
                     speed.route=route;speed.point=context.road.point;speed.category=context.category;
+                    speed.direction=direction_;
                     speed.context=selected_context[i];speed.tick=world.tick;speed.offset_interval=cfg.offset_interval;
                     speed.context_scale=cfg.context_scale;speed.catchup_scale=catchup_[i].speed_scale;
                     speed.offset_amplitude=cfg.offset_amplitude;speed.strategy_cap=1000000000.F;
+                    speed.queued_override=policies[i].speed_override_active();
                     speed.route_speed=action.speed.route_speed;speed.action_speed=action.speed.speed;
                     speed.duration=action.speed.duration;speed.auxiliary=action.speed.auxiliary;speed.enabled=action.speed.enabled;
                     if(policies[i].marker>=0) {
                         const auto& marker=events.at(unsigned(policies[i].marker));const auto* marked=lines.find(marker.target_route);
                         if(!marked||marker.target_point>=marked->points.size())return false;
                         speed.marker_point=&marked->points[marker.target_point];
+                        speed.marker_columns_reversed=marked->category_columns_reversed;
                     }
                     AiSpeedPublication speed_output;
                     if(retail_speed_) {
@@ -664,9 +1063,11 @@ public:
                 }
                 minimum_speed[i]=std::min(minimum_speed[i],p.desired_speed);
                 maximum_speed[i]=std::max(maximum_speed[i],p.desired_speed);
-                if(!p.path.count)return false;
-                published[i]=publication;world.actors[i].path=publication;world.actors[i].action=action.action.kind;
+                // 45FAF0 publishes even an empty action path. The driver
+                // then steers toward a point along heading or velocity.
+                published[i]=publication;world.actors[i].action=action.action.kind;
                 retained_plan_[i]=p;
+                finish_controller(p);
                 evaluations+=action.evaluations;pairs+=action.pair_queries;
                 side_choices+=action.maneuver.kind!=1;fallbacks+=action.action.kind==4;
             }
@@ -676,14 +1077,8 @@ public:
             batch.human.path=published[3].path;batch.human.desired_speed=world.actors[3].absolute_speed;
             batch.human.route_distance=race.travelled_distance();
             batch.human.driver_category=int(human_grade_);
-            if(drag_)for(unsigned i=0;i<rival_count_;++i) {
-                auto& p=batch.cars[i];const auto& t=race.timing();
-                if(race_car_held(t)) {
-                    const float remaining=t.countdown_valid?race.timing_config().countdown_step_seconds*3.F-
-                        float(t.now_ticks-t.countdown_start_ticks)*.00025F:1e9F;
-                    p.grid_throttle=drag_launch[i]<0&&remaining< -drag_launch[i]?1.F:0.F;
-                }else if(drag_launch[i]>=0&&float(t.now_ticks-t.go_ticks)*.00025F<drag_launch[i])p.desired_speed=0;
-            }
+            // 4284C5 calls the drag controller getter 44AC60 for its current lane.
+            batch.human_drag_lane=drag_?contexts[3].category:-1;
             ++frames;return true;
         }
     }
@@ -697,6 +1092,9 @@ bool IntroAiPlanner::camera_road(const AiRoadContextInput& input,const AiRoadPol
                                  AiRoadContext& context)const {
     return state_&&state_->camera_road(input,policy,context);
 }
+bool IntroAiPlanner::human_road_cursor(AiRoadCursor& out)const noexcept {
+    return state_&&state_->human_road_cursor(out);
+}
 bool IntroAiPlanner::drag_human_snapshot(IntroDragSnapshot& out)const {return state_&&state_->drag_human_snapshot(out);}
 bool IntroAiPlanner::rail_snapshot(unsigned i,IntroRailSnapshot& out)const {return state_&&state_->rail_snapshot(i,out);}
 bool IntroAiPlanner::observe_human(const RaceSession& race) {
@@ -706,17 +1104,31 @@ std::string IntroAiPlanner::difficulty_line() const {
     return state_?state_->difficulty_line():"AI_DIFFICULTY inactive";
 }
 bool IntroAiPlanner::load(const std::filesystem::path& root,const std::array<int,3>& contexts,
-                          const std::array<const VehicleHull*,4>& hulls,bool retail_speed,unsigned track_number,int direction,bool drag,float catchup_weight,int laps,bool point_to_point,unsigned traffic_selector,bool catchup_enabled) {
+                          const std::array<const VehicleHull*,4>& hulls,bool retail_speed,unsigned track_number,int direction,bool drag,float catchup_weight,int laps,bool point_to_point,unsigned traffic_selector,bool catchup_enabled,int decision_start) {
     auto next=std::make_unique<State>();next->set_recovery_trace(trace_recovery_);
-    if(!next->load(root,contexts,hulls,retail_speed,track_number,direction,drag,catchup_weight,laps,point_to_point,traffic_selector,catchup_enabled))return false;
+    if(!next->load(root,contexts,hulls,retail_speed,track_number,direction,drag,catchup_weight,laps,point_to_point,traffic_selector,catchup_enabled,decision_start))return false;
     state_=std::move(next);evaluations=pairs=side_choices=fallbacks=0;
     minimum_speed={{1e9F,1e9F,1e9F}};maximum_speed={};return true;
 }
-bool IntroAiPlanner::plan(const RaceSession& race,RaceRivalPlans& batch,int held_lane) {
-    if(!state_||!state_->plan(race,batch,held_lane))return false;
+bool IntroAiPlanner::plan(RaceSession& race,RaceRivalPlans& batch,int held_lane,
+                          const RaceSession* obstacle_world) {
+    return plan(race,batch,held_lane,obstacle_world,{});
+}
+bool IntroAiPlanner::plan(RaceSession& race,RaceRivalPlans& batch,int held_lane,
+                          const RaceSession* obstacle_world,IntroAiWorldObserver observer) {
+    if(!state_||!state_->plan(race,batch,held_lane,obstacle_world,observer,&race))return false;
     evaluations=state_->evaluations;pairs=state_->pairs;
     side_choices=state_->side_choices;fallbacks=state_->fallbacks;
     minimum_speed=state_->minimum_speed;maximum_speed=state_->maximum_speed;
     return true;
 }
+bool IntroAiPlanner::inspect_plan(const RaceSession& race,RaceRivalPlans& batch,int held_lane,
+                                  const RaceSession* obstacle_world,IntroAiWorldObserver observer) {
+    if(!state_||!state_->plan(race,batch,held_lane,obstacle_world,observer))return false;
+    evaluations=state_->evaluations;pairs=state_->pairs;
+    side_choices=state_->side_choices;fallbacks=state_->fallbacks;
+    minimum_speed=state_->minimum_speed;maximum_speed=state_->maximum_speed;
+    return true;
+}
+
 }

@@ -350,14 +350,14 @@ int main(int argc, char** argv) {
         // packet capacity; no payload or memory-budget ceiling is increased.
         // The world UV payload extends retained draw metadata and texture-bearing
         // assets; uniform slot alignment and all memory ceilings stay unchanged.
-        // The two Trolley model labels fit existing draw capacity, adding62 name bytes.
+        // World model labels include the trolley, the semi and both fixed boxcar meshes.
         // Pre-start NOS retains one purge draw template and two instances.
         // Lamp recovery replaces seven inline draws with a vector header
         // and four legacy draws, plus five authored anchors and eight
         // reusable original-sprite records: 24-3*408+5*56+8*72 = -344.
         // Both Default and Release replays retain their original state hashes.
         // Particle atlas resource names are included in retained metadata.
-        const std::uint64_t cache_pin = (tuned ? 4611704U : 4611673U) +
+        const std::uint64_t cache_pin = (tuned ? 4612107U : 4612076U) +
                                         (glows ? 39787U : 0U);
         const auto initial_cache_bytes = scene.cache_bytes();
         std::cout << "payload stream " << scene.track().streaming_bytes << " car " << scene.car_bytes()
@@ -635,9 +635,11 @@ int main(int argc, char** argv) {
                             "animated descriptor points outside the upload package");
                     effective_textures[alias.resource]=alias.frame;
                 }
+                std::size_t world_draws = 0;
                 for (std::size_t i = 0; i < frame.commands.draw_count(); ++i) {
                     const auto selected = frame.commands.draw_view(i);
                     const auto& a = selected.definition; const auto& b = reference.commands.owning_draws()[i];
+                    if (a.name.rfind("world model group ",0)==0) ++world_draws;
                     if (i < frame.commands.static_track_draw_count()) {
                         require(a.group < static_by_group.size() &&
                                 static_by_group[a.group] == &a && selected.track_instance &&
@@ -674,11 +676,15 @@ int main(int argc, char** argv) {
                     }
                 }
                 require(frame.track_draws > 0 && frame.car_draws == (tuned ? 75U : 74U) &&
-                        frame.particle_draws == kRaceParticleLimit+expected_particles.environment_draw_limit(),
+                        frame.particle_draws == kRaceParticleLimit+expected_particles.environment_draw_limit()+
+                            (std::any_of(race.session().course().world.collision.polygons.begin(),
+                                race.session().course().world.collision.polygons.end(),[](const auto& p){
+                                    return p.unknown0[2]==13 || p.unknown0[2]==14;
+                                }) ? 1U : 0U),
                         "missing track/car/particle commands");
                 require(frame.commands.draw_count() == frame.track_draws + frame.car_draws +
-                        frame.particle_draws + frame.glow_draws + 1,
-                        "ground shadow, particles or glows missing");
+                        frame.particle_draws + frame.glow_draws + world_draws + 1,
+                        "ground shadow, particles, glows or world objects missing");
                 if (smoke_witness) {
                     unsigned visible_smoke=0, visible_sparks=0;
                     bool smoke_color_checked=false, spark_color_checked=false;
@@ -749,8 +755,10 @@ int main(int argc, char** argv) {
                                 const auto y = (cell / 4) * cell_size + cell_size / 2;
                                 const auto* texel = atlas.data + (y * atlas.texture.width + x) * 4;
                                 const auto& state=frame.commands.frame;
-                                require(state.options[2] == 1 && view.material.fallback[3] == 2.0F &&
-                                        view.material.alpha[2] == 0.0F && view.material.alpha[3] == 0.0F,
+                                const bool authored=view.material.alpha[0]>0 && particle_index<count &&
+                                    (spark?expected_particles.spark(particle_index):expected_particles.smoke(particle_index)).life_ticks!=0;
+                                require((state.options[2] & 1U) && view.material.fallback[3] == 2.0F &&
+                                        view.material.alpha[2] == 0.0F && view.material.alpha[3] == (authored?8.0F:0.0F),
                                         "particle draw is not unlit under flat race shading");
                                 const float length=std::sqrt(state.light[0]*state.light[0]+state.light[1]*state.light[1]+
                                                              state.light[2]*state.light[2]);
@@ -792,7 +800,7 @@ int main(int argc, char** argv) {
                 }
                 require(frame.glow_draws == (glows ? 4U : 0U) &&
                         frame.commands.draw_count() == frame.track_draws + 1 +
-                            frame.car_draws + frame.particle_draws + frame.glow_draws,
+                            frame.car_draws + frame.particle_draws + frame.glow_draws + world_draws,
                         "glow slots were not reserved at a fixed per-frame draw count");
                 require(deko_frame_gpfifo_bound(deko_track_list_calls(
                             static_cast<std::uint32_t>(frame.track_draws))) < kDekoGpfifoRingEntries,

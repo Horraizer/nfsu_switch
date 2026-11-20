@@ -22,7 +22,8 @@ bool world_obstacle_clear(const WorldObstacleWindow& in,float distance,float spe
     const float first=boundary_time(in.head_present,in.head,in.enter,in.delay);
     const float last=boundary_time(in.tail_present,in.tail,in.leave,in.delay);
     const bool clear=arrival<first||last<arrival;
-    if(first<0&&last>0&&std::abs(speed)<=.001F&&distance<30.F)return false;
+    // 454B81 requires nonzero signed forward speed for the near-crossing guard.
+    if(first<0&&last>0&&std::abs(speed)>.001F&&distance<30.F)return false;
     return clear;
 }
 } // namespace nfsu

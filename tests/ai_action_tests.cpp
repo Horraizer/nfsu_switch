@@ -6,9 +6,28 @@
 #include <filesystem>
 using namespace nfsu;
 namespace {
+struct NitrousWindowCase {
+    bool monotonic;std::uint32_t now,before,after;bool admitted;
+};
+const NitrousWindowCase nitrous_window_cases[]={
+#include "ai_nitrous_window_native.inc"
+};
+struct NitrousTimingCase {
+    bool active,last,finish;std::uint32_t now,started,stopped;bool admitted;
+};
+struct NitrousStopCase {std::uint32_t now,started;bool admitted;};
+#include "ai_nitrous_lifecycle_native.inc"
+struct NitrousRoadCell {bool reverse;std::uint8_t bytes[24];};
+struct NitrousRoadCase {
+    int category;unsigned count,first;NitrousRoadCell cells[3];
+    unsigned speed;bool increasing,raw_present;
+};
+const NitrousRoadCase nitrous_road_cases[]={
+#include "ai_nitrous_road_native.inc"
+};
 struct OffsetCase {AiActionOffsetInput input;std::uint32_t value;};
 struct PublicationCase {
-    unsigned count;std::uint8_t rows[256][23],marker[23];bool has_marker;
+    unsigned count;std::uint8_t rows[256][24],marker[24];bool has_marker;
     unsigned point;int category,direction,context;std::uint32_t tick;
     float interval,context_scale,catchup,cap;unsigned amplitude;
     std::uint32_t before_tick;int before_offset;std::uint32_t before_rng;
@@ -84,6 +103,55 @@ void check(bool ok,const char* label){if(!ok){++failures;std::cerr<<"FAIL: "<<la
 std::uint32_t bits(float v){std::uint32_t result;std::memcpy(&result,&v,4);return result;}
 }
 int main(int argc,char** argv){
+    for(const auto& c:nitrous_road_cases)for(bool storage_reversed:{false,true}) {
+        RacingLineTrack track;track.routes.resize(1);auto& route=track.routes[0];
+        route.points.resize(3);AiRoadChain chain;chain.count=c.count;
+        for(unsigned j=0;j<3;++j) {
+            auto& point=route.points[j];const auto& values=c.cells[j].bytes;
+            point.lane_offset[11]=float(std::int16_t(unsigned(values[0])<<8))/256.F;
+            for(unsigned k=0;k<23;++k)point.speed[k]=values[k+1];
+        }
+        check(ai_road_orient(track,storage_reversed?1:0),"orient nitrous road storage");
+        for(unsigned j=0;j<c.count;++j) {
+            chain.cells[j].point=route.points[j];chain.cells[j].reverse=c.cells[j].reverse;
+            chain.cells[j].category_columns_reversed=storage_reversed;
+        }
+        AiRivalNitrousRoad result;
+        check(ai_rival_nitrous_road(c.raw_present?&route:nullptr,0,c.category,chain,c.first,result)&&
+              result.speed==float(c.speed)&&result.nondecreasing==c.increasing&&
+              result.traffic_lane==(c.category>=11&&c.category<=16),
+              "original raw NOS speed and per-cell monotonic scan including missing raw road");
+    }
+    for(const auto& c:nitrous_window_cases) {
+        auto state=c.before;
+        check(ai_nitrous_road_window(c.monotonic,c.now,state)==c.admitted&&state==c.after,
+              "original nitrous nondecreasing-road time window");
+    }
+    for(const auto& c:nitrous_timing_cases) {
+        AiRivalNitrousState state{c.started,c.stopped,0};
+        AiRivalNitrousTuning tuning{2,1,2,false,1,2};
+        AiRivalNitrousInput in;in.clock=c.now;in.remaining=40000;
+        in.active=c.active;in.last_lap=c.last;in.finish_approach=c.finish;
+        in.physical=true;in.road.traffic_lane=true;
+        check(ai_rival_nitrous_request(in,tuning,state)==c.admitted,
+              "original active maximum and stopped-clock delay boundaries");
+    }
+    for(const auto& c:nitrous_stop_cases) {
+        AiRivalNitrousState state{c.started,0,0};
+        AiRivalNitrousTuning tuning{2,1,2,false,1,2};
+        AiRivalNitrousInput in;in.clock=c.now;
+        check(ai_rival_nitrous_can_stop(in,tuning,state)==c.admitted,
+              "original minimum burst stop boundary");
+    }
+    {
+        std::array<unsigned char,0x82c> data{};AiSpeedConfiguration decoded;
+        const float minimum=1.25F,maximum=3.5F;
+        std::memcpy(data.data()+0x380+2*0x54+0x3c,&minimum,4);
+        std::memcpy(data.data()+0x380+2*0x54+0x40,&maximum,4);
+        check(ai_speed_configuration(data.data(),data.size(),2,decoded)&&
+              decoded.nitrous.minimum_burst_secs==minimum&&decoded.nitrous.maximum_burst_secs==maximum,
+              "NOS selected difficulty row decodes both burst duration fields");
+    }
     if(argc==3 && std::string(argv[1])=="--retail-drag") {
         std::ifstream file(std::filesystem::path(argv[2])/"Global/GLOBALB.BUN",std::ios::binary);
         std::array<unsigned char,0x82c> data{};unsigned char h[8];bool found=false;
@@ -248,11 +316,17 @@ int main(int argc,char** argv){
         check(ok&&bits(value)==c.value,"original action offset policy");
     }
     unsigned index=0;
-    for(const auto& c:publications){
+    for(const auto& c:publications)for(bool storage_reversed:{false,true}){
         Route route;route.points.resize(c.count);RoutePoint marker;
-        for(unsigned j=0;j<c.count;++j)for(unsigned k=0;k<23;++k)route.points[j].speed[k]=c.rows[j][k];
-        for(unsigned k=0;k<23;++k)marker.speed[k]=c.marker[k];
-        AiSpeedPolicyInput in;in.route=c.has_route?&route:nullptr;in.point=c.point;in.category=c.category;
+        for(unsigned j=0;j<c.count;++j)for(unsigned k=0;k<23;++k)route.points[j].speed[k]=c.rows[j][k+1];
+        for(unsigned k=0;k<23;++k)marker.speed[k]=c.marker[k+1];
+        for(unsigned j=0;j<c.count;++j)route.points[j].lane_offset[11]=float(std::int16_t(unsigned(c.rows[j][0])<<8))/256.F;
+        marker.lane_offset[11]=float(std::int16_t(unsigned(c.marker[0])<<8))/256.F;
+        RacingLineTrack storage;storage.routes.push_back(route);Route marker_route;
+        marker_route.points.push_back(marker);storage.routes.push_back(marker_route);
+        check(ai_road_orient(storage,storage_reversed?1:0),"orient speed-publication storage");
+        route=storage.routes[0];marker=storage.routes[1].points[0];
+        AiSpeedPolicyInput in;in.route=c.has_route?&route:nullptr;in.marker_columns_reversed=storage_reversed;in.point=c.point;in.category=c.category;
         in.direction=c.direction;in.context=c.context;in.tick=c.tick;in.offset_interval=c.interval;
         in.context_scale=c.context_scale;in.catchup_scale=c.catchup;in.strategy_cap=c.cap;
         in.offset_amplitude=c.amplitude;in.marker_point=c.has_marker?&marker:nullptr;

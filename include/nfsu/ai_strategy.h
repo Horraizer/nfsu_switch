@@ -72,7 +72,9 @@ struct AiReactionInput {
     float relative=0;
     unsigned neighbors=0;
     int self_selector=3,self_role=2,target_role=2;
-    bool target_disabled=false,racing=true,eligible=true;
+    // 44C34C compares the game flow to 9. Playable race flow 4 keeps
+    // horn/headlamp reactions restricted to human targets.
+    bool target_disabled=false,flow_state_nine=false,eligible=true;
 };
 bool ai_strategy_react(const AiReactionInput&,AiReactionState&,std::uint32_t& rng) noexcept;
 struct AiReactionOutput {bool flash=false,horn=false;};

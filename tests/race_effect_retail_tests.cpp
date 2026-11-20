@@ -18,6 +18,130 @@ namespace {
 using namespace nfsu;
 namespace sm=shader_manifest;
 void check(bool value,const std::string& message) {if(!value)throw std::runtime_error(message);}
+
+void check_national_rail_wire(const std::filesystem::path& root) {
+    std::vector<unsigned char> image;
+    std::vector<RaceTableIssue> issues;
+    check(load_race_image(root/"Tracks/TRACKB1008.LZC",image,issues),"National Rail data");
+    {
+        RaceParticles site;
+        std::string error;
+        check(site.load_environment(image,error),error);
+        unsigned emitted=0, peak=0;
+        bool saw_mixed_source_order=false;
+        bool released_after_saturation=false;
+        for(unsigned frame=1;frame<=420;++frame) {
+            const auto before=site.environment_alpha_count()+site.environment_additive_count();
+            site.advance_environment(frame,{-270,-948,33});
+            constexpr double first_age=17.0/1024;
+            std::size_t born=0;
+            for(std::size_t i=0;i<site.environment_additive_count();++i)
+                born+=site.environment_additive(i).elapsed_seconds==first_age;
+            std::size_t visited=0;
+            bool seen_additive=false;
+            site.visit_environment([&](const RaceParticle& child) {
+                ++visited;
+                if(child.kind==RaceParticleKind::spark)seen_additive=true;
+                else if(seen_additive)saw_mixed_source_order=true;
+            });
+            check(visited==site.environment_alpha_count()+site.environment_additive_count(),
+                  "mixed blend traversal lost track children");
+            unsigned alive=0;
+            for(std::size_t i=0;i<site.environment_alpha_count();++i) {
+                const auto& puff=site.environment_alpha(i);
+                born+=puff.elapsed_seconds==first_age;
+                if(std::abs(puff.origin.x+270.28)>.8 || std::abs(puff.origin.y+924.68)>.8 ||
+                   std::abs(puff.origin.z-49.05)>.5)continue;
+                ++alive;
+                emitted+=puff.elapsed_seconds==first_age;
+            }
+            peak=std::max(peak,alive);
+            const auto after=site.environment_alpha_count()+site.environment_additive_count();
+            check(before+born<=kRaceWaterPool,"track sources reused slots due to expire later in this frame");
+            released_after_saturation|=before+born==kRaceWaterPool && after<kRaceWaterPool;
+        }
+        check(saw_mixed_source_order,"all additive sources were moved after the smoke");
+        check(released_after_saturation,"canal fixture did not leave room for the next vehicle update");
+        check(emitted>=40 && peak>8,"other track emitters starved the overhead steam outlet");
+    }
+    RaceChunkPayload placements;
+    check(find_race_chunk(image.data(),image.size(),0x35020,placements,issues),"National Rail emitters");
+    const auto header=(placements.begin+15)&~std::uint64_t{15};
+    constexpr std::size_t stride=0xc0;
+    const auto first=header+16;
+    const std::string name="XE_SparkSpraySmall_08";
+    auto row=first;
+    while(row+stride<=placements.end && std::memcmp(image.data()+row+0x80,name.c_str(),name.size()+1)!=0)
+        row+=stride;
+    check(row+stride<=placements.end,"missing tunnel wire");
+    // Isolate the authored emitter so other in-range effects cannot consume its slots.
+    std::memmove(image.data()+first,image.data()+row,stride);
+    std::fill_n(image.data()+header+12,4,0);
+    std::memcpy(image.data()+first+stride,image.data()+first,stride);
+    image[header+12]=2;
+    const VehicleVec3 eye{-262,-861,45};
+    {
+        RaceParticles pair;
+        std::string error;
+        check(pair.load_environment(image,error),error);
+        pair.advance_environment(1,eye);
+        pair.advance_environment(2,eye);
+        bool saw_first=false;
+        std::array<bool,2> saw_older{},saw_new{};
+        for(std::size_t i=0;i<pair.environment_additive_count();++i) {
+            const auto& child=pair.environment_additive(i);
+            const auto id=child.environment_source;
+            check(id<2 && (!saw_first || id==0),"track placements interleaved their children");
+            saw_first|=id==0;
+            if(child.elapsed_seconds>17.0/1024) {
+                check(!saw_new[id],"new track particles preceded their older siblings");
+                saw_older[id]=true;
+            } else saw_new[id]=true;
+        }
+        check(saw_older[0] && saw_older[1] && saw_new[0] && saw_new[1],"two-source wire order was not exercised");
+    }
+    image[header+12]=1;
+    RaceParticles particles;
+    std::string error;
+    check(particles.load_environment(image,error),error);
+    bool resumed=false;
+    for(unsigned frame=1;frame<=420;++frame) {
+        particles.advance_environment(frame,eye);
+        unsigned born=0;
+        for(std::size_t i=0;i<particles.environment_additive_count();++i)
+            born+=particles.environment_additive(i).elapsed_seconds==17.0/1024;
+        if(frame==1)check(born==2,"100 Hz wire lost its initial burst at 60 Hz");
+        if(frame>=17 && frame<=160)check(!born,"wire emitted during its authored off interval");
+        if(frame>160 && born)resumed=true;
+    }
+    check(resumed,"wire did not start its next burst");
+    particles.reset();
+    for(unsigned frame=1;frame<=30;++frame)particles.advance_environment(frame,{10000,10000,0});
+    particles.advance_environment(31,eye);
+    check(!particles.environment_additive_count(),"out-of-view wire restarted on camera entry");
+
+    // With a stationary carrier, a scaled placement still affects the
+    // launch speed. Native packing stores speed separately from direction.
+    RaceChunkPayload definitions;
+    check(find_race_chunk(image.data(),image.size(),0x35021,definitions,issues),"wire presets");
+    auto def=((definitions.begin+15)&~std::uint64_t{15})+16;
+    while(def+0x220<=definitions.end && std::memcmp(image.data()+def+8,image.data()+first+12,4))def+=0x220;
+    check(def+0x220<=definitions.end,"wire preset for scaled launch");
+    const auto field=[&](std::uint64_t at,float v){std::memcpy(image.data()+at,&v,sizeof v);};
+    field(first+0x50,.875F);field(first+0x54,0);field(first+0x58,0);
+    field(def+0x40,8);field(def+0x44,0);field(def+0x4c,0);
+    field(def+0x50,.25F);field(def+0x54,0);field(def+0x84,0);field(def+0x88,0);
+    image[def+0x18]=0;
+    for(unsigned deferred=0;deferred<=1;++deferred) {
+        image[def+0x1e]=static_cast<unsigned char>(deferred);
+        check(particles.load_environment(image,error),error);
+        particles.advance_environment(1,eye);
+        check(particles.environment_additive_count()>0,"no scaled wire birth");
+        const auto& v=particles.environment_additive(0).velocity;
+        const double expected=deferred?8.*111/127:7.;
+        check(std::abs(v.x-expected)<1e-6 && v.y==0 && v.z==0,"scaled wire lost native speed/direction packing");
+    }
+}
 struct Image {unsigned width=0,height=0;std::vector<unsigned char> bytes;};
 using Images=std::map<std::size_t,Image>;
 const Image& image(const UploadTable& table,std::size_t handle,Images& cache) {
@@ -129,7 +253,35 @@ void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std
             material_frame(d,before,commands.frame,commands.resource_table(),images);
         }
         if(d.name.find("particle/")!=std::string::npos) {
-            check(marker==4,"particle lost unlit specialization");
+            if(d.name.find("particle/water/")!=std::string::npos || d.name.find("particle/environment/")!=std::string::npos) {
+                check(!marker && before.fallback[3]==9 && commands.resource_table().resources[d.vertex_resource].streamed_vertices,
+                      "water lost its packed world-color vertex stream");
+                if(tick==0) {
+                    const auto& resources=commands.resource_table().resources;
+                    const auto& packed=resources.at(d.texture_resource);
+                    check(packed.texture.width==512 && packed.texture.height==512,"water atlas dimensions");
+                    const std::array<std::array<unsigned,2>,8> origins{{
+                        {0,128},{0,256},{256,0},{0,384},{0,0},{64,384},{128,128},{256,256}
+                    }};
+                    for(std::size_t layer=0;layer<origins.size();++layer) {
+                        const auto& layout=kRaceParticleAtlases[layer];
+                        const std::string name=std::string("particle/")+layout.name;
+                        const auto src=std::find_if(resources.begin(),resources.end(),
+                            [&](const auto& r){return r.texture_hash==layout.hash && r.name.find(name)!=std::string::npos;});
+                        if(src==resources.end() && layer>=kRaceVehicleAtlasCount &&
+                           d.name.find("particle/environment/")==std::string::npos)continue;
+                        check(src!=resources.end() && src->texture.width==layout.width,"missing original particle sheet layer");
+                        const auto origin=origins[layer];
+                        for(unsigned row=0;row<src->texture.height;++row)
+                            check(!std::memcmp(packed.data+4*((origin[1]+row)*512+origin[0]),
+                                               src->data+4*row*layout.width,4*layout.width),
+                                  "packed particle region differs from original image");
+                    }
+                }
+            } else if(before.alpha[3]==8 || before.alpha[0]>0) {
+                check(!marker && before.alpha[3]==8 && before.environment_range[3]==2,
+                      "authored particle lost world.efx color and alpha modulation");
+            } else check(marker==4,"empty particle lost unlit specialization");
             if(before.alpha[0]>0)++live;
             if(race_effect_no_output(view)) {
                 ++skipped;if(d.name.find("smoke")!=std::string::npos)++smoke;else ++sparks;
@@ -159,6 +311,7 @@ int main(int argc,char** argv) {
         check(check_arguments(argc,argv,1,error),error);
         const auto root=argument_path(argv[2]);TextureFilterMode filter=TextureFilterMode::legacy;
         check(parse_texture_filter(argv[3],filter),"bad filter");const bool shaded=std::string(argv[4])=="shaded";
+        check_national_rail_wire(root);
         std::ifstream input(argument_path(argv[1]),std::ios::binary);
         const std::string text((std::istreambuf_iterator<char>(input)),{});RaceReplay replay;
         check(bool(input) && replay.load(text,error),error);
@@ -201,24 +354,108 @@ int main(int argc,char** argv) {
                   opacity<=.5 && at.z>particle.origin.z,
                   "retail smoke curve or upward motion missing");
         }
-        for (unsigned surface : {13U,14U}) {
+        for (unsigned surface : {1U,2U,3U,7U,13U,14U}) {
             auto wet=scene.particles(), dry=scene.particles();
             VehicleTrackTelemetry step;
             step.orientation.w=1;
             step.velocity.x=35;
+            step.model.owner_speeds.magnitude=35.F;
             for (auto& wheel : step.model.wheels) {
                 wheel.contact=true;
                 wheel.surface=surface;
             }
             bool spray=false;
-            for (step.step=1; step.step<=180; ++step.step) {
+            for (step.step=1; step.step<=2; ++step.step) {
                 wet.advance(step,race.session().spec(),10,surface);
-                dry.advance(step,race.session().spec(),10,1);
-                check(dry.smoke_count()==0,"water emitted without a water material beneath the car");
+                dry.advance(step,race.session().spec(),10,0);
+                check(dry.smoke_count()==0 && dry.water_count()==0,"spray emitted without an authored driving surface");
                 for (unsigned i=0; i<wet.smoke_count(); ++i)
                     spray|=wet.smoke(i).atlas==RaceParticleAtlas::water_spray;
+                for (unsigned i=0; i<wet.water_count(); ++i)
+                    spray|=wet.water(i).atlas==RaceParticleAtlas::water_spray;
             }
-            check(spray,"water drive group did not select DUSTA_CS");
+            check(spray,"driving spray did not start immediately with the authored DUSTA_CS atlas");
+        }
+        {
+            auto canal=scene.particles();
+            VehicleTrackTelemetry step;
+            step.orientation.w=1;
+            step.model.owner_speeds.magnitude=50.F;
+            for (auto& wheel:step.model.wheels) wheel.contact=true;
+            for (step.step=1;step.step<=2;++step.step)
+                canal.advance(step,race.session().spec(),10,14);
+            constexpr unsigned drive=unsigned(RaceParticleEffect::water_first)+13;
+            std::array<unsigned,3> jets{};
+            for (std::size_t i=0;i<canal.water_count();++i) {
+                const auto& p=canal.water(i);
+                if (p.atlas!=RaceParticleAtlas::water_spray) continue;
+                const auto side=unsigned(p.effect)-drive;
+                check(side<3,"unexpected high speed canal jet");
+                ++jets[side];
+                const bool direction=side==0 ? p.velocity.x>0 :
+                    (side==1 ? p.velocity.y>0 && p.origin.y>0 : p.velocity.y<0 && p.origin.y<0);
+                check(direction && p.velocity.z>0,"canal jet lost its marker or placement basis");
+            }
+            check(jets[0]>1 && jets[1]>1 && jets[2]>1,"canal entry lost the original burst");
+            {
+                auto drying=canal;
+                auto dry_step=step;
+                dry_step.model.solver_dt=kDriveFrameSeconds/4;
+                std::vector<unsigned> lives;
+                for(std::size_t i=0;i<drying.water_count();++i)lives.push_back(drying.water(i).life_ticks);
+                for(unsigned frame=1;frame<=120;++frame) {
+                    for(unsigned substep=0;substep<4;++substep,++dry_step.step)
+                        drying.advance(dry_step,race.session().spec(),10,0);
+                    const auto expected=std::count_if(lives.begin(),lives.end(),[&](unsigned life){return life>17*frame;});
+                    check(drying.water_count()==std::size_t(expected),"water lifetime changed with the number of solver steps");
+                }
+            }
+            const auto first=canal.water_count();
+            for (;step.step<=4;++step.step) canal.advance(step,race.session().spec(),10,14);
+            check(canal.water_count()>first,"negative burst budget incorrectly retained its delay");
+            // The surviving DR nodes stay in place when slower motion first
+            // activates DRSL. The native lists append new nodes at the tail.
+            auto changed=canal;
+            auto slower=step;
+            slower.model.owner_speeds.magnitude=22.F;
+            for(;slower.step<=14;++slower.step)changed.advance(slower,race.session().spec(),10,14);
+            std::vector<unsigned> runs;
+            std::uint64_t last_birth=0;
+            for(std::size_t i=0;i<changed.water_count();++i) {
+                const auto& p=changed.water(i);
+                const unsigned id=unsigned(p.effect)-unsigned(RaceParticleEffect::water_first);
+                if(runs.empty() || runs.back()!=id) {
+                    runs.push_back(id);
+                    last_birth=0;
+                }
+                check(p.born_step>=last_birth,"water emitter children left FIFO order");
+                last_birth=p.born_step;
+            }
+            check(runs==std::vector<unsigned>({13,14,15,16,17,18,5,6,7,8,9,10,11,12}),
+                  "later water nodes displaced or interleaved surviving emitters");
+            for (auto& wheel:step.model.wheels) wheel.contact=false;
+            for (;step.step<=800;++step.step) {
+                canal.advance(step,race.session().spec(),10,step.step<8?14:0);
+                for (std::size_t i=0;i<canal.water_count();++i)
+                    check(canal.water(i).born_step<=4,"airborne or dry car kept emitting canal spray");
+            }
+            check(canal.water_count()==0,"water trail did not expire after exit");
+            for(auto& wheel:step.model.wheels)wheel.contact=true;
+            for(;step.step<960;++step.step)canal.advance(step,race.session().spec(),10,14);
+            CameraFrame camera{};
+            camera.eye={0,0,50};camera.forward={0,0,-1};camera.right={1,0,0};camera.up={0,1,0};
+            camera.focal_x=1;camera.focal_y=1;camera.near_plane=.1;camera.far_plane=200;
+            const auto view=canal.visible_water(camera);
+            std::size_t expected=0;
+            for(std::size_t i=0;i<canal.water_count();++i) {
+                VehicleVec3 at;double size=0,opacity=0;std::array<unsigned,3> tint{};
+                if(!canal.visual(canal.water(i),at,size,opacity,tint)||opacity<=0)continue;
+                const auto clip=project_point(camera,{at.x,at.z,-at.y});
+                if(clip.w<=camera.near_plane||clip.w>camera.far_plane||
+                   std::abs(clip.x)>clip.w+size*.5||std::abs(clip.y)>clip.w+size*.5)continue;
+                check(expected<view.count && view.indices[expected++]==i,"camera discarded or reordered visible spray");
+            }
+            check(expected==view.count && expected>96,"dense canal view was not exercised");
         }
         {
             auto sparks=scene.particles(), gentle=scene.particles();
@@ -227,7 +464,6 @@ int main(int argc,char** argv) {
             world.collision.polygons[0].unknown0[2]=20;
             VehicleTrackTelemetry step;
             step.step=1;
-            step.velocity.x=22;
             step.audio_contact_count=1;
             step.audio_contacts[0].normal={0,1,0};
             step.audio_contacts[0].point={3,4,5};
@@ -235,8 +471,8 @@ int main(int argc,char** argv) {
             sparks.advance(step,race.session().spec(),10,0,&world);
             step.audio_contacts[0].slide_mps=15;
             gentle.advance(step,race.session().spec(),10,0,&world);
-            check(sparks.spark_count()>0 && gentle.spark_count()==0,
-                  "solid wall scrape did not follow the speed gate");
+            check(sparks.spark_count()>2 && gentle.spark_count()==0,
+                  "solid wall scrape lost its authored burst at zero post-contact speed");
             check(sparks.spark(0).origin.z==5,"wall spark lost the collision witness");
             RacePairFrame contact;
             contact.count=1;
@@ -248,9 +484,12 @@ int main(int argc,char** argv) {
             gentle.emit_car_impact_sparks(contact,{100,0,0});
             check(gentle.spark_count()==0,"car sparks respect camera distance");
             gentle.emit_car_impact_sparks(contact,{});
-            check(gentle.spark_count()==2&&gentle.spark(0).effect==RaceParticleEffect::car_impact&&
+            check(gentle.spark_count()==kRaceSparkLimit&&
+                  gentle.spark(0).effect==RaceParticleEffect::car_impact&&
                   gentle.spark(0).atlas==RaceParticleAtlas::sparks&&gentle.spark(0).origin.z==5,
-                  "bumper impact must emit authored car sparks at the collision point");
+                  "bumper impact must emit the authored bounded spark burst at the collision point");
+            check(gentle.smoke_count()>0&&gentle.smoke(0).effect==RaceParticleEffect::car_impact_smoke,
+                  "car impact lost the smoke in the authored collision group");
         }
         RaceParticles expected=scene.particles();bool saw_live=false;
         for(unsigned tick=0;tick<kRaceInputMaxTicks;++tick) {

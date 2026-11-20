@@ -29,13 +29,14 @@ void update_race_minimap_direction(MapPoint target,std::int32_t ticks,
 
 bool append_race_minimap(const RaceSession& session,const RaceHudAtlas& atlas,
                          unsigned width,unsigned height,RaceMinimapState& state,
-                         RaceHudFrame& frame) noexcept {
+                         RaceHudFrame& frame,unsigned local) noexcept {
     if (session.start_cinematic() || (session.is_drift() && !session.timing().go_valid) || !atlas.map.valid) return true;
     if (!width || !height) return false;
-    const auto& camera=session.camera();
+    const auto& driver=local?session.rival(local-1):session;
+    const auto& camera=driver.camera();
     const MapPoint target{{float(camera.forward.x),float(camera.forward.y)}};
     update_race_minimap_direction(target,session.timing().step_ticks,
-                                  session.telemetry().resets,state);
+                                  driver.telemetry().resets,state);
     const auto angle=std::uint16_t(chase_angle(state.direction[1],state.direction[0])+0x8000);
     // Original perspective/rotating style1, from 0x005912B0. Final scale
     // follows the current HUD's uniform 640x480 FEng canvas adapter.
@@ -48,8 +49,8 @@ bool append_race_minimap(const RaceSession& session,const RaceHudAtlas& atlas,
     MinimapPresentation presentation;presentation.valid=presentation.camera_angle_valid=true;
     presentation.native_center={{86,240}};presentation.native_half_extent={{64,64}};
     presentation.screen_transform={{scale,0,0,0,scale,0}};presentation.map_angle=angle;
-    const auto& car=session.car();const auto& q=car.orientation;
-    MinimapActor player;player.id=0;player.raw_xy={{float(car.position.x),float(car.position.y)}};
+    const auto& car=driver.car();const auto& q=car.orientation;
+    MinimapActor player;player.id=local;player.raw_xy={{float(car.position.x),float(car.position.y)}};
     player.heading=chase_angle(1-2*(q.y*q.y+q.z*q.z),2*(q.x*q.y+q.w*q.z));
     // Explicit port roster. No inferred retail live gate writers.
     player.raw_gates_valid=true;player.gate_4d0=player.gate_8a9=1;
@@ -74,13 +75,14 @@ bool append_race_minimap(const RaceSession& session,const RaceHudAtlas& atlas,
     line(course.route.start,course.route.reverse && course.route.point_to_point?atlas.map.finish_angle:atlas.map.start_angle,-1);
     if(course.route.point_to_point)
         line(course.route.finish,course.route.reverse?atlas.map.start_angle:atlas.map.finish_angle,-2);
-    for(std::size_t i=0;i<session.rival_count();++i) {
-        const auto& s=session.rival(i).car();const auto& r=s.orientation;
-        auto& actor=actors[actor_count++];actor=player;actor.id=unsigned(i+1);
+    for(std::size_t i=0;i<=session.rival_count();++i) {
+        if(i==local)continue;
+        const auto& s=i?session.rival(i-1).car():session.car();const auto& r=s.orientation;
+        auto& actor=actors[actor_count++];actor=player;actor.id=unsigned(i);
         //435746..435756 passes hide=true for eliminated non-human actors;
         //43535D clears8A9, which58EA00 tests before drawing their map marker.
         //Keep the result row for standings; this gate hides only the marker.
-        actor.gate_8a9=session.timing().racers.at(i+1).status==RacerStatus::knocked_out?0:1;
+        actor.gate_8a9=session.timing().racers.at(i).status==RacerStatus::knocked_out?0:1;
         actor.raw_xy={{float(s.position.x),float(s.position.y)}};
         actor.heading=chase_angle(1-2*(r.y*r.y+r.z*r.z),2*(r.x*r.y+r.w*r.z));
         // Original 58EA88: rival palette7313DD and marker kind5.

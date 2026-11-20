@@ -136,7 +136,7 @@ std::vector<GamepadFrame> drive_demo_recording();
 // give it. nfsu_drive_tests owns the portable regression pin; it is not
 // an original-game recording or an inferred acceleration benchmark.
 constexpr const char* kDrivePinnedDemoSha256 =
-    "6FC2FCBBC8D3E794C1D60FBBBAF8DD8EB32FF8C32D172B7E43700AC692BF6959";
+    "7370090239F0FEC007510AA4FA5256BD357668B0E15627E28D68F8AC8521239C";
 
 // ---------------------------------------------------------------------------
 // Showing it with the CPU reference renderer

@@ -7,6 +7,75 @@ namespace nfsu {
 bool ai_traffic_spawn_point_allowed(const std::array<std::uint8_t,4>& flags,bool forward) noexcept {
     return (flags[3] & (forward ? 2U : 4U)) != 0;
 }
+bool ai_traffic_walk_road(const RacingLineTrack& roads,const std::vector<AiRoadEvent>& events,
+                          AiRoadCursor start,float distance,bool forward,AiRoadCursor& out) noexcept {
+    const auto* start_road=roads.find(start.route);
+    if(!start_road||start.point>=start_road->points.size()||!std::isfinite(distance)||distance<0.F)return false;
+    struct Candidate {AiRoadCursor cursor;float remaining;};
+    std::array<Candidate,20> alternatives;
+    unsigned head=0,count=0,popped=0;
+    const auto enqueue=[&](Candidate candidate,bool front) {
+        if(count==alternatives.size())return;
+        if(front)head=(head+alternatives.size()-1)%alternatives.size();
+        alternatives[(head+(front?0:count))%alternatives.size()]=candidate;
+        ++count;
+    };
+    const auto allowed=[&](const RoutePoint& point) {
+        const auto& flags=point.unknown_84;
+        return forward?(flags[0]&0x40||flags[3]&0x0a):(flags[2]&0x08||flags[3]&0x14);
+    };
+
+    Candidate current{start,distance+(forward?0.F:start_road->points[start.point].distance_to_next)};
+    for(unsigned step=0;step<0x19000;++step) {
+        const auto& road=*roads.find(current.cursor.route);
+        const auto& point=road.points[current.cursor.point];
+        current.remaining-=point.distance_to_next;
+        if(current.remaining<0.F){out=current.cursor;return true;}
+
+        const int adjacent=int(current.cursor.point)+(forward?1:-1);
+        const bool has_adjacent=adjacent>=0&&unsigned(adjacent)<road.points.size();
+        const Candidate straight{{road.index,std::uint16_t(has_adjacent?adjacent:0)},current.remaining};
+        bool use_straight=true,deferred=false;
+        for(const auto id:{point.event_a,point.event_b}) {
+            if(id==kRouteNoEvent)break;
+            if(id>=events.size())return false;
+            const auto& event=events[id];
+            if(event.direction==unsigned(forward))continue;
+            if(event.type==3) {
+                current.remaining=-1.F;
+                use_straight=false;
+                break;
+            }
+            const bool traffic_connector=(point.unknown_84[3]&2)!=0;
+            if(traffic_connector&&event.traffic_type==7)continue;
+            const auto* target=roads.find(event.target_route);
+            if(!target||event.target_point>=target->points.size())return false;
+            const auto& next=target->points[event.target_point];
+            const float projection=(next.position[0]-point.position[0])*point.forward[0]+
+                                   (next.position[1]-point.position[1])*point.forward[1];
+            const Candidate branch{{event.target_route,event.target_point},
+                                   current.remaining+point.distance_to_next-projection};
+            use_straight=false;
+            if(traffic_connector&&event.traffic_type==2) {
+                current=branch;
+                break;
+            }
+            if(has_adjacent)enqueue(straight,true);
+            enqueue(branch,event.type==0);
+            deferred=true;
+        }
+        if(!deferred) {
+            if(use_straight&&has_adjacent)current=straight;
+            const bool has_next=!use_straight||has_adjacent;
+            if(has_next&&allowed(roads.find(current.cursor.route)->points[current.cursor.point]))continue;
+        }
+        if(!count||++popped>100)return false;
+        current=alternatives[head];
+        head=(head+1)%alternatives.size();
+        --count;
+    }
+    return false;
+}
 bool ai_traffic_drag_spawn_margin(unsigned point,unsigned count,bool forward) noexcept {
     return forward ? count>10 && point<count-10 : point>=10;
 }
@@ -61,6 +130,16 @@ bool ai_traffic_spawn_spacing(const TrackPathZone* zone,unsigned selector,
     const float unit=float(sample)*4.656612873077393e-10F;
     const float offset=float(unit*extent);
     spacing=float(offset+low);return true;
+}
+void ai_traffic_placement_ranges(const std::array<float,8>& base,const std::array<float,8>& spread,
+                                 std::uint32_t& random,std::array<float,8>& ranges) noexcept {
+    for(unsigned i=0;i<ranges.size();++i) {
+        const auto sample=random%0x7fffffffU;
+        const auto x=random^0x1d872b41U,y=(x>>5)^x;
+        random=(y<<27)^y^x;
+        const float offset=(float(sample)*4.656612873077393e-10F)*spread[i];
+        ranges[i]=(offset+offset-spread[i])+base[i];
+    }
 }
 bool ai_traffic_spawn_gap_blocked(float delta,float spacing,bool traffic) noexcept {
     return traffic?std::abs(delta)<spacing:delta>0&&delta<spacing;

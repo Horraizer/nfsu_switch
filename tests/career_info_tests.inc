@@ -61,7 +61,7 @@ void verify_career_info(const std::filesystem::path& root,const CareerCatalog& c
     check(load_career(base,catalog,loaded,error)&&loaded.statistics.starts==8&&loaded.statistics.metres==p.statistics.metres&&
         loaded.statistics.modes[2].style==150&&loaded.statistics.totalled==1&&!loaded.statistics.partial_history,"statistics survive slot reload exactly");
     auto file=base;file+=".0";std::ifstream in(file,std::ios::binary);std::string bytes((std::istreambuf_iterator<char>(in)),{});in.close();
-    auto body=bytes.substr(0,bytes.find("STATS "));body.replace(0,std::string("NFSU_CAREER 11").size(),"NFSU_CAREER 9");
+    auto body=bytes.substr(0,bytes.find("STATS "));body.replace(0,std::string("NFSU_CAREER 12").size(),"NFSU_CAREER 9");
     const auto legacy=body+"SHA256 "+sha256_hex(sha256(body.data(),body.size()))+'\n';
     {std::ofstream out(file,std::ios::binary|std::ios::trunc);out<<legacy;check(bool(out),"schema9 fixture written");}
     check(load_career(base,catalog,loaded,error)&&loaded.statistics.partial_history&&loaded.statistics.starts==0&&loaded.statistics.metres==0&&

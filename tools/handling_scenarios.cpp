@@ -28,7 +28,7 @@ int main() {
         if (name == "shift") pose.gearbox = VehicleGearbox::manual;
         if (!model.reset(car, pose)) return 1;
         if (name == "reverse") car.gear = car.transmission.requested_gear = kVehicleGearReverse;
-        SteeringState steering; unsigned shift_step = 0; bool shifted = false;
+        SteeringState steering;
         for (unsigned k = 0; k < 1440; ++k) {
             VehicleInput input; std::string phase;
             if (name == "accelerate-coast") {
@@ -69,14 +69,14 @@ int main() {
             c.heading_minus_velocity_deg = float(double(std::int16_t(delta))*360/65536);
             c.throttle = float(input.throttle); c.brake = float(input.brake);
             c.handbrake = input.handbrake ? 1.F : 0.F; c.predicted_max_speed = predictor;
-            c.shift_elapsed = shifted ? float(double(k-shift_step)/120) : 1;
+            // Only the initial body construction occurs on this isolated flat course.
+            c.shift_elapsed = float(double(k)/120);
             SteeringResult road;
             if (!steering_step(c, steering, road)) return 1;
             input.road_steering = true; input.road_angle = road.angle_deg*3.14159265358979323846/180;
             input.road_target = road.target_deg*3.14159265358979323846/180;
-            VehicleTelemetry t; const int previous = car.gear;
+            VehicleTelemetry t;
             if (!model.step(car, input, VehicleFlatGround(), t)) return 1;
-            if (car.gear != previous) { shifted = true; shift_step = k; }
             std::cout << name << ',' << t.step << ',' << phase << ',' << t.forward_speed << ','
                 << t.angular_velocity.z << ',' << t.lateral_speed << ',' << t.engine_rpm << ','
                 << t.wheel_rpm << ',' << t.gear << ',' << t.brake;

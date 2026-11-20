@@ -212,7 +212,7 @@ void check_sessions(const Record& record) {
     // operation fixtures stay separate. Runtime aero now uses57F2B0; the
     // native aero fixture pins that producer independently of this replay.
     const auto synthetic_hash=sha256_hex(hash.finish());
-    require(synthetic_hash=="6554B0A5C6EB55B31C14E52CEB1E918F77C70063A450BC8D25CEA64FC9C5245A","synthetic upgraded replay pin: "+synthetic_hash);
+    require(synthetic_hash=="F438F11CB5974BB80C179722DEE93699B5B286D176511B02818BFDEF9C489F3C","synthetic upgraded replay pin: "+synthetic_hash);
     std::cout << "synthetic-upgrade-sha256 " << synthetic_hash << '\n';
     // Reset reuses the model and shifts; it must not apply tables again.
     const auto before=a.spec().handling;

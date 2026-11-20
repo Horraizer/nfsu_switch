@@ -6,7 +6,6 @@
 #include "nfsu/ai_action.h"
 #include "nfsu/quick_rival.h"
 #include "nfsu/ai_powertrain.h"
-#include "nfsu/traffic_model.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -14,13 +13,12 @@
 namespace nfsu {
 namespace {
 bool load_traffic(const std::filesystem::path& root,const std::vector<unsigned char>& globals,
-                  unsigned track,unsigned count,std::vector<IntroGridActor>& out,std::string& error) {
+                  unsigned track,unsigned count,std::vector<IntroGridActor>& out,std::string& error,
+                  std::uint32_t& random) {
     if(!count)return true;
     const auto types=parse_car_type_table(globals.data(),globals.size());
     if(!types.ok()){error="traffic car table unavailable";return false;}
-    // The current frontend supplies an explicit port seed. This restores the
-    // original weighted draw/retry/skin boundary, not all earlier global RNG
-    // consumers or the original traffic actor construction scheduler.
+    // The input is the global state at the 4B3B20 traffic roster boundary.
     std::array<TrafficModelRecord,35> models{};
     if(types.records.size()!=models.size()){error="traffic model table extent";return false;}
     for(const auto& type:types.records) {
@@ -31,7 +29,7 @@ bool load_traffic(const std::filesystem::path& root,const std::vector<unsigned c
     }
     if(count>kRaceTrafficCapacity){error="authored traffic pool exceeds supported capacity";return false;}
     std::array<int,kRaceTrafficCapacity> used{};
-    std::uint32_t random=0x60000000U;out.reserve(count);
+    out.reserve(count);
     for(unsigned i=0;i<count;++i) {
         const auto choice=choose_traffic_model(models.data(),models.size(),track,used.data(),i,random);
         if(choice.id<0||choice.id>=int(types.records.size())){error="intro traffic pool unavailable";return false;}
@@ -165,14 +163,16 @@ bool load_quick_race_traffic(const std::filesystem::path& root,const SupportedRa
         const auto* track=find_track_info(table,race.slot.track);
         const auto count=track?race_traffic_pool_size(*track,density,unsigned(race.slot.direction)):-1;
         if(!table.ok()||count<0){error="traffic track selection invalid";return false;}
-        if(!load_traffic(root,globals,race.slot.track,unsigned(count),next,error))return false;
+        std::uint32_t random=0x60000000U;
+        if(!load_traffic(root,globals,race.slot.track,unsigned(count),next,error,random))return false;
     }
     out=std::move(next);error.clear();return true;
 }
 bool load_race_grid(const std::filesystem::path& root,unsigned event,const std::string& car,
                      unsigned difficulty,IntroGrid& out,std::string& error,const VehicleUpgradeLevels* owned_levels,
                      const RaceCarDress* owned_dress,unsigned race_index,GridPlayerVisuals player_visuals,
-                     const QuickRaceOptions* quick) {
+                     const QuickRaceOptions* quick,std::optional<std::uint32_t> traffic_roster_seed,
+                     std::optional<std::uint32_t> campaign_seed_before_settings) {
     IntroGrid next;
     SupportedRace selection;
     if(!load_supported_race(root/"FrontEnd/FrontB.lzc",root/"Global/GLOBALB.BUN",event,selection,error,race_index))return false;
@@ -327,8 +327,17 @@ bool load_race_grid(const std::filesystem::path& root,unsigned event,const std::
             }
         }
     }
+    // Authored rivals skip the random car and context selection at 4B418F
+    // and 4B42A7. The intro and Quick Race have different setup branches.
+    const bool authored=event!=0&&!quick&&std::all_of(next.actors.begin(),next.actors.end(),[](const auto& actor) {
+        return actor.config.role!=Event0Role::opponent||!actor.config.visual.name.empty();
+    });
+    const bool use_campaign_seed=authored&&campaign_seed_before_settings&&!traffic_roster_seed;
+    auto random=traffic_roster_seed.value_or(0x60000000U);
+    if(use_campaign_seed)random=authored_race_roster_seed(*campaign_seed_before_settings);
     if(!load_traffic(root,globals,next.setup->race.track,next.setup->traffic.requested_configs,
-        next.traffic,error))return false;
+        next.traffic,error,random))return false;
+    if(use_campaign_seed)next.startup_random=race_startup_random(random);
     out=std::move(next);error.clear();return true;
 }
 bool load_intro_grid(const std::filesystem::path& root,IntroGrid& out,std::string& error) {

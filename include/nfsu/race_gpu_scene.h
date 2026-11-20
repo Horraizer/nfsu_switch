@@ -1,4 +1,5 @@
 #pragma once
+#include "nfsu/split_layout.h"
 
 #include "nfsu/deko_gpfifo_budget.h"
 #include "nfsu/race_run.h"
@@ -28,6 +29,13 @@ struct RaceGpuFrame {
     std::uint64_t triangles = 0, unplaced = 0;
     double far_plane = 0;
 };
+// Environment alpha, environment additive, then vehicle water. Draws share
+// immutable texture and index storage; each view rewrites only its live quads.
+struct RaceParticleStream {
+    std::vector<MeshVertex> vertices;
+    std::size_t used = 0;
+};
+using RaceParticleStreams = std::array<RaceParticleStream,3>;
 struct RaceFrameProfile {
     double cull_ms = 0, list_ms = 0, car_ms = 0, track_ms = 0, combine_ms = 0;
     // Children of combine_ms, not additional parent costs.
@@ -64,9 +72,9 @@ public:
     void set_particles_enabled(bool enabled) { particles_enabled_ = enabled; }
     void set_start_scenes_enabled(bool enabled) { start_scenes_enabled_ = enabled; }
     const RaceParticles& particles() const noexcept { return particles_; }
-    void advance_particles(const RaceSession& session) noexcept {
-        if (particles_enabled_) particles_.advance(session);
-    }
+    void advance_particles(const RaceSession& session) noexcept;
+    void set_local_second_player(bool enabled) { if(!ready_)local_second_player_=enabled; }
+    bool set_local_second_car(const CarAssets&,const StockFrame&,std::string&);
     // The separate sky pass (issue 184), on by default. Off records no sky
     // draws, for console A/B cost runs. Refused once the scene is loaded.
     bool set_sky(bool enabled) { if (ready_) return false; sky_ = enabled; return true; }
@@ -102,6 +110,8 @@ public:
         if(ready_)return false;
         start_scene_=scene;start_region_=region;return true;
     }
+    bool load_road_start_scene(FileSystemService&,const std::filesystem::path&,unsigned,
+                               const std::string&,RaceStartClock&,std::string&);
     bool load_start_camera(FileSystemService& fs,const std::filesystem::path& root,unsigned scene,
                            const std::string& region,RaceStartClock& clock,std::string& error) {
         if(!ready_){error="race scene must load before start camera";return false;}
@@ -115,7 +125,8 @@ public:
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
                TimingService* timer = nullptr);
-    bool frame_split_view(const RaceSession&,const ChaseCameraView&,unsigned player,RaceGpuFrame&,std::string&);
+    bool frame_split_view(const RaceSession&,unsigned player,RaceGpuFrame&,std::string&,
+                          SplitLayout layout=SplitLayout::stacked,RaceFrameProfile* =nullptr,TimingService* =nullptr);
     // Append before the first frame/upload. Payloads move into this stable owner.
     bool add_rival(PreparedCarScene scene,std::vector<PreparedInstance> base,
                    std::size_t skin_source,CarShadowAsset shadow,std::string& error,bool traffic=false,
@@ -125,8 +136,10 @@ public:
     // Conservative metadata/capacity estimate; payloads are borrowed once.
     std::uint64_t cache_bytes() const;
 private:
+    bool append_start_crowd(FileSystemService&,const std::filesystem::path&,unsigned,
+                            const std::string&,std::string&);
     bool frame_view(const RaceSession&,RaceGpuFrame&,std::string&,RaceFrameProfile*,bool,
-                    TimingService*,const ChaseCameraView*,unsigned player);
+                    TimingService*,const ChaseCameraView*,unsigned player,SplitLayout=SplitLayout::stacked);
     TrackSlice track_;
     struct AnimatedTexture {std::size_t animation=0,first=0;std::vector<std::size_t> frames;};
     std::vector<AnimatedTexture> animated_textures_;
@@ -161,6 +174,7 @@ private:
     std::vector<unsigned> world_draw_sources_;
     bool sky_ = true;
     bool complete_zone_backing_=false;
+    std::size_t static_track_definitions_ = 0;
     std::size_t sky_draws_ = 0;
     std::size_t sky_position_ = 0;
     std::vector<std::size_t> template_of_group_;
@@ -191,7 +205,7 @@ private:
     std::size_t static_track_draw_count() const override { return sky_draws_ + selection_.size(); }
     std::size_t static_track_instance_count() const override { return track_placements_.size(); }
     const DrawInstanceUniform& static_track_instance(std::size_t i) const override { return track_placements_.at(i); }
-    std::size_t static_track_definition_count() const override { return track_templates_.owning_draws().size(); }
+    std::size_t static_track_definition_count() const override { return static_track_definitions_; }
     const RecordedDraw& static_track_definition(std::size_t i) const override { return track_templates_.owning_draws().at(i); }
     std::size_t reflection_draw_count() const override { return reflection_selection_.size() + lamp_draws_.size(); }
     const RecordedDraw& reflection_draw(std::size_t i) const override { return i < reflection_selection_.size() ? reflection_templates_.at(reflection_selection_[i]) : lamp_draws_.at(i-reflection_selection_.size()); }
@@ -253,7 +267,14 @@ private:
     std::vector<PreparedInstance> base_;
     std::size_t skin_source_ = kNoHandle;
     std::uint64_t car_bytes_ = 0;
+    std::size_t water_draws_ = 0;
+    RaceParticleStreams particle_streams_, second_particle_streams_;
+    std::vector<unsigned char> particle_sheet_;
     RaceParticles particles_;
+    std::unique_ptr<RaceParticles> second_particles_;
+    std::unique_ptr<RaceSkidMarks> second_skids_;
+    CarExhaustAnchors second_exhaust_{};
+    bool local_second_player_=false;
     RaceParticleTextures particle_textures_;
     std::unique_ptr<RaceSkidMarks> skids_;
     bool particles_enabled_ = false;
@@ -266,6 +287,8 @@ private:
     std::array<std::uint16_t,24> nitrous_indices_{};
     RecordedDraw nitrous_template_,purge_template_;
     std::array<RecordedDraw,5> nitrous_selected_{};
+    std::vector<RecordedDraw> second_flames_;
+    std::size_t second_flame_count_=0;
     std::size_t nitrous_count_=0;
     RenderTexture glow_head_, glow_tail_;
     std::array<RenderTexture,3> original_glow_textures_;

@@ -54,7 +54,8 @@ The trace checks the dispatch, Size multipliers and center instructions.
 
 The original player supplies display geometry separately from decoded sample
 width/height. `blit_movie` fits that 4:3 rectangle into the destination and
-samples the complete encoded picture into it. A widescreen Switch therefore
+bilinearly samples the complete encoded picture into it. At 720p the
+content rectangle is 960x720. A widescreen Switch therefore
 uses side bars. No picture is cropped or fitted using raw sample proportions.
 The Switch Screen uses a linear RGBA framebuffer and passes its byte stride
 unchanged to this helper. The padded-stride regression checks geometry and
@@ -64,6 +65,28 @@ Owner testing of integrated source `42f96af6` reported working intro audio
 and rejected image scaling. That build fitted encoded dimensions and is not
 accepted for movie presentation. The geometry correction preserves its audio
 path. Corrected hardware image acceptance remains pending owner retest.
+
+## Optional 720p movies
+
+Place the generated `Movies720` folder next to `Movies` under the game's
+data root. Each cache file is optional. The reader checks the cache against
+the original and can resume native playback if a cache frame fails. Audio
+and frame timing always come from the original.
+
+The conversion decodes the native pictures, lightly reduces noise, scales
+to 960x720 with Lanczos, and applies mild sharpening. The picture keeps the
+original 4:3 presentation. The separate LZ4 frames let the Switch read and
+decode one picture at a time. Regenerate with Python 3.9 or newer, FFmpeg
+and liblz4 installed.
+
+```text
+python tools/prepare_movies720.py <retail-root> out/Movies720 --decoder <nfsu_intro_movie_tests>
+```
+
+Add `--all` for career and extra movies. On Windows, pass `--lz4 <path>`
+if the compressor DLL is outside the loader's search path.
+`nfsu_intro_movie_tests --verify-enhanced <movie.mad> <movie.nfm>` compares
+the complete cached timeline with native decode.
 
 ## Player contract
 

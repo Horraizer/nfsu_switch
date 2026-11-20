@@ -36,8 +36,7 @@ bool original_wheel_skid(const WheelSkidInput& in,WheelSkidSample& out) noexcept
     out.texture=(in.surface==8||in.surface==9)?1:in.surface==15?2:0;
     return out.opacity>0;
 }
-bool RaceSkidMarks::load(const std::filesystem::path& root,const CarAssets& car,std::string& error) {
-    reset();textures_={};
+bool RaceSkidMarks::set_wheel_widths(const std::filesystem::path& root,const CarAssets& car,std::string& error) {
     std::ifstream f(root/"Global/GLOBALB.BUN",std::ios::binary);
     for(unsigned i=0;i<4;++i) {
         unsigned char b[4]{};f.seekg(static_cast<std::streamoff>(car.record_offset+kVehicleWheelOffset+i*kVehicleWheelStride+0x14));
@@ -46,6 +45,11 @@ bool RaceSkidMarks::load(const std::filesystem::path& root,const CarAssets& car,
         std::memcpy(&widths_[i],&bits,4);
         if(!std::isfinite(widths_[i])||widths_[i]<=0||widths_[i]>2){error="invalid skid wheel width";return false;}
     }
+    return true;
+}
+bool RaceSkidMarks::load(const std::filesystem::path& root,const CarAssets& car,std::string& error) {
+    reset();textures_={};
+    if(!set_wheel_widths(root,car,error))return false;
     const char* names[]={"SKID_ROAD","SKID_DIRT","SKID_GRASS"};
     std::vector<std::uint32_t> wanted;for(auto name:names)wanted.push_back(bin_hash(name));std::sort(wanted.begin(),wanted.end());
     for(const auto* file:{"Global/INGAMEB.BUN","Global/GLOBALB.BUN"}) {
@@ -123,26 +127,27 @@ void RaceSkidMarks::rebuild() noexcept {
     }
     for(unsigned t=0;t<3;++t)for(std::size_t i=visible_[t]*4;i<kSegments*4;++i)vertices_[t*kSegments*4+i]={};
 }
-bool RaceSkidMarks::append(RecordedCommands& commands,std::string& error) {
+bool RaceSkidMarks::append(RecordedCommands& commands,std::string& error,bool second_player) {
     rebuild();
     auto& table=commands.owning_uploads();const auto first=table.resources.size();
+    const std::string prefix=second_player?"second/skid/":"skid/";
     for(unsigned t=0;t<3;++t) {
-        UploadResource v;v.kind=UploadResourceKind::vertex_buffer;v.name="skid/vertices/"+std::to_string(t);
+        UploadResource v;v.kind=UploadResourceKind::vertex_buffer;v.name=prefix+"vertices/"+std::to_string(t);
         v.data=reinterpret_cast<const unsigned char*>(vertices_.data()+t*kSegments*4);v.streamed_vertices=true;
         v.bytes=kSegments*4*sizeof(MeshVertex);v.element_bytes=sizeof(MeshVertex);v.elements=kSegments*4;v.alignment=kCarVertexAlignment;
         table.resources.push_back(v);
-        UploadResource index;index.kind=UploadResourceKind::index_buffer;index.name="skid/indices/"+std::to_string(t);
+        UploadResource index;index.kind=UploadResourceKind::index_buffer;index.name=prefix+"indices/"+std::to_string(t);
         index.data=reinterpret_cast<const unsigned char*>(indices_.data());index.bytes=sizeof(indices_);index.element_bytes=2;index.elements=indices_.size();index.alignment=kIndexAlignment;
         table.resources.push_back(index);
         const auto& texture=textures_[t];UploadResource image;image.kind=UploadResourceKind::texture;image.memory=UploadMemory::image;
-        image.name="skid/texture/"+std::to_string(t);image.data=texture.rgba.data();image.bytes=texture.rgba.size();image.alignment=kTextureStagingAlignment;
+        image.name=prefix+"texture/"+std::to_string(t);image.data=texture.rgba.data();image.bytes=texture.rgba.size();image.alignment=kTextureStagingAlignment;
         image.element_bytes=4;image.elements=image.bytes/4;image.texture_hash=texture.hash;
         if(!check_texture_upload_format(TextureUploadFormat::rgba8,texture.width,texture.height,image.bytes,image.texture,error,texture.mip_count))return false;
         table.resources.push_back(image);
         auto& totals=table.totals;totals.resources+=3;++totals.vertex_buffers;++totals.index_buffers;++totals.textures;
         totals.vertex_bytes+=v.bytes;totals.index_bytes+=index.bytes;totals.texture_bytes+=image.bytes;
         totals.largest_texture_bytes=std::max(totals.largest_texture_bytes,image.bytes);
-        RecordedDraw d;d.name="skid/material/"+std::to_string(t);d.group=0x187000+t;
+        RecordedDraw d;d.name=prefix+"material/"+std::to_string(t);d.group=(second_player?0x189000:0x187000)+t;
         d.vertex_resource=first+t*3;d.index_resource=d.vertex_resource+1;d.texture_resource=d.vertex_resource+2;
         d.vertex_count=kSegments*4;d.index_count=kSegments*6;
         for(const auto& p:shader_manifest::kPrograms)if(std::strcmp(p.name,"car_textured")==0)d.program=&p;

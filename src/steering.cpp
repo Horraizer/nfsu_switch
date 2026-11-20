@@ -126,7 +126,7 @@ bool steering_step(const SteeringContext& c, SteeringState& state, SteeringResul
         r.shift_factor = static_cast<float>(shift_curve(c.shift_elapsed));
         lock = static_cast<float>((r.shift_factor+(1-double(r.shift_factor))*(1-double(ratio)))*lock);
     }
-    const float slip = c.forward_speed > 1 ? c.heading_minus_velocity_deg : 0;
+    const float slip = c.forward_speed >= 1 ? c.heading_minus_velocity_deg : 0;
     const float abs_slip = std::abs(slip);
     if (s.assist) {
         if (abs_slip < 5 || c.speed < 17.88109F) s.assist = false;

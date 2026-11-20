@@ -114,6 +114,10 @@ public:
     bool texture_spillover_ready = false;
     std::array<std::vector<unsigned char>,3> texture_bytes;
     std::array<TexturePackSet,3> texture_packs;
+    std::vector<TextureAnimation> common_animations;
+    struct BoundAnimation {TextureAnimation timing;std::vector<std::size_t> frames;};
+    std::vector<BoundAnimation> animations;
+    std::vector<std::size_t> texture_frames;
     RenderTextureSet textures;
     PreparedTrackScene track;
     TrackDrawList list;
@@ -160,6 +164,7 @@ public:
         for (std::size_t i=0;i<paths.size();++i) {
             texture_packs[i] = load_texture_pack_set(paths[i],texture_bytes[i]);
             require(texture_packs[i].complete,"track texture source is incomplete: "+utf8_text(paths[i]));
+            require(load_texture_animations(paths[i],common_animations,error),error);
         }
         if (particles_enabled) {
             require(particles.load_presets(texture_bytes[2],error),error);
@@ -227,6 +232,29 @@ public:
         }
         std::vector<RenderTextureSource> extra_sources;
         std::vector<std::size_t> extra_owners;
+        std::map<std::uint32_t,TextureAnimation> definitions;
+        const auto collect=[&](const auto& source) {
+            for(const auto& a:source) {
+                const auto result=definitions.emplace(a.hash,a);
+                const auto& prev=result.first->second;
+                require(result.second || (a.fps==prev.fps && a.clock==prev.clock && a.frames==prev.frames),
+                        "conflicting race texture animation");
+            }
+        };
+        collect(common_animations);
+        for(const auto& entry:sections)for(const auto& section:entry.second->sections)collect(section.animations);
+        for(const auto& section:texture_spillover.sections)collect(section.animations);
+        TrackSceneOptions options;
+        animations.clear();
+        for(const auto& entry:definitions) {
+            const auto& a=entry.second;
+            if(std::none_of(a.frames.begin(),a.frames.end(),[&](auto hash){return std::binary_search(wanted.begin(),wanted.end(),hash);}))continue;
+            options.region.animation_texture_hashes.insert(options.region.animation_texture_hashes.end(),a.frames.begin(),a.frames.end());
+            animations.push_back({a,{}});
+        }
+        wanted.insert(wanted.end(),options.region.animation_texture_hashes.begin(),options.region.animation_texture_hashes.end());
+        std::sort(wanted.begin(),wanted.end());
+        wanted.erase(std::unique(wanted.begin(),wanted.end()),wanted.end());
         track_stream_texture_sources(texture_spillover,&wanted,extra_sources,extra_owners);
         for (std::size_t i=0;i<extra_sources.size();++i)
             if (sections.count(texture_spillover.sections[extra_owners[i]].record)==0)
@@ -241,8 +269,16 @@ public:
         require(decode_render_texture_sources(sources,limits,textures,error),error);
         if (track_number == 1005) require(bind_track_default_alpha(textures,0x828DCF0BU,error),error);
         if(track_number==1301)require(bind_drift_track_default_alpha(textures,error),error);
-        TrackSceneOptions options; options.region.max_texture_bytes = limits.max_total_bytes;
+        options.region.max_texture_bytes = limits.max_total_bytes;
         require(build_track_scene(geometry,objects,textures,options,track,error),error);
+        texture_frames.resize(track.region.textures.size());
+        for(std::size_t i=0;i<texture_frames.size();++i)texture_frames[i]=i;
+        for(auto& a:animations)for(auto hash:a.timing.frames) {
+            const auto& images=track.region.textures;
+            const auto it=std::find_if(images.begin(),images.end(),[&](const auto& t){return t.claims_hash(hash);});
+            require(it!=images.end(),"missing race texture animation frame");
+            a.frames.push_back(std::size_t(it-images.begin()));
+        }
         std::vector<TrackVisibleInstance> visible;
         for (const auto& section : track.sections) for (std::size_t k=0;k<section.source_instances;++k) {
             TrackVisibleInstance item; item.section_index=section.section_index; item.instance_index=k;
@@ -268,11 +304,16 @@ public:
                 options.camera.focal_y_override * double(options.height) / double(options.width);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
+        track_options.world_ticks=session.timing().step_ticks;
+        for(const auto& a:animations) {
+            const auto phase=texture_animation_phase(a.timing,std::uint32_t(session.world_visual_frame()));
+            for(std::size_t i=0;i<a.frames.size();++i)texture_frames[a.frames[i]]=a.frames[(i+phase)%a.frames.size()];
+        }
         track_options.sky = true;
         track_options.wet_road_reflections = wet_road_reflections;
         track_options.wet_lamps = wet_road_reflections ? &lamps : nullptr;
         track_options.material_state = MaterialStateMode::retail;
-        require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error),error);
+        require(render_track_draw_list(track,list,track_options,{},background,stats,track_stats,error,{},&texture_frames),error);
         VehicleState presented=session.car();
         auto presented_animation=session.animation();
         const bool start_car=crowd.car(session,presented,&presented_animation);
@@ -498,7 +539,7 @@ int run(int argc, char** argv) {
     audio::RaceAudioService sound;
     if (live && !smoke) {
         std::string diagnostic;
-        sound.start(root, diagnostic, {}, {}, false,selected_car.car_type_name,performance.engine_a,performance.nitrous,performance.tyres,{},performance.induction);
+        sound.start(root, diagnostic, {}, {}, false,selected_car.car_type_name,performance.engine_a,performance.nitrous,performance.tyres,{},performance.induction,16,1,scene.track_number);
         std::cout << "audio: " << diagnostic << '\n';
     }
     RaceRouteDriver driver(race_event_driving_line(event_number)); std::vector<RaceInputRun> recording;

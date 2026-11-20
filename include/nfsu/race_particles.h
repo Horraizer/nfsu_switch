@@ -42,8 +42,12 @@ constexpr unsigned kRaceWaterPresetCount = 19;
 enum class RaceParticleEffect : unsigned {
     fixture, road, rough_road, dirt, grass, blue, yellow, red, wall,
     water_first, purge_first = water_first + kRaceWaterPresetCount,
-    purge_right, car_impact, count
+    purge_right, car_impact, road_spray, car_impact_smoke, count
 };
+
+inline bool is_driving_water_effect(RaceParticleEffect effect) noexcept {
+    return effect>=RaceParticleEffect::water_first && effect<RaceParticleEffect::purge_first;
+}
 
 struct RaceParticlePreset {
     std::array<std::array<float,4>,4> rgba{};
@@ -51,12 +55,16 @@ struct RaceParticlePreset {
     float life=0, life_spread=0, speed=0, speed_spread=0;
     float arc=0, tilt=0, inherit=0, inherit_spread=0, gravity=0, drag=0;
     float interval=1;
+    VehicleVec3 offset;
     RaceParticleAtlas atlas = RaceParticleAtlas::smoke;
-    unsigned frame_period=0, wheel=0;
+    unsigned frame_period=0;
+    bool random_start_cell=true;
 };
 
 struct RaceParticle {
     RaceParticleKind kind = RaceParticleKind::smoke;
+    std::uint8_t water_owner = 0;
+    std::uint32_t water_node = 0;
     std::uint64_t born_step = 0;
     double solver_dt = kVehicleStepSeconds;
     double elapsed_seconds = -1; // Managed age after a world-dt transition.
@@ -67,16 +75,18 @@ struct RaceParticle {
     RaceParticleEffect effect = RaceParticleEffect::fixture;
     unsigned life_ticks = 0, frame_period = 0, environment_preset = 0;
     RaceParticleAtlas atlas = RaceParticleAtlas::smoke;
+    unsigned environment_source = 0;
     VehicleVec3 displacement;
 };
 
 constexpr std::size_t kRaceSmokeLimit = 16;
+constexpr std::size_t kRaceWaterPool = 1000; // 40272B, shared native particle pool ceiling.
+struct WaterParticleView {
+    std::array<std::uint16_t,kRaceWaterPool> indices{};
+    std::size_t count = 0;
+};
 constexpr std::size_t kRaceSparkLimit = 8;
 constexpr std::size_t kRaceParticleLimit = kRaceSmokeLimit + kRaceSparkLimit;
-constexpr std::size_t kRaceEnvironmentAlphaLimit = 24;
-constexpr std::size_t kRaceEnvironmentAdditiveLimit = 16;
-constexpr std::size_t kRaceEnvironmentLimit = kRaceEnvironmentAlphaLimit + kRaceEnvironmentAdditiveLimit;
-
 // The slots retain insertion order within each kind. Expired particles are
 // removed before emitting; at the cap, a new one replaces the oldest.
 struct RacePairFrame;
@@ -87,54 +97,87 @@ public:
     bool load_environment(const std::vector<unsigned char>& track, std::string& error);
     bool load_environment(const std::filesystem::path& track, std::string& error);
     void reset() noexcept;
-    void advance_environment(std::uint64_t frame, const VehicleVec3& eye) noexcept;
+    void advance_environment(std::uint64_t frame,const VehicleVec3& eye,const VehicleVec3* other_eye=nullptr) noexcept;
     std::size_t environment_emitter_count() const noexcept { return emitters_.size(); }
     std::size_t environment_draw_limit() const noexcept {
-        return emitters_.empty() ? 0 : kRaceEnvironmentLimit;
+        return environment_draw_limit_;
     }
     std::uint64_t environment_bytes() const noexcept;
     std::size_t environment_alpha_count() const noexcept { return environment_alpha_count_; }
     std::size_t environment_additive_count() const noexcept { return environment_additive_count_; }
-    const RaceParticle& environment_alpha(std::size_t i) const noexcept { return environment_alpha_[i]; }
-    const RaceParticle& environment_additive(std::size_t i) const noexcept { return environment_additive_[i]; }
+    const RaceParticle& environment_alpha(std::size_t i) const noexcept { return environment_alpha_[environment_order_[0][i]]; }
+    const RaceParticle& environment_additive(std::size_t i) const noexcept { return environment_additive_[environment_order_[1][i]]; }
+    // Native 404240 walks active placements, then each placement's children.
+    template<class Visitor>
+    void visit_environment(Visitor&& visit) const {
+        for(std::size_t i=0;i<active_environment_count_;++i) {
+            const auto& source=emitters_[active_environment_sources_[i]];
+            const bool additive=environment_presets_[source.preset].additive;
+            const auto& pool=additive?environment_additive_:environment_alpha_;
+            const auto& order=environment_order_[additive];
+            for(auto j=source.child_offset-source.children;j<source.child_offset;++j)
+                visit(pool[order[j]]);
+        }
+    }
     bool visual(const RaceParticle& particle, VehicleVec3& position, double& diameter,
                 double& opacity, std::array<unsigned,3>& rgb) const noexcept;
-    void advance(const RaceSession& session) noexcept;
+    void advance(const RaceSession& session,const RaceSession* second_driver=nullptr,bool vehicle_only=false) noexcept;
     void advance(const VehicleTrackTelemetry& step, const VehicleSpec& spec,
                  float camera_distance = 0, unsigned driving_surface = 0,
-                 const TrackContactWorld* contact_world = nullptr) noexcept;
-    void emit_car_impact_sparks(const RacePairFrame&,const VehicleVec3& eye) noexcept;
+                 const TrackContactWorld* contact_world = nullptr, const VehicleVec3* camera_eye = nullptr,
+                 const VehicleVec3* second_eye = nullptr) noexcept;
+    void emit_car_impact_sparks(const RacePairFrame&,const VehicleVec3& eye,const VehicleVec3* other_eye=nullptr) noexcept;
     std::uint64_t step() const noexcept { return step_; }
     std::size_t smoke_count() const noexcept {
-        return purge_count_ + std::min(smoke_count_,kRaceSmokeLimit-purge_count_);
+        return purge_count_ + std::min(spray_count_+smoke_count_,kRaceSmokeLimit-purge_count_);
     }
+    WaterParticleView visible_water(const CameraFrame& camera) const noexcept;
+    std::size_t water_count() const noexcept { return water_count_; }
+    const RaceParticle& water(std::size_t i) const noexcept { return water_[i]; }
     std::size_t spark_count() const noexcept { return spark_count_; }
     const RaceParticle& smoke(std::size_t i) const noexcept {
-        return i < purge_count_ ? purge_[i] : smoke_[i-purge_count_];
+        if (i < purge_count_) return purge_[i];
+        i -= purge_count_;
+        return i < spray_count_ ? spray_[i] : smoke_[i-spray_count_];
     }
     const RaceParticle& spark(std::size_t i) const noexcept { return sparks_[i]; }
 private:
     struct EnvironmentPreset {
         RaceParticlePreset particle;
-        float radius = 0, delay = 0, delay_spread = 0, rate_spread = 0;
-        bool additive = false;
+        VehicleVec3 offset, extent;
+        float radius = 0, on_time = 0, on_spread = 0, off_time = 0, off_spread = 0, rate_spread = 0;
+        float rate = 0;
+        bool additive = false, planar = false, inherit_during_update = false;
     };
     struct EnvironmentEmitter {
-        VehicleVec3 origin, axis;
+        VehicleVec3 origin;
+        std::array<VehicleVec3,3> basis;
         unsigned preset = 0;
         std::uint32_t seed = 0, random = 0;
-        double remaining = 0;
+        double remaining = 0, phase_time = 0;
+        unsigned children = 0, child_offset = 0;
+        bool active = true, listed = false;
     };
+    RaceParticle spawn_environment(EnvironmentEmitter&,const EnvironmentPreset&) const noexcept;
+    void index_environment_children() noexcept;
     const RaceParticlePreset& preset_for(const RaceParticle&) const noexcept;
+    void advance_water(double frame_dt) noexcept;
+    void advance_vehicle(const VehicleTrackTelemetry&,const VehicleSpec&,float,unsigned,
+        const TrackContactWorld*,const VehicleVec3*,const VehicleVec3*) noexcept;
     void advance_purge(const RaceSession&) noexcept;
+    void emit_wheel_smoke(const VehicleTrackTelemetry&,const VehicleSpec&,float,
+                          std::array<float,kVehicleWheelCount>&,std::uint64_t,bool,unsigned) noexcept;
     std::array<VehicleVec3,2> purge_offsets_{};
     std::array<RaceParticle,kRaceSmokeLimit> purge_{};
     std::size_t purge_count_ = 0;
     std::uint64_t purge_frame_ = 0;
     std::vector<EnvironmentPreset> environment_presets_;
     std::vector<EnvironmentEmitter> emitters_;
-    std::array<RaceParticle,kRaceEnvironmentAlphaLimit> environment_alpha_{};
-    std::array<RaceParticle,kRaceEnvironmentAdditiveLimit> environment_additive_{};
+    std::vector<unsigned> active_environment_sources_;
+    std::size_t active_environment_count_ = 0, environment_draw_limit_ = 0;
+    std::array<std::vector<std::uint16_t>,2> environment_order_;
+    std::vector<RaceParticle> environment_alpha_;
+    std::vector<RaceParticle> environment_additive_;
     std::size_t environment_alpha_count_ = 0, environment_additive_count_ = 0;
     std::uint64_t environment_frame_ = 0;
     std::array<RaceParticlePreset,static_cast<unsigned>(RaceParticleEffect::count)> presets_{};
@@ -142,8 +185,36 @@ private:
     std::array<RaceParticle, kRaceSmokeLimit> smoke_{};
     std::array<RaceParticle, kRaceSparkLimit> sparks_{};
     std::array<float,kVehicleWheelCount> smoke_timers_{};
-    std::array<double,kRaceWaterPresetCount> water_phase_{};
-    TrackGroundCache water_ground_;
+    struct WaterEmitter {
+        std::array<VehicleVec3,3> basis;
+        VehicleVec3 offset, extent;
+        unsigned marker = 0;
+    };
+    std::array<WaterEmitter,kRaceWaterPresetCount> water_emitters_{};
+    std::array<unsigned,kRaceWaterPresetCount> water_placement_order_{};
+    std::array<std::uint32_t,kRaceWaterPresetCount> cached_water_node_{};
+    std::uint64_t water_frame_ = 0;
+    double water_sample_seconds_ = 0;
+    struct SpraySource {
+        TrackGroundCache ground;
+        double next_road = 0;
+        unsigned surface=0;
+    };
+    void emit_driving_spray(const VehicleTrackTelemetry&,const VehicleSpec&,float,unsigned,
+        const TrackContactWorld*,SpraySource&,unsigned) noexcept;
+    void emit_track_sparks(const VehicleTrackTelemetry&,float,const TrackContactWorld*,
+        const VehicleVec3*,const VehicleVec3*,std::uint64_t,unsigned) noexcept;
+    struct RivalSmokeState {
+        SpraySource spray;
+        std::array<float,kVehicleWheelCount> timers{};
+        std::uint64_t step=0;
+    };
+    std::array<RivalSmokeState,3> rival_smoke_{};
+    std::array<RaceParticle,kRaceSmokeLimit/2> spray_{};
+    std::vector<RaceParticle> water_;
+    std::size_t water_count_ = 0;
+    SpraySource player_spray_;
+    std::size_t spray_count_ = 0;
     std::size_t smoke_count_ = 0;
     std::size_t spark_count_ = 0;
     std::uint64_t step_ = 0;

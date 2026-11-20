@@ -394,6 +394,7 @@ TrackInfoTable parse_track_info_table(
         decoded.number = read_s16(record + kTrackInfoNumberOffset);
         decoded.number_copy = read_s16(record + kTrackInfoNumberCopyOffset);
         decoded.mode_mask = read_u32(record + kTrackInfoModeMaskOffset);
+        decoded.ai_decision_start = read_s16(record + 0xB8);
         // 435DCF selects a signed road ID by direction and grid position.
         for(unsigned j=0;j<decoded.rival_start_roads.size();++j)
             decoded.rival_start_roads[j]=read_s16(record+0xA8+2*j);

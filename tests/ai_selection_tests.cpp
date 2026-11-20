@@ -52,7 +52,7 @@ int main(int argc,char** argv) {
     }
     std::vector<AiRoadEvent> events(std::begin(context_events),std::end(context_events));
     std::array<bool,128> reverse{};for(const auto& r:track.routes)reverse[r.index]=r.reverse;
-    unsigned context_index=0;
+    unsigned context_index=0,marked_passages=0;
     for(const auto& c:context_cases){
         AiRoadContext context;const auto& b=c.before;const auto& expected=c.after;
         context.selected=b.selected;context.road=b.road;context.category=b.category;context.nearest=b.nearest;
@@ -64,6 +64,17 @@ int main(int argc,char** argv) {
             cell.offset=saved.offset;cell.lower=saved.lower;cell.upper=saved.upper;context.chain.junction[j]=saved.junction;
         }
         AiRoadPolicy policy;policy.cache=b.cache;policy.marker=b.marker;auto rng=b.rng;AiRoadContextResult output;
+        // Replay a captured crossing with the speed marker on its destination event.
+        if(c.passed_count&&c.passed[0]>=0) {
+            auto marked=events;
+            marked.at(static_cast<unsigned>(c.passed[0])).marker=1;
+            auto road=context;auto decisions=policy;auto seed=rng;AiRoadContextResult crossing;
+            if(!ai_road_update_context(track,marked,reverse,c.input,c.policy,decisions,seed,road,crossing)||
+               !crossing.passed_count||crossing.passed_events[0]!=c.passed[0]||decisions.speed_override_ticks!=10000) {
+                ++failed;std::cerr<<"FAIL: crossing a speed marker must arm the rival controller\n";
+            }
+            ++marked_passages;
+        }
         const bool ok=ai_road_update_context(track,events,reverse,c.input,c.policy,policy,rng,context,output);
         bool same=ok&&context.selected==expected.selected&&(!context.selected||
             (context.road.route==expected.road.route&&context.road.point==expected.road.point))&&
@@ -89,6 +100,7 @@ int main(int argc,char** argv) {
             rng!=saved_rng||context.chain.count!=saved.chain.count||context.road.point!=saved.road.point){++failed;std::cerr<<"FAIL: invalid context changed published state\n";}
         ++context_index;
     }
+    if(!marked_passages){++failed;std::cerr<<"FAIL: missing recorded junction crossing\n";}
     std::cout<<"Original spatial context "<<context_index<<" cases, total failures "<<failed<<'\n';
     return failed?1:0;
 }

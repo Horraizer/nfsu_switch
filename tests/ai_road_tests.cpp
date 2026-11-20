@@ -40,6 +40,22 @@ void check(bool ok,const char* message){if(!ok){++failures;std::cerr<<"FAIL: "<<
 }
 int main(){
     const auto real=[](unsigned bits){float value;std::memcpy(&value,&bits,4);return value;};
+    const struct {
+        int event_marker,selected,timer;unsigned frame_bits;
+        int after_pass,after_marker,after_frame,active;
+    } junction_windows[]={
+#include "ai_junction_speed_native.inc"
+    };
+    for(const auto& row:junction_windows) {
+        AiRoadPolicy policy;policy.marker=row.selected;policy.speed_override_ticks=row.timer;
+        AiRoadEvent event;event.marker=static_cast<std::uint8_t>(row.event_marker);
+        policy.pass_racer_event(event,3);
+        check(policy.marker==row.after_marker&&policy.speed_override_ticks==row.after_pass,
+              "retail junction speed window on passage");
+        policy.advance_speed_override(real(row.frame_bits));
+        check(policy.speed_override_ticks==row.after_frame&&policy.speed_override_active()==bool(row.active),
+              "retail junction countdown and admission");
+    }
     unsigned traffic_speed_row=0,traffic_speed_differences=0;
     for(const auto& row:kNativeTrafficSpeed) {
         const auto& profile=kNativeTrafficSpeedProfiles[row[0]];
@@ -208,7 +224,11 @@ int main(){
         check(ai_road_nearest_lane(road,0,{0,y,0},int(v[2]),int(v[3]))==v[4],
               "original456E90 nearest lane and exclusion interval");
     }
-    Route lane_road;lane_road.index=0;lane_road.points.resize(2);lane_road.lane_enabled.fill(true);
+    RacingLineTrack lane_track;
+    lane_track.routes.resize(2);
+    auto& lane_road=lane_track.routes[0];
+    lane_road.index=0;lane_road.points.resize(2);lane_road.lane_enabled.fill(true);
+    const AiRoadCursor lane_cursor{0,0};
     for(unsigned j=0;j<2;++j) {
         auto& p=lane_road.points[j];p.position[0]=float(j)*10;p.forward[0]=1;p.backward[0]=-1;
         p.unknown_24=p.unknown_28=20;p.distance_to_next=p.distance_to_previous=10;
@@ -220,43 +240,102 @@ int main(){
     for(const auto& row:kNativeDragInput) {
         float distance;std::memcpy(&distance,&row.distance,4);
         DragLaneState input;input.mode=0;
-        check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,0,distance,input)&&
+        check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,0,distance,input)&&
               input.mode==int(row.mode),"actual4605E0 release gate uses travelled distance, independently of speed");
     }
     check(ai_road_nearest_lane(lane_road,0,{0,3,0})==12,"nearest enabled drag lane");
     check(ai_road_nearest_lane(lane_road,0,{0,3,0},12,16)==11,"inclusive lane exclusion");
-    check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,-1,10,lane_state)&&
+    check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,-1,10,lane_state)&&
           lane_state.category==11&&lane_state.exclude_first==12&&lane_state.exclude_last==16,"held left selects reachable lane");
-    check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,0,10,lane_state)&&
+    check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,0,10,lane_state)&&
           lane_state.category==11&&lane_state.mode==2,"release retains target until crossed lane is left");
-    check(drag_lane_step(lane_road,0,{0,5,0},lane_chain,available,0,10,lane_state)&&
+    check(drag_lane_step(lane_track,lane_cursor,{0,5,0},lane_chain,available,0,10,lane_state)&&
           lane_state.category==11&&lane_state.exclude_first==255,"centered destination clears lane exclusion");
     lane_state={};available[3]=false;lane_road.lane_enabled[2]=false;
-    check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,1,10,lane_state)&&lane_state.category==12,
+    check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,1,10,lane_state)&&lane_state.category==12,
           "lane change cannot jump across a disabled raw route lane");
     lane_state={};
-    check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,-1,1,lane_state)&&lane_state.mode==2,
+    check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,-1,1,lane_state)&&lane_state.mode==2,
           "drag lane input waits for original minimum travelled distance");
     lane_road.lane_enabled[2]=true;lane_state={};
-    check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,1,10,lane_state)&&lane_state.category==16,
+    check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,1,10,lane_state)&&lane_state.category==16,
           "actual owner2 skips future chain flags after header admission");
     lane_state={};
-    check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,1,10,lane_state,{0,0,0,4})&&lane_state.category==12,
+    check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,1,10,lane_state,{0,0,0,4})&&lane_state.category==12,
           "other controllers still consume destination chain availability");
     available.fill(true);lane_state={};
-    check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,-1,10,lane_state,{1206,0,1000,2})&&lane_state.category==12,
+    check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,-1,10,lane_state,{1206,0,1000,2})&&lane_state.category==12,
           "live drag input cannot cross the active left divider");
     lane_state={};
-    check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,1,10,lane_state,{1206,0,1000,2})&&lane_state.category==13,
+    check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,1,10,lane_state,{1206,0,1000,2})&&lane_state.category==13,
           "multi-lane hold stops at the next blocked adjacent divider");
     lane_state={};
-    check(drag_lane_step(lane_road,0,{0,3,0},lane_chain,available,-1,10,lane_state,{1206,0,1300,2})&&lane_state.category==11,
+    check(drag_lane_step(lane_track,lane_cursor,{0,3,0},lane_chain,available,-1,10,lane_state,{1206,0,1300,2})&&lane_state.category==11,
           "same divider releases after its authored progress interval");
+    auto& next_lane_road=lane_track.routes[1];
+    next_lane_road=lane_road;
+    next_lane_road.index=1;
+    lane_road.lane_enabled[2]=false;
+    lane_chain.cells[1].point.route_index=1;
+    lane_state={};
+    check(drag_lane_step(lane_track,lane_cursor,{1,3,0},lane_chain,available,1,10,lane_state)&&
+          lane_state.category==16&&lane_state.exclude_first==11&&lane_state.exclude_last==12,
+          "right tap checks lane permission on the projected chain cell across a junction");
+    check(drag_lane_step(lane_track,lane_cursor,{1,3,0},lane_chain,available,0,10,lane_state)&&
+          lane_state.category==14&&lane_state.mode==2,
+          "right tap release must exclude the old lane even across a junction");
     for(const auto& c:kNativeRoadHorizons) {
         AiRoadHorizons h;
         check(ai_road_horizons(real(c[0]),real(c[1]),real(c[2]),h)&&
             float_bits(h.initial)==c[3]&&float_bits(h.retained)==c[4],
             "original racer initial and speed-dependent retained road horizons");
+    }
+    {
+        AiRoadContext context;context.selected=true;context.chain.count=3;
+        for(unsigned i=0;i<3;++i){auto& c=context.chain.cells[i];c.distance=float(i)*10;
+            c.point.forward[0]=1;c.point.position[0]=i?10.F:0.F;c.point.position[1]=i==2?10.F:0.F;}
+        context.chain.cells[2].point.forward[0]=0;context.chain.cells[2].point.forward[1]=1;
+        AiRoadLocation location;bool ready=true;
+        check(ai_road_context_ready(context,{35,9,0},ready,location)&&!ready&&location.distance==35&&context.chain.count==3,
+              "refreshed nonempty chain behind owner is normal no-road, not a failed calculation");
+        check(ai_road_context_ready(context,{20,9,0},ready,location)&&ready&&location.distance==20,
+              "owner equality with chain end remains usable");
+        context.chain={};
+        check(ai_road_context_ready(context,{0,0,0},ready,location)&&!ready,"empty refreshed chain is normal no-road");
+        ready=true;
+        check(!ai_road_context_ready(context,{std::numeric_limits<float>::quiet_NaN(),0,0},ready,location)&&ready,
+              "invalid owner pose is not hidden by the no-road fallback");
+    }
+    {
+        //44B55F ->44BAF0 ->44F0D0: a retained old lane must not survive
+        //raw-road reselection just because both new-road lanes are enabled.
+        RacingLineTrack track;track.routes.resize(1);auto& route=track.routes[0];
+        route.points.resize(5);route.category_enabled.fill(true);route.lane_enabled.fill(true);
+        route.bounds={0,-30,100,30};
+        for(unsigned i=0;i<5;++i) {
+            auto& p=route.points[i];p.position[0]=20.F*float(i);p.forward[0]=1;p.backward[0]=-1;
+            p.distance_to_next=p.distance_to_previous=20;p.unknown_24=p.unknown_28=30;
+            p.unknown_84[0]=0x40;p.lane_offset[0]=-10;p.lane_offset[1]=0;
+            for(unsigned j=2;j<6;++j)p.lane_offset[j]=10.F*float(j);
+        }
+        AiRoadContextInput input;input.selection.position={1,0,0};input.selection.maximum_distance=999;
+        input.selection.require_enabled_lane=true;input.body_width=2;input.back_margin=24;
+        input.initial_horizon=input.retained_horizon=50;input.ride_category=2;
+        input.category_probe=AiRoadCategoryProbe::nearest_lane;
+        AiRoadPolicyInput policy;policy.probabilities={0,0,1};std::array<bool,128> reverse{};
+        const auto run=[&](AiRoadContext& context,AiRoadCategoryProbe probe) {
+            input.category_probe=probe;AiRoadPolicy decisions;std::uint32_t rng=12345;AiRoadContextResult result;
+            return ai_road_update_context(track,{},reverse,input,policy,decisions,rng,context,result)&&result.reselected;
+        };
+        AiRoadContext lane;lane.category=11;
+        check(run(lane,AiRoadCategoryProbe::nearest_lane)&&lane.selected&&lane.category==12,
+              "rival lane virtual reselects nearest enabled lane before road growth");
+        AiRoadContext grade;grade.category=11;
+        check(run(grade,AiRoadCategoryProbe::ride)&&grade.selected&&grade.category==2,
+              "ordinary action virtual restores ride grade after raw-road reselection");
+        AiRoadContext retained;retained.category=11;
+        check(run(retained,AiRoadCategoryProbe::retain)&&retained.selected&&retained.category==11,
+              "human owner can retain its selected lane without a rival action callback");
     }
     unsigned permission_index=0;
     for(const auto& c:kNativeLanePermission) {

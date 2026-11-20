@@ -126,6 +126,7 @@ int main(int argc,char** argv){
                 check(race.start(root,error,{},{},true,"CIVIC"),error.c_str());
                 check(error.find("music_bank="+std::to_string(bank))!=std::string::npos,
                       "new race service resumes original unplayed music bank");
+                check(!race.now_playing(),"EA Trax waits for the first decoded music frame to play");
                 std::vector<std::int16_t> pcm;
                 const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
                 for(unsigned block=0;block<375;++block) {
@@ -136,6 +137,9 @@ int main(int argc,char** argv){
                 }
                 check(std::any_of(pcm.begin(),pcm.end(),[](auto v){return v!=0;}),"selected original race music reaches device");
                 check(race.stats().ring_underruns==0,"music comparison uses decoded PCM without underflow");
+                const auto* song=race.now_playing();
+                check(song&&song==original_race_song(bank-1)&&song->title[0]&&song->artist[0],
+                      "EA Trax reports metadata for the audible race bank");
                 if(bank==1)opening=pcm;else check(opening!=pcm,"next race actually decodes different song PCM");
                 if(bank==2) {
                     race.fade_music_for_finish();

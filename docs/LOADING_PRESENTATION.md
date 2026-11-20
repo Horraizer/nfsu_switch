@@ -22,6 +22,31 @@ No new game asset, percentage, tip, song restart or GPU budget is introduced.
 The artwork may hold its current frame during a synchronous asset operation;
 an independent asynchronous loader/continuous animation worker is not added.
 
+## Optional higher-resolution artwork
+
+Copy the generated `ArtworkHD` folder into the game data root near
+`Movies` and `Movies720`. The Switch uses enhanced copies of the generic
+loading background, the loading tip illustrations, and the Press A
+startup background. The authored positions, alpha blend modes, text,
+loading indicator and prompt timing are shared with the retail artwork.
+
+The tool rescales the decoded textures with Lanczos and applies light
+sharpening to opaque artwork. The loading background and splash fit a
+1536-pixel maximum edge. Loading illustrations scale to twice the
+original dimensions. Each texture is compressed with LZ4 and decoded only
+while that screen is active, outside the shared frontend atlas. Missing,
+incompatible or unreadable files fall back to the retail graphics.
+
+Build `nfsu_frontend_art_sources` on PC. Use Python 3.9 or newer with
+Pillow and liblz4 installed.
+
+```text
+python tools/prepare_artwork_hd.py <retail-root> out/ArtworkHD --exporter <nfsu_frontend_art_sources>
+```
+
+On Windows pass `--lz4 <path>` if liblz4 is outside the loader search
+path. Retail files are read-only. The generated artwork stays local.
+
 ## Evidence
 
 nfsu_intro_grid_viewer supports the loading mode. It writes four activity

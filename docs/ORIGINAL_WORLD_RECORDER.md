@@ -33,6 +33,14 @@ Archive creation and verification stream large members in bounded chunks;
 the raw binary tape schema is unchanged. Stop after the desired drive and
 allow packaging to finish before closing the recorder.
 
+For a PC controller comparison, add `--gamepad-index 0` to a headless run
+when the game uses XInput controller slot zero. The extra `gamepad.jsonl`
+stream stores changes to the XInput packet, button mask, triggers and all
+four stick axes with the original frame and clock. The summary records
+poll intervals, skipped packet numbers and disconnections. Polling can miss
+intermediate packets. Use the native input callbacks to verify which
+commands reached the original driver.
+
 There is no 300-decision sampling limit. Capture is bounded by the time and
 byte ceilings in `tools/original_world_recorder.py`; reaching a ceiling ends
 the recording. Native ring overflow, writer backpressure, sequence gaps and
@@ -84,6 +92,9 @@ replay or a bitwise-equivalence claim.
 - `instrumentation.json`: actual boundary addresses, signatures and enabled flags.
 - `calls.bin`: contiguous little-endian records of 40 unsigned 32-bit words.
 - `snapshots.bin`: little-endian state records of 1344 unsigned 32-bit words.
+  Ordinary human-driver entry snapshots additionally preserve the current
+  raw road and reselection seed, course progress and retained compact cells.
+  Older recordings omit these fields. The snapshot width is unchanged.
 - `samples.jsonl`: whole-world polling, including traffic and cross-frame flags.
 - `memory.bin`: original-recorder `<dII>` elapsed/address/size blocks and bytes.
 - `events.jsonl`, `summary.json`, `manifest.json`: errors, stop completeness,

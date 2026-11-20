@@ -318,7 +318,8 @@ bool render_track_draw_list(
     RenderStats& stats,
     TrackRenderStats& track_stats,
     std::string& error,
-    const ReferenceDrawObserver& observe) {
+    const ReferenceDrawObserver& observe,
+    const std::vector<std::size_t>* texture_frames) {
     stats = RenderStats{};
     track_stats = TrackRenderStats{};
     CameraFrame camera;
@@ -336,6 +337,12 @@ bool render_track_draw_list(
             return false;
         }
     }
+    if(texture_frames && (texture_frames->size()!=scene.region.textures.size() ||
+       std::any_of(texture_frames->begin(),texture_frames->end(),
+                   [&](auto i){return i>=scene.region.textures.size();}))) {
+        error="track animation frame outside prepared textures";return false;
+    }
+    const auto texture_handle=[&](std::size_t i){return texture_frames?(*texture_frames)[i]:i;};
     if (!validate_prepared_track_scene(scene, error)) {
         error = "invalid prepared track scene: " + error;
         return false;
@@ -429,14 +436,14 @@ bool render_track_draw_list(
             if (draw.mesh != scene.sky_mesh || !draw.drawable ||
                 draw.binding != BindingKind::resolved) continue;
             RasterMaterial material;
-            material.texture = &scene.region.textures[draw.texture];
+            material.texture = &scene.region.textures[texture_handle(draw.texture)];
             material.depth_write = false; material.sky = true;
             material.alpha_test = render_alpha_test_enabled(material.texture->alpha_test_mode);
             material.blend = render_blend_mode_of(material.texture->alpha_blend_mode);
             // The sky copy is numbered one past the scenery instances, as
             // record_track_commands numbers it.
             if (observe) observe(ReferenceDraw{group, draw.mesh, scene.instances.size(),
-                draw.texture, draw.first_index, draw.index_count, true, false, true,
+                texture_handle(draw.texture), draw.first_index, draw.index_count, true, false, true,
                 CullMode::none, material.blend, material.alpha_test, material.alpha_ref,
                 false, true, material.linear_filter});
             for (std::size_t n = draw.first_index/3; n < (draw.first_index+draw.index_count)/3; ++n) {
@@ -473,7 +480,7 @@ bool render_track_draw_list(
         mirror.background[3] = 255;
         RenderStats mirror_stats; TrackRenderStats mirror_track;
         if (!render_track_draw_list(scene, list, mirror, limits, reflected,
-                                   mirror_stats, mirror_track, error)) return false;
+                                    mirror_stats, mirror_track, error,{},texture_frames)) return false;
         const auto geometry_triangles = mirror_stats.triangles_submitted;
         if (options.wet_lamps && !render_wet_road_lamps(*options.wet_lamps, mirror, limits, reflected, mirror_stats, error)) return false;
         track_stats.reflection_draws = mirror_track.entries_drawn + (mirror_stats.triangles_submitted-geometry_triangles)/2;
@@ -525,8 +532,8 @@ bool render_track_draw_list(
         switch (draw.binding) {
         case BindingKind::resolved:
             ++track_stats.entries_resolved;
-            raster.texture = &scene.region.textures[draw.texture];
-            key = draw.texture;
+            key = texture_handle(draw.texture);
+            raster.texture = &scene.region.textures[key];
             if (options.material_state == MaterialStateMode::retail) {
                 raster.alpha_test = render_alpha_test_enabled(
                     raster.texture->alpha_test_mode);
@@ -578,7 +585,7 @@ bool render_track_draw_list(
         const std::uint64_t count = draw.index_count;
         if (observe && count != 0) {
             observe(ReferenceDraw{entry.draw, draw.mesh, entry.instance,
-                raster.texture ? draw.texture : kNoHandle,
+                raster.texture ? key : kNoHandle,
                 draw.first_index, draw.index_count, true, raster.depth_write, true,
                 options.cull, raster.blend, raster.alpha_test, raster.alpha_ref, false, false, raster.linear_filter});
         }

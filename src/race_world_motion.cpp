@@ -29,8 +29,8 @@ void RaceSession::initialize_world_object(unsigned index){
 }
 bool RaceSession::prepare_world_motion(const std::filesystem::path& root,std::string& error){
     std::vector<std::uint32_t> wanted;
-    for(const auto& source:course_.world_objects)if(source.motion_collision)
-        for(unsigned j=0;j<2;++j)if(std::find(wanted.begin(),wanted.end(),source.animation[j])==wanted.end())wanted.push_back(source.animation[j]);
+    for(const auto& source:course_.world_objects)if(source.motion_collision||source.visual_motion)
+        for(unsigned j=0;j<2;++j)if(source.animation[j]&&std::find(wanted.begin(),wanted.end(),source.animation[j])==wanted.end())wanted.push_back(source.animation[j]);
     std::vector<WorldMotionClip> clips;
     if(!wanted.empty()){
         std::ifstream input(root/"Global/INGAMEB.BUN",std::ios::binary|std::ios::ate);
@@ -42,10 +42,11 @@ bool RaceSession::prepare_world_motion(const std::filesystem::path& root,std::st
         if(!decode_world_motion_clips(bytes,wanted,clips,error))return false;
     }
     world_motion_clips_=std::move(clips);
-    for(unsigned i=0;i<course_.world_objects.size();++i)if(course_.world_objects[i].motion_collision){
+    for(unsigned i=0;i<course_.world_objects.size();++i)if(course_.world_objects[i].motion_collision||course_.world_objects[i].visual_motion){
         initialize_world_object(i);auto& object=world_objects_[i];object.animated=true;
         for(unsigned j=0;j<2;++j){
             const auto hash=course_.world_objects[i].animation[j];
+            if(!hash)continue;
             const auto at=std::find_if(world_motion_clips_.begin(),world_motion_clips_.end(),[&](const auto& c){return c.hash==hash;});
             if(at==world_motion_clips_.end()){error="world motion clip binding absent";return false;}
             object.clips[j]=std::size_t(at-world_motion_clips_.begin());
@@ -58,8 +59,10 @@ bool RaceSession::reset_world_motion(std::string& error){
     for(unsigned i=0;i<world_objects_.size();++i){
         auto& object=world_objects_[i];if(!object.animated)continue;
         const auto& source=course_.world_objects[i];object.reference_ready=false;object.train_prediction={};
+        std::size_t frames=0;
+        for(const auto clip:object.clips)if(clip!=kNoHandle)frames=std::max(frames,world_motion_clips_[clip].frames.size());
         object.clock={source.animation_flags,source.animation_rate==0?1.F:source.animation_rate,
-            float(std::max(world_motion_clips_[object.clips[0]].frames.size(),world_motion_clips_[object.clips[1]].frames.size())),0,source.animation_hold,0};
+            float(frames),0,source.animation_hold,0};
         if(!(object.clock.flags&0xf0))object.clock.flags|=0x10;
         if(source.type==0x427a6453U)object.clock.phase=float(cars++)*6.F;
     }
@@ -74,9 +77,10 @@ bool RaceSession::reset_world_motion(std::string& error){
 }
 bool RaceSession::place_world_motion(unsigned index,bool reset,std::string& error){
     auto& object=world_objects_[index];
-    eagl::Pose translation,rotation;
-    if(!sample_world_motion_clip(world_motion_clips_[object.clips[0]],object.clock.phase,translation)||
-       !sample_world_motion_clip(world_motion_clips_[object.clips[1]],object.clock.phase,rotation)){
+    const eagl::Pose identity{{1,1,1,1,0,0,0,1,0,0,0,0}};
+    auto translation=identity,rotation=identity;
+    if((object.clips[0]!=kNoHandle&&!sample_world_motion_clip(world_motion_clips_[object.clips[0]],object.clock.phase,translation))||
+       (object.clips[1]!=kNoHandle&&!sample_world_motion_clip(world_motion_clips_[object.clips[1]],object.clock.phase,rotation))){
         error="world motion pose sample refused";return false;
     }
     for(unsigned j=8;j<11;++j)rotation[j]=translation[j];
@@ -120,12 +124,13 @@ bool RaceSession::world_obstacle_status(const WorldObstacleBinding& binding,cons
     WorldObstacleWindow window;window.bound=window.head_present=window.tail_present=true;
     window.head=head.clock;window.tail=tail->clock;window.enter=binding.enter;window.leave=binding.leave;window.delay=head.train_prediction.delay;
     const auto& motion=actor.owner_motion;
-    const float acceleration=(motion.acceleration[0]*motion.axes[0][0]+motion.acceleration[1]*motion.axes[0][1])+motion.acceleration[2]*motion.axes[0][2];
+    const float acceleration=float((double(motion.acceleration[2])*motion.axes[0][2]+
+        double(motion.acceleration[1])*motion.axes[0][1])+double(motion.acceleration[0])*motion.axes[0][0]);
     const float distance=world_obstacle_distance(binding.distance,progress,course_.route.spline.path_length,!course_.route.spline.open);
     status.available=true;status.passed=distance<0;
-    status.clear=world_obstacle_clear(window,distance,actor.owner_speeds.magnitude,acceleration);return true;
+    status.clear=world_obstacle_clear(window,distance,actor.owner_speeds.forward,acceleration);return true;
 }
-bool RaceSession::advance_world_motion(float dt,int lane,std::string& error){
+bool RaceSession::advance_world_motion(float dt,int lane,std::string& error,int second_lane){
     for(unsigned i=0;i<world_objects_.size();++i){
         auto& object=world_objects_[i];if(!object.animated)continue;
         object.history=race_contact_pose(object.state);
@@ -134,18 +139,35 @@ bool RaceSession::advance_world_motion(float dt,int lane,std::string& error){
         object.state.simulation_seconds=car().simulation_seconds;
     }
     //58E2E0 admits authored event10006 by strict sphere and direction mask.
-    bool trigger=false;
-    for(const auto& sphere:course_.train_triggers){
+    const auto inside=[&](const VehicleWorldTrigger& sphere,const RaceSession& driver) {
         //4281E0 queries a point predicted0.15seconds ahead of published motion.
-        const auto& velocity=car().owner_motion.velocity;
-        const float x=(float(car().position.x)+velocity[0]*.15F)-sphere.centre[0];
-        const float y=(float(car().position.y)+velocity[1]*.15F)-sphere.centre[1];
-        const float z=(float(car().position.z)+velocity[2]*.15F)-sphere.centre[2];
-        if((sphere.player_mask&(1U<<unsigned(course_.route.spline.reverse)))&&
-           (x*x+y*y)+z*z<sphere.radius*sphere.radius){trigger=true;break;}
-    }
+        const auto& vehicle=driver.car();
+        const auto& velocity=vehicle.owner_motion.velocity;
+        const float x=(float(vehicle.position.x)+velocity[0]*.15F)-sphere.centre[0];
+        const float y=(float(vehicle.position.y)+velocity[1]*.15F)-sphere.centre[1];
+        const float z=(float(vehicle.position.z)+velocity[2]*.15F)-sphere.centre[2];
+        return (sphere.player_mask&(1U<<unsigned(course_.route.spline.reverse)))&&
+           (x*x+y*y)+z*z<sphere.radius*sphere.radius;
+    };
+    const auto in_range=[&](const auto& triggers,const RaceSession& driver) {
+        return std::any_of(triggers.begin(),triggers.end(),[&](const auto& sphere){return inside(sphere,driver);});
+    };
+    // Event 0x10009 clears the pause bit on XO_PlaneA_1b_01 after mover update.
+    if(in_range(course_.plane_triggers,*this))
+        for(unsigned i=0;i<world_objects_.size();++i)
+            if(world_objects_[i].animated&&course_.world_objects[i].name==kPlaneWorldObject)
+                world_objects_[i].clock.flags&=~0x80U;
     bool release=false;
-    if(trigger)for(unsigned i=0;i<world_objects_.size();++i){
+    const RaceSession* driver=in_range(course_.train_triggers,*this)?this:nullptr;
+    if(second_lane>=0&&human_rival_) {
+        const auto& second=rival(0);
+        if(in_range(course_.train_triggers,second)&&
+           (!driver||second.progress().coordinate.distance>progress().coordinate.distance)) {
+            driver=&second;lane=second_lane;
+        }
+    }
+    if(driver)
+      for(unsigned i=0;i<world_objects_.size();++i){
         auto& engine=world_objects_[i];if(!engine.animated||course_.world_objects[i].type!=0x24cebc53U)continue;
         if(!engine.reference_ready){
             const auto saved=engine.clock.phase;engine.clock.phase=52.F;
@@ -156,19 +178,19 @@ bool RaceSession::advance_world_motion(float dt,int lane,std::string& error){
             engine.state=old_state;engine.placement=old_placement;engine.clock.phase=saved;
             engine.reference_ready=true;
         }
-        float distance=engine.reference.distance-progress().coordinate.distance;
+        float distance=engine.reference.distance-driver->progress().coordinate.distance;
         const auto& spline=course_.route.spline;
         if(!spline.open){
             if(distance<spline.path_length*-.5F)distance+=spline.path_length;
             else if(distance>spline.path_length*.5F)distance-=spline.path_length;
         }
-        const auto& owner=car().owner_motion;
+        const auto& owner=driver->car().owner_motion;
         const float acceleration=(owner.acceleration[0]*owner.axes[0][0]+owner.acceleration[1]*owner.axes[0][1])+owner.acceleration[2]*owner.axes[0][2];
-        const float velocity=car().owner_speeds.magnitude;
+        const float velocity=driver->car().owner_speeds.magnitude;
         const float arrival=world_train_arrival(distance,velocity,acceleration);
         const float lead=world_train_lead(lane);
         if(arrival>=0)engine.train_prediction={true,arrival-lead,engine.reference.distance-velocity*lead};
-        if(arrival>=0&&(arrival<lead||distance<50.F))release=true;
+        if(arrival>=0&&(arrival<=lead||distance<50.F))release=true;
     }
     if(release)for(unsigned i=0;i<world_objects_.size();++i)
         if(course_.world_objects[i].type==0x24cebc53U||course_.world_objects[i].type==0x427a6453U)world_objects_[i].clock.flags&=~0x80U;

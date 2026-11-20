@@ -194,10 +194,80 @@ electrical sparks, FLOCKOFSEAGULLS for birds and FIREA_CS for flames and
 embers. Electric sparks and fire use additive blending. Existing track
 mesh animations and vehicle contact effects keep their existing owners.
 
-The port uses the authored origin, direction, camera radius, start delay,
-rate, life, atlas and appearance curves. The stationary emitters use a
-deterministic visual RNG and the shared particle integration. Eight
-nearby emitters per blend class, bounded particle pools and an inactive
-draw skip cap frame work. Native random stream ordering, volume sampling,
-bird alpha testing and exact particle integration are still separate
-fidelity work.
+PC 402BD0 starts a placement in its active phase. 403AB0 advances the
+active and inactive timers, including when the emitter is outside camera
+range. 402D30 limits the emission budget to the remaining active time.
+The port uses these transitions with the authored origin, direction,
+camera radius, rate, life, atlas and appearance curves. The stationary
+emitters use a deterministic visual RNG and shared integration. Each
+emitter samples all three axes of its placement box. Water, steam, fire
+and electrical sparks share the authored particle budget. Each camera
+streams visible environmental particles into an alpha or additive draw.
+Native global random stream ordering, bird alpha testing and exact
+particle integration remain open.
+
+On National Rail the barrel combines two flame layers with smoke and
+sparks. Three wire placements spark intermittently; two overhead pipe
+placements produce steam. The channel floor uses a track texture
+flipbook. The side outlet uses UV scrolling. Neither depends on wheel
+contact or particle emission. Both visual clocks also run in the desktop
+frame capture.
+
+## Driving through a water channel
+
+PC 428A31 selects puddle or deep-water groups from the ground below the
+chassis, body speed, camera range and wheel contacts. The same producer is
+used for a nearby simulated opponent. The four placement codes in GLOBALB
+are the front axle, rear axle and two sides of the car. Each attaches at
+the midpoint of its two original wheel markers (56BA1B through 56BC9B).
+569A00 supplies the placement orientation. 402D30 transforms the centered
+spawn box with that orientation and restarts a negative-duration burst
+budget on the next update. This lets the two sides throw water outwards.
+
+The port retains living water particles independently of tyre smoke and
+road mist. Each camera submits visible water quads in one streamed draw.
+PC 428B95 and Xbox 371BD visit the two deep-water groups in placement
+order. An emitter first adds its node at the tail of the active list,
+then appends particles to that node in birth order. Each placement
+caches only the last admitted node. Changing its owner creates a new
+node at the tail even if an earlier node for that owner still lives.
+Once the last particle of the cached node expires, emission also
+creates a new node. PC 403A8D and Xbox 13B4A convert the visual frame
+duration to whole 1/1024-second ticks before updating the countdown.
+This is independent of the number of vehicle solver substeps.
+The shallow-water groups use DUSTA_CS. The
+deep-water groups combine DUSTA_CS jets and SMOKEB_CS mist. Each quad
+retains its original cell and half-texel inset. The desktop particle
+overlay samples between texel centers with the GPU's linear filter.
+The world effect doubles
+the modulated RGB and alpha of authored particles at draw time; PC
+404646 packs half alpha before the shader sees it. On the dry bank
+new emissions stop, and old ones live out their authored lifetime. The
+deep-water regression in `tests/race_effect_retail_tests.cpp` activates
+one group before the other and checks draw order across updates.
+Matching the global random sequence and reproducing a particular retail
+frame still require equivalent runtime state.
+
+Continuous track placements enter at the head of the native list (PC
+402CB0, Xbox 1233B). Vehicle bursts are submitted before the continuous
+track pass. Each track placement spends its emission intervals even if
+the shared pool is full. PC 403AB0 visits the particle list and releases
+expired children only after those producers. Advancing the track
+particles first lets the track reclaim the slots that would otherwise
+admit wheel spray on the following frame. The National Rail regression
+checks this ordering with the original canal emitters at saturation.
+The preset byte at 0x1c selects a random or fixed initial atlas cell.
+
+Continuous emitters retain their own live child sublists. The compact
+simulation arrays are indexed once per visual update in active source
+order and then birth order. Visible sources of different blend modes retain
+this traversal on the GPU through alternating indexed draw ranges. A placement
+whose last child expired enters at the tail when it next admits a birth.
+The original 402D30 samples orientation first, then the three origin
+axes, cell, lifetime, sprite rotation, speed, optional carrier gain and
+next interval. Track spawns consume the same source sequence even when
+allocation fails. A nonzero immediate carrier gain repacks magnitude
+and unit direction separately, even for a stationary pipe. The scale
+of the placement basis reaches the launch speed before quantization.
+Shared world RNG initialization and sprite rotation at draw time remain
+open comparisons.

@@ -44,10 +44,23 @@ int main() {
                    target.height == (docked ? 720U : 540U) &&
                    target.upscale == !docked, "mode transition retained stale target")) return 1;
     }
+    if (!check(cycle_race_resolution(720,true,false)==1080 &&
+               cycle_race_resolution(1080,true,false)==0 &&
+               cycle_race_resolution(0,true,true)==1080 &&
+               cycle_race_resolution(720,false,false)==0 &&
+               cycle_race_resolution(1080,false,false)==540 &&
+               deko_effective_scene_height(1080,false,true)==540 &&
+               deko_effective_scene_height(1080,true,false)==720 &&
+               deko_effective_scene_height(1080,true,true)==1080 &&
+               plan_deko_scene_target(1280,720,true,1080,target) &&
+               target.width==1920 && target.height==1080 && !target.upscale &&
+               target.output_width==1920 && target.output_height==1080,
+               "1080p must render and present natively in docked mode only")) return 1;
     for (const auto height : {720U, 540U, 450U, 360U}) {
         if (!check(plan_deko_scene_target(1280,720,true,height,target), "valid target refused") ||
             !check(target.height == height && target.width * 9 == height * 16,
                    "target changes aspect ratio") ||
+            !check(target.output_width==1280 && target.output_height==720,"legacy output changed") ||
             !check(target.upscale == (height != 720), "native path gained a blit")) return 1;
     }
     // Diagnostic applications keep their original dimensions and capture
@@ -56,7 +69,7 @@ int main() {
                target.width == 640 && target.height == 480 && !target.upscale, "offscreen default") ||
         !check(plan_deko_scene_target(1280,720,false,720,target) && !target.upscale,
                "native panel refused")) return 1;
-    for (const auto height : {540U,450U,360U,1U,480U,721U,0xffffffffU}) {
+    for (const auto height : {540U,450U,360U,1080U,1U,480U,721U,0xffffffffU}) {
         if (!check(!plan_deko_scene_target(1280,720,false,height,target), "scaled capture accepted") ||
             !check(target.width == 0 && target.height == 0 && !target.upscale,
                    "refusal retained stale target")) return 1;

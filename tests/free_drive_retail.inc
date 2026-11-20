@@ -101,7 +101,7 @@ void verify_quick_race(const std::filesystem::path& root) {
     for(unsigned i=0;i<kQuickRaceModeCount;++i)
         check(catalog.quick_courses(static_cast<QuickRaceMode>(i)).size()==course_counts[i],"quick race authored mode coverage");
     CarAssets car;check(load_car_assets(global,"CIVIC",car,error),"quick race Civic");
-    const struct Case {QuickRaceMode mode;int track;unsigned density,opponents,laps;} cases[]={
+    const struct Case {QuickRaceMode mode;int track;unsigned density,opponents,laps;int direction=0;} cases[]={
         {QuickRaceMode::free_run,1003,0,0,0},
         {QuickRaceMode::free_run,1003,1,0,0},
         {QuickRaceMode::free_run,1003,2,0,0},
@@ -112,13 +112,15 @@ void verify_quick_race(const std::filesystem::path& root) {
         {QuickRaceMode::drag,1202,3,3,1},
         {QuickRaceMode::drift,1301,0,0,2},
         {QuickRaceMode::lap_knockout,1003,1,1,1},
+        {QuickRaceMode::circuit,1004,1,3,2},
+        {QuickRaceMode::circuit,1004,1,3,2,1},
     };
     unsigned quick_case=0,checked_neons=0;
     for(const auto& test:cases) {
         const auto ordinal=quick_case++;
         const auto choices=catalog.quick_courses(test.mode);
         const auto chosen=std::find_if(choices.begin(),choices.end(),[&](unsigned i) {
-            const auto& c=catalog.free_courses()[i];return c.track==test.track&&!c.direction;
+            const auto& c=catalog.free_courses()[i];return c.track==test.track&&c.direction==test.direction;
         });
         check(chosen!=choices.end(),"quick race course is selectable");
         const auto& course=catalog.free_courses()[*chosen];
@@ -173,7 +175,7 @@ void verify_quick_race(const std::filesystem::path& root) {
             grid.course={};
         }else check(load_quick_race_traffic(root,selection,options.traffic,grid.traffic,error),name+" traffic");
         const auto* info=find_track_info(tracks,test.track);
-        const auto expected=unsigned(race_traffic_pool_size(*info,test.density,0));
+        const auto expected=unsigned(race_traffic_pool_size(*info,test.density,unsigned(test.direction)));
         check(grid.traffic.size()==expected,name+" authored pool size");
         if(has_grid||!grid.traffic.empty()) {
             std::vector<RaceTrafficSetup> traffic;
@@ -194,7 +196,16 @@ void verify_quick_race(const std::filesystem::path& root) {
         if(road_start) {
             RaceStartClock clock;
             check(scene.load_start_camera(posix_file_system(),root,start_scene,selection.region,clock,error)&&
-                run.set_start_clock(clock.release,clock.go,error),name+" start camera");
+                run.set_start_clock(clock,error),name+" start camera");
+            StartCrowd camera_only;
+            RaceStartClock camera_clock;
+            check(camera_only.load_camera(posix_file_system(),root,start_scene,selection.region,camera_clock,error),
+                name+" independent camera load");
+            check(clock.animated_slots==camera_clock.animated_slots,name+" start camera animated slots");
+            for(unsigned i=0;i<clock.release_cars.size();++i)if(clock.animated_slots&(1U<<i))
+                check(clock.release_cars[i].position==camera_clock.release_cars[i].position&&
+                      clock.release_cars[i].forward==camera_clock.release_cars[i].forward,
+                    name+" each animated grid car retains its authored release transform");
         }
         for(auto& actor:grid.actors)if(actor.config.role==Event0Role::opponent)
             check(scene.add_rival(std::move(actor.frame->scene),std::move(actor.base_instances),actor.frame->skin_binding.source,
@@ -207,13 +218,48 @@ void verify_quick_race(const std::filesystem::path& root) {
         check(run.session().is_drag()==(type==RaceType::drag)&&run.session().is_drift()==(type==RaceType::drift),name+" race type");
         const auto* traffic=run.session().traffic();
         check((traffic?traffic->actors().size():0)==expected,name+" live traffic pool");
-        for(unsigned step=0,driving=0;step<1800&&driving<120;++step) {
+        float peak_rival_throttle=0;
+        std::array<VehicleVec3,4> go_positions{};
+        const bool check_speed_history=type==RaceType::sprint&&!options.catch_up&&test.opponents!=0;
+        const unsigned driving_limit=check_speed_history?1200U:120U;
+        for(unsigned step=0,driving=0;step<driving_limit+1680&&driving<driving_limit;++step) {
             const auto buttons=run.session().timing().go_valid?gamepad_button_bit(GamepadButton::trigger_right):0;
             driving+=buttons!=0;
             const auto pad=race_input_frame({1,buttons,0},step);
             check(run.simulate(pad,error)&&run.commit(error),name+" live simulation");
+            if(road_start&&!driving&&run.session().timing().go_valid) {
+                go_positions[0]=run.session().car().position;
+                for(unsigned i=0;i<run.session().rival_count();++i)
+                    go_positions[i+1]=run.session().rival(i).car().position;
+                for(unsigned i=1;i<=run.session().rival_count();++i)for(unsigned j=0;j<i;++j)
+                    check(std::hypot(go_positions[i].x-go_positions[j].x,go_positions[i].y-go_positions[j].y)>1.5,
+                        name+" each racer has a distinct position at GO");
+            }
+            if(buttons&&type==RaceType::drag)for(unsigned i=0;i<run.session().rival_count();++i)
+                peak_rival_throttle=std::max(peak_rival_throttle,run.session().rival_driver(i).pedals.throttle);
         }
         check(run.session().timing().go_valid&&run.session().timing().outcome==RaceOutcome::running,name+" release and running");
+        if(check_speed_history) {
+            std::istringstream fields(run.difficulty_line());
+            std::string field;
+            unsigned scales=0;
+            while(fields>>field)if(field.rfind("min=",0)==0) {
+                const float lowest=std::stof(field.substr(4));
+                check(lowest>0.F&&lowest<1.F,name+" human speed history remains active with catch-up off");
+                ++scales;
+            }
+            check(scales==test.opponents,name+" observed speed scale for each rival");
+        }
+        if(test.track==1004)for(unsigned i=0;i<run.session().rival_count();++i) {
+            const auto& position=run.session().rival(i).car().position;
+            const auto& start=go_positions[i+1];
+            check(std::hypot(position.x-start.x,position.y-start.y)>3.,
+                name+" each Terminal rival advances after GO");
+        }
+        if(type==RaceType::drag) {
+            constexpr float original_caps[]={.93F,.97F,1.F};
+            check(peak_rival_throttle==original_caps[options.difficulty],name+" Quick Drag difficulty cap");
+        }
         RaceHudAtlas hud;
         check(load_race_hud_atlas(root,hud,error,type!=RaceType::drift&&type!=RaceType::drag,
             false,type==RaceType::drift,test.track),name+" HUD");
