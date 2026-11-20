@@ -126,6 +126,30 @@ int main() {
     VehicleTrackTelemetry telemetry;
     VehicleTrackSession car(model,course);
     {
+        auto placement=course.start;
+        placement.heading=0;
+        placement.speed=.1F;
+        VehicleState actor;
+        check(model.reset(actor,placement),"slow full-mover placement");
+        actor.published_gear=kVehicleGearNeutral;
+        actor.published_support=4;
+        VehicleTrackSession placed(model,course);
+        check(placed.start(actor),"start slow full-mover fixture");
+        placed.select_rival_physics(1,12135);
+        auto first=placed.state();
+        check(first.velocity.x==actor.velocity.x&&std::abs(first.velocity.x-.1)<.00001&&
+              first.rigid_body.velocity[0]==0&&first.rigid_body.momentum[0]==0,
+              "constructor rest settles private momentum before the actor publishes");
+        auto edited=first;
+        vehicle_import_rigid(model.spec().handling,first);
+        check(first.rigid_body.momentum[0]==0&&first.velocity.x==0,
+              "first solver import keeps settled momentum");
+        edited.velocity.x=2;
+        vehicle_import_rigid(model.spec().handling,edited);
+        check(std::abs(edited.rigid_body.velocity[0]-2)<.00001,
+              "explicit velocity edit before first move is imported");
+    }
+    {
         // 474801 publishes the reduced body's heading through floating bATan.
         // Exercise both sides of the point where the full body's integer lookup differs.
         bool distinguished=false;

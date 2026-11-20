@@ -257,12 +257,17 @@ void rigid_public_cache(VehicleState& s) noexcept {
     s.position=public_vector(s.rigid_body.position);
     s.velocity=public_vector(s.rigid_body.velocity);
     s.angular_velocity=public_vector(s.rigid_body.angular_velocity);
+    s.motion_before_first_move.reset();
 }
 void rigid_import_public(const VehicleHandling& h,VehicleState& s) noexcept {
     auto& body=s.rigid_body;
     const bool pose_changed=!s.rigid_body_ready||!same_quaternion(s.orientation,s.rigid_orientation);
-    const bool velocity_changed=pose_changed||!same_vector(s.velocity,body.velocity);
-    const bool omega_changed=pose_changed||!same_vector(s.angular_velocity,body.angular_velocity);
+    // A constructor force refresh may settle the body while the actor still
+    // exposes its placement velocity. Only a subsequent external edit should
+    // replace that body's momentum on the first physical step.
+    const auto& prior=s.motion_before_first_move;
+    const bool velocity_changed=pose_changed||!same_vector(s.velocity,prior?rigid_vector(prior->linear):body.velocity);
+    const bool omega_changed=pose_changed||!same_vector(s.angular_velocity,prior?rigid_vector(prior->angular):body.angular_velocity);
     if(pose_changed) body.axes=rigid_axes(rotation(s.orientation));
     body.position=rigid_vector(s.position);
     // Spawn, teleport and explicit public velocity edits are port adapters.
@@ -282,7 +287,7 @@ void rigid_import_public(const VehicleHandling& h,VehicleState& s) noexcept {
     body.gravity=s.body_gravity;body.yaw_torque_limit=h.yaw_torque_limit;
     if(velocity_changed||omega_changed) {
         player_rigid_body_refresh(h,body);rigid_public_cache(s);
-    }
+    } else if(prior) rigid_public_cache(s);
     s.rigid_body_ready=true;s.rigid_orientation=s.orientation;
 }
 

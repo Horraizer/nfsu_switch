@@ -322,6 +322,7 @@ bool VehicleTrackSession::reconstruct_ai_physics(VehicleState& s,const VehicleIn
 
 bool VehicleTrackSession::reconstruct_full_physics(VehicleState& state,std::int32_t clock) const {
     auto s=state;
+    s.motion_before_first_move.reset();
     // 426110 constructs fresh components.478383/47839B restore only the
     // published RPM/gear, not the old solver's cutoff or clutch history.
     // This also applies to the human when47C9E0 releases the road NIS.
@@ -370,6 +371,10 @@ bool VehicleTrackSession::reconstruct_full_physics(VehicleState& state,std::int3
     initial.world_clock_valid=true;
     if(!model_->step(s,initial,ground_,telemetry,0,0,false,true,true,true,0,0,
                      VehicleSteeringState::before_first_command))return false;
+    // 476F13 prepares the mover. Only the following 4789D0 publishes motion.
+    s.velocity=state.velocity;
+    s.angular_velocity=state.angular_velocity;
+    s.motion_before_first_move=VehiclePublishedMotion{s.velocity,s.angular_velocity};
     s.steering_word_ready=false;
     state=s;
     return true;

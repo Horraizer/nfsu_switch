@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -632,6 +633,10 @@ struct PlayerOwnerMotion {
     std::uint16_t heading = 0;
 };
 
+struct VehiclePublishedMotion {
+    VehicleVec3 linear,angular;
+};
+
 //479640 owner3C8/CC/D0/D4. Owner policy is not part of rigid integration history.
 struct PlayerOwnerTraction {
     int mode = 0;
@@ -681,6 +686,7 @@ struct VehicleState {
     PlayerRigidBodyState rigid_body;
     bool rigid_body_ready = false;
     VehicleQuat rigid_orientation; // detects external edits to the public pose
+    std::optional<VehiclePublishedMotion> motion_before_first_move;
     std::uint16_t steering_word = 0;
     bool steering_word_ready = false; // original outer producer epoch
 };
