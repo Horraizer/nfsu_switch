@@ -72,7 +72,6 @@ class IntroAiPlanner::State {
     int road_decision_start_=0;
     float catchup_weight_=0;
     bool catchup_enabled_=true;
-    bool limit_career_pace_=false;
     unsigned traffic_selector_=0;
     std::array<std::array<AiCatchupTuning,4>,3> catchup_tuning_{};
     std::array<AiCatchupState,3> catchup_{};
@@ -254,7 +253,6 @@ public:
     std::string difficulty_line() const {
         std::ostringstream out;out<<std::setprecision(9)<<"AI_DIFFICULTY frames="<<frames<<" updates="<<catchup_updates_
             <<" traffic_selector="<<traffic_selector_<<" reference_weight="<<catchup_weight_<<" human_history="<<human_history_.average<<" history_samples="<<human_history_.count;
-        if(limit_career_pace_)out<<" career_hard_pace=1";
         for(unsigned i=0;i<rival_count_;++i)out<<" rival"<<i<<"_context="<<selected_context[i]<<" category="<<rival_grades_[i]<<" action="<<actions_[i].current().kind<<" scale="<<catchup_[i].speed_scale
             <<" min="<<catchup_low_[i]<<" max="<<catchup_high_[i]<<" physical="<<catchup_[i].physical_scale
             <<" full="<<full_updates_[i]<<" partial="<<partial_updates_[i]<<" retained="<<retained_updates_[i];
@@ -262,10 +260,9 @@ public:
     }
     std::array<float,3> minimum_speed{{1e9F,1e9F,1e9F}},maximum_speed{};
     bool load(const std::filesystem::path& root,const std::array<int,3>& selected,
-              const std::array<const VehicleHull*,4>& hulls,bool retail_speed,unsigned track_number,int direction,bool drag,float catchup_weight,int laps,bool point_to_point,unsigned traffic_selector,bool catchup_enabled,int decision_start,bool limit_career_pace) {
+              const std::array<const VehicleHull*,4>& hulls,bool retail_speed,unsigned track_number,int direction,bool drag,float catchup_weight,int laps,bool point_to_point,unsigned traffic_selector,bool catchup_enabled,int decision_start) {
         if((direction!=0 && direction!=1)||traffic_selector>3)return false;
         catchup_enabled_=catchup_enabled;road_decision_start_=decision_start;
-        limit_career_pace_=limit_career_pace;
         track_number_=track_number;traffic_selector_=traffic_selector;direction_=direction;retail_speed_=retail_speed;drag_=drag;catchup_weight_=catchup_weight;
         if(!std::isfinite(catchup_weight_))return false;
         std::array<unsigned char,0x82c> configuration{};
@@ -1050,17 +1047,6 @@ public:
                     speed.offset_amplitude=cfg.offset_amplitude;speed.strategy_cap=1000000000.F;
                     speed.queued_override=policies[i].speed_override_active();
                     speed.route_speed=action.speed.route_speed;speed.action_speed=action.speed.speed;
-                    if(limit_career_pace_ && timing.stage==RaceStage::racing &&
-                       timing.racers[0].status==RacerStatus::not_finished &&
-                       timing.racers[i+1].status==RacerStatus::not_finished) {
-                        // Gameplay tuning: a pursuing rival has its own engine and
-                        // nitrous. Gradually ease the road target of a clear leader.
-                        const float lead=(catchup.self_progress-catchup.target_progress)*catchup.route_length;
-                        const float easing=std::clamp((lead-20.F)/80.F,0.F,1.F);
-                        speed.catchup_scale=std::min(1.F,speed.catchup_scale)*(1.F-.12F*easing);
-                        speed.respect_queued_road_speed=true;
-                        p.physical_scale=1.F;
-                    }
                     speed.duration=action.speed.duration;speed.auxiliary=action.speed.auxiliary;speed.enabled=action.speed.enabled;
                     if(policies[i].marker>=0) {
                         const auto& marker=events.at(unsigned(policies[i].marker));const auto* marked=lines.find(marker.target_route);
@@ -1118,9 +1104,9 @@ std::string IntroAiPlanner::difficulty_line() const {
     return state_?state_->difficulty_line():"AI_DIFFICULTY inactive";
 }
 bool IntroAiPlanner::load(const std::filesystem::path& root,const std::array<int,3>& contexts,
-                          const std::array<const VehicleHull*,4>& hulls,bool retail_speed,unsigned track_number,int direction,bool drag,float catchup_weight,int laps,bool point_to_point,unsigned traffic_selector,bool catchup_enabled,int decision_start,bool limit_career_pace) {
+                          const std::array<const VehicleHull*,4>& hulls,bool retail_speed,unsigned track_number,int direction,bool drag,float catchup_weight,int laps,bool point_to_point,unsigned traffic_selector,bool catchup_enabled,int decision_start) {
     auto next=std::make_unique<State>();next->set_recovery_trace(trace_recovery_);
-    if(!next->load(root,contexts,hulls,retail_speed,track_number,direction,drag,catchup_weight,laps,point_to_point,traffic_selector,catchup_enabled,decision_start,limit_career_pace))return false;
+    if(!next->load(root,contexts,hulls,retail_speed,track_number,direction,drag,catchup_weight,laps,point_to_point,traffic_selector,catchup_enabled,decision_start))return false;
     state_=std::move(next);evaluations=pairs=side_choices=fallbacks=0;
     minimum_speed={{1e9F,1e9F,1e9F}};maximum_speed={};return true;
 }

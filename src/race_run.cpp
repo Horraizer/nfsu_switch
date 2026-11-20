@@ -321,10 +321,8 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
             std::printf("AI_DIFFICULTY_SETUP event=%u difficulty=%u slot=%u car=%s context=%d rating=%.9g low_slip=%.9g\n",
                 unsigned(event_number_),difficulty_,i,rivals_[i].car_type.c_str(),rival_contexts_[i],rating,slip);
         }
-        const bool limit_career_pace=!quick_race_ && difficulty_==2 &&
-            (race_type_==RaceType::circuit || race_type_==RaceType::sprint || race_type_==RaceType::lap_knockout);
         if(!intro_ai_.load(root,rival_contexts_,hulls,true,track_number_,direction_,race_type_==RaceType::drag,catchup_weight_,laps_,lap_skip_!=0,catchup_traffic_selector_,
-            !quick_race_||quick_race_->catch_up,ai_decision_start_,limit_career_pace)) {error="intro planner data refused";return false;}
+            !quick_race_||quick_race_->catch_up,ai_decision_start_)) {error="intro planner data refused";return false;}
         if(!session_->set_planned_rivals(rivals_,low_slip,error,player_grid_))return false;
         session_->enable_rival_physics_switching();
         if(!session_->prepare_leaderboard(root,car_,error))return false;

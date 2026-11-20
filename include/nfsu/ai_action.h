@@ -86,7 +86,6 @@ struct AiSpeedPolicyInput {
     bool queued_override=false,route_speed=true,enabled=true;
     bool debug_constant=false,debug_route=false;
     float action_speed=0,duration=0,auxiliary=0,debug_auxiliary=0;
-    bool respect_queued_road_speed=false;
 };
 struct AiSpeedPublication {float speed=0,duration=0,auxiliary=0;bool enabled=true;};
 // 44C578..44C7EE after original catch-up update44BD10 and path publication.
