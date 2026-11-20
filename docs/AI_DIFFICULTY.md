@@ -21,6 +21,11 @@ Two distance curves are interpolated using the rival context. Rank difference
 contributes separately, weighted by event+0x12C. A bounded speed-difference
 correction and the human's recent speed/road-speed history also contribute.
 The history retains ten samples;430778/43080A/584270 define its timer and ring.
+PC 4307BA and 4307EA call RealController getters 59BF80 and 59BF90 for
+the published road and point. PC 43080A and Xbox 3F245 read the category
+flag and speed from the raw road records. The port uses that publication
+once the human controller runs. During grid hold its initial lookup still
+approximates the already initialized retail controller.
 Target speed can be reduced below its ordinary road target when the rival is
 ahead, or increased when behind. Actor+0x404 receives max(1, catchup), so a
 speed penalty is not a negative physical boost. This is conditional assistance,

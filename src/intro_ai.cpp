@@ -376,18 +376,27 @@ public:
         recovery_progress_ready_=true;recovery_previous_dt_=dt;
         const int decrement=static_cast<int>(dt*4000.F+.5F);
         if(human_history_.timer<decrement) {
-            AiRoadSelectionInput input;const auto& state=race.car();
-            input.position={float(state.position.x),float(state.position.y),float(state.position.z)};
-            input.progress=race.progress().coordinate.distance;
-            if(direction_)input.progress=race.course().route.spline.path_length-input.progress;
-            input.maximum_distance=999999.F;input.allow_outside_width=true;input.role=1;
             AiRoadCursor point;
-            if(!ai_road_select(lines,input,found,point))return false;
+            // PC 4307BA/4307EA read RealController+48/+4C. At a junction
+            // another nearby road can have a different speed for the same car.
+            found=human_road_cursor(point);
+            if(!found && !frames) {
+                // The port holds the controller during the starting grid.
+                // Bootstrap its sample until its first road publication.
+                AiRoadSelectionInput input;const auto& state=race.car();
+                input.position={float(state.position.x),float(state.position.y),float(state.position.z)};
+                input.progress=race.progress().coordinate.distance;
+                if(direction_)input.progress=race.course().route.spline.path_length-input.progress;
+                input.maximum_distance=999999.F;input.allow_outside_width=true;input.role=1;
+                if(!ai_road_select(lines,input,found,point))return false;
+            }
             if(found) {
                 const auto* road=lines.find(point.route);
                 if(!road||point.point>=road->points.size())return false;
-                authored_speed=float(road->points[point.point].speed[human_grade_]);
-                enabled=road->category_enabled[human_grade_];
+                // PC 43080A/43081E and Xbox 3F245/3F25B read the raw
+                // header and speed byte, even when driving the course in reverse.
+                authored_speed=route_raw_speed(road->points[point.point],int(human_grade_),road->category_columns_reversed);
+                enabled=road->category_enabled[human_grade_+(road->category_columns_reversed?5U:0U)];
             }
         }
         const auto speed=race.car().owner_speeds.magnitude;

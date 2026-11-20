@@ -79,6 +79,28 @@ int main(int argc,char** argv){try {
     std::array<const VehicleHull*,4> hulls{{&rivals[0].hull,&rivals[1].hull,&rivals[2].hull,&player->hull}};
     need(publication.load(root,contexts,hulls,true,run.track_number()),"publication planner load");
     if(event==19) {
+        // The history consumer reads the last controller road, including when
+        // the car has moved since publication. No new controller update here.
+        IntroAiPlanner history;
+        need(history.load(root,contexts,hulls,true,run.track_number()),"history probe load");
+        RaceRivalPlans plans;
+        need(history.inspect_plan(run.session(),plans),"publish history probe road");
+        AiRoadCursor road;
+        need(history.human_road_cursor(road),"expected human road publication");
+        auto& car=const_cast<VehicleState&>(run.session().car());
+        auto& timing=const_cast<RaceTimingState&>(run.session().timing());
+        const auto saved_position=car.position;
+        const auto saved_tick=timing.now_ticks;
+        car.position={10000000,10000000,0};
+        for(unsigned i=0;i<65;++i) {
+            timing.now_ticks+=67;
+            need(history.observe_human(run.session()),"sample the retained human road");
+        }
+        car.position=saved_position;timing.now_ticks=saved_tick;
+        need(history.difficulty_line().find("history_samples=2 ")!=std::string::npos,
+             "human road history unexpectedly performed another spatial search");
+    }
+    if(event==19) {
         {
             IntroAiPlanner reset_adapter;
             need(reset_adapter.load(root,contexts,hulls,true,run.track_number()),"reset road adapter load");
