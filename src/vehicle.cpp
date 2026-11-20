@@ -1297,7 +1297,8 @@ bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
 
 bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
                         const VehicleGround& ground, VehicleTelemetry& telemetry,
-                        double publication_dt, double step_dt, bool select_request, bool allow_rest, bool contact_completion, bool refresh_only,float refresh_interval,double outer_dt) const {
+                        double publication_dt, double step_dt, bool select_request, bool allow_rest, bool contact_completion, bool refresh_only,float refresh_interval,double outer_dt,
+                        VehicleSteeringState steering) const {
     if (!finite(outer_dt)||outer_dt< -1 || !finite(refresh_interval)||refresh_interval<0 || (refresh_only && (!contact_completion || step_dt!=0 || select_request || publication_dt!=0)) ||
         !valid_ || !state_finite(state) || state.gear < kVehicleGearReverse ||
         state.gear > kVehicleGearFirst + static_cast<int>(spec_.handling.forward_gears) - 1 ||
@@ -1507,7 +1508,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
                 static_cast<std::uint16_t>(static_cast<std::int64_t>(rounded)):0;
             s.steering_word_ready=true;
         }
-        const auto front_axes=player_front_steering_axes(h,s.steering_word);
+        // 476944 creates a zeroed steering object. The constructor force pass
+        // precedes SetSteering at 4775F4. A zero steering word produces unit
+        // axes and is different from the two unpublished matrices.
+        std::array<std::array<VehicleVec3,3>,2> front_axes{};
+        if(steering==VehicleSteeringState::initialized)
+            front_axes=player_front_steering_axes(h,s.steering_word);
 
         force = v3(0.0,0.0,s.body_gravity?-d_.weight:0.0);
         torque = {};
@@ -1726,7 +1732,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             if(s.published_support>0&&s.body_rest_state==2) w.spin=0.0F;
             else if(s.body_rest_state==1) w.spin*=0.94999998807907104F;
             if(s.body_rest_state!=0)
-                w.spin_direction=w.spin>1.0e-5F?0:(w.spin<-1.0e-5F?2:1);
+                w.spin_direction=player_wheel_spin_direction(w.spin);
             // The repeated wheel refresh (586DA0) observes the stopped or
             // damped spin before the next derivative can reject a reversal.
             wheel.spin=w.spin;

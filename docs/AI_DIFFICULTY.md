@@ -60,6 +60,20 @@ authenticated speed.exe instructions with supplied race snapshots and no
 semantic replacements. nfsu_career_races_tests checks that the production
 planner receives the event's traffic selector.
 
+## Returning to full vehicle physics
+
+PC 476944..476963 allocates the two front steering matrices before the
+constructor force pass at 476F13..476F2F. The first driver steering command
+at 4775F4 fills them. The GameCube build exposes the same order in
+PhysicsMover construction (800803DC), InitializeStateFromCar (80081FEC)
+and ComputeAuxiliaries (80080C58). In a Dolphin watchpoint run of a
+reconstructed mover, both front wheel bases were zero at constructor return,
+hub velocities were nonzero, and the rear bases contained the body axes.
+The wheel derivative therefore initially sees the full front rim speed as
+slip. The sign of imported spin also participates in the reversal clamp.
+The replacement-mover cases in nfsu_ai_track_tests exercise both properties.
+Traffic layout and the decision to change movers are independent inputs.
+
 ## Evidence limits
 
 These checks establish the isolated arithmetic, table selection and bounded

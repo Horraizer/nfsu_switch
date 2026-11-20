@@ -826,6 +826,8 @@ private:
 // The model
 // ---------------------------------------------------------------------------
 
+enum class VehicleSteeringState { initialized, before_first_command };
+
 class VehicleModel {
 public:
     // Checks the handling (check_vehicle_handling) and the approximations,
@@ -882,7 +884,8 @@ public:
               bool contact_completion = false,
               bool refresh_only = false,
               float refresh_interval = 0,
-              double outer_dt = -1) const;
+              double outer_dt = -1,
+              VehicleSteeringState steering = VehicleSteeringState::initialized) const;
 
 private:
     struct Derived {

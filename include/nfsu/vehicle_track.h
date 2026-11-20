@@ -716,7 +716,7 @@ private:
     float ai_gearing_speed_limit_=0.F;
     bool resolve_body(VehicleState& s, VehicleTrackTelemetry& t) const;
     void run_tick(VehicleState& s, const VehicleInput& input, VehicleTrackTelemetry& t, unsigned selector=1);
-    void reconstruct_full_physics(VehicleState& s, std::int32_t clock) const noexcept;
+    bool reconstruct_full_physics(VehicleState& state, std::int32_t clock) const;
     bool reconstruct_ai_physics(VehicleState&,const VehicleInput&,int,std::int32_t,VehicleTrackTelemetry&);
     bool ground_under(double x, double y, double& z) const;
     // The road-preferring column reset placements use; see its definition.
