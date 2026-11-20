@@ -49,7 +49,7 @@ endif()
 # The pins. demo_stream moved with the handbrake fix: the demonstration's
 # handbrake second is max(service, 0.5 x handbrake) (0x00474B4B), not an
 # added rear lock torque (docs/CONTROLS_CAMERA.md).
-set(demo_stream "6FC2FCBBC8D3E794C1D60FBBBAF8DD8EB32FF8C32D172B7E43700AC692BF6959")
+set(demo_stream "7370090239F0FEC007510AA4FA5256BD357668B0E15627E28D68F8AC8521239C")
 set(fixture_frame_690 "1896A88A494364C5459EA1F20A82782A123D0BD5ED5DFC56B6D149DBD33516DD")
 # Both synthetic poses changed with the corrected full-domain arctangent.
 set(fixture_frame_1380 "40227856ECF68D73090FE85E1EC3A4F7E1B707565B7248084AA10ED008D980D4")

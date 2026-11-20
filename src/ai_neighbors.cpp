@@ -29,7 +29,7 @@ float projected_vector(const AiDriverPoint& v,const AiDriverPoint& vector) {
 }
 bool ai_neighbors(const AiRoadChain& chain,const AiNeighborInput& in,
                   const AiNeighborActor* actors,std::size_t count,AiNeighborhood& result) noexcept {
-    if(chain.count>40||(!actors&&count)||!((in.category>=0&&in.category<5)||(in.category>=11&&in.category<=16))||
+    if(chain.count>40||(!actors&&count)||!(in.category==-1||(in.category>=0&&in.category<5)||(in.category>=11&&in.category<=16))||
        in.ride_category<0||in.ride_category>=5||!finite(in.position)||!finite(in.velocity)||
        !finite(in.forward)||!finite(in.acceleration)||!finite(in.projection_vector)||
        !std::isfinite(in.progress)||!std::isfinite(in.horizon)||in.horizon<0||
@@ -87,7 +87,9 @@ bool ai_neighbors(const AiRoadChain& chain,const AiNeighborInput& in,
         const auto phase=static_cast<std::uint16_t>(track_angle(actor.forward[0],actor.forward[1])-in.heading+0x4000);
         const float cosine=player_angle_sin(phase),c2=cosine*cosine,s2=1.F-c2;
         entry.half_extent={{half[0]*s2+c2*half[1],c2*half[0]+s2*half[1]}};
-        const float along=entry.distance-self.distance,across=entry.lateral-self.lateral;
+        const float lateral_for_category=in.category<0?0.F:
+            in.category>=11?entry.lane_lateral[unsigned(in.category-11)]:entry.lateral;
+        const float along=entry.distance-self.distance,across=lateral_for_category-self.lateral;
         float score=across*across+along*along;
         if(along<0)score=-score;
         if(!std::isfinite(score))return false;

@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,8 @@ struct RaceAudioSnapshot {
     struct Traffic {TrafficAudioInput input;std::uint64_t generation=0;bool active=false;};
     std::array<Traffic,kRaceTrafficCapacity> traffic{};
     std::array<float,3> listener_eye{},listener_forward{{1,0,0}};
+    std::array<float,3> plane_position{};
+    bool plane_present=false;
 
 };
 
@@ -241,6 +244,22 @@ private:
 };
 
 RaceAudioSnapshot race_audio_snapshot(const RaceSession& session) noexcept;
+// The bridge has two fixed sources. The plane uses one of these slots with
+// the WorldObject's current pose on Terminal.
+class RaceScenerySound {
+public:
+    static bool supported(unsigned track) noexcept;
+    bool load(const std::filesystem::path& root,unsigned track,std::string& error);
+    void update(const RaceAudioSnapshot& snapshot,Mixer& mixer,int category_gain,TrafficAudioRandom& random);
+    void stop(Mixer& mixer) noexcept;
+    std::size_t resident_bytes() const noexcept;
+private:
+    PcmClip clip_;
+    std::array<PcmClip,3> plane_clips_;
+    unsigned track_=0;
+    unsigned plane_available_=0b111;
+    bool plane_in_range_=false;
+};
 // Previous port mix, retained only for diagnostic before/after playback.
 std::array<double, 4> engine_layer_weights(double rpm) noexcept;
 std::vector<Segment> race_music_playlist(const Bank& bank,
@@ -264,6 +283,7 @@ private:
 // Reads retail audio and drives the platform output. Missing banks or a
 // missing device leave the race running with an explicit diagnostic.
 struct RaceRemoteEngineBinding {std::string car;int engine_upgrade=0,induction_upgrade=0;bool turbo_installed=false;};
+struct MenuSong;
 class RaceAudioService {
 public:
     struct Stats {
@@ -288,11 +308,13 @@ public:
                const std::string& car = "240SX", int engine_upgrade = 0,
                int nitrous_upgrade = 1,int tyre_upgrade = 0,
                const std::vector<RaceRemoteEngineBinding>& rivals = {},int induction_upgrade = 0,
-               unsigned traffic_count = 16,std::uint32_t prop_materials = 1);
+               unsigned traffic_count = 16,std::uint32_t prop_materials = 1,
+               unsigned track = 0,std::optional<std::uint32_t> sound_seed=std::nullopt);
     void on_tick(const RaceAudioSnapshot& snapshot,std::uint32_t* world_random=nullptr);
     void set_suspended(bool suspended) noexcept;
     void fade_music_for_finish() noexcept;
     bool finish_music_drained() const;
+    const MenuSong* now_playing() const noexcept;
     void frontend_sound(FrontendSound);
     bool frontend_sound_active();
     bool post_race_voice(const std::filesystem::path&,unsigned event,bool won,std::string& error);

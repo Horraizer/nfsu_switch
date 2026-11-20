@@ -5,6 +5,14 @@
 #include <cmath>
 #include <cstdint>
 namespace nfsu::audio {
+struct SceneryAudioPosition {
+    int gain=0;
+    std::uint16_t pan=0;
+    float distance=0;
+};
+SceneryAudioPosition scenery_audio_position(bool plane,const std::array<float,3>& source,
+    const std::array<float,3>& human,const std::array<float,3>& eye,
+    const std::array<float,3>& forward) noexcept;
 struct TrafficAudioRandom {
     std::uint32_t state=0x12345678;
     float last_horn=0;

@@ -5,6 +5,21 @@
 #include <limits>
 
 namespace nfsu {
+void AiRoadPolicy::pass_racer_event(const AiRoadEvent& event,unsigned id) noexcept {
+    // 462A00 uses the marker byte at +08, independently of the event type at +0B.
+    if(event.marker==1)speed_override_ticks=10000; // retail6B735C: 2.5 seconds
+    if(marker==static_cast<int>(id))marker=-1;
+}
+bool AiRoadPolicy::speed_override_active() const noexcept {
+    return speed_override_ticks!=0&&speed_override_ticks!=std::numeric_limits<int>::max();
+}
+void AiRoadPolicy::advance_speed_override(float frame_seconds) noexcept {
+    if(!speed_override_active())return;
+    // 586640 truncates after multiplying with the game's single-precision x87 control word.
+    const float ticks=frame_seconds*4000.F;
+    if(ticks>=speed_override_ticks)speed_override_ticks=0;
+    else if(ticks>0)speed_override_ticks-=static_cast<int>(ticks);
+}
 bool ai_road_orient(RacingLineTrack& track,int direction) noexcept {
     if(direction!=0 && direction!=1)return false;
     if(!direction)return true;
@@ -12,6 +27,7 @@ bool ai_road_orient(RacingLineTrack& track,int direction) noexcept {
         // Reverse virtual5A7020 traverses opposite to5A6F50; no reindexing
         // of event targets or authored route point identities is involved.
         route.reverse=!route.reverse;
+        route.category_columns_reversed=!route.category_columns_reversed;
         for(unsigned k=0;k<5;++k)std::swap(route.category_enabled[k],route.category_enabled[k+5]);
         for(unsigned k=0;k<6;++k)std::swap(route.lane_enabled[k],route.lane_enabled[k+6]);
         for(auto& p:route.points) {
@@ -274,19 +290,27 @@ bool ai_road_lane_transition(const AiLaneTransitionInput& in,int from,int to,
     }
     output=true;return true;
 }
-bool drag_lane_step(const Route& route,unsigned point,const AiDriverPoint& position,
+bool drag_lane_step(const RacingLineTrack& track,const AiRoadCursor& raw,const AiDriverPoint& position,
                     const AiRoadChain& chain,const std::array<bool,7>& available,
                     int held,float travelled_distance,DragLaneState& state,const AiLaneTransitionInput& transition) noexcept {
     if(held< -1||held>1||!std::isfinite(travelled_distance)||chain.count==0)return false;
-    const int nearest=ai_road_nearest_lane(route,point,position);
+    const auto* route=track.find(raw.route);
+    if(!route)return false;
+    const int nearest=ai_road_nearest_lane(*route,raw.point,position);
     if(nearest<11)return false;
     auto next=state;
     const auto shifted=[&](int direction) {
+        // 45D970 finds the closest lane at the raw point, then uses 5A6700
+        // to obtain the compact cell used by 5A7700 for destination admission.
+        AiRoadLocation location;
+        if(!ai_road_locate_actor(chain,position,nearest,location))return -1;
+        const auto* destination_route=track.find(chain.cells[location.cell].point.route_index);
+        if(!destination_route)return -1;
         int lane=nearest;
         for(unsigned i=0;i<6;++i) {
             const int candidate=lane+direction;
             if(candidate<11||candidate>16)break;
-            const bool destination=route.lane_enabled[unsigned(candidate-11)]&&
+            const bool destination=destination_route->lane_enabled[unsigned(candidate-11)]&&
                 (transition.controller_kind==2||available[unsigned(candidate-10)]);
             bool allowed=false;
             if(!ai_road_lane_transition(transition,lane,candidate,destination,allowed))return -1;
@@ -319,7 +343,7 @@ bool drag_lane_step(const Route& route,unsigned point,const AiDriverPoint& posit
             if(std::abs(at.lateral)<.5F)next.exclude_first=next.exclude_last=255;
         }
     }
-    next.category=next.mode==2?ai_road_nearest_lane(route,point,position,next.exclude_first,next.exclude_last):
+    next.category=next.mode==2?ai_road_nearest_lane(*route,raw.point,position,next.exclude_first,next.exclude_last):
         shifted(next.mode==0?-1:1);
     if(next.category<11)return false;
     state=next;return true;
@@ -365,6 +389,8 @@ bool ai_road_extend(const RacingLineTrack& track,const std::vector<AiRoadEvent>&
             if(!std::isfinite(offsets[k]))return false;
         }
         AiPathRoadPoint cell;cell.point=*to;cell.point_index=cursor.point;
+        cell.reverse=reverse[unsigned(cursor.route)];
+        cell.category_columns_reversed=track.find(cursor.route)->category_columns_reversed;
         cell.offset=offsets;cell.distance=last.distance+distance;
         if(!std::isfinite(cell.distance)||!ai_path_road_bounds(cell,category))return false;
         next.junction[next.count]=connected;next.cells[next.count++]=cell;last=cell;
@@ -432,7 +458,7 @@ bool ai_road_nearest(const AiRoadChain& chain,const AiDriverPoint& position,int 
 }
 bool ai_road_curvature(const AiRoadChain& chain,unsigned first,int category,
                        float lookahead,float& result) noexcept {
-    if(chain.count>40||first>=chain.count||!road_category(category)||!std::isfinite(lookahead))return false;
+    if(chain.count>40||first>=chain.count||(category!=-1&&!road_category(category))||!std::isfinite(lookahead))return false;
     if(chain.count-first<2){result=0;return true;}
     unsigned middle=chain.count,end=chain.count;
     if(lookahead>=0) {
@@ -444,7 +470,7 @@ bool ai_road_curvature(const AiRoadChain& chain,unsigned first,int category,
     if(end==chain.count||middle==chain.count) {middle=(chain.count-first)/2;end=chain.count-1;}
     auto sample=[&](unsigned i) {
         const auto& c=chain.cells[i];const auto& p=c.point;
-        const float offset=authored_lane(p,category)+c.offset[road_slot(category)];
+        const float offset=ai_path_lateral_origin(c,category);
         return std::array<float,2>{p.position[0]+offset*p.forward[1],p.position[1]-offset*p.forward[0]};
     };
     const auto a=sample(first),b=sample(middle),c=sample(end);
@@ -464,7 +490,7 @@ bool ai_road_refresh(const RacingLineTrack& track,const std::vector<AiRoadEvent>
                      const AiDriverPoint& position,bool keep_previous,float initial_horizon,float retained_horizon,
                      const AiRoadPolicyInput& input,AiRoadPolicy& policy,std::uint32_t& rng,AiRoadChain& chain,
                      int bounds_category) noexcept {
-    if(chain.count>40||!road_category(category)||selected.route<0||selected.route>=128||
+    if(chain.count>40||(category!=-1&&!road_category(category))||selected.route<0||selected.route>=128||
        !std::isfinite(initial_horizon)||!std::isfinite(retained_horizon))return false;
     if(bounds_category==-1)bounds_category=category;
     if(!road_category(bounds_category))return false;
@@ -487,6 +513,8 @@ bool ai_road_refresh(const RacingLineTrack& track,const std::vector<AiRoadEvent>
         next.search_origin=static_cast<int>(found);
     }else{
         next={};next.count=1;next.cells[0].point=route->points[selected.point];next.cells[0].point_index=selected.point;
+        next.cells[0].reverse=reverse[unsigned(selected.route)];
+        next.cells[0].category_columns_reversed=route->category_columns_reversed;
     }
     if(!ai_road_extend(track,events,reverse,bounds_category,horizon,input,decisions,random,next))return false;
     int nearest=-1;float curvature=0;
@@ -543,7 +571,7 @@ bool ai_road_select(const RacingLineTrack& track,const AiRoadSelectionInput& in,
 }
 bool ai_road_locate(const AiRoadChain& chain,const AiDriverPoint& position,int category,
                     AiRoadLocation& result) noexcept {
-    if(chain.count>40||!road_category(category))return false;
+    if(chain.count>40||(category!=-1&&!road_category(category)))return false;
     for(float v:position)if(!std::isfinite(v))return false;
     if(!chain.count){result={};return true;}
     auto along=[&](unsigned i) {
@@ -560,7 +588,7 @@ bool ai_road_locate(const AiRoadChain& chain,const AiDriverPoint& position,int c
     const auto& c=chain.cells[selected];const auto& p=c.point;
     const float cross=(position[0]-p.position[0])*p.forward[1]-
                       (position[1]-p.position[1])*p.forward[0];
-    const float lateral=cross-(authored_lane(p,category)+c.offset[road_slot(category)]);
+    const float lateral=cross-ai_path_lateral_origin(c,category);
     const float distance=along(previous);
     if(!std::isfinite(distance)||!std::isfinite(lateral))return false;
     result={selected,distance,lateral};return true;
@@ -571,9 +599,20 @@ bool ai_road_locate_actor(const AiRoadChain& chain,const AiDriverPoint& position
     if(!ai_road_locate(chain,position,category,location)||!chain.count)return false;
     const auto& c=chain.cells[location.cell?location.cell-1:0];const auto& p=c.point;
     const float cross=(position[0]-p.position[0])*p.forward[1]-(position[1]-p.position[1])*p.forward[0];
-    location.lateral=cross-(authored_lane(p,category)+c.offset[road_slot(category)]);
+    location.lateral=cross-ai_path_lateral_origin(c,category);
     if(!std::isfinite(location.lateral))return false;
     result=location;return true;
+}
+bool ai_road_context_ready(const AiRoadContext& context,const AiDriverPoint& position,
+                           bool& ready,AiRoadLocation& location) noexcept {
+    if(context.chain.count>context.chain.cells.size())return false;
+    for(float x:position)if(!std::isfinite(x))return false;
+    if(!context.selected||!context.chain.count){ready=false;location={};return true;}
+    AiRoadLocation projected;
+    if(!ai_road_locate_actor(context.chain,position,context.category,projected))return false;
+    const float end=context.chain.cells[context.chain.count-1].distance;
+    if(!std::isfinite(end))return false;
+    ready=projected.distance<=end;location=projected;return true;
 }
 bool ai_traffic_speed(const AiRoadChain& chain,const AiTrafficSpeedInput& in,
                       std::array<float,3>& output) noexcept {
@@ -663,15 +702,18 @@ bool ai_road_update_context(const RacingLineTrack& track,const std::vector<AiRoa
     const std::array<bool,128>& reverse,const AiRoadContextInput& in,const AiRoadPolicyInput& input,
     AiRoadPolicy& policy,std::uint32_t& rng,AiRoadContext& context,AiRoadContextResult& result) noexcept {
     const bool traffic=input.policy==AiRoadDecisionPolicy::traffic;
-    const bool unselected_traffic=traffic&&!context.selected&&!context.chain.count&&context.category==-1;
-    if((!road_category(context.category)&&!unselected_traffic)||context.chain.count>40||
+    if((context.category!=-1&&!road_category(context.category))||context.chain.count>40||
        (in.ride_category!=-1&&!road_category(in.ride_category))||
+       (in.category_probe!=AiRoadCategoryProbe::retain&&in.ride_category<0)||
        !std::isfinite(in.body_width)||!std::isfinite(in.back_margin))return false;
     auto next=context;auto decisions=policy;auto random=rng;AiRoadContextResult output;
     bool admitted=false;const auto& position=in.selection.position;
     for(float v:position)if(!std::isfinite(v))return false;
     if(next.chain.count) {
-        AiRoadLocation location;if(!ai_road_locate_actor(next.chain,position,next.category,location))return false;
+        //44CF87 uses local category0 when no raw road is available. An
+        //admitted retained cell restores pointers without changing category.
+        const int projection_category=next.selected?next.category:0;
+        AiRoadLocation location;if(!ai_road_locate_actor(next.chain,position,projection_category,location))return false;
         unsigned nearest=0;float best=0;
         for(unsigned j=0;j<next.chain.count;++j) {
             const float distance=std::fabs(next.chain.cells[j].distance-location.distance);
@@ -679,7 +721,9 @@ bool ai_road_update_context(const RacingLineTrack& track,const std::vector<AiRoa
             if(j==0||distance<best){nearest=j;best=distance;}
         }
         const auto& c=next.chain.cells[nearest];
-        const float outside=location.lateral>0?location.lateral-c.upper[road_slot(next.category)]:c.lower[road_slot(next.category)]-location.lateral;
+        const float low=projection_category<0?0.F:c.lower[road_slot(projection_category)];
+        const float high=projection_category<0?0.F:c.upper[road_slot(projection_category)];
+        const float outside=location.lateral>0?location.lateral-high:low-location.lateral;
         admitted=location.distance>=next.chain.cells[0].distance-in.back_margin&&
             location.distance<=next.chain.cells[next.chain.count-1].distance&&
             (outside<=in.body_width||in.allow_wide);
@@ -695,8 +739,7 @@ bool ai_road_update_context(const RacingLineTrack& track,const std::vector<AiRoa
                     if(events[id].target_route==next.chain.cells[j].point.route_index){selected_event=id;break;}
                 }
                 output.passed_events[output.passed_count++]=selected_event;
-                // 462A00 clears a consumed marker before refreshing decisions.
-                if(!traffic&&selected_event>=0&&decisions.marker==selected_event)decisions.marker=-1;
+                if(!traffic&&selected_event>=0)decisions.pass_racer_event(events[selected_event],unsigned(selected_event));
             }
         }
     }else if(next.selected) {
@@ -719,6 +762,16 @@ bool ai_road_update_context(const RacingLineTrack& track,const std::vector<AiRoa
                 const auto* route=track.find(next.road.route);
                 if(!route)return false;
                 next.category=std::max(0,ai_road_nearest_lane(*route,next.road.point,position));
+            }
+        }else if(next.selected&&in.category_probe!=AiRoadCategoryProbe::retain) {
+            //44B55F clears neighbors before44BAF0. Its lane virtual can
+            //therefore select directly; it must not test the retained path.
+            next.category=in.ride_category;
+            if(in.category_probe==AiRoadCategoryProbe::nearest_lane) {
+                const auto* route=track.find(next.road.route);
+                if(!route)return false;
+                const int lane=ai_road_nearest_lane(*route,next.road.point,position);
+                if(lane>=0)next.category=lane;
             }
         }
         next.nearest=-1;decisions.marker=-1;output.reselected=true;

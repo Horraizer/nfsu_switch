@@ -7,6 +7,10 @@ namespace nfsu {
 //4420B0: raw point+84 bits25/26 admit forward/backward traffic spawning.
 //Header lane availability alone also includes lanes reserved for racers.
 bool ai_traffic_spawn_point_allowed(const std::array<std::uint8_t,4>& flags,bool forward) noexcept;
+// 4563D0 follows the selected direction and the authored connector queue.
+// The output is published only when a road point is reached.
+bool ai_traffic_walk_road(const RacingLineTrack&,const std::vector<AiRoadEvent>&,
+                          AiRoadCursor start,float distance,bool forward,AiRoadCursor& out) noexcept;
 //599C40: callers supply a valid point index; leave ten points ahead.
 bool ai_traffic_drag_spawn_margin(unsigned point,unsigned count,bool forward) noexcept;
 // 599B20 / 442820 with the startup caller's zero reference progress.
@@ -15,6 +19,9 @@ AiRoadCursor ai_traffic_drag_grid_point(const RacingLineTrack&,const TrackPathSp
 //59B3E0/59B670/59B6A0: selector1..3 chooses the zone's min/max pair.
 //Absent zone or a nearby stopped car suppresses the draw, returning99999.
 bool ai_traffic_spawn_spacing(const TrackPathZone*,unsigned,bool,std::uint32_t&,float&) noexcept;
+// 5AB080 initializes all density/direction pairs of one 34124 placement row.
+void ai_traffic_placement_ranges(const std::array<float,8>& base,const std::array<float,8>& spread,
+                                 std::uint32_t& random,std::array<float,8>& ranges) noexcept;
 //59B1E0: traffic is protected on both sides; a racer only ahead of itself.
 bool ai_traffic_spawn_gap_blocked(float spawn_minus_actor,float spacing,bool traffic) noexcept;
 //583350 role3 gate. Frame is global6F08A4, not this actor's physics tick.

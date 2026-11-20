@@ -291,6 +291,7 @@ bool render_track_draw_list(
     RenderStats& stats,
     TrackRenderStats& track_stats,
     std::string& error,
-    const ReferenceDrawObserver& observe = {});
+    const ReferenceDrawObserver& observe = {},
+    const std::vector<std::size_t>* texture_frames = nullptr);
 
 } // namespace nfsu

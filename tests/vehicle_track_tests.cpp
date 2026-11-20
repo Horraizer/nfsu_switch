@@ -419,6 +419,24 @@ void test_native_strut_ground() {
         check(bounds.bounds[2]==16.25F,"4407B0 rebuilds outside the radius-8 query bounds");
     }
     const auto course=proving_ground();const auto& model=stock_model();
+    {
+        std::vector<VehicleSupportFace> faces(1);
+        auto& face=faces[0];face.low={3,3};face.high={4,4};face.plane={0,0,1,20};
+        face.corners={{{3,3,20},{4,3,20},{4,4,20},{3,4,20}}};
+        TrackVehicleGround dynamic(course.world,true,TrackStrutQuery::cached_height,&faces);
+        std::array<VehicleVec3,4> hubs;hubs.fill({0,0,12});
+        std::array<VehicleGroundHit,4> hits;
+        dynamic.strut_heights(hubs,hits);
+        check(hits.back().dynamic_candidate,
+              "577060 marks a nearby support candidate even when the hub misses its face");
+        face.low[0]=8;face.high[0]=9;
+        dynamic.reset_strut_cache();dynamic.strut_heights(hubs,hits);
+        check(!hits.back().dynamic_candidate,"577060 rejects exact cache-boundary contact");
+        face.low[0]=3;face.high[0]=4;hubs[3]={100,100,12};
+        dynamic.reset_strut_cache();dynamic.strut_heights(hubs,hits);
+        check(hits[0].dynamic_candidate&&!hits[3].dynamic_candidate,
+              "577060 overwrites the candidate flag on each wheel instead of accumulating it");
+    }
     TrackVehicleGround cached(course.world,true,TrackStrutQuery::cached_height),segment(course.world,true);
     VehicleState initial;VehiclePose pose=course.start;pose.ground.z=9.F;
     check(model.reset(initial,pose),"under-road source query fixture resets");
@@ -1116,7 +1134,7 @@ void test_zones_and_off_path() {
     }
     check(moved != 0 && point[moved].reset == nfsu::VehicleTrackReset::zone_to_point &&
               point[moved].position.x == 40.0 && point[moved].position.y == 56.0 &&
-              std::fabs(speed(point[moved].velocity) - 8.1) < 1e-8 &&
+              std::fabs(speed(point[moved].velocity) - double(float(8.1))) < 1e-6 &&
               point[moved].velocity.x > 8.09 && std::fabs(point[moved].velocity.y) < 1e-9,
           "the RESET_TO_POINT zone puts the car at (40, 56) moving +x at 8 plus 0.1");
     check(moved != 0 && point[moved - 1].position.y > 79.0 && point[moved - 1].position.y < 81.0,

@@ -57,5 +57,9 @@ int main(int argc,char** argv) {
     input.enabled=false;
     check(ai_catchup_update(input,tuning,state)&&std::memcmp(&state,&catchups[0].before,sizeof(state))==0,
         "disabled update preserves all publication");
+    input=catchups[0].input;
+    input.has_player_view=true;
+    check(ai_catchup_update(input,tuning,state)&&std::memcmp(&state,&catchups[0].before,sizeof(state))==0,
+        "44BD37 keeps prior values for an actor with a bound player view");
     std::cout<<"Original catchup: "<<index<<" cases; history steps="<<sizeof(catchup_history_native)/sizeof(*catchup_history_native)<<"; failures="<<failures<<'\n';return failures?1:0;
 }

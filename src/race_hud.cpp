@@ -234,6 +234,8 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
         atlas.lap_font_heights[f]=font.line_height;
         auto glyphs=std::string(needed[f])+(f==1 && atlas.drift_ready?"XTO SLOW!Wg.y":"")+
             (f==1 && drag?"Gof!SiTotaledBlownEngK":"")+(f==1 && knockout?"Youwk":"");
+        if(f==1&&drag)for(char c:std::string_view("Winner!You Finished Second!You Finished Third!Last PlaceYOUR TIME: 0:00.00"))
+            if(glyphs.find(c)==std::string::npos)glyphs+=c;
         // Comment_DATA uses the large font too; keep all earlier atlas UVs.
         if(f==1&&atlas.drift_ready)for(char c:std::string("GOOD DRIFTGREAT SUPERB!COLOSSAL!OUTRAGEOUS!INSANE DRIFT!!DRIFT KING!!"))
             if(glyphs.find(c)==std::string::npos)glyphs+=c;
@@ -242,7 +244,7 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
             if(glyphs.find(c)==std::string::npos)glyphs+=c;
         std::array<bool,128> packed{};
         for (const char* c=glyphs.c_str();*c;++c) {
-            if(atlas.drift_ready){if(packed[unsigned(*c)])continue;packed[unsigned(*c)]=true;}
+            if(atlas.drift_ready||drag){if(packed[unsigned(*c)])continue;packed[unsigned(*c)]=true;}
             const auto it=std::find_if(font.glyphs.begin(),font.glyphs.end(),
                 [&](const RaceLapHudGlyph& g){return g.code==unsigned(*c);});
             if (it==font.glyphs.end()) { error="lap HUD glyph absent"; return false; }
@@ -474,6 +476,18 @@ bool load_race_hud_atlas(const std::filesystem::path& root,
     return load_lap_fonts(root,atlas,error,false,knockout);
 }
 
+std::string drag_finish_message(const RaceHudAtlas& atlas,unsigned place,std::int32_t finish_ticks) {
+    if(!place || place>atlas.drag_finish_places.size() || atlas.drag_finish_places[place-1].empty())return "Race Over";
+    auto time=format_race_ticks(finish_ticks);
+    // 586580 with flags zero suppresses the minutes field for sub-minute times.
+    if(time.rfind("0:",0)==0) {
+        time.erase(0,2);
+        if(time.front()=='0')time.erase(0,1);
+    }
+    time.insert(0,8-std::min<std::size_t>(8,time.size()),' ');
+    return atlas.drag_finish_places[place-1]+"\n"+atlas.drag_finish_time+time+"  ";
+}
+
 void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,unsigned height,RaceHudFrame& frame,std::string_view message) noexcept {
     if(!atlas.lap_ready || !width || !height || !std::isfinite(seconds) || seconds<0)return;
     // HUD_SingleRace RaceOverMessage/RaceOverBacking, original4A7E1F
@@ -494,9 +508,9 @@ void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,un
     const float bw=650+sample(backing);
     // Keep the complete finish message when the ordinary HUD fills the frame.
     std::size_t required=1;
-    for(const unsigned char c:message) {
+    for(const unsigned char c:message)if(c && c<128) {
         const auto& glyph=atlas.lap_fonts[1][c];
-        if(c&&glyph.width&&glyph.height)++required;
+        if(glyph.width&&glyph.height)++required;
     }
     if(required>kRaceHudMaxQuads)return;
     frame.quads=std::min<std::size_t>(frame.quads,kRaceHudMaxQuads-required);
@@ -504,24 +518,33 @@ void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,un
     rect(frame,kLapWhite,float(width)*.5F+(1.24171447754F-bw*.5F)*scale,
         (244-65)*scale,bw*scale,130*scale,{{0,0,0}},250);
     const float size=(.75F+sample(sizes))*scale;
-    float advance=0;
-    for(const unsigned char c:message)if(c)advance+=atlas.lap_fonts[1][c].advance;
-    float x=float(width)*.5F-advance*size*.5F;
     const auto opacity=static_cast<unsigned char>(std::clamp(int(255+sample(alpha)+.5F),0,255));
-    // Resource0: Conduit38 Bold Italic, centered horizontally and vertically.
-    const float y=243*scale-38*size*.5F;
-    for(const unsigned char c:message)if(c) {
-        const auto& g=atlas.lap_fonts[1][c];
-        if(g.width && g.height) {
-            const auto q=frame.quads;
-            rect(frame,{g.x,g.y,g.width+2,g.height+2},x+g.bearing_x*size,y+g.bearing_y*size,
-                std::max(4,g.width)*size,g.height*size,{{194,146,0}},opacity);
-            if(frame.quads>q)for(unsigned v=0;v<4;++v) {
-                frame.vertices[q*4+v].u+=(v==0||v==3?.5F:-.5F)/kRaceHudAtlasWidth;
-                frame.vertices[q*4+v].v+=(v<2?.5F:-.5F)/kRaceHudAtlasSize;
+    // Resource0: Conduit38 Bold Italic. Center each line of the authored string.
+    const auto font_height=atlas.lap_font_heights[1]>0?atlas.lap_font_heights[1]:38.F;
+    const auto lines=std::count(message.begin(),message.end(),'\n')+1;
+    float y=lines==1?243*scale-38*size*.5F:250*scale-float(lines)*font_height*size*.5F;
+    while(!message.empty()) {
+        const auto end=message.find('\n');
+        const auto line=message.substr(0,end);
+        float advance=0;
+        for(const unsigned char c:line)if(c && c<128)advance+=atlas.lap_fonts[1][c].advance;
+        float x=float(width)*.5F-advance*size*.5F;
+        for(const unsigned char c:line)if(c && c<128) {
+            const auto& g=atlas.lap_fonts[1][c];
+            if(g.width && g.height) {
+                const auto q=frame.quads;
+                rect(frame,{g.x,g.y,g.width+2,g.height+2},x+g.bearing_x*size,y+g.bearing_y*size,
+                    std::max(4,g.width)*size,g.height*size,{{194,146,0}},opacity);
+                if(frame.quads>q)for(unsigned v=0;v<4;++v) {
+                    frame.vertices[q*4+v].u+=(v==0||v==3?.5F:-.5F)/kRaceHudAtlasWidth;
+                    frame.vertices[q*4+v].v+=(v<2?.5F:-.5F)/frame.atlas_height;
+                }
             }
+            x+=g.advance*size;
         }
-        x+=g.advance*size;
+        if(end==std::string_view::npos)break;
+        message.remove_prefix(end+1);
+        y+=font_height*size;
     }
 }
 
@@ -542,9 +565,10 @@ void build_race_hud_frame(const RaceSession& session,
 }
 
 namespace {
-void append_drift_hud(const RaceSession& session,const RaceHudAtlas& atlas,
-                      unsigned width,unsigned height,RaceHudFrame& frame) noexcept {
+void append_drift_hud(const RaceSession& world,const RaceHudAtlas& atlas,
+                      unsigned width,unsigned height,RaceHudFrame& frame,unsigned player) noexcept {
     if(!atlas.drift_ready)return;
+    const auto& session=player?world.rival(player-1):world;
     const auto& drift=session.drift();const auto& chain=session.style().item(0);
     auto& clock=frame.drift_clock;const auto now=session.timing().now_ticks;
     if(!clock.initialized || now<clock.now) {
@@ -644,23 +668,39 @@ void append_drift_hud(const RaceSession& session,const RaceHudAtlas& atlas,
         std::snprintf(value,sizeof value,"%d",drift.target());
         text(value,2,-157,-111,.45F,2,yellow);
     }else text("MAXXXED",0,-147,-128,.9F,2,yellow);
-    // Virtual score table, in score order (43EB00/43F130).
     const float right=float(width)/scale-640;
+    struct LocalRow { const char* name; float score; unsigned actor; };
+    std::array<LocalRow,2> local{};
+    const bool duel=world.human_rival();
+    unsigned place=session.player_position();
+    if(duel) {
+        local={{{world.player_name().c_str(),world.style().item(0).total,0},
+                {world.rival(0).player_name().c_str(),world.rival(0).style().item(0).total,1}}};
+        if(local[1].score>local[0].score)std::swap(local[0],local[1]);
+        place=local[0].score==local[1].score||local[0].actor==player?1:2;
+    }
     box(kLapBacking,242+right,-192,156,64,{{0,0,0}},214);
-    const char* suffix=session.player_position()==1?"st":session.player_position()==2?"nd":session.player_position()==3?"rd":"th";
-    std::snprintf(value,sizeof value,"%u",session.player_position());
+    const char* suffix=place==1?"st":place==2?"nd":place==3?"rd":"th";
+    std::snprintf(value,sizeof value,"%u",place);
     text(value,2,247+right,-220,1,2,blue);
     text(suffix,1,249+right,-218,.5F,0,blue);
-    text("/4",1,249+right,-191,.5F,0,cyan);
-    unsigned rank=0;
-    for(const auto& row:session.drift_competition().standings()) {
-        const float y=-150+float(rank++)*24;
-        box(kLapWhite,242+right,y,156,22,row.actor?std::array<unsigned char,3>{{0,0,0}}:cyan,row.actor?180:128);
-        std::snprintf(value,sizeof value,"%d",int(row.score));
+    text(duel?"/2":"/4",1,249+right,-191,.5F,0,cyan);
+    const auto draw_drift_row=[&](const char* name,float score,unsigned actor,unsigned rank) {
+        const float y=-150+float(rank)*24;
+        const bool remote=actor!=player;
+        box(kLapWhite,242+right,y,156,22,remote?std::array<unsigned char,3>{{0,0,0}}:cyan,remote?180:128);
+        std::snprintf(value,sizeof value,"%d",int(score));
         constexpr float name_left=170,score_right=314,row_scale=.9F;
         const float name_width=std::min(88.F,score_right-name_left-text_advance(value,0)*row_scale-6.F);
-        text(row.name.c_str(),0,name_left+right,y-10,row_scale,0,blue,254,row.actor?0.F:name_width);
+        text(name,0,name_left+right,y-10,row_scale,0,blue,254,duel||!remote?name_width:0.F);
         text(value,0,score_right+right,y-10,row_scale,2,blue);
+    };
+    if(duel)for(unsigned rank=0;rank<local.size();++rank) {
+        const auto& row=local[rank];draw_drift_row(row.name,row.score,row.actor,rank);
+    }
+    else {
+        unsigned rank=0;
+        for(const auto& row:session.drift_competition().standings())draw_drift_row(row.name.c_str(),row.score,row.actor,rank++);
     }
     box(kLapWhite,242+right,-36,156,20,cyan,128);
     box(kLapWhite,242+right,-12,156,20,cyan,128);
@@ -738,25 +778,30 @@ void append_countdown(const RaceSession& session,const RaceHudAtlas& atlas,unsig
 }
 void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                           std::uint32_t width, std::uint32_t height,
-                          RaceHudFrame& frame,bool metric_speed) noexcept {
-    build_race_hud_base(session,width,height,frame,metric_speed?&atlas:nullptr);
+                          RaceHudFrame& frame,bool metric_speed,unsigned player) noexcept {
+    const auto& driver=player?session.rival(player-1):session;
+    const auto& handling=driver.spec().handling;
+    build_race_hud_geometry(driver.car(),handling.max_rpm,handling.redline_rpm,
+        width,height,frame,metric_speed?&atlas:nullptr);
+    build_race_lap_hud_panel(race_lap_hud_snapshot(session.course().route,session.timing(),player),
+        RaceLapHudStyle::unknown,frame.lap);
     if(session.start_cinematic()){frame.quads=0;return;}
     if(session.is_drag()&&!atlas.drag_objects.empty()) {
         frame.quads=0;frame.lap_first_quad=0;frame.atlas_height=atlas.height;
-        append_race_drag_hud(session,atlas,width,height,frame);return;
+        append_race_drag_hud(session,atlas,width,height,frame,player);return;
     }
-    const bool turbo=has_turbo(session.spec());
-    append_race_boost_hud(atlas,session.nitrous(),turbo,session.turbo_pressure(),width,height,frame,
-                          session.spec().nitrous.count);
+    const bool turbo=has_turbo(driver.spec());
+    append_race_boost_hud(atlas,driver.nitrous(),turbo,driver.turbo_pressure(),width,height,frame,
+                          driver.spec().nitrous.count);
     if (!atlas.lap_ready || !width || !height) return;
     append_countdown(session,atlas,width,height,frame);
     if(session.is_drift()) {
         // The reference keeps only the gauge during the start countdown.
         if(!session.timing().go_valid)return;
-        append_drift_hud(session,atlas,width,height,frame);
+        append_drift_hud(session,atlas,width,height,frame,player);
         return;
     }
-    const auto snapshot=race_lap_hud_snapshot(session.course().route,session.timing(),0,true,session.time_limit_ticks());
+    const auto snapshot=race_lap_hud_snapshot(session.course().route,session.timing(),player,true,session.time_limit_ticks());
     build_race_lap_hud_panel(snapshot,RaceLapHudLanguage{true,0},frame.lap);
     if (!frame.lap.formatting_valid) return;
     if(frame.lap_first_quad==kRaceHudMaxQuads)frame.lap_first_quad=frame.quads;
@@ -838,17 +883,17 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
             const auto& standings=session.standings();
             for(unsigned row=0;row<standings.count;++row) {
                 // SetPlayerColor: BGRA base(-63,56,-24,255) + key(255,72,24,0).
-                const std::array<unsigned char,3> color=standings.order[row]==0?
+                const std::array<unsigned char,3> color=standings.order[row]==player?
                     std::array<unsigned char,3>{{0,126,190}}:std::array<unsigned char,3>{{0,0,0}};
                 box(kLapWhite,220,-160+20*float(row),137.923553F,18,color,254);
                 box(kLapWhite,139,-160+20*float(row),20.5F,18,{{0,0,0}},254);
             }
             constexpr std::array<unsigned char,3> blue{{148,188,254}},dark_blue{{0,126,190}};
             char position[8],total[8];
-            std::snprintf(position,sizeof position,"%u",session.player_position());
+            const auto place=standings.position(player);
+            std::snprintf(position,sizeof position,"%u",place);
             std::snprintf(total,sizeof total,"/%u",standings.count);
-            const char* ordinal=session.player_position()==1?"st":session.player_position()==2?"nd":
-                                session.player_position()==3?"rd":"th";
+            const char* ordinal=place==1?"st":place==2?"nd":place==3?"rd":"th";
             label(position,2,204,-220,1,true,blue);
             label(ordinal,1,209,-221,.5F,false,blue);
             label(total,1,205,-202,.5F,false,dark_blue);
@@ -856,8 +901,9 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                 char rank[8];std::snprintf(rank,sizeof rank,"%u:",row+1);
                 label(rank,0,134,-170+20*float(row)-(row?1:0),.9F,false,blue);
                 const unsigned actor=standings.order[row];
-                const auto text=session.leaderboard_label(actor);
-                label(text.c_str(),0,284,-170+20*float(row),.9F,true,blue,254,actor?0.F:129.F);
+                const auto text=session.human_rival()?(actor==player?session.player_name():"OTHER PLAYER"):
+                    session.leaderboard_label(actor);
+                label(text.c_str(),0,284,-170+20*float(row),.9F,true,blue,254,actor==player?129.F:0.F);
             }
         }
         if(session.style().ready()) {

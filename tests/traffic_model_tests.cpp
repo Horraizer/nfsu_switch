@@ -30,6 +30,19 @@ int main(int argc,char** argv) {
                 throw std::runtime_error("native traffic choice row "+std::to_string(index));
             used.push_back(choice.id);++index;
         }
+        // Event 19 (track 1001). The capture records saved settings, the
+        // roster IDs and sound RNG. The constructor seed comes from 41F7C9.
+        random=nfsu::authored_race_roster_seed(0x1eda9271U);
+        if(random!=0x53a88c2cU)throw std::runtime_error("career settings and name draws");
+        used.clear();
+        for(const int model:{27,28,21,23,24,31,31,24,21,23,24,27}) {
+            const auto choice=nfsu::choose_traffic_model(records.data(),records.size(),1001,used.data(),used.size(),random);
+            if(choice.id!=model)throw std::runtime_error("recorded career traffic roster");
+            used.push_back(choice.id);
+        }
+        const auto startup=nfsu::race_startup_random(random);
+        if(startup.sound_seed!=0x3599f063U||startup.before_world%0x7fffffffU!=0x5940f6daU||
+           startup.next_global!=0xa6263eecU)throw std::runtime_error("career sound/world startup draws");
         std::cout<<"PASS original weighted traffic, duplicate retries, skin/RNG: "<<index<<" rows\n";
         return 0;
     } catch(const std::exception& e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}

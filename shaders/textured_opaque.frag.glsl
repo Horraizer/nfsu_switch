@@ -194,8 +194,9 @@ void main()
     if ((frame.options.z & 1024u) != 0u) {
         vec2 uv = inTexcoord / inWorld.x;
         if (inWorld.y > 0.5) {
-            vec2 local = (uv * vec2(1024.0, 512.0) - vec2(513.0, 1.0)) / 256.0;
-            uv = (vec2(513.0, 1.0) + fract(local) * 256.0) / vec2(1024.0, 512.0);
+            vec2 atlasSize = vec2(textureSize(baseTexture, 0));
+            vec2 local = (uv * atlasSize - vec2(513.0, 1.0)) / 256.0;
+            uv = (vec2(513.0, 1.0) + fract(local) * 256.0) / atlasSize;
         }
         outColor = texture(baseTexture, uv) * inColor;
         return;

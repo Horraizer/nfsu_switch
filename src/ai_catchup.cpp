@@ -21,7 +21,7 @@ float curve(const std::array<AiCatchupPoint,11>& p,float x) noexcept {
 }
 }
 bool ai_catchup_update(const AiCatchupInput& in,const AiCatchupTuning& t,AiCatchupState& state) noexcept {
-    if(!in.has_race||!in.enabled||in.finished||in.special_context)return true;
+    if(!in.has_race||!in.enabled||in.has_player_view||in.special_context)return true;
     if(!std::isfinite(t.interval)||!std::isfinite(t.grace))return false;
     if(elapsed(in.tick,state.updated_tick)<=t.interval)return true;
     auto next=state;next.updated_tick=in.tick;next.target_id=0;

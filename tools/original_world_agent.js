@@ -123,6 +123,43 @@ static int copy(uint32_t *to,uint32_t from,uint32_t bytes) {
     uint32_t i;if(!readable(from,bytes))return 0;
     for(i=0;i<bytes/4;i++)to[i]=U(from+i*4);return 1;
 }
+static int human_road(uint32_t *out,uint32_t controller,uint32_t actor) {
+    uint32_t chain=U(controller+0x44),count,i,raw=U(controller+0x2c),category=U(controller+0x50);
+    if(!readable(chain,8))return 0;
+    count=U(chain+4);
+    if(count>40||(count&&!readable(chain+8,4*count))||!readable(actor+0x814,4))return 0;
+    out[0]=count;out[1]=0xffffffff;out[2]=0xffffffff;out[3]=U(actor+0x814);
+    if(readable(raw,0x88)) {
+        uint32_t index=*(uint8_t *)(uintptr_t)(raw+0x83);
+        if(index<128) {
+            uint32_t route=U(0x77af30+4*index);
+            if(readable(route,0x14)&&raw>=route+0x27c) {
+                uint32_t offset=raw-route-0x27c;
+                if(offset%0x88==0&&offset/0x88<*(uint16_t *)(uintptr_t)(route+0x10)) {
+                    out[1]=index;out[2]=offset/0x88;
+                }
+            }
+        }
+    }
+    out[4]=0xffffffff;out[5]=0xffffffff;
+    {
+        uint32_t route=U(controller+0x48),point=U(controller+0x4c);
+        if(readable(route,0x14)&&point>=route+0x27c) {
+            uint32_t offset=point-route-0x27c;
+            if(offset%0x88==0&&offset/0x88<*(uint16_t *)(uintptr_t)(route+0x10)) {
+                out[4]=*(uint16_t *)(uintptr_t)(route+0xa);out[5]=offset/0x88;
+            }
+        }
+    }
+    out[6]=category;
+    for(i=0;i<count;i++) {
+        uint32_t cell=U(chain+8+4*i),*row=out+7+5*i;
+        if(!readable(cell,0x5f+1))return 0;
+        row[0]=U(cell+0x5c);row[1]=U(cell+0x58);row[2]=U(cell+4);
+        row[3]=U(cell+0x20);row[4]=U(cell+0x3c);
+    }
+    return 1;
+}
 static void snapshot(Invocation *d,uint32_t phase,uint32_t seq) {
     uint32_t i,*p,head=state[3],a=d->actor,driver,physics;
     uint32_t rigid=0,controller,ride,config,sel,valid=1;
@@ -147,8 +184,10 @@ static void snapshot(Invocation *d,uint32_t phase,uint32_t seq) {
     }
     p[11]=rigid;
     if(readable(controller,4)) {
-        controller_bytes=U(controller)==0x6c89f0?0x4bc:0x20;
+        uint32_t vtable=U(controller),human=vtable==0x6b8968&&d->role==1&&d->kind==2&&phase==1;
+        controller_bytes=vtable==0x6c89f0?0x4bc:human?0x54:0x20;
         if(copy(p+608,controller,controller_bytes))valid|=16;else controller_bytes=0;
+        if(controller_bytes==0x54&&human_road(p+632,controller,a))valid|=16384;
         if(controller_bytes==0x4bc) {
             valid|=128;action=U(controller+0x3f8);route=U(controller+0x3d8);strategy=U(controller+0x3fc);
             if(pointer(action)&&copy(p+933,action,0x1f4))valid|=256;

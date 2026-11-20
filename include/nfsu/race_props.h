@@ -59,7 +59,7 @@ private:
     friend class RaceSession;
     friend struct RaceWorldContactProbe;
     void convert_proxy(RaceProp&,const TrackContactWorld&);
-    void maintain_pool(const TrackContactWorld&,const VehicleVec3&,std::uint32_t,std::uint64_t);
+    void maintain_pool(const TrackContactWorld&,const VehicleVec3&,std::uint32_t,std::uint64_t,const VehicleVec3* second=nullptr);
     bool advance_body(RaceProp&,const TrackContactWorld&,std::string&,float dt);
     bool prepare_frame(const TrackContactWorld&,std::string&,float dt);
     bool refresh_contact(RaceProp&,VehicleState&);

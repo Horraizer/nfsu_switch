@@ -310,6 +310,8 @@ void original_material_surfaces() {
         for(unsigned j=0;j<7;++j)if(actual[j]!=c[7+j]) {
             std::cerr<<"surface force material="<<c[0]<<" field="<<j<<" expected="<<c[7+j]<<" actual="<<actual[j]<<'\n';++failures;
         }
+        check(bits(w.effect_slip[0])==c[16]&&bits(w.effect_slip[1])==c[17],
+              "original exported wheel slip differs from raw slip outside sliding");
         const float rate=player_wheel_acceleration(h,0,w,1.F/120.F);
         check(bits(rate)==c[14]&&bits(w.history_torque)==c[15],"original surface wheel derivative and retained history");
     }
@@ -396,6 +398,29 @@ void publication_and_reset() {
     check(a.transmission.mode==3&&a.transmission.clutch==1.0F&&
           a.transmission.requested_gear==a.gear&&a.transmission.previous_slip_rpm==0.0F,
           "original completed reset closes the clutch with matching current/requested gear");
+    // 46DB60 samples the wheels before committing the requested gear.
+    auto launch=a;
+    launch.gear=kVehicleGearNeutral;
+    launch.transmission.mode=1;
+    launch.transmission.requested_gear=kVehicleGearFirst;
+    launch.transmission.shift_pending=true;
+    launch.transmission.clutch=0.F;
+    launch.forces_prepared=true;
+    VehicleInput launch_input;
+    launch_input.throttle=1;
+    VehicleTelemetry shift_step;
+    check(model.step(launch,launch_input,VehicleFlatGround{},shift_step,0,1.0/240,false,false)&&
+          launch.gear==kVehicleGearFirst&&launch.transmission.mode==2&&
+          launch.transmission.wheel_engine_speed==0.F&&launch.wheels[0].spin>1.F,
+          "shift commit retains the wheel speed sampled in neutral until the next gearbox update");
+    PlayerGearState neutral{};
+    neutral.mode=0;neutral.clutch=.25F;
+    PlayerEngineState revving{};
+    revving.angular_speed=776.44744873046875F;
+    const float neutral_torque=player_clutch_torque(model.spec().handling,revving,neutral,
+                                                    kVehicleGearNeutral,0,0);
+    check(neutral_torque==0.F&&neutral.previous_slip_rpm==-7414.53271484375F,
+          "neutral retains the original clutch slip while transmitting no torque");
     a.engine_rpm=7000.0;b.engine_rpm=3000.0;
     VehicleInput input;input.brake=1.0;
     VehicleTelemetry ta,tb;
@@ -462,6 +487,38 @@ void wheel_history_and_player_brake() {
     check(ba!=bb,"canonical telemetry identifies torque-history futures");
     tb=ta;tb.transmission.requested_gear=3;
     encode_vehicle_telemetry(tb,bb);check(ba!=bb,"canonical telemetry identifies pending gear request");
+}
+
+void service_brake_routing() {
+    using namespace nfsu;
+    const auto spec=stock_240sx_vehicle_spec();
+    const VehicleModel model(spec);
+    const auto wheel_torques=[&](bool grid,float gas,float brake,float speed) {
+        VehicleState state;VehicleTelemetry telemetry;
+        check(model.reset(state,VehiclePose{}),"service brake fixture resets");
+        state.gear=state.published_gear=state.transmission.requested_gear=kVehicleGearNeutral;
+        state.owner_speeds.forward=speed;state.owner_speeds.magnitude=std::abs(speed);
+        VehicleInput input;input.on_start_grid=grid;input.race_active=!grid;
+        input.throttle=gas;input.brake=brake;
+        check(model.step(state,input,VehicleFlatGround{},telemetry,0,0,false,false,true,true),
+              "prepare wheel forces without integrating or turning the wheels");
+        std::array<float,4> torque{};
+        for(unsigned k=0;k<torque.size();++k)torque[k]=state.wheels[k].prepared_torque;
+        return torque;
+    };
+    const auto parked=wheel_torques(true,1,1,0);
+    const auto normal=wheel_torques(false,.8F,1,0);
+    check(parked[0]==normal[0] && parked[1]==normal[1] && normal[0]>0,
+          "grid hold keeps the front service brakes");
+    check(parked[2]==0 && parked[3]==0 && normal[2]>0 && normal[3]>0,
+          "grid hold releases both rear service brakes until GO");
+    const auto overlap=wheel_torques(false,1,1,0);
+    check(overlap==parked,"stationary active racer with both pedals releases the rear axle");
+    const auto slow=wheel_torques(false,1,1,2);
+    const float rear=(spec.handling.service_brake*((2.F*2.237F)*.05F))*4.F;
+    check(slow[2]==rear && slow[3]==rear,"overlapping pedals use signed road speed for rear braking");
+    check(wheel_torques(false,1,1,5)==normal,"ordinary axle bias resumes at road speed");
+    check(wheel_torques(false,1,.5F,0)[2]>0,"half brake remains in ordinary axle bias");
 }
 
 void shift_cycle_and_differential_sync() {
@@ -635,6 +692,25 @@ void strut_hub_and_world_force_witness() {
           plain.z==.5880000591278076,"original hub velocity uses current rigid rotation");
     check(pitched.x==3.8987998962402344&&pitched.y==2.5279998779296875&&
           pitched.z==.5466000437736511,"pitched original hub velocity retains float order");
+    const std::array<VehicleVec3,3> golf_axes{{
+        {0x1.eae4f8p-1F,0x1.22f9b6p-2F,-0x1.15eb1ep-15F},
+        {-0x1.22f9b6p-2F,0x1.eae4f8p-1F,0x1.bb1c76p-14F},
+        {0x1.03273cp-14F,-0x1.815bdap-14F,1}}};
+    const auto rear=player_hub_velocity(golf_axes,
+        {-0x1.8cfd4cp+0F,-0x1.7ae148p-1F,-0x1.6d4e88p-4F},
+        {0x1.3b4716p-4F,0x1.a12ac2p-6F,0x1.ef2a0ap-5F},
+        {-0x1.44719ap-8F,0x1.90243cp-8F,0x1.c28774p-9F});
+    check(rear.x==0x1.493d4ap-4F&&rear.y==0x1.520a6ep-6F&&rear.z==0x1.2ed44ap-4F,
+          "live Golf rear hub velocity after wake");
+    // 4785BC..4785E1, supplied Peugeot body force and lateral axis.
+    check(player_axis_projection({0x1.9abff4p+1F,0x1.66e7c2p+1F,0x1.22d8c0p-4F},
+          {-0x1.0a0376p-2F,0x1.ee6c0cp-1F,-0x1.d14a80p-12F})==0x1.dfc024p+0F,
+          "external lateral force enters the five wheel constraint passes in original precision");
+    const float longitudinal=player_axis_projection(
+        {0x1.293766p-5F,0x1.13cf32p-6F,0x1.3cb848p-4F},
+        {0x1.ec4c6ap-1F,0x1.1953bcp-2F,-0x1.2d2a1cp-19F});
+    check(0x1.3acc4ep-2F*0x1.245f1ep-3F-longitudinal==0x1.1edd90p-8F,
+          "live Tiburon rear tyre publishes the recorded slip at wake");
     const auto at_contact=player_hub_velocity(identity,{1.14,.73,-.63},{4,2,.1},{.2,-.3,.4});
     check(at_contact.y!=plain.y,"contact arm cannot substitute for hub velocity input");
     const std::array<VehicleVec3,3> yaw{{{.6,.8,0},{-.8,.6,0},{0,0,1}}};
@@ -646,6 +722,15 @@ void strut_hub_and_world_force_witness() {
     // Full587830 default basis1, independently executed by the reviewer.
     check(force.x==2.6000001430511475&&force.y==2&&force.z==1.8000000715255737,
           "original full wheel force includes Fx Fy load through pitched world axes");
+    // Recorded 587DCA output with all three components active, left front.
+    const std::array<VehicleVec3,3> captured_axes{{
+        {-0x1.53fe40p-7F,-0x1.fff79cp-1F, 0x1.28e800p-12F},
+        { 0x1.ffc2acp-1F,-0x1.541ee0p-7F,-0x1.d19ba6p-6F},
+        { 0x1.d1a38ep-6F,-0x1.8f8830p-17F,0x1.ffcb0ep-1F}}};
+    const auto captured=player_world_wheel_force(captured_axes,0x1.036d9ap+2F,
+                                                 -0x1.04d8aap+4F,0x1.6f81a8p+3F);
+    check(captured.x==-0x1.002cc8p+4F&&captured.y==-0x1.f12e3cp+1F&&
+          captured.z==0x1.7e3870p+3F,"live PC transform preserves wheel force rounding");
     const auto h=stock_240sx_handling();
     check(player_body_inverse_yaw(h,false)==.42239347100257874F&&
           player_body_inverse_yaw(h,true)==.21119673550128937F,
@@ -772,9 +857,36 @@ void completed_rest_phase() {
     check(state.position.x==initial.x&&state.position.y==initial.y&&state.position.z==initial.z&&
           state.velocity.x==0&&state.velocity.y==0&&state.velocity.z==0&&state.body_rest_state==2,
           "original post-refresh rest transition holds body pose despite standing forces");
+    {
+        auto held=state;
+        for(auto& wheel:held.wheels)wheel.spin_direction=2;
+        check(model.step(held,{},ground,t,0,0,false,true,true,true),
+              "stationary component refresh");
+        for(const auto& wheel:held.wheels)
+            check(wheel.spin==0 && wheel.spin_direction==1,
+                  "rest clears the previous spin direction before the next driven slice");
+    }
     check(state.prepared_force.y!=0&&state.forces_prepared,
           "rest retains authentic next standing force rather than suppressing the producer");
     VehicleInput gas;gas.throttle=1;
+    {
+        // Remove tyre forces to measure gravity on two successive refreshes.
+        const VehicleFlatGround below(-10);
+        auto waking=state;
+        auto awake=state;
+        awake.body_gravity=true;
+        awake.rigid_body.gravity=true;
+        const auto refresh=[&](VehicleState& car) {
+            return model.step(car,gas,below,t,0,0,false,true,true,true);
+        };
+        const double weight=9.8F*model.spec().handling.mass*model.spec().approx.unit_scale;
+        check(refresh(waking)&&refresh(awake)&&waking.body_gravity&&awake.body_gravity,
+              "both unsupported cars leave rest on the first refresh");
+        check(std::fabs((waking.prepared_force.z-awake.prepared_force.z)-weight)<0.01,
+              "first wake preparation retains the gravity flag at refresh entry");
+        check(refresh(waking)&&refresh(awake)&&waking.prepared_force.z==awake.prepared_force.z,
+              "both cars apply gravity on the following refresh");
+    }
     check(model.step(state,gas,ground,t,0,1.0/240.0,true)&&state.body_rest_state==0&&state.body_gravity,
           "first-gear throttle wakes genuine rest transition and restores gravity");
     check(state.velocity.x!=0||state.velocity.y!=0,"wake preserves force-created momentum");
@@ -918,6 +1030,16 @@ void original_strut_bump_impulse() {
 void recovered_rigid_component() {
     using namespace nfsu;
     const auto h=stock_240sx_handling();
+    // 58593A..585993, captured orientation with a known diagonal inertia.
+    auto setup=h;setup.inertia={{1,2,4}};
+    PlayerRigidBodyState launch;
+    launch.axes={{{{0x1.ec4c6ap-1F,0x1.1953bcp-2F,-0x1.2d2a1cp-19F}},
+                  {{-0x1.1953bcp-2F,0x1.ec4c6ap-1F,0x1.4b02aap-13F}},
+                  {{0x1.7ddf4ap-15F,-0x1.3cfab2p-13F,1}}}};
+    launch.angular_momentum={{0x1.9157bp-9F,0x1.621e44p-8F,0x1.3e1dp-7F}};
+    player_rigid_body_refresh(setup,launch);
+    check(launch.angular_velocity==PlayerRigidVector{{0x1.dfb996p-9F,0x1.b1e76cp-9F,0x1.3e2284p-9F}},
+          "original dispatched inverse inertia maps momentum to angular velocity");
     PlayerRigidBodyState body;
     body.axes={{{{.8F,0,-.6F}},{{0,1,0}},{{.6F,0,.8F}}}};
     body.position={{0,0,.5F}};body.angular_momentum={{1,-2,0}};body.alternate_yaw=true;
@@ -1076,6 +1198,20 @@ void original_strut_binary32_witness() {
     check(player_strut_attachment(h,0,body)==
           PlayerRigidVector{{1.1378464698791504F,0.7300000190734863F,0.2879999876022339F}},
           "original strut attachment rounds local transform before body position");
+    // Live Golf front-right attachment, checked with 588580's SSE dispatch.
+    auto golf=h;
+    golf.centre_of_mass={0,0,0};
+    golf.wheels[1].longitudinal=0x1.f0d846p-1F;
+    golf.wheels[1].lateral=-0x1.7ae148p-1F;
+    golf.wheels[1].vertical=-0x1.6b0748p-4F;
+    PlayerRigidBodyState golf_body{};
+    golf_body.position={{0x1.a5d264p+10F,-0x1.ce5e08p+8F,0x1.ff789cp+5F}};
+    golf_body.axes={{{{0x1.eae602p-1F,0x1.22f226p-2F,-0x1.23820cp-10F}},
+                     {{-0x1.22f23ap-2F,0x1.eae614p-1F,-0x1.c6f930p-14F}},
+                     {{0x1.0f6a22p-10F,0x1.b85b5cp-12F,0x1.ffffecp-1F}}}};
+    check(player_strut_attachment(golf,1,golf_body)==
+          PlayerRigidVector{{0x1.a61b64p+10F,-0x1.cecd18p+8F,0x1.fec10cp+5F}},
+          "Golf strut uses the original dispatched rotation at track coordinates");
     check(player_strut_nominal_force(h.struts[0],-1.5735626220703125e-5F,0,0,
           3.2054226398468018F,0,200)==3.204289674758911F,
           "original initial strut preload/spring/prior partner preserve binary32 order");
@@ -1216,6 +1352,47 @@ void original_strut_refresh_witness() {
     }
 }
 
+void original_ground_normal_consumer() {
+    using namespace nfsu;
+    struct CapturedPlane final : VehicleGround {
+        VehicleGroundHit cast(const VehicleVec3&, const VehicleVec3&, double) const override {
+            return {};
+        }
+        bool strut_heights(const std::array<VehicleVec3,4>&,
+                           std::array<VehicleGroundHit,4>& hits) const override {
+            for (auto& hit : hits) {
+                hit.hit = hit.has_plane = true;
+                hit.plane = {0, 0, 0x1.fffffep-1F, 0};
+                hit.normal = {0, 0, hit.plane[2]};
+            }
+            return true;
+        }
+    };
+    const VehicleModel model(stock_240sx_vehicle_spec());
+    VehicleState car;
+    VehicleTelemetry telemetry;
+    check(model.reset(car, {}), "original ground normal reset");
+    check(model.step(car, {}, CapturedPlane{}, telemetry, 0, 1.0 / 240.0, true),
+          "original ground normal refresh");
+    // Wheel+140 in the PC launch capture stores this one-ULP-short normal.
+    const PlayerRigidVector normal{0, 0, 0x1.fffffep-1F};
+    std::array<VehicleVec3,3> axes;
+    for (unsigned j = 0; j < axes.size(); ++j) {
+        const auto& axis = car.rigid_body.snapshot_axes[j];
+        axes[j] = {axis[0], axis[1], axis[2]};
+    }
+    const auto front = player_front_steering_axes(model.spec().handling, car.steering_word);
+    for (unsigned k = 0; k < 4; ++k) {
+        const auto& wheel = telemetry.wheels[k];
+        const float nominal = float(wheel.load / model.spec().approx.unit_scale);
+        const auto y = k < 2 ? player_world_wheel_axes(axes, front[k])[1] : axes[1];
+        const PlayerRigidVector lateral{float(y.x), float(y.y), float(y.z)};
+        check(wheel.contact && nominal > 0 && wheel.ground_normal.z == normal[2] &&
+              car.wheels[k].prepared_load == player_wheel_contact_load(lateral, normal, nominal),
+              "original cached plane reaches the contact load without a second normalization");
+    }
+}
+
 void original_bump_overflow_consumer() {
     using namespace nfsu;
     struct SuppliedGround final:VehicleGround {
@@ -1283,7 +1460,7 @@ void original_strut_partner_epoch() {
 }
 void original_wheel_contact_witness() {
     using namespace nfsu;
-    // Authentic5AC69C/586F10 initial supplied-brake callback, binary32.
+    // Live PC matrix dispatch 5ECE7A and contact callback 586F10, binary32.
     PlayerRigidBodyState body;body.position={{0,0,.4999089539051056F}};
     body.snapshot_axes={{{{.999945342540741F,0,-.01045604795217514F}},
                          {{0,1,0}},{{.01045604795217514F,0,.999945342540741F}}}};
@@ -1292,10 +1469,10 @@ void original_wheel_contact_witness() {
         h.wheels[0].lateral-h.centre_of_mass[1],
         (h.wheels[0].vertical-h.centre_of_mass[2])-1.5735626220703125e-5F}};
     const auto hub=player_world_wheel_hub(body,local);
-    check(hub==PlayerRigidVector{{1.1378462314605713F,.7300000190734863F,.2879842519760132F}},
+    check(hub==PlayerRigidVector{{1.1378462314605713F,.7300000190734863F,.28798428177833557F}},
           "original wheel hub translation retains snapshot matrix accumulation order");
     check(player_wheel_contact_point(hub,{{0,0,1}},h.wheels[0].radius)==
-          PlayerRigidVector{{1.1378462314605713F,.7300000190734863F,-1.5735626220703125e-5F}},
+          PlayerRigidVector{{1.1378462314605713F,.7300000190734863F,-1.570582389831543e-5F}},
           "original wheel contact offsets hub by radius along ground normal");
     check(player_wheel_contact_load({{0,1.0000035762786865F,0}},{{0,0,1}},3.204289674758911F)==
           3.2043814659118652F,
@@ -1311,15 +1488,24 @@ void original_wheel_contact_witness() {
     check(cached==PlayerRigidVector{{37,-11,4}},
           "original miss retains cached contact point independently of nominal load");
     player_wheel_contact_point(cached,hub,{{0,0,1}},h.wheels[0].radius,true);
-    check(cached==PlayerRigidVector{{1.1378462314605713F,.7300000190734863F,-1.5735626220703125e-5F}},
+    check(cached==PlayerRigidVector{{1.1378462314605713F,.7300000190734863F,-1.570582389831543e-5F}},
           "original contact writes point even when the separate nominal-load branch is zero");
+    // Live Peugeot left-front hub on the GO frame. At track coordinates
+    // the matrix accumulation order is visible in the published position.
+    PlayerRigidBodyState launch;
+    launch.snapshot_axes={{{{0x1.ea1126p-1F,0x1.288086p-2F,0}},
+                           {{-0x1.288086p-2F,0x1.ea1126p-1F,0}},{{0,0,1}}}};
+    launch.position={{0x1.a59386p+10F,-0x1.cb6f76p+8F,0x1.ffd23cp+5F}};
+    check(player_world_wheel_hub(launch,{{0x1.f851eap-1F,0x1.70a3d8p-1F,-0x1.3d265ap-3F}})==
+          PlayerRigidVector{{0x1.a5c286p+10F,-0x1.ca7606p+8F,0x1.fe9516p+5F}},
+          "live strut matrix produces the recorded hub in world coordinates");
     // Independent source row: translated/turned body and tilted surface.
     body.position={{.15F,-.3F,1000.125F}};
     body.snapshot_axes={{{{.8F,.6F,0}},{{-.6F,.8F,0}},{{0,0,1}}}};
     const auto moved=player_world_wheel_hub(body,{{1.14F,.73F,-.2F}});
-    check(moved==PlayerRigidVector{{.6240000128746033F,.968000054359436F,999.9249877929688F}}&&
+    check(moved==PlayerRigidVector{{.6239999532699585F,.9680001139640808F,999.9249877929688F}}&&
           player_wheel_contact_point(moved,{{0,.8F,.6F}},.2879999876022339F)==
-          PlayerRigidVector{{.6240000128746033F,.7376000881195068F,999.752197265625F}},
+          PlayerRigidVector{{.6239999532699585F,.7376000881195068F,999.752197265625F}},
           "original tilted contact follows surface normal with rounded world translation");
     struct MissGround final:VehicleGround {
         VehicleGroundHit cast(const VehicleVec3&,const VehicleVec3&,double) const noexcept override {return {};}
@@ -1526,6 +1712,7 @@ int main() {
     original_drag_engine();original_drag_mechanics();original_drag_launch();original_material_surfaces();
     original_rear_grip();
     original_cutoff_boundaries();
+    service_brake_routing();
     publication_and_reset();wheel_history_and_player_brake();shift_cycle_and_differential_sync();
     retained_wheel_slip_epoch();
     owner_speed_domains();steered_constraint_witness();strut_hub_and_world_force_witness();
@@ -1542,6 +1729,7 @@ int main() {
     strut_numeric_domain();
     original_strut_projection_witness();
     original_strut_refresh_witness();
+    original_ground_normal_consumer();
     original_bump_overflow_consumer();
     original_strut_partner_epoch();
     original_wheel_contact_witness();

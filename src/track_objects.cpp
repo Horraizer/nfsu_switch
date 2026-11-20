@@ -1,6 +1,7 @@
 #include "nfsu/track_objects.h"
 
 #include "nfsu/chunk.h"
+#include "nfsu/world_motion.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1079,7 +1080,7 @@ std::vector<std::uint32_t> track_object_mesh_hashes(
     return std::vector<std::uint32_t>(hashes.begin(), hashes.end());
 }
 
-bool track_world_motion_models(const std::vector<unsigned char>& track,
+bool track_world_models(const std::vector<unsigned char>& track,int direction,
                                std::vector<std::uint32_t>& models,std::string& error) {
     models.clear();
     for(std::size_t at=0;at<track.size();) {
@@ -1093,9 +1094,17 @@ bool track_world_motion_models(const std::vector<unsigned char>& track,
             if(first>end||(end-first)%160){error="world model record bounds";return false;}
             for(auto record=first;record<end;record+=160) {
                 const auto* b=track.data()+record;const auto type=read_u32_le(b);
-                if(read_u32_le(b+12)||(type!=0x24cebc53U&&type!=0x427a6453U&&type!=0x67dbe3eaU))continue;
-                const auto hash=read_u32_le(b+80);
-                if(!hash){error="world model hash absent";return false;}
+                const bool mover=type==0x24cebc53U||type==0x427a6453U||type==0x67dbe3eaU;
+                const bool fixed=type==0x3e83cbdeU;
+                const auto shape=read_u32_le(b+8),hash=read_u32_le(b+80);
+                const bool decor=world_decor_motion(type,shape,hash,read_u32_le(b+132),read_u32_le(b+144));
+                if(read_u32_le(b+12)||(!decor&&(!shape||(!mover&&!fixed))))continue;
+                // 578820 excludes the named track jump in the reverse direction.
+                if(direction==1&&read_u32_le(b+4)==0x6691470dU)continue;
+                if(!hash) {
+                    if(fixed)continue;
+                    error="world model hash absent";return false;
+                }
                 if(std::find(models.begin(),models.end(),hash)==models.end())models.push_back(hash);
             }
         }

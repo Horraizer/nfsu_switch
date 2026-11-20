@@ -23,13 +23,13 @@ Verified call path:
 | 0x00461692..0x004616A0 | Passes raw steer to the object at controls +0x1F0 |
 | 0x00460930 | Updates input history, runs target/slew, saves last raw input |
 | 0x00460970 | Previous word to signed degrees; limit times raw times setup +0x270; positive cap; slew unless bypass; sub-degree snap; truncation to word |
-| 0x00460A80 | Speed lock, throttle/brake terms, input-history gain, shift reduction, heading/velocity assist and retained-limit branch |
+| 0x00460A80 | Speed lock, throttle/brake terms, input-history gain, post-contact reduction, heading/velocity assist and retained-limit branch |
 | 0x00460DE0 | Raw delta/dt curve, rate history, speed response and input-history gain |
 | 0x00460E70 | Constructs 0.55 s input history and 0.15 s rate history at 60 samples/s, capacities 33 and 9; initial limit 45 degrees |
 | 0x00584360, 0x00584180 | History capacity and zero-initialized allocation layout |
 | 0x00584500, 0x005844B0 | Ring sum/count/average, timestamp expiry, zero-time sentinel and clear retaining the prior average |
 | 0x00583EA0 | Uniform curve: unrounded truncation index, binary32 fraction, negative-fraction quirk |
-| 0x00583F20 | Pair-table shift interpolation |
+| 0x00583F20 | Pair-table post-contact interpolation |
 | 0x00585D70 | Advances the cumulative time at 0x0073AD3C; it is not dt |
 
 Normal lock is the base speed curve times
@@ -45,14 +45,20 @@ They are not separate digital and analog throttle sources. The bridge uses
 applied port throttle/brake and its boolean handbrake, retaining the existing
 reverse assist; recovering the native brake/reverse normalization is separate.
 
-During the first second after a valid engine +0x14C shift timestamp, lock is
-multiplied by `shiftCurve(t) + (1-shiftCurve(t)) * (1-speedRatio)` with
+At 0x00460B69 the actor's +0x3C points to its collision body. The body
+constructor 0x00469BD7 initializes +0x14C to the world clock. Pair queries
+0x00467F8B and 0x004681E8 update both qualifying car bodies on overlap.
+The partner predicate 0x00467360 accepts kinds 0 through 2, and kind 3
+when its polygon carries flag 0x02. Ghost overlap writes +0x148 instead
+when both bodies are dynamic. A gear transition does not write +0x14C.
+During the following second the limit multiplier is
+`contactCurve(t) + (1-contactCurve(t)) * (1-speedRatio)` with
 `speedRatio = min(1, forwardSpeed/(0.7*predictedMaximumSpeed))`.
 Zero and 0x7FFFFFFF timestamps skip this branch. The predicted maximum comes
 from 0x00580240, which consumes a cached acceleration curve; recovering that
 engine predictor is separate from testing this steering consumer.
 
-Assist uses heading minus velocity direction only above forward speed 1.
+Assist uses heading minus velocity direction from forward speed 1 m/s inclusive.
 It enters above slip 7 degrees and total speed 13.410818; an active flag clears
 below slip 5 or total speed 17.88109. These seemingly unusual thresholds are
 the actual comparisons, not a conventional hysteresis invented from names.
@@ -64,7 +70,7 @@ neighbors. The assist device predicate chooses descriptor 0x00705F20 or
 0x00705F34; it is not inferred from a button-versus-stick classification.
 
 Byte 0x00736514 selects alternate speed lock and bypasses history gain,
-shift suppression, rate slew and the sub-degree snap. Its locally verified
+post-contact suppression, rate slew and the sub-degree snap. Its locally verified
 writer at 0x0040664A depends on device lookup arrays and byte 0x00736515;
 the hardware meaning is unresolved. The predicate at 0x004607A0 returns false
 when object +0x54 or global 0x007361A8 is set, otherwise true when global
@@ -92,7 +98,7 @@ brackets the entire operation with full retail tree manifests. Both successes
 and failures retain evidence in the ignored scratch directory.
 
 The comparison covers signed speed, positive/negative inputs, turn-in,
-sustained steer, release/reversal, shift progression, throttle/brake channels,
+sustained steer, release/reversal, post-contact elapsed time, throttle/brake channels,
 both predicate branches, bypass mode, assist thresholds and history expiry.
 The oracle explicitly initializes the x87 control word to 0x037F for each
 bounded call; this is a declared numeric context, not a measurement of the
@@ -107,29 +113,23 @@ The default is `baseline`. The recovered choices explicitly select predicate
 false or true; neither asserts a Joy-Con, Pro Controller, wheel, keyboard or
 D-pad mapping. The hardware bypass byte stays false. Switch pinned `--replay`
 requires baseline; use `--live` for the experiment. Desktop input recordings
-can drive either mode for comparisons. A recovered recording has an `STR1`
-state extension containing both histories, angle, previous raw/limit, assist,
-mode, shift/time state and predicted-speed reference. Baseline bytes stay intact.
+can drive either mode for comparisons. The recovered state digest uses an
+`STR2` extension containing both histories, angle, previous raw/limit, assist,
+mode, controller count, body contact clock and predicted-speed reference.
+Previously generated `STR1` digests used an inferred gear-change clock.
+Pad recordings remain usable with the current controller.
 
 Recovered mode skips the old controls slew and old road-wheel lock/slew.
 Bindings, hot-plug calibration, throttle shaping, reverse assist and shift
 edges retain their behavior. Track reset clears both histories and the word.
-Gear changes observed after a model step start the shift timer for the next
-120 Hz step. This one-step delay and the port's existing gearbox schedule
-are integration approximations, not a recovered engine +0x14C writer.
-The kernel runs at the port's fixed 120 Hz with the recovered capacities;
-retail construction specifies 60 samples/s. This changes the effective ring
-span even though the native history algorithm and time windows are retained.
-
-The heading difference uses the existing deterministic `chase_angle` helper,
-which approximates retail `bATan` rather than using its lookup bytes. The
-bridge keeps the stock 240SX multiplier of one: applying upgrades that change
-an untraced steering multiplier is unsupported. Its maximum-speed reference
-is kinematic redline speed in top gear, using the selected handling record,
-wheel radius and weighted final drive. This is explicitly an approximation
-of the cached acceleration predictor, and a recovered shift consumer does
-not make that predictor recovered. These gaps prevent default promotion and
-whole-car parity claims even when the isolated context comparison passes.
+The human steering kernel runs once before the vehicle solver with the
+world update interval. The queue stamps qualifying overlaps before response
+ordering. The next steering update reads that timestamp. A gear change on
+an empty track leaves the body clock alone. The steering consumer uses the
+published longitudinal speed, world velocity and heading used by 0x00464ED0.
+The port shares the ride's acceleration/drag predictor with the AI. The
+context multiplier is still one; the archive does not establish every
+device or setup combination.
 
 `--handling-telemetry` now emits `handling-v2`, with raw bound input, history
 input, requested/actual road angle, limit/rate/shift factor, steering mode,

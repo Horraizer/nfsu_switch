@@ -31,6 +31,7 @@ struct PlayerWheelWork {
     float slip = 0.0F; // wheel+160, cleared by component refresh
     float friction_usage = 0.0F; // diagnostic wheel+168 after587830, not slip speed
     float cached_slip = 0.0F; // wheel+164, retained until58747D writes both
+    std::array<float,2> effect_slip{}; // wheel+100/104, zero outside sliding branch
     float service = 0.0F, parking = 0.0F;
     float heading_x = 1.0F, heading_y = 0.0F;
     float side_x = 0.0F, side_y = 1.0F;
@@ -199,7 +200,10 @@ VehicleVec3 player_hub_velocity(const std::array<VehicleVec3,3>& current_axes,
                                const VehicleVec3& linear_velocity,
                                const VehicleVec3& angular_velocity) noexcept;
 
-//5889C5..5889E7 and5AC6A2 combine local wheel and rigid snapshot axes.
+// 4785DC and 5873E9 project force and velocity with the runtime SIMD transform.
+float player_axis_projection(const VehicleVec3& value,const VehicleVec3& axis) noexcept;
+
+//5889C5..5889E7 combine local wheel and rigid snapshot axes.
 //587830's default force basis resolves Fx/Fy/load in those world axes.
 std::array<VehicleVec3,3> player_world_wheel_axes(
     const std::array<VehicleVec3,3>& snapshot_axes,
@@ -227,6 +231,11 @@ float player_wheel_contact_load(const PlayerRigidVector& across,
 float player_body_inverse_yaw(const VehicleHandling& setup,bool alternate) noexcept;
 PlayerRigidMatrix player_body_inverse_tensor(const VehicleHandling& setup,
     const PlayerRigidMatrix& axes,bool alternate) noexcept;
+//584B80 restores published motion into a newly constructed rigid component.
+// It uses the normal tensor even when the next outer step enables alternate yaw.
+void player_rigid_body_import(const VehicleHandling& setup,PlayerRigidBodyState& body,
+    const PlayerRigidVector& position,const PlayerRigidMatrix& axes,
+    const PlayerRigidVector& velocity,const PlayerRigidVector& angular_velocity) noexcept;
 
 // Refresh clears force/torque then restores gravity; optional drive force
 // control1E4 is outside this common component API and must be disabled.

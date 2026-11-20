@@ -13,7 +13,7 @@ def main():
     if sha!='c0fad450912952f53809a54690d235aa8b4e25b9f46650693c7cbee1b4c074b7':raise ValueError('unsupported executable')
     image=Image(data);cases=[];hooks=[]
     speeds=[10.,7.,6.,2.,1.,0.,-1.,-2.,-6.,-7.,-8.,-15.]
-    for sequence in range(8):
+    for sequence in range(16):
         case=sequence%4
         slips=[5.,-6.,2.,7.] if sequence>=4 else [0.,0.,0.,0.]
         direction=1 if case%2 else -1;points=[(10.,direction*10.,0.),(100.,direction*60.,0.)]
@@ -29,8 +29,13 @@ def main():
             m.put(ACTOR+0x3d0,speed,'f');m.put(ACTOR+0x3d4,abs(speed),'f');m.put(ACTOR+0x70,speed,'f')
             for j,v in enumerate(contact):m.put(ACTOR+0x350+j,int(v),'B')
             m.put(0x73ad34,40000+step*67)
-            reset=case>=2 and step==12
-            if reset:m.run(0x45e650,ecx=DRIVER)
+            reset=2 if sequence>=8 and step==12 else int(case>=2 and step==12)
+            if reset==2:
+                #427D87..427DB3: whole placement driver reset sequence.
+                m.allowed.append((0x45dba0,0x45dbab))
+                m.put(DRIVER+0x1d0,0,'H')
+                for routine in (0x45e520,0x45e710,0x45dba0):m.run(routine,ecx=DRIVER)
+            elif reset:m.run(0x45e650,ecx=DRIVER)
             m.run(0x45e180,(bits(desired),0,0,int(step!=26)),ecx=DRIVER)
             m.run(0x45e970,(bits(1/60),),ecx=DRIVER)
             history=m.get(DRIVER+0x23c)

@@ -146,11 +146,12 @@ const Transition transitions[]={
 struct ManeuverRoad {float v[18];unsigned route,index;};
 struct Maneuver {
     int category,side;bool extra;int self_role,target_role;bool alternate;
-    float margin,policy[8],actor[10],position[3],velocity[3];
+    float margin,policy[8],actor[11],position[3],velocity[3];
     int self_cell,target_cell;float self_distance,target_distance,lateral;
     unsigned target_cursor,target_count;float target_points[20][3];
     unsigned roads;ManeuverRoad road[40];bool maneuver,clipped;unsigned end,count;
     std::uint32_t length;Point point[20];
+    unsigned neighbor_sides;
 };
 const Maneuver maneuvers[]={
 #include "ai_maneuver_native.inc"
@@ -163,6 +164,13 @@ struct Dispatch {
 };
 const Dispatch dispatches[]={
 #include "ai_maneuver_dispatch_native.inc"
+};
+struct AdmissionCase {
+    unsigned source;int kind;bool present,rebuild,maneuver;
+    unsigned count;std::uint32_t length;Point point[20];
+};
+const AdmissionCase admission_cases[]={
+#include "ai_admission_native.inc"
 };
 struct CycleNative {
     std::uint32_t tick;int category,kind,priority;unsigned status;bool timed;
@@ -202,6 +210,28 @@ template<class T> bool same(const AiPlannedPath& p,const T& c) {
 }
 }
 int main() {
+    {
+        AiPathActorSnapshot self,traffic;
+        self.id=1;self.forward={0,1,0};
+        traffic.role=3;traffic.action=9;
+        // Original 45BFB0 with room available. Vary velocity independently
+        // of facing, including a stopped car and one travelling backwards.
+        for(float velocity:{-5.F,0.F,5.F}) {
+            traffic.velocity={0,velocity,0};
+            traffic.forward={0,-1,0};
+            check(ai_traffic_blocks_pass(self,traffic,2)&&!ai_traffic_blocks_pass(self,traffic,3),
+                  "oncoming traffic action 9 blocks only the left pass");
+            traffic.forward={0,1,0};
+            check(!ai_traffic_blocks_pass(self,traffic,2),"parallel traffic keeps the pass");
+            traffic.forward={1,0,0};
+            check(!ai_traffic_blocks_pass(self,traffic,2),"perpendicular traffic keeps the pass");
+        }
+        traffic.forward={0,-1,0};traffic.action=7;traffic.maneuver={2,self.id,0,false};
+        check(ai_traffic_blocks_pass(self,traffic,3)&&!ai_traffic_blocks_pass(self,traffic,2),
+              "opposing side maneuver aimed at this rival blocks the pass");
+        traffic.maneuver.target=self.id+1;
+        check(!ai_traffic_blocks_pass(self,traffic,3),"another racer's maneuver leaves the pass open");
+    }
     unsigned target_index=0;
     for(const auto& c:target_choice_cases) {
         AiTargetPathChoiceInput input;input.current=c.current;input.current_available=true;
@@ -233,14 +263,28 @@ int main() {
     }
 
     unsigned maneuver_index=0,moving_witnesses=0,contact_witnesses=0;
+    {
+        AiPathRoadPoint raw;raw.point.path_distance=from_bits(0x01000000U);
+        raw.point.driving_offset[4]=3;raw.point.driving_offset[9]=9;
+        check(ai_path_lateral_origin(raw,-1)==1,
+              "forward missing category reads signed high word of raw path distance");
+        raw.reverse=true;
+        check(ai_path_lateral_origin(raw,-1)==3,
+              "authored reverse road maps missing category to raw column4 before orientation");
+        std::swap(raw.point.driving_offset[4],raw.point.driving_offset[9]);
+        raw.category_columns_reversed=true;
+        check(ai_path_lateral_origin(raw,-1)==3,
+              "oriented reverse road retains raw column4 through swapped storage");
+    }
     for(const auto& c:maneuvers) {
         AiPathExtension ex;ex.category=c.category;ex.margin=c.margin;ex.absolute_speed=c.actor[9];
+        ex.raw_road_available=c.category>=0;
         AiManeuverInput in;in.side=c.side;in.extra_clearance=c.extra;
         in.self.cell=c.self_cell;in.target.cell=c.target_cell;in.self.role=c.self_role;
         in.self.distance=c.self_distance;in.target.distance=c.target_distance;
         in.self.half_width=1;in.target.half_width=1;in.target.lateral=c.lateral;
         in.target.role=c.target_role;in.target.racer=true;in.target.alternate_controller=c.alternate;
-        in.self_signed_speed=c.actor[9];in.target_cursor=c.target_cursor;
+        in.target_cursor=c.target_cursor;
         in.target_path.path.count=c.target_count;
         for(unsigned k=0;k<8;++k)in.policy[k]=c.policy[k];
         for(unsigned k=0;k<3;++k) {
@@ -249,16 +293,48 @@ int main() {
             in.target.position[k]=c.position[k];in.target.velocity[k]=c.velocity[k];
             for(unsigned j=0;j<c.target_count;++j)in.target_path.path.points[j][k]=c.target_points[j][k];
         }
+        // Exercise the same neighborhood-to-maneuver producer as IntroAi.
+        // Retail vectors use distinct unused offsets to expose lane/ride mixing.
+        AiPathActorSnapshot self_body,target_body;
+        self_body.position=in.self.position;self_body.velocity=in.self.velocity;self_body.role=c.self_role;
+        target_body.position=in.target.position;target_body.velocity=in.target.velocity;target_body.role=c.target_role;
+        AiNeighborEntry self_entry,target_entry;
+        self_entry.cell=c.self_cell;self_entry.distance=c.self_distance;self_entry.half_extent[0]=1;
+        target_entry.cell=c.target_cell;target_entry.distance=c.target_distance;target_entry.half_extent[0]=1;
+        self_entry.lateral=3.25F;target_entry.lateral=c.lateral-7.5F;
+        self_entry.lane_lateral.fill(3.25F);target_entry.lane_lateral.fill(c.lateral-7.5F);
+        if(c.category<5){self_entry.lateral=0;target_entry.lateral=c.lateral;}
+        else {self_entry.lane_lateral[c.category-11]=0;target_entry.lane_lateral[c.category-11]=c.lateral;}
+        check(ai_path_maneuver_vehicle(self_body,self_entry,c.category,in.self)&&
+              ai_path_maneuver_vehicle(target_body,target_entry,c.category,in.target),
+              "native maneuver snapshots use active category offsets");
+        in.target.alternate_controller=c.alternate;
         AiPathRoadPoint roads[40];const int index=c.category<5?0:c.category-10;
         for(unsigned j=0;j<c.roads;++j) {
             const auto& r=c.road[j];auto& road=roads[j];auto& p=road.point;
             p.position[0]=r.v[0];p.position[1]=r.v[1];p.height=r.v[2];p.forward[0]=r.v[3];p.forward[1]=r.v[4];
             p.unknown_2c=r.v[5];p.unknown_30=r.v[6];
-            (c.category<5?p.driving_offset[c.category]:p.lane_offset[c.category-11])=r.v[7];
+            if(c.category<0) {
+                const auto word=std::uint32_t(std::uint16_t(std::int16_t(r.v[7]*256.F)))<<16;
+                p.path_distance=from_bits(word);
+            } else (c.category<5?p.driving_offset[c.category]:p.lane_offset[c.category-11])=r.v[7];
             road.offset[index]=r.v[8];road.lower[index]=r.v[9];road.upper[index]=r.v[10];
             p.unknown_24=r.v[11];p.unknown_28=r.v[12];road.distance=r.v[13];
             p.driving_offset[0]=r.v[14];road.offset[0]=r.v[15];road.lower[0]=r.v[16];road.upper[0]=r.v[17];
             p.route_index=static_cast<std::uint8_t>(r.route);road.point_index=static_cast<std::uint16_t>(r.index);
+        }
+        if(c.neighbor_sides) {
+            AiRoadChain chain;chain.count=c.roads;
+            for(unsigned j=0;j<c.roads;++j)chain.cells[j]=roads[j];
+            AiNeighborhood neighborhood;neighborhood.count=2;neighborhood.self_index=0;
+            self_entry.id=7;target_entry.id=42;
+            //The native fixture initialized all56 bytes of self and a fresh
+            //target with unit half width and zero half length.
+            neighborhood.entries[0]=self_entry;neighborhood.entries[1]=target_entry;
+            bool eligible=false;unsigned sides=0;
+            check(ai_path_neighbor_policy(chain,neighborhood,1,c.category,
+                    {0,5,1,2,50,5,.11999999731779099F},eligible,sides)&&sides==c.neighbor_sides,
+                  "native missing-road side policy retains raw curvature and zero category bounds");
         }
         AiManeuverResult output;
         const bool ok=ai_path_maneuver(roads,c.roads,ex,in,output);
@@ -304,6 +380,14 @@ int main() {
             }
             AiManeuverResult planned;const AiContactManeuver descriptor{c.side,42,0,c.extra};
             const bool dispatched=ai_action_plan_path(descriptor,plan,planned);
+            for(const auto& missing:admission_cases)if(missing.source==maneuver_index&&missing.rebuild==d.rebuild) {
+                auto unavailable=plan;
+                if(!missing.present){unavailable.target=nullptr;unavailable.resolved_target=0;unavailable.category_available=false;}
+                AiManeuverResult fallback;
+                check(ai_action_plan_path({missing.kind,42,0,false},unavailable,fallback)&&
+                      same(fallback.path,missing)&&fallback.maneuver==missing.maneuver,
+                      "original empty descriptor and lost target produce forward fallback");
+            }
             if(!dispatched||!same(planned.path,d)||planned.maneuver!=d.maneuver||
                planned.clipped!=d.clipped||planned.transition_end!=d.end) {
                 ++failures;std::cerr<<"FAIL: native side action dispatch "<<maneuver_index
@@ -350,11 +434,12 @@ int main() {
                     CycleSelection selection{{{12,400,42},-1,true}};
                     frame.select=CycleSelection::select;frame.selection_context=&selection;
                     AiActionRuntimeOutput output;std::uint32_t contact_handle=0;
-                    {
+                    for(bool forward_available:{true,false}) {
                         AiRivalActionController connected;
                         AiPathPlannerInput planner;planner.path=frame.path;planner.path.tick=cycle_native[0].tick;
+                        planner.path.category_available=forward_available;
                         planner.target_count=1;planner.target_ids[0]=42;planner.targets[0]=in;
-                        planner.target_available[0]=plan.category_available;planner.choice.horizon=2;
+                        planner.choice.horizon=2;
                         planner.side_score_scale=1.2F;planner.fallback_margin=1;
                         AiRoadChain chain;chain.count=c.roads;
                         for(unsigned j=0;j<c.roads;++j)chain.cells[j]=roads[j];
@@ -556,6 +641,12 @@ int main() {
                       "three real geometry/fitness choices consume one frozen epoch");
                 for(const auto& choice:chosen)check(choice.found&&same(choice.selected.geometry.path,c),
                       "batch retains the original ordinary geometry for every actor");
+                for(auto& input:inputs){input.choice.current_available=false;input.path.rebuild=true;}
+                check(ai_plan_three_paths(inputs,world,{0,1,2},{},{},chosen,queries)&&chosen[0].selected.geometry.path.path.count>0,
+                      "unavailable retained descriptor uses ordinary forward selection");
+                for(auto& input:inputs){input.choice.current_available=true;input.choice.current={2,42,0,false};}
+                check(ai_plan_three_paths(inputs,world,{0,1,2},{},{},chosen,queries)&&chosen[0].selected.geometry.path.path.count>0,
+                      "lost side target does not abort the race planner");
                 for(auto& choice:chosen)choice.evaluations=77;
                 ++inputs[2].path.tick;queries=123;
                 check(!ai_plan_three_paths(inputs,world,{0,1,2},{},{},chosen,queries)&&queries==123&&

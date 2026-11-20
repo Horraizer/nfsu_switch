@@ -27,7 +27,7 @@ struct MovieFrame {
 // two YUV reference frames, one RGBA frame and one audio chunk, not movie length.
 class MovieReader {
 public:
-    explicit MovieReader(const std::string& path);
+    explicit MovieReader(const std::string& path,const std::string& enhanced_path={});
     ~MovieReader();
     MovieReader(const MovieReader&) = delete;
     MovieReader& operator=(const MovieReader&) = delete;

@@ -11,14 +11,28 @@ inline constexpr unsigned kFirstDriftStartScene=2333;
 // Fractional skeletal poses use fenced streamed vertices; scene end retires the crowd after GO.
 bool load_drift_start_pose(const std::filesystem::path&,const VehicleTrackCourse&,VehiclePose&,std::string&,const std::string& region="L1RB");
 // Single-player road playlists in original47BC63. Variant is an index into
-// retail data, not a scene ID. The caller supplies a presentation RNG value.
+// retail data. Live races draw from the shared world generator.
 unsigned road_start_playlist(unsigned racers,unsigned grid);
 bool select_road_start_scene(FileSystemService&,const std::filesystem::path&,
                             unsigned racers,unsigned grid,unsigned variant,unsigned&,std::string&);
+bool draw_road_start_scene(FileSystemService&,const std::filesystem::path&,
+                          unsigned racers,unsigned grid,std::uint32_t& world_random,unsigned&,std::string&);
 bool select_race_finish_scene(FileSystemService&,const std::filesystem::path&,
                               unsigned racers,unsigned place,unsigned track,
                               unsigned variant,unsigned&,std::string&);
-struct RaceStartClock { unsigned release=0,go=0,end=0; };
+struct RoadStartCarTransform {
+    std::array<float,3> position{},forward{};
+};
+struct RoadStartCarKeys;
+struct RaceStartClock {
+    unsigned release=0,go=0,end=0,animated_slots=0;
+    std::array<RoadStartCarTransform,4> release_cars{};
+    std::shared_ptr<const RoadStartCarKeys> car_keys{};
+};
+std::unique_ptr<RaceStartCarMotion> make_road_start_motion(const VehicleTrackCourse&,
+    std::shared_ptr<const RoadStartCarKeys>,std::string& error);
+bool place_road_start_car(const VehicleTrackCourse&,const VehicleSpec&,const RoadStartCarTransform&,
+                          VehicleVec3&,PlayerRigidMatrix&,std::string&);
 class StartCrowd {
 public:
     StartCrowd();
@@ -40,6 +54,7 @@ public:
     bool camera(const RaceSession&, OrbitCamera&,unsigned width=1280,unsigned height=720) const;
     bool render(const RenderOptions&, Frame&, RenderStats&, std::string&) const;
     std::size_t draw_count() const;
+    bool visible() const;
     std::size_t actor_count() const;
     std::uint64_t bytes() const;
 private:

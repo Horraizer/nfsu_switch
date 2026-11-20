@@ -7,6 +7,7 @@
 #include "nfsu/vehicle.h"
 #include "nfsu/ai_powertrain.h"
 #include "nfsu/ai_driver.h"
+#include "nfsu/ai_path_body.h"
 
 #include <array>
 #include <cstddef>
@@ -287,7 +288,7 @@ struct VehicleWorldObject {
     std::array<float,16> transform{};
     VehicleHull hull;
     bool fixed_collision=false,default_shape=false;
-    bool motion_collision=false,path_cache=false;
+    bool motion_collision=false,path_cache=false,visual_motion=false;
     std::array<std::uint32_t,3> animation{};
     std::uint32_t animation_flags=0;
     float animation_rate=1,animation_hold=0;
@@ -303,6 +304,7 @@ struct VehicleTrackCourse {
     std::vector<VehicleSupportFace> support_faces;
     std::vector<VehicleWorldObject> world_objects;
     std::vector<VehicleWorldTrigger> train_triggers;
+    std::vector<VehicleWorldTrigger> plane_triggers;
     // The route of the race, whose path nodes the reset puts the car on,
     // whose zones reset it, and whose progress says how far it is round.
     // Without one (has_route false) a reset is requested and reported but
@@ -425,6 +427,28 @@ struct VehicleTrackResetInfo {
     int zone = -1;
     std::uint16_t heading_units = 0;
     VehiclePose pose;
+};
+
+//4273D0: yaw-transform the authored wheel points, then fit the body to all
+//four queried heights. A missing wheel preserves the supplied XYZ and yaw.
+std::array<VehicleVec3,kVehicleWheelCount> vehicle_placement_hubs(
+    const VehicleHandling&,std::uint16_t,const VehicleVec3&,PlayerRigidMatrix&) noexcept;
+bool vehicle_placement_ground(const VehicleHandling&,
+    const std::array<VehicleVec3,kVehicleWheelCount>&,
+    const std::array<VehicleGroundHit,kVehicleWheelCount>&,
+    VehicleVec3&,PlayerRigidMatrix&) noexcept;
+
+struct VehicleRoadResetPoint {
+    VehicleVec3 position;
+    std::array<float,2> forward{1,0};
+};
+// Borrowed from the race planner, which outlives the live vehicle sessions.
+// Resolve runs AFTER integration, as4264D0's controller road getters do.
+struct VehicleRoadResetSource {
+    void* context=nullptr;
+    unsigned slot=0;
+    bool(*resolve)(void*,unsigned,const VehicleState&,const RaceProgress&,std::int32_t,VehicleRoadResetPoint&)=nullptr;
+    void(*placed)(void*,unsigned,const VehicleState&,const RaceProgress&,std::int32_t)=nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -561,6 +585,7 @@ private:
 // One car on one course. The model and the course must outlive it.
 class VehicleTrackSession {
 public:
+    void set_road_reset_source(VehicleRoadResetSource source) noexcept {road_reset_=source;}
     VehicleTrackSession(const VehicleModel& model,
                         const VehicleTrackCourse& course,
                         const VehicleTrackApproximations& approx = VehicleTrackApproximations{},
@@ -579,6 +604,10 @@ public:
     // False on an invalid session or a state that is not finite.
     bool start(const VehicleState& state);
 
+    // 4278D0 uses the owning actor's road cache for all four attachment points.
+    void fit_road_pose(std::uint16_t heading, VehicleVec3& position, PlayerRigidMatrix& axes,
+        std::array<VehicleTrackCast,kVehicleWheelCount>& casts, bool new_placement=false) const;
+
     // One solver_dt slice: the model on the track's ground, then the body's
     // collision with the track. Every steps_per_tick slices run one tick's
     // checks and any reset they call for. False, with the
@@ -591,25 +620,28 @@ public:
               std::uint32_t steps_per_tick = kVehicleTrackStepsPerTick,
               bool explicit_frame_end = false);
 
-    // Human pre-race adapter: settled neutral, engine-only solver slices.
-    // Grid body, wheels and contact/route counters remain untouched.
-    // simulation_seconds is the engine clock and continues across GO.
+    // A held road countdown advances the full chassis in neutral after the
+    // authored scene releases it. Other held stages only advance the engine.
     bool step_grid_engine(const VehicleInput&, VehicleTrackTelemetry& telemetry,
                           double publication_dt, double solver_dt,
-                          bool drag=false, std::int32_t clock=0);
-    void release_grid_engine(bool drag=false,unsigned category=3,float window_scale=1.F) noexcept;
+                          bool drag=false, std::int32_t clock=0, bool advance_chassis=false);
+    bool release_grid_engine(bool drag=false,unsigned category=3,float window_scale=1.F);
     // Port pre-race adapter: settle a stationary grid on its actual terrain
     // before the first visible countdown frame. No race/route clock advances.
     bool prepare_grid(unsigned frames);
+    void publish_start_car_speeds(bool animated) noexcept;
+    void place_start_car(const VehicleVec3&,const PlayerRigidMatrix&,bool animated);
+    void initialize_gearbox_offsets(std::uint32_t& world_random) noexcept;
+    bool rival_nitrous_rpm_allowed(bool drag) const noexcept;
 
     // Explicit WIP selector3 integration using the existing port's track
     // collision/reset adapters. Caller supplies original processed controls
     // and selected low-slip scale. This is not complete retail world behavior.
     bool configure_ai(float low_slip);
     bool set_ai_scale(float scale) noexcept;
-    void select_rival_physics(unsigned selector) noexcept;
+    void select_rival_physics(unsigned selector,std::int32_t clock=0);
     bool step_rival_path(const AiDriverPath&,float desired_speed,float speed_duration,bool publish,
-                         const VehicleInput&,VehicleTrackTelemetry&);
+                         const VehicleInput&,VehicleTrackTelemetry&,bool& departure_predicted);
     // Ordinary processed driver1D4: -1 automatic,0 reverse. This is a held
     // AI command, not a player's one-shot shift edge.
     bool step_ai(const VehicleInput&,VehicleTrackTelemetry&,int gear_request=-1,float continuation_dt=-1,
@@ -670,28 +702,33 @@ private:
     int last_ai_gear_request_=-1;
     class AiWorld;
     AiPhysicsState ai_;
+    struct AiUnpublishedImport {
+        bool pending=false;
+        VehicleVec3 position,velocity,angular_velocity;
+        VehicleQuat orientation;
+    } ai_import_;
     AiPowertrainTables ai_tables_;
     bool ai_configured_ = false, ai_active_ = false, ai_started_ = false, ai_route_tracking_ = true;
     bool preparing_grid_ = false; // placement must settle before rest admission
     float ai_low_slip_ = 1, ai_scale_ = 1;
-    struct RivalPathMotion {
-        AiDriverPath path;
-        float parameter=0, speed=0, acceleration=0, metres_per_point=0;
-        float lateral_offset=0, lateral_derivative=0, lateral_phase=0;
-        double vertical_offset=0;
-    } rival_path_;
+    AiPathBodyState rival_path_;
     std::array<float,64> ai_acceleration_{};
+    float ai_gearing_speed_limit_=0.F;
     bool resolve_body(VehicleState& s, VehicleTrackTelemetry& t) const;
-    void run_tick(VehicleState& s, const VehicleInput& input, VehicleTrackTelemetry& t);
+    void run_tick(VehicleState& s, const VehicleInput& input, VehicleTrackTelemetry& t, unsigned selector=1);
+    void reconstruct_full_physics(VehicleState& s, std::int32_t clock) const noexcept;
+    bool reconstruct_ai_physics(VehicleState&,const VehicleInput&,int,std::int32_t,VehicleTrackTelemetry&);
     bool ground_under(double x, double y, double& z) const;
     // The road-preferring column reset placements use; see its definition.
     bool ground_under_road(double x, double y, double& z) const;
     bool sunk(const VehicleState& s) const;
     bool reset_to_node(VehicleState& s, VehicleTrackReset reason);
+    bool reset_to_road(VehicleState& s, VehicleTrackReset reason,std::int32_t clock);
     bool reset_to_point(VehicleState& s, int zone);
     static void lead_velocity(VehicleState& s, double speed) noexcept;
 
     const VehicleModel* model_ = nullptr;
+    VehicleRoadResetSource road_reset_;
     const VehicleTrackCourse* course_ = nullptr;
     VehicleTrackApproximations approx_;
     TrackVehicleGround ground_;

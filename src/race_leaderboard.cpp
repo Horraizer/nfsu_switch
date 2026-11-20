@@ -1,4 +1,5 @@
 #include "nfsu/race_leaderboard.h"
+#include "nfsu/race_timing.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -56,6 +57,25 @@ float RaceGapMap::time(float progress) const noexcept {
     const float p=std::max(0.F,progress);const int lap=int(p);
     const float fraction=p-float(lap);const auto bin=std::min(255U,unsigned(fraction*256.F));
     return float((double(fraction)-double(bin)/256)/rate[bin]+double(lap)*lap_seconds+elapsed[bin]);
+}
+std::int32_t race_result_estimate_ticks(const RaceGapMap& map,const RaceGapActor& row,
+    const RaceGapActor& player,int race_laps,std::int32_t elapsed_ticks) noexcept {
+    if(race_laps<1||elapsed_ticks<=0||!std::isfinite(row.progress))return 0;
+    const auto to_ticks=[](double seconds) {return std::trunc(seconds*4000.+.5);};
+    double estimate=0;
+    if(player.finished&&map.valid) {
+        // 433ECE uses the completed human lap and the other racer's progress.
+        const auto passed=to_ticks(double(map.time(row.progress))-map.time(float(player.lap)));
+        estimate=double(elapsed_ticks)-passed;
+    } else {
+        // When the human has no official time, 433E20 extrapolates from the
+        // other racer's fraction of the race, floored at .01.
+        const double elapsed=double(elapsed_ticks)*.0002500000118743628F;
+        const float scale=float(1./std::max(double(.01F),double(row.progress)/race_laps));
+        estimate=to_ticks(elapsed*scale);
+    }
+    if(!std::isfinite(estimate)||estimate<=0||estimate>=kRaceTicksLimit)return 0;
+    return race_quantize_ticks(std::int32_t(estimate));
 }
 std::int32_t race_gap_ticks(const RaceGapMap& map,const RaceGapActor& row,
                            const RaceGapActor& player,std::int32_t since_go) noexcept {

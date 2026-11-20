@@ -32,7 +32,7 @@ struct RaceTrafficActor {
     AiRoadPolicy road_policy;
     AiRoadLocation location;
     AiNeighborhood neighbors;
-    AiPlannedPath published_path,driver_path;
+    AiPlannedPath published_path,driver_path,world_path; //57A530 before manager/controllers
     AiContactManeuver maneuver;
     AiTrafficActionOwner action_owner;
     std::array<RaceTrafficActionRecord,2> action_records{};
@@ -43,13 +43,15 @@ struct RaceTrafficActor {
     bool actor_override_enabled=false;
     std::array<float,4> actor_override{};
     std::uint64_t registration=0;
-    unsigned lane=0;
+    unsigned lane=0,appearance_variants=0;
     std::uint16_t published_heading=0;
     bool active=false,ended=false,impacted=false,crash_stop=false;
+    bool relocation_pending=false,left_authored_road=false;
+    int authored_placement=-1;
     struct PairHistory {float magnitude=0;std::uint64_t last_tick=0;bool valid=false;};
     std::array<PairHistory,1+kRaceRivalCapacity+kRaceTrafficCapacity> pair_history{};
-    float target_speed=0,body_height=0,progress=0,steering_scale=1;
-    VehicleQuat initial_pitch;
+    float target_speed=0,progress=0,steering_scale=1;
+    float speed_cap=24.58650016784668F;
     std::uint64_t activations=0,contacts=0;
 };
 // Fixed pool / world adapter. The ordinary mover and driver are recovered;
@@ -62,6 +64,9 @@ public:
     bool advance(const std::array<const VehicleState*,4>&,std::uint64_t,std::string&,std::int32_t world_clock=-1,float dt=1.F/60.F,
                  const std::array<bool,4>& ghosts={},
                  const std::array<const RaceContactBox*,4>& racer_shapes={});
+    bool recycle_before_controllers(const std::array<const VehicleState*,4>&,
+        const std::array<const RaceContactBox*,4>&,const std::array<bool,4>&,
+        std::uint64_t tick,std::int32_t clock,float dt,bool grid_held,bool wrong_way,const AiRoadCursor*,std::string&);
     bool stage_grid(const std::array<const VehicleState*,4>&,
                          const std::array<const RaceContactBox*,4>&,
                          float spacing,float clearance,std::int32_t clock,std::string&);
@@ -79,7 +84,10 @@ public:
     bool refresh_contact(unsigned,VehicleState&,std::string&,const VehicleState*,float interval);
     float last_component_interval=-1;
     void defer_body_contacts(bool);
+    // A cached neighbor still references a parked/reused actor slot. Its
+    // wrapper publishes a new raw57A530 path each world epoch.
     bool world_prediction(unsigned,const AiPathActorSnapshot&,std::uint32_t,float,AiPlannedPath&)const;
+    bool actor_recovering(unsigned,std::int32_t clock)const;
 
     const std::vector<RaceTrafficActor>& actors() const {return actors_;}
     std::vector<RaceTrafficActor>& contact_actors() {return actors_;}
@@ -98,8 +106,10 @@ private:
     std::vector<AiRoadEvent> events_;
     struct SpawnRecord {
         std::int16_t road;
-        std::array<std::int16_t,2> points;
+        std::array<std::int16_t,2> points,exit_points;
+        std::array<float,2> longitudinal_offsets;
         float speed_limit;
+        float near_scale,far_scale,gap_min,gap_max;
     };
     std::vector<SpawnRecord> spawn_records_;
     bool has_spawn_table_=false;
@@ -114,15 +124,19 @@ private:
     unsigned density_=1;
     bool drag_=false;
     unsigned recycle_=0;
+    float recycle_seconds_=1.F;
+    std::uint64_t relocation_tick_=~std::uint64_t{0};
     std::array<unsigned,kRaceTrafficCapacity> prepared_actors_{};
     unsigned prepared_count_=0;
     std::array<bool,kRaceTrafficCapacity> advanced_actors_{};
     bool frame_prepared_=false,grid_staged_=false;
-    bool activate(unsigned,AiRoadCursor,unsigned,std::uint32_t,bool,float speed_limit,std::string&);
+    bool activate(unsigned,AiRoadCursor,unsigned,std::uint32_t,bool,float speed_limit,std::string&,
+                  float relocation_speed=-1.F,float longitudinal_offset=0.F,int authored_placement=-1);
     bool stage_authored(unsigned,float spacing,std::int32_t clock,float* placed_progress,std::string&);
     bool stage_drag_grid(float spacing,float clearance,std::int32_t clock,std::string&);
     bool stage_ordinary_grid(float spacing,float clearance,std::int32_t clock,std::string&);
     bool spawn(unsigned,const std::array<const VehicleState*,4>&,std::uint64_t,std::string&);
+    bool relocate_ordinary(unsigned,std::uint32_t,float,bool,const AiRoadCursor*,std::string&);
     bool prepare_world(std::string&);
     bool plan(unsigned,std::uint32_t,std::string&);
     bool retire(unsigned,std::string&);

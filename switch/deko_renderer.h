@@ -7,6 +7,7 @@
 #include "nfsu/race_hud.h"
 #include "nfsu/deko_scene_target.h"
 #include "nfsu/speed_blur.h"
+#include "nfsu/split_layout.h"
 #include <memory>
 
 namespace nfsu {
@@ -24,6 +25,16 @@ struct DekoPresentTiming {
 struct DekoUpdateTiming {
     double validation_ms = 0;
     double uniform_write_ms = 0;
+};
+struct DekoSplitTiming {
+    struct View {
+        double source_ms=0,validate_ms=0,uniforms_ms=0,record_ms=0,submit_ms=0;
+        // Completed GPU timestamps are from the previous presentation.
+        double gpu_ms=-1,reflections_gpu_ms=-1,world_gpu_ms=-1,dynamic_gpu_ms=-1,
+               upscale_gpu_ms=-1,hud_gpu_ms=-1;
+    };
+    std::array<View,2> views{};
+    double fence_ms=0,acquire_ms=0,queue_ms=0;
 };
 struct DekoMemoryUsage {
     std::uint64_t frame_uniform_bytes = 0;
@@ -59,10 +70,13 @@ public:
               bool opaque_first = false, bool sky_with_opaque = false,
               std::uint32_t scene_height = 0,
               const RaceHudAtlas* hud_atlas = nullptr);
-    bool open_split(const RecordedCommands&,const RaceHudAtlas&,std::size_t draw_capacity,std::string&);
+    bool open_race_target(const RecordedCommands&, std::string&, std::size_t draw_capacity,
+                          bool profile_frame, bool sky_with_opaque, std::uint32_t& scene_height,
+                          const RaceHudAtlas*, bool split_screen = false, const FrontendUiAtlas* pause_atlas = nullptr);
     using SplitViewSource=std::function<bool(unsigned,const RecordedCommands*&,const RaceHudFrame*&,std::string&)>;
     // Consume each borrowed view before requesting the next one.
-    bool present_split(const SplitViewSource&,std::string&);
+    bool present_split(const SplitViewSource&,std::string&,SplitLayout=SplitLayout::stacked,
+                       DekoSplitTiming* timing=nullptr);
     // Replace drained scene uploads without detaching the native window or
     // changing the displayed image. Both source owners survive this call.
     bool replace_frontend(const RecordedCommands&,std::size_t capacity,std::string& error);
@@ -77,8 +91,9 @@ public:
     // waiting for GPU work. Resident assets are uploaded again on this rare path.
     bool reconfigure_target(const RecordedCommands& commands, std::string& error,
                             std::size_t draw_capacity, bool profile_frame,
-                            bool sky_with_opaque, std::uint32_t scene_height,
-                            const RaceHudAtlas* hud_atlas = nullptr);
+                            bool sky_with_opaque, std::uint32_t& scene_height,
+                            const RaceHudAtlas* hud_atlas, bool split_screen = false,
+                            const FrontendUiAtlas* pause_atlas = nullptr);
     // Reuses resident GPU resources. Presentation may have a frame in flight.
     bool update(const RecordedCommands& commands, std::string& error,
                 DekoUpdateTiming* timing = nullptr);
@@ -93,7 +108,8 @@ public:
                  const RaceHudFrame* hud_frame = nullptr);
     bool present(std::string& error, DekoPresentTiming* timing = nullptr,
                  const DekoSceneFrame* scene_frame = nullptr,
-                 const RaceHudFrame* hud_frame = nullptr);
+                 const RaceHudFrame* hud_frame = nullptr,
+                 const FrontendUiFrame* song_card = nullptr);
     void set_speed_blur(const SpeedBlurFrame& frame);
     void enable_speed_blur_probe(bool enabled) noexcept;
     bool speed_blur_probe_complete() const noexcept;

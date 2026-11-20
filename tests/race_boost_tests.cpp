@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
+#include <memory>
 #include <stdexcept>
 #include <cstring>
 namespace nfsu {
@@ -164,10 +165,13 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
         check(run.session().nitrous().remaining==0&&!run.session().nitrous().active,"actual depletion");
         validate(false);
         step(gamepad_button_bit(GamepadButton::select));validate(false);
-        RaceRun fresh;check(fresh.set_event(event,error)&&fresh.set_free_drive(true,error)&&
-            fresh.set_car("SKYLINE",error)&&fresh.set_performance_levels(dress.performance,error),error);
-        check(fresh.prepare_metadata(root,error)&&fresh.start(root,gpu.track(),error),error);
-        validate(false,&fresh.session());
+        // Keep the second full simulation off the Windows debug stack while
+        // the first still owns its contact and rendering fixtures.
+        auto fresh=std::make_unique<RaceRun>();
+        check(fresh->set_event(event,error)&&fresh->set_free_drive(true,error)&&
+            fresh->set_car("SKYLINE",error)&&fresh->set_performance_levels(dress.performance,error),error);
+        check(fresh->prepare_metadata(root,error)&&fresh->start(root,gpu.track(),error),error);
+        validate(false,&fresh->session());
         std::cout<<"event="<<event<<" prepared NOS package: "<<checks
                  <<" updates PASS; inactive/active/4cells/release/depletion/reset/re-entry\n";
     }
@@ -199,7 +203,11 @@ int main(int argc,char** argv) { try {
           "inactive torque must be unchanged");
     VehicleTrackCourse course;std::string error;
     check(build_vehicle_proving_ground(course,error),"course");
-    RaceSession a(course,spec),b(course,spec);
+    // Several simultaneous full sessions otherwise consume almost the entire
+    // 2 MiB Windows debug stack before the real contact solver is entered.
+    auto a_owner=std::make_unique<RaceSession>(course,spec);
+    auto b_owner=std::make_unique<RaceSession>(course,spec);
+    auto& a=*a_owner;auto& b=*b_owner;
     check(a.start(error)&&b.start(error),"boost sessions");
     unsigned tick=0;
     while(race_car_held(a.timing())) {
@@ -208,7 +216,9 @@ int main(int argc,char** argv) { try {
         check(a.nitrous().remaining==8000 && !a.nitrous().active,"countdown preserves charge");
     }
     const auto gas=gamepad_button_bit(GamepadButton::trigger_right),nos=gamepad_button_bit(GamepadButton::shoulder_left);
-    RaceSession grid_stock(course,spec),grid_purge(course,spec);
+    auto grid_stock_owner=std::make_unique<RaceSession>(course,spec);
+    auto grid_purge_owner=std::make_unique<RaceSession>(course,spec);
+    auto& grid_stock=*grid_stock_owner;auto& grid_purge=*grid_purge_owner;
     check(grid_stock.start(error)&&grid_purge.start(error),error);
     unsigned grid_tick=0;
     while(grid_stock.timing().stage!=RaceStage::countdown) {
@@ -241,11 +251,12 @@ int main(int argc,char** argv) { try {
     const auto left=a.nitrous().remaining;
     auto reset=p;reset.pads[0].buttons=gamepad_button_bit(GamepadButton::select);
     check(a.advance(reset,error)&&a.nitrous().remaining==left,"pose reset must not refill nitrous");
-    RaceSession fresh(course,spec);check(fresh.start(error)&&fresh.nitrous().remaining==8000,"new session fills charge");
+    auto fresh=std::make_unique<RaceSession>(course,spec);
+    check(fresh->start(error)&&fresh->nitrous().remaining==8000,"new session fills charge");
     for(unsigned i=0;i<160;++i)check(a.advance(boosted,error),"depletion");
     check(!a.nitrous().active&&a.nitrous().remaining==0,"empty bottle cannot boost");
     if(argc==2) {
-        RaceSession purge(course,spec);
+        auto purge_owner=std::make_unique<RaceSession>(course,spec);auto& purge=*purge_owner;
         check(purge.prepare_style(argv[1],error)&&purge.start(error),error);
         unsigned purge_tick=0;
         const auto step_purge=[&](std::uint32_t buttons) {
@@ -298,7 +309,7 @@ int main(int argc,char** argv) { try {
         RaceHudAtlas civic_atlas;
         check(load_race_hud_atlas(argv[1],civic_atlas,error,true,race_hud_uses_boost_atlas(civic)),error);
         check(civic_atlas.boost_ready,"Civic turbo without NOS must load boost artwork");
-        RaceSession civic_race(course,civic);
+        auto civic_race_owner=std::make_unique<RaceSession>(course,civic);auto& civic_race=*civic_race_owner;
         check(civic_race.start(error),error);
         for(unsigned width:{960U,1280U}) {
             RaceHudFrame frame;

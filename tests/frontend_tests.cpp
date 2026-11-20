@@ -7,6 +7,7 @@
 #include "nfsu/frontend_motion.h"
 #include "nfsu/frontend_preset.h"
 #include "nfsu/race_events.h"
+#include "nfsu/race_hud.h"
 #include "nfsu/sha256.h"
 #include <cmath>
 #include "nfsu/frontend_music.h"
@@ -1409,6 +1410,32 @@ int main(int argc,char** argv) {
             chyron_art.advance(1.F);check(chyron_alpha()==0,"closed Chyron removes metadata glyphs");
             chyron_menu.announce_song();check(chyron_alpha()==0,"same-song reentry restarts Show invisible key");
             chyron_art.advance(.75F);check(chyron_alpha()==218,"same-song reentry follows authored Show keys again");
+            FrontendArt race_card,results_card;
+            check(chyron_art.prepare_song_card(race_card,kRaceHudAtlasWidth,error),error.c_str());
+            check(gpu_art.prepare_post_race(results_card,error,true),error.c_str());
+            check(race_card.atlas().width==kRaceHudAtlasWidth&&
+                  results_card.atlas().rgba.size()<=8U*1024U*1024U,"EA Trax fits both overlay atlases");
+            FrontendMenu recorded_song;
+            recorded_song.song("Static-X","The Only","Shadow Zone");
+            const auto draw_card=[&](const FrontendArt& art) {
+                FrontendUiFrame card;
+                art.append_song_card(1280,720,recorded_song,card);
+                check(card.background_quads==0&&card.vertices.size()==4*card.additive.size(),
+                      "EA Trax uses foreground submissions");
+                return card;
+            };
+            draw_card(race_card);draw_card(results_card);
+            race_card.advance(.9F);results_card.advance(.9F);
+            const auto race_ui=draw_card(race_card),result_ui=draw_card(results_card);
+            check(!race_ui.vertices.empty()&&race_ui.additive==result_ui.additive&&
+                  race_ui.vertices.size()==result_ui.vertices.size(),"race and results submit the same song card");
+            for(std::size_t i=0;i<race_ui.vertices.size();++i)
+                check(race_ui.vertices[i].px==result_ui.vertices[i].px&&race_ui.vertices[i].py==result_ui.vertices[i].py&&
+                      std::memcmp(race_ui.vertices[i].color,result_ui.vertices[i].color,4)==0,
+                      "EA Trax positions and colors are independent of atlas packing");
+            race_card.advance(4.4F);draw_card(race_card);
+            race_card.advance(1.F);
+            check(draw_card(race_card).vertices.empty(),"completed EA Trax card stops submitting quads");
             // Genuine 4D76A0 -> 4D7580 binds TrackTitle to artist and
             // ArtistName to quoted title. Inspect actual font quads in authored
             // package order, rather than inferring semantics from object names.

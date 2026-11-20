@@ -27,7 +27,7 @@ def main():
         (0x5a7007,0x5a7014),(0x5a6150,0x5a6306),(0x5a7390,0x5a7447),(0x462a60,0x462a99),
         (0x435ca0,0x435d30),(0x44cf30,0x44d3d4),(0x462840,0x4629dc),(0x4629e0,0x4629ff),
         (0x458bd0,0x458cbb),(0x4216f0,0x421740),(0x44bad0,0x44baef),(0x44adc0,0x44b060),
-        (0x5a6d20,0x5a6e0f),(0x462a00,0x462a52),(0x433b0a,0x433b15)]:
+        (0x5a6d20,0x5a6e0f),(0x462a00,0x462a52),(0x433b0a,0x433b15),(0x57b31c,0x57b340)]:
         m.instructions.update({i.address:i.size for i in md.disasm(im.read(a,b-a),a)})
     store,scalar_result=0x119f100,0x119f000;code=b'\xd9\x1d'+struct.pack('<I',scalar_result)+b'\xc3'
     m.uc.mem_write(store,code);m.instructions.update({i.address:i.size for i in md.disasm(code,store)})
@@ -64,18 +64,21 @@ def main():
         ('stopped',30,20.,30,0.,60,False),('off_road',30,20.,30,40.,80,False),
         ('bend',36,35.,37,27.,-2,False),('same',30,20.,30,20.,0,False),
         ('wrap',30,20.,31,14.,0,False),('progress_reject',30,20.,31,14.,0,False),
-        ('accelerating',15,20.,30,21.,0,False),('braking',15,20.,30,65.,0,False)]
+        ('accelerating',15,20.,30,21.,0,False),('braking',15,20.,30,65.,0,False),
+        ('missing_near',30,20.,31,14.,0,False),('missing_side',30,20.,30,20.,3.5,False)]
     # First prime the shape observations with both admitted original actors.
     pose(ACTOR,30,20.);pose(HUMAN,30,20.)
     m.run(0x44cf30,(CTX,CONTROLLER),budget=3000000)
     for label,point,speed,hpoint,hspeed,side,flip in scenarios:
         pose(ACTOR,point,speed);pose(HUMAN,hpoint,hspeed,side,flip)
+        m.put(CTX+0x394,0)
         m.run(0x44cf30,(CTX,CONTROLLER),budget=3000000)
         # Declared caller snapshots, not an integrated physical trajectory.
         delta=m.get(0x7372b0,'f') if label=='wrap' else 1000. if label=='progress_reject' else 0.
         if delta:m.put(HUMAN+0x814,m.get(HUMAN+0x814,'f')+delta,'f')
         acceleration=35. if label=='accelerating' else -5. if label=='braking' else 0.
         for k in range(3):m.put(ACTOR+0x80+4*k,acceleration*m.get(ACTOR+0x90+4*k,'f'),'f')
+        if label.startswith('missing_'):m.put(CTX+0x394,-1,'i')
         category=m.get(CTX+0x394,'i');ride_category=m.get(m.get(ACTOR+0x10)+0x424,'b')
         road=[]
         for j in range(m.get(chain+4)):
@@ -84,7 +87,7 @@ def main():
             road.append([vector(p),[m.get(p+0xc+4*k,'f') for k in range(2)],
                 [m.get(p+0x3c+2*k,'h')/256. for k in range(5)],
                 [m.get(p+0x3c+2*(k+11),'h')/256. for k in range(12)],
-                m.get(c+0x58,'f'),[m.get(c+4+4*k,'f') for k in range(7)]])
+                m.get(c+0x58,'f'),[m.get(c+4+4*k,'f') for k in range(7)],m.get(p+0x38,'f')])
         actors=[];self_node=None
         for node in nodes():
             ref=m.get(node+0x1d4);state=m.get(ref+0x1c)
@@ -103,7 +106,7 @@ def main():
         indata=[self_node,vector(ACTOR+0x60),vector(ACTOR+0x70),vector(ACTOR+0x90),
             vector(ACTOR+0x80),vector(0x7372a0),m.get(ACTOR+0x3b4,'H'),m.get(ACTOR+0x814,'f'),
             horizon,m.get(0x7372b0,'f'),category,ride_category,circuit]
-        predictive.clear();active=True;m.run(0x57a910,(CTX,chain,category),budget=3000000);active=False
+        predictive.clear();active=True;m.run(0x57a910,(CTX,chain,category & 0xffffffff),budget=3000000);active=False
         result=[[m.get(CTX+8+56*j+4*k) for k in range(14)] for j in range(m.get(CTX+4))]
         records.append(dict(label=label,road=road,input=indata,actors=actors,entries=result,
             self_index=m.get(CTX+0x388,'b'),predictive=list(predictive)))

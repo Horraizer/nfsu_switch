@@ -37,6 +37,9 @@ inline const char* post_race_status_text(RacerStatus status) noexcept {
 inline bool post_race_has_time(RacerStatus status,bool valid,std::int32_t ticks) noexcept {
     return status==RacerStatus::normal_completion&&valid&&ticks>0;
 }
+inline bool post_race_has_time(const RaceResultRow& row) noexcept {
+    return row.total_estimated||post_race_has_time(row.status,row.total_valid,row.total_ticks);
+}
 // PostRaceStats49CEE0 circuit binding. Speed/distance are measured from this
 // port's completed fixed physics steps, not from render or wall-clock cadence.
 // This is a statistics adapter, not a claim of retail telemetry bit parity.
@@ -106,13 +109,22 @@ public:
             "TOP SPEED:","AVERAGE SPEED:","TRIP ODOMETER:","LAPS LED:"};
         for(unsigned i=0;i<7;++i)out["DataName_"+std::to_string(i+1)]=labels[i];
         out["RacerName"]=name+" - "+car;
-        out["RaceFinishedPosition"]=(r.position<10?"0":"")+std::to_string(r.position);
-        const bool timed=post_race_has_time(r.status,r.finish_valid,r.finish_ticks);
-        out["Data_1"]=timed?format_race_ticks(r.finish_ticks):"--:--.--";
+        int position=r.position;
+        auto finish_ticks=r.finish_ticks;
+        bool timed=post_race_has_time(r.status,r.finish_valid,r.finish_ticks);
         std::int32_t winner=kRaceNoTime,best=kRaceNoTime;
         for(const auto& a:t.racers)
             if(post_race_has_time(a.status,a.finish_valid,a.finish_ticks))winner=std::min(winner,a.finish_ticks);
-        out["Data_2"]=timed&&r.position!=1?post_race_time(r.finish_ticks-winner,true):post_race_status_text(r.status);
+        if(session.is_drag())for(const auto& row:session.result_rows()) {
+            if(row.position==1&&post_race_has_time(row))winner=row.total_ticks;
+            if(row.racer==actor) {
+                position=row.position;finish_ticks=row.total_ticks;timed=post_race_has_time(row);
+            }
+        }
+        out["RaceFinishedPosition"]=(position<10?"0":"")+std::to_string(position);
+        out["Data_1"]=timed?format_race_ticks(finish_ticks):"--:--.--";
+        out["Data_2"]=timed&&position!=1&&winner!=kRaceNoTime?
+            post_race_time(finish_ticks-winner,true):post_race_status_text(r.status);
         if(session.is_drag()) {
             //49CC70 ->49D4C0/49D5B0/49DB30/49DE00/49DE80.
             out["DataName_3"]="TOP SPEED:";
@@ -202,10 +214,10 @@ inline PostRaceValues post_race_report(const RaceSession& session,PostRaceValues
             values["Lead"+key]=values["Time"+key];
         }else if(n<rows.size()) {
             const auto& r=rows[n];
-            const bool timed=post_race_has_time(r.status,r.total_valid,r.total_ticks);
+            const bool timed=post_race_has_time(r);
             values["Time"+key]=timed?post_race_time(r.total_ticks):post_race_status_text(r.status);
             values["Lead"+key]=values["Time"+key];
-            if(n&&timed&&post_race_has_time(rows[0].status,rows[0].total_valid,rows[0].total_ticks))
+            if(n&&timed&&post_race_has_time(rows[0]))
                 values["Lead"+key]=post_race_time(std::max(0,r.total_ticks-rows[0].total_ticks),true);
             if(r.best_lap_ticks!=kRaceNoTime && !session.is_drag())values["BestLap_"+key]=format_race_ticks(r.best_lap_ticks);
         }

@@ -1,6 +1,6 @@
 from pathlib import Path
 import argparse,hashlib,json,os,struct,subprocess,sys
-from unicorn.x86_const import UC_X86_REG_EIP
+from unicorn.x86_const import UC_X86_REG_CR4, UC_X86_REG_EIP
 parser=argparse.ArgumentParser(description='Original selector3 two-component system versus portable code')
 parser.add_argument('--root',type=Path,required=True)
 parser.add_argument('--out',type=Path,required=True)
@@ -30,7 +30,12 @@ m.allowed=[(0x475097,0x475179),(0x475530,0x47623f),(0x584740,0x584800),(0x584800
  (0x586720,0x58672f),(0x575940,0x575945),(0x4387e0,0x4387f6),(0x40bd40,0x40bf00),
  (0x564b10,0x564f20),(0x565060,0x565300),(0x5abdaf,0x5abf00),(0x5ac69c,0x5acd00),
  (0x674898,0x674920),(0x401cd0,0x401d70),(0x567370,0x5673d0)]
-m.uc.mem_write(setup,record[0x110:]);m.put(0x6d4ac4,0x5abdb5);m.put(0x6d4acc,0x5ac6a2)
+m.uc.mem_write(setup,record[0x110:])
+# Use the vector and matrix dispatch selected by the recorded PC executable.
+m.uc.reg_write(UC_X86_REG_CR4, m.uc.reg_read(UC_X86_REG_CR4) | 0x200)
+m.allowed.extend([(0x5ebce3,0x5ebdb7),(0x5ece7a,0x5ecfae)])
+m.put(0x6d4ac4,0x5ebce3)
+m.put(0x6d4acc,0x5ece7a)
 m.run(0x584800,ecx=body,eax=setup+0x110)
 m.run(0x475097,end=0x475179,esi=engine,ebp=setup)
 m.put(engine,0x6c847c);m.put(engine+0x18,setup);m.put(engine+0x14,body)

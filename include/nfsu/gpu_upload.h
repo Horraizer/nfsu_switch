@@ -170,6 +170,8 @@ struct UploadResource {
     // Occupies existing enum/string alignment padding, not a larger descriptor.
     // Opt-in vertex payload is copied into a fenced per-frame GPU buffer.
     bool streamed_vertices = false;
+    // Optional live prefix, in elements, copied after the frame slot fence.
+    const std::size_t* streamed_elements = nullptr;
     // ASCII, unique within its table and stable across builds of the same
     // scene: what a leak report prints. It carries the prepared position, so
     // two meshes with one stored name stay apart. A stored mesh name is

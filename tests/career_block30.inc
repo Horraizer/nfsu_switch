@@ -112,7 +112,7 @@
         const auto end=bytes.rfind("SHA256 ");check(end!=std::string::npos,"v8 checksum boundary");
         std::istringstream lines(bytes.substr(0,end));std::vector<std::string> fields;std::string line;
         while(std::getline(lines,line))fields.push_back(line);
-        check(fields.size()>48&&fields[0]=="NFSU_CAREER 11","new save schema11");
+        check(fields.size()>48&&fields[0]=="NFSU_CAREER 12","new save schema12");
         // Header0, state1, statuses2, style3, performance4, parts5,
         // ownership6..30, tournament31, standings32..39.
         const auto detailed=std::find_if(fields.begin(),fields.end(),[](const auto& value){return value.rfind("STATS ",0)==0;});

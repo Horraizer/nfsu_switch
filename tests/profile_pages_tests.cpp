@@ -35,7 +35,7 @@ int main() {
         "STATE SHA B 0123456789ABCDEF", "STEPS SHA A 0123456789ABCDEF",
         "STEPS SHA B 0123456789ABCDEF"
     };
-    for (const auto height : {720U, 540U, 450U, 360U}) {
+    for (const auto height : {1080U, 720U, 540U, 450U, 360U}) {
         if (!plan_deko_scene_target(1280, 720, true, height, context.scene_target)) return 1;
         for (bool active : {false, true}) {
             try {
@@ -71,7 +71,8 @@ int main() {
                         if (row.find(needle) != std::string::npos) return true;
                     return false;
                 };
-                if (!contains(height == 720 ? "NATIVE DIRECT" : "LINEAR UPSCALE INCLUDED")) {
+                if (!contains(height >= 720 ? "NATIVE DIRECT" : "LINEAR UPSCALE INCLUDED") ||
+                    (height==1080 && !contains("1920x1080 -> 1920x1080"))) {
                     std::cerr << "FAIL: missing target mode\n";
                     return 1;
                 }

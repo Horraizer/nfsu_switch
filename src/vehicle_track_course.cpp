@@ -1,4 +1,5 @@
 #include "nfsu/vehicle_track.h"
+#include "nfsu/world_motion.h"
 
 #include "nfsu/car_collision_hull.h"
 
@@ -450,7 +451,7 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
 
                  {segment(240, 0.0, 1.0, 0.0)},
 
-                 "2786EEED0625538554ACA9673003D1303B4E3A6602F05F16173F23DF14F35EF6"),
+                 "D5A9027D7F58D8F6B1CC18A9B7F69DF1F86DE8B1ECAE039822B64953807D9439"),
 
         scenario("drive", "full throttle for six seconds from (64, 48) along +x, across the "
 
@@ -510,7 +511,7 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
 
                  0, {segment(360, 0.0, 0.0, 0.0)},
 
-                 "A404CC5C429D971CE2915DA4CEC71B9AD9112C373148751885D11E6F87DAED53"),
+                 "A9CDFEDDB82EE7460377D995A6D161EFD3B775BF073C7C50A4D8CACBFF2C7F73"),
 
         scenario("leave", "full throttle from (176, 20) along -y off the open edge at pz 0, "
 
@@ -518,7 +519,7 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
 
                  144.0, -28.0, 0.0, -kTurn90, {segment(600, 1.0, 0.0, 0.0)},
 
-                 "B2D804AA75051CCDBB2E33FA9BDD7A6CC1230AD1C6B9B46BC73B923DD781AE47"),
+                 "D7CD15EF89CA632CB193B2718AB03186D4A4A9CF77A6D75CD2E385274B0AB2B7"),
 
         scenario("zone", "0.6 throttle at 8 m/s from (128, 60) along +y into the RESET zone at "
 
@@ -526,7 +527,7 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
 
                  96.0, 12.0, 0.0, kTurn90, {segment(600, 0.6, 0.0, 0.0)},
 
-                 "DB925A690B40AF8D4ACD7E798E4B30BC299A903D05BD382E43EDA9DF20A1DB0B", 8.0),
+                 "15E1D8ED106515C1DE58A30916C51F8EA49FCE4B6E82CDE94E36D67ED648580E", 8.0),
 
         scenario("zone-point", "0.6 throttle at 8 m/s from (152, 60) along +y into the RESET_TO_POINT "
 
@@ -536,7 +537,7 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
 
                  {segment(480, 0.6, 0.0, 0.0), segment(240, 0.0, 0.0, 0.0)},
 
-                 "898196E5FBEFB9C453B795CF138469DA0AB7B1613633ED3A71F75279397C886B", 8.0),
+                 "EAD83E5BD01062267C38681944E294A944D7BEDEA24A717C8CF873679226D16A", 8.0),
 
         scenario("far", "at rest on the pad at (-4032, -3040), more than 5000 from the "
 
@@ -544,7 +545,7 @@ std::vector<VehicleTrackScenario> proving_ground_scenarios() {
 
                  -4064.0, -3088.0, 0.0, 0, {segment(240, 0.0, 0.0, 0.0)},
 
-                 "86B73FEAB6EA7691A816DE945D683C7EAE826BE40315CD934B4A87D603532831"),
+                 "C0D148758CA3F340E0CE4FB80418BEF029417622B6E755D1152C8EDBA599606E"),
 
     };
 
@@ -562,7 +563,7 @@ std::vector<VehicleTrackScenario> circuit_scenarios() {
 
                  {segment(360, 0.0, 1.0, 0.0)},
 
-                 "C3B7E039F5924D31424A96193F0CB83108F2F42286037147E3411E7848552AD6"),
+                 "D96781104AE77E02571692F24F545F624E58D6DA1C5E59B229DBA8450E6FC1E2"),
 
         scenario("drive", "full throttle for four seconds from the grid along the road", 0.0,
 
@@ -598,7 +599,7 @@ std::vector<VehicleTrackScenario> circuit_scenarios() {
 
                  0.0, 20.0, 1.0, 0, {segment(360, 0.0, 0.0, 0.0)},
 
-                 "9C3DAB2E16C85410DE87C7FF0D03541BFC8CD670C5553EA166C1A5EA4540F2F0"),
+                 "4A0623DFD31C2D06357CF085E9078258E2E77CA8BDF1599DE1DF96CD4DD3809A"),
 
     };
 
@@ -1379,7 +1380,8 @@ bool load_support_faces(const std::vector<unsigned char>& image,int direction,
 }
 
 bool load_world_objects(const std::vector<unsigned char>& image,int direction,
-                        std::vector<VehicleWorldObject>& objects,std::vector<VehicleWorldTrigger>& triggers) {
+                        std::vector<VehicleWorldObject>& objects,std::vector<VehicleWorldTrigger>& train,
+                        std::vector<VehicleWorldTrigger>& plane) {
     const auto walk=[&](const auto& self,std::size_t begin,std::size_t finish)->bool {
     for(std::size_t chunk=begin;chunk+8<=finish;) {
         const auto kind=hull_u32(image.data()+chunk),size=hull_u32(image.data()+chunk+4);
@@ -1389,13 +1391,15 @@ bool load_world_objects(const std::vector<unsigned char>& image,int direction,
         if(kind==0x36003) {
             const auto aligned=(start+15)&~std::size_t(15);
             if(aligned>end||(end-aligned)%32)return false;
-            for(auto at=aligned;at<end;at+=32)if(hull_u32(image.data()+at+4)==0x10006) {
+            for(auto at=aligned;at<end;at+=32) {
+                const auto event=hull_u32(image.data()+at+4);
+                if(event!=0x10006&&event!=0x10009)continue;
                 VehicleWorldTrigger trigger;trigger.player_mask=hull_u32(image.data()+at+12);
                 std::memcpy(trigger.centre.data(),image.data()+at+16,12);
                 std::memcpy(&trigger.radius,image.data()+at+28,4);
                 for(float value:trigger.centre)if(!std::isfinite(value))return false;
                 if(!std::isfinite(trigger.radius)||trigger.radius<=0)return false;
-                triggers.push_back(trigger);
+                (event==0x10006?train:plane).push_back(trigger);
             }
         }
         if(kind==0x3B300) {
@@ -1403,26 +1407,29 @@ bool load_world_objects(const std::vector<unsigned char>& image,int direction,
             if(aligned>end||(end-aligned)%160)return false;
             for(auto at=aligned;at<end;at+=160) {
                 const auto* record=image.data()+at;
-                if(hull_u32(record+12)||!hull_u32(record+8))continue;
+                const auto type=hull_u32(record),shape=hull_u32(record+8),model=hull_u32(record+80);
+                const bool decor=world_decor_motion(type,shape,model,hull_u32(record+132),hull_u32(record+144));
+                if(hull_u32(record+12)||(!shape&&!decor))continue;
                 //578820 suppresses these constructors before registration.
                 if(hull_u32(record)==track_marker_hash("DrawBridge")||
                    (direction==1&&hull_u32(record+4)==0x6691470DU))continue;
                 if(objects.size()==kRaceWorldObjectCapacity)return false;
-                VehicleWorldObject object;object.type=hull_u32(record);object.name=hull_u32(record+4);
-                object.shape=hull_u32(record+8);object.model=hull_u32(record+80);object.source_offset=at;
+                VehicleWorldObject object;object.type=type;object.name=hull_u32(record+4);
+                object.shape=shape;object.model=model;object.source_offset=at;
                 std::memcpy(object.transform.data(),record+16,64);
                 for(float value:object.transform)if(!std::isfinite(value))return false;
                 //116 creates the optional path helper, not a rigid body.
                 object.path_cache=hull_u32(record+116)!=0;
-                object.fixed_collision=object.type==0x3E83CBDEU;
+                object.fixed_collision=object.type==0x3E83CBDEU&&!decor;
+                object.visual_motion=decor;
                 object.motion_collision=object.type==0x24CEBC53U||object.type==0x427A6453U||object.type==0x67DBE3EAU;
-                if(object.motion_collision) {
+                if(object.motion_collision||decor) {
                     std::memcpy(object.animation.data(),record+128,12);
                     std::memcpy(&object.animation_rate,record+148,4);
                     std::memcpy(&object.animation_hold,record+156,4);
                     object.animation_flags=hull_u32(record+152);
                     if(!std::isfinite(object.animation_rate)||!std::isfinite(object.animation_hold)||
-                       !object.animation[0]||!object.animation[1]||object.animation[2])return false;
+                       (object.motion_collision&&(!object.animation[0]||!object.animation[1]||object.animation[2])))return false;
                 }
                 if(object.fixed_collision||object.motion_collision) {
                     if(hull_u32(record+144))return false; // Only the default ROOT skeleton is recovered here.
@@ -1505,7 +1512,7 @@ bool load_vehicle_track_course(const std::filesystem::path& trackb,
 
 
 
-    if(!load_world_objects(image,direction,course.world_objects,course.train_triggers)) {
+    if(!load_world_objects(image,direction,course.world_objects,course.train_triggers,course.plane_triggers)) {
         error="invalid WorldObject collision records in "+course.name;return false;
     }
     if (!build_race_route(course.track, laps, direction, lap_skip, course.route, error)) {

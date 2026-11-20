@@ -3,7 +3,9 @@
 #include "nfsu/car_shadow.h"
 #include "nfsu/car_neon.h"
 #include "nfsu/light_glows.h"
+#include "nfsu/traffic_model.h"
 #include <memory>
+#include <optional>
 namespace nfsu {
 struct RaceCarDress;
 // Visual starting grid only. No rival performance or controller is invented.
@@ -28,6 +30,7 @@ struct IntroGrid {
     VehicleTrackCourse course;
     std::vector<IntroGridActor> traffic;
     std::vector<IntroGridActor> actors; // Final physical grid order.
+    std::optional<RaceStartupRandom> startup_random;
 };
 // Authenticates retail setup, installs each authored preset, projects grid markers
 // to the course, and prepares stable owned car payloads. Publishes only on success.
@@ -36,7 +39,9 @@ enum class GridPlayerVisuals { prepare, load_with_scene };
 bool load_race_grid(const std::filesystem::path& root,unsigned event,const std::string& car,
                      unsigned difficulty,IntroGrid& out,std::string& error,const VehicleUpgradeLevels* owned_levels=nullptr,
                      const RaceCarDress* owned_dress=nullptr,unsigned race_index=0,
-                     GridPlayerVisuals player_visuals=GridPlayerVisuals::prepare,const QuickRaceOptions* quick=nullptr);
+                     GridPlayerVisuals player_visuals=GridPlayerVisuals::prepare,const QuickRaceOptions* quick=nullptr,
+                     std::optional<std::uint32_t> traffic_roster_seed=std::nullopt,
+                     std::optional<std::uint32_t> campaign_seed_before_settings=std::nullopt);
 bool load_quick_race_traffic(const std::filesystem::path&,const SupportedRaceSelection&,
     unsigned density,std::vector<IntroGridActor>&,std::string& error);
 // Common real roster/session setup; planner and driver own live AI behavior.

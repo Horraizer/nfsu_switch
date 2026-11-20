@@ -34,7 +34,7 @@ def main():
             m.put(point,x,'f');m.put(point+4,y,'f')
             m.run(0x441d80,(material,),eax=point);m.run(trampoline)
             bumps.append([material,bits(x),bits(y),m.get(output)])
-        for spin,longitudinal,lateral,torque,service,locked in [(80.,20.,5.,1.,0.,False),(0.,0.,0.,50.,0.,False),(80.,20.,5.,-20.,.8,True)]:
+        for spin,longitudinal,lateral,torque,service,locked in [(80.,20.,5.,1.,0.,False),(0.,0.,0.,50.,0.,False),(80.,20.,5.,-20.,.8,True),(20.2/m.get(setup+0x20,'f'),20.,0.,1.,0.,False)]:
             m.uc.mem_write(wheel,initial)
             for at,val in [(0x28,spin),(0xf0,longitudinal),(0xf4,lateral),(0x108,torque),(0x170,service),
                            (0x174,0.),(0x158,3.),(0x178,1.),(0x17c,1.),(0x180,1.),(0x16c,0.),(0x114,0.)]:m.put(wheel+at,val,'f')
@@ -44,18 +44,18 @@ def main():
             result=[m.get(wheel+at) for at in (0x28,0x108,0x118,0x11c,0x160)]
             result += [m.get(wheel+0x10c),m.get(wheel+0x154,'B')]
             m.run(0x587170,(output,),ecx=wheel)
-            result += [m.get(output+4),m.get(wheel+0x114)]
+            result += [m.get(output+4),m.get(wheel+0x114),m.get(wheel+0x100),m.get(wheel+0x104)]
             cases.append([material,bits(spin),bits(longitudinal),bits(lateral),bits(torque),bits(service),int(locked)]+result)
     assert not m.events
     lines=['// Generated from authenticated original code; no external call hooks.','static const std::uint32_t surface_factors[][5]={']
     lines += ['    {'+','.join(str(v)+'U' for v in row)+'},' for row in factors]
     lines += ['};','static const std::uint32_t surface_bumps[][4]={']
     lines += ['    {'+','.join(str(v)+'U' for v in row)+'},' for row in bumps]
-    lines += ['};','static const std::uint32_t surface_wheels[][16]={']
+    lines += ['};','static const std::uint32_t surface_wheels[][18]={']
     lines += ['    {'+','.join(str(v)+'U' for v in row)+'},' for row in cases]
     lines += ['};','']
     args.output.write_text('\n'.join(lines),encoding='ascii')
     args.evidence.write_text(json.dumps({'exe_sha256':hashlib.sha256(data).hexdigest(),'factors':factors,'bumps':bumps,'wheels':cases,'hooks':m.events,'scope':'Original441D80,587330,587830 through587A91,587170; supplied stock240SX owner/wheel inputs, no whole-road/trajectory claim'},indent=2)+'\n',encoding='ascii')
-    print('PASS original29 material rows,116 positional bumps,87 wheel force/derivative cases,0 call hooks')
+    print('PASS original29 material rows,116 positional bumps,116 wheel force/derivative/export cases,0 call hooks')
 
 if __name__=='__main__':main()

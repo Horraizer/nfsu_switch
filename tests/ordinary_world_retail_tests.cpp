@@ -61,7 +61,7 @@ int main(int argc,char** argv) {
                     if(std::strcmp(d.program->name,"sky_textured")==0) {
                         sky=true;need(view.material.fallback[3]!=6,"sky received ordinary marker");continue;
                     }
-                    if(i>=frame.track_draws) {
+                    if(i>=frame.track_draws&&d.name.rfind("world model group ",0)!=0) {
                         car=true;need(view.material.fallback[3]!=6,"car or effect received ordinary marker");continue;
                     }
                     const auto& mesh=scene.region.meshes.at(d.mesh);

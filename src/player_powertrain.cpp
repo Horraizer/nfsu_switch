@@ -160,8 +160,9 @@ PlayerRigidVector player_strut_attachment(const VehicleHandling& h,
                                   w.vertical-h.centre_of_mass[2]}};
     PlayerRigidVector point{};
     for(unsigned j=0;j<3;++j) {
-        const float zy=local[2]*body.axes[2][j]+local[1]*body.axes[1][j];
-        const float rotated=zy+local[0]*body.axes[0][j];
+        // 5885A7 dispatches to the same packed rotation used by the rigid body.
+        const float xy=local[0]*body.axes[0][j]+local[1]*body.axes[1][j];
+        const float rotated=xy+(local[2]*body.axes[2][j]+0.0F);
         point[j]=rotated+body.position[j];
     }
     return point;
@@ -414,19 +415,24 @@ VehicleVec3 player_hub_velocity(const std::array<VehicleVec3,3>& axes,
                                const VehicleVec3& angular) noexcept {
     const float x=static_cast<float>(local_hub.x),y=static_cast<float>(local_hub.y),
                 z=static_cast<float>(local_hub.z);
-    //5ABDB5: accumulate the z and y terms before x; matrix translation
-    // is zero for the rotation used to resolve this relative hub arm.
-    const float ax=(z*static_cast<float>(axes[2].x)+y*static_cast<float>(axes[1].x))+
-                   x*static_cast<float>(axes[0].x);
-    const float ay=(z*static_cast<float>(axes[2].y)+y*static_cast<float>(axes[1].y))+
-                   x*static_cast<float>(axes[0].y);
-    const float az=(z*static_cast<float>(axes[2].z)+y*static_cast<float>(axes[1].z))+
-                   x*static_cast<float>(axes[0].z);
+    // 588913 transforms the arm before taking angular velocity cross arm.
+    const float ax=(x*static_cast<float>(axes[0].x)+y*static_cast<float>(axes[1].x))+
+                   z*static_cast<float>(axes[2].x);
+    const float ay=(x*static_cast<float>(axes[0].y)+y*static_cast<float>(axes[1].y))+
+                   z*static_cast<float>(axes[2].y);
+    const float az=(x*static_cast<float>(axes[0].z)+y*static_cast<float>(axes[1].z))+
+                   z*static_cast<float>(axes[2].z);
     const float ox=static_cast<float>(angular.x),oy=static_cast<float>(angular.y),
                 oz=static_cast<float>(angular.z);
     return {(az*oy-ay*oz)+static_cast<float>(linear.x),
             (ax*oz-az*ox)+static_cast<float>(linear.y),
             (ay*ox-ax*oy)+static_cast<float>(linear.z)};
+}
+
+float player_axis_projection(const VehicleVec3& value,const VehicleVec3& axis) noexcept {
+    return (static_cast<float>(value.x)*static_cast<float>(axis.x)+
+            static_cast<float>(value.y)*static_cast<float>(axis.y))+
+            static_cast<float>(value.z)*static_cast<float>(axis.z);
 }
 
 std::array<VehicleVec3,3> player_world_wheel_axes(
@@ -456,22 +462,25 @@ std::array<VehicleVec3,3> player_world_wheel_axes(
 
 VehicleVec3 player_world_wheel_force(const std::array<VehicleVec3,3>& axes,
                                     float longitudinal,float lateral,float load) noexcept {
-    //5ABDB5 transform used by587830 default6F0874=1. The wheel frame
-    // rotation has zero translation; all three force components contribute.
-    return {((load*static_cast<float>(axes[2].x)+lateral*static_cast<float>(axes[1].x))+
-             longitudinal*static_cast<float>(axes[0].x))+0.0F,
-            ((load*static_cast<float>(axes[2].y)+lateral*static_cast<float>(axes[1].y))+
-             longitudinal*static_cast<float>(axes[0].y))+0.0F,
-            ((load*static_cast<float>(axes[2].z)+lateral*static_cast<float>(axes[1].z))+
-             longitudinal*static_cast<float>(axes[0].z))+0.0F};
+    // 587DCA uses the runtime matrix dispatch. The recorded wheel forces
+    // match 5D6D10: add longitudinal to lateral, then load, then translation.
+    return {((longitudinal*static_cast<float>(axes[0].x)+lateral*static_cast<float>(axes[1].x))+
+             load*static_cast<float>(axes[2].x))+0.0F,
+            ((longitudinal*static_cast<float>(axes[0].y)+lateral*static_cast<float>(axes[1].y))+
+             load*static_cast<float>(axes[2].y))+0.0F,
+            ((longitudinal*static_cast<float>(axes[0].z)+lateral*static_cast<float>(axes[1].z))+
+             load*static_cast<float>(axes[2].z))+0.0F};
 }
 
 PlayerRigidVector player_world_wheel_hub(const PlayerRigidBodyState& body,
                                          const PlayerRigidVector& local) noexcept {
     const auto& a=body.snapshot_axes;const auto& p=body.position;
-    return {{((p[0]+local[0]*a[0][0])+local[1]*a[1][0])+local[2]*a[2][0],
-             ((p[1]+local[2]*a[2][1])+local[1]*a[1][1])+local[0]*a[0][1],
-             ((local[1]*a[1][2]+local[0]*a[0][2])+p[2])+local[2]*a[2][2]}};
+    // 5889D8 uses the translation row of the dispatched matrix product.
+    // 5ECF86..5ECF9C adds the two pairs before publishing the hub.
+    PlayerRigidVector hub{};
+    for(unsigned i=0;i<3;++i)
+        hub[i]=(local[0]*a[0][i]+local[1]*a[1][i])+(local[2]*a[2][i]+p[i]);
+    return hub;
 }
 
 PlayerRigidVector player_wheel_contact_point(const PlayerRigidVector& hub,
@@ -591,15 +600,16 @@ PlayerRigidVector rigid_normalized(PlayerRigidVector v) noexcept {
     return v;
 }
 PlayerRigidMatrix rigid_product(const PlayerRigidMatrix& a,const PlayerRigidMatrix& b) noexcept {
-    // Exact5AC6A2 accumulation orders, shared with world wheel axes.
+    // Rotational block of the runtime 5ECE7A matrix multiply.
     PlayerRigidMatrix result{};
-    for(unsigned c=0;c<3;++c)for(unsigned r=0;r<3;++r) {
-        const float x=b[c][0]*a[0][r],y=b[c][1]*a[1][r],z=b[c][2]*a[2][r];
-        if(c==0)result[c][r]=r==1?((y+0.0F)+z)+x:((0.0F+x)+z)+y;
-        else if(r==0)result[c][r]=((0.0F+x)+y)+z;
-        else if(r==1)result[c][r]=((z+0.0F)+y)+x;
-        else result[c][r]=((y+x)+0.0F)+z;
-    }
+    for(unsigned c=0;c<3;++c)for(unsigned r=0;r<3;++r)
+        result[c][r]=(b[c][0]*a[0][r]+b[c][1]*a[1][r])+b[c][2]*a[2][r];
+    return result;
+}
+PlayerRigidVector rigid_transform(const PlayerRigidMatrix& matrix,const PlayerRigidVector& v) noexcept {
+    PlayerRigidVector result{};
+    for(unsigned k=0;k<3;++k)
+        result[k]=((v[0]*matrix[0][k]+v[1]*matrix[1][k])+v[2]*matrix[2][k])+0.0F;
     return result;
 }
 }
@@ -667,6 +677,22 @@ PlayerRigidMatrix player_body_inverse_tensor(const VehicleHandling& h,
     return rigid_product(rigid_product(axes,inverse),transpose);
 }
 
+void player_rigid_body_import(const VehicleHandling& h,PlayerRigidBodyState& body,
+    const PlayerRigidVector& position,const PlayerRigidMatrix& axes,
+    const PlayerRigidVector& velocity,const PlayerRigidVector& angular_velocity) noexcept {
+    body.position=position;body.axes=axes;
+    const PlayerRigidMatrix identity{{{{1,0,0}},{{0,1,0}},{{0,0,1}}}};
+    const auto inverse=player_body_inverse_tensor(h,identity,false);
+    PlayerRigidMatrix local{},transpose{};
+    for(unsigned k=0;k<3;++k) {
+        body.momentum[k]=velocity[k]*h.mass;
+        local[k][k]=1.F/inverse[k][k];
+        for(unsigned j=0;j<3;++j)transpose[k][j]=axes[j][k];
+    }
+    const auto tensor=rigid_product(rigid_product(axes,local),transpose);
+    body.angular_momentum=rigid_transform(tensor,angular_velocity);
+}
+
 void player_rigid_body_refresh(const VehicleHandling& h,PlayerRigidBodyState& body) noexcept {
     const float inverse_mass=1.0F/h.mass;
     for(unsigned k=0;k<3;++k)body.velocity[k]=body.momentum[k]*inverse_mass;
@@ -678,9 +704,7 @@ void player_rigid_body_refresh(const VehicleHandling& h,PlayerRigidBodyState& bo
         }
     }
     const auto world=player_body_inverse_tensor(h,body.axes,body.alternate_yaw);
-    for(unsigned k=0;k<3;++k)
-        body.angular_velocity[k]=((body.angular_momentum[2]*world[2][k]+
-            body.angular_momentum[1]*world[1][k])+body.angular_momentum[0]*world[0][k])+0.0F;
+    body.angular_velocity=rigid_transform(world,body.angular_momentum);
     const float omega=rigid_norm(body.angular_velocity);
     if(omega>250.0F) { //5859B3: cache limit, momentum is retained
         const float factor=250.0F/omega;
@@ -840,6 +864,7 @@ void player_wheel_prepare(const VehicleHandling& h, std::size_t k,
     const float friction=((w.surface.sliding_grip*h.tyres[k/2].sliding_friction)*w.friction_scale)*w.owner_grip;
     const float magnitude=sqrtf(w.velocity_lat*w.velocity_lat+w.slip*w.slip);
     w.sliding=false;
+    w.effect_slip={}; //58771C/587726 standing branch clears exported pair
     w.force_long=0.0F; w.force_lat=0.0F;
     if (magnitude != 0.0F && (w.velocity_lat != 0.0F || w.velocity_long != 0.0F)) {
         const float scale=(1.0F/magnitude)*friction;
@@ -859,6 +884,7 @@ void player_wheel_prepare(const VehicleHandling& h, std::size_t k,
         const float angle=absf(slip_angle(w.velocity_long,w.velocity_lat));
         if (absf(w.slip)>=0.5F || angle>=h.tyres[k/2].slip_scale || w.locked) {
             w.sliding=true;
+            w.effect_slip={w.slip,w.velocity_lat}; //587689/58768F
             w.force_long=w.slip*force_scale;
             w.force_lat=-(force_scale*w.velocity_lat);
             //587637..58767B uses the separate owner speed, not wheel speed.
@@ -1253,8 +1279,8 @@ float player_clutch_torque(const VehicleHandling& h,
                           const PlayerEngineState& engine,
                           PlayerGearState& gearbox, int gear,
                           float wheel_engine_speed, float crank) noexcept {
-    if (gear == kVehicleGearNeutral || gearbox.mode == 1) return 0.0F;
-    if (gearbox.mode == 3) return crank;
+    if (gearbox.mode == 1) return 0.0F;
+    if (gearbox.mode == 3) return gear == kVehicleGearNeutral ? 0.0F : crank;
     float difference = engine.angular_speed - wheel_engine_speed;
     if (difference > 300.0F) difference = 300.0F; // 6FFF28
     if (difference < -300.0F) difference = -300.0F;
@@ -1264,7 +1290,8 @@ float player_clutch_torque(const VehicleHandling& h,
         absf(slip_rpm) > 2000.0F && absf(gearbox.previous_slip_rpm) > 2000.0F)
         stiffness *= 0.3F; // 6B7248, sign-crossing guard46E302..46E33D
     gearbox.previous_slip_rpm = slip_rpm;
-    return (stiffness * gearbox.clutch) * difference;
+    // 46E33F stores slip even in neutral; 46E020 skips torque distribution.
+    return gear == kVehicleGearNeutral ? 0.0F : (stiffness * gearbox.clutch) * difference;
 }
 
 float player_engine_acceleration(const VehicleHandling& h,

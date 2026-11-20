@@ -4,7 +4,9 @@
 #include "nfsu/race_setup.h"
 #include "nfsu/intro_ai.h"
 #include "nfsu/race_crash_road.h"
+#include "nfsu/start_crowd.h"
 #include "nfsu/track_slice.h"
+#include <functional>
 #include <optional>
 #include <set>
 
@@ -13,11 +15,11 @@ namespace nfsu {
 // Host diagnostic input includes an explicit early tyre-smoke/braking witness.
 // CLI and RaceRun independently consume the full two-lap input without reset.
 constexpr const char* kEvent1InputHash = "6E9CE2689BA9A33E4C2D8E61795E7BDB677B6AAC45E2812B0A57FD7F30FCA66F";
-constexpr const char* kEvent1SequenceHash = "70D6FA38CCAED185EA55C4482E249C163152B05885E055BF1B7CB965BDAE06AD";
-constexpr const char* kEvent1StepsHash = "CF08E75406E4AA051BE0297E8D2E85D0F52764E8DFC01A42ADB82946671CC001";
+constexpr const char* kEvent1SequenceHash = "93E559C95F85C1250DD2010889DA99F6FE9B720847CFF4F717312DE470DE5354";
+constexpr const char* kEvent1StepsHash = "051D0525F4E4D0546AA8775B222A91108231EA9BE6E4215569165C7A52FE66CC";
 constexpr const char* kPerformance1InputHash = "E06FCA77A8AB5042A8BB499D3D0351A4913524CB93781EABAC5299AA17DFE4B0";
-constexpr const char* kPerformance1SequenceHash = "C0206DDFDA25C9A6D12256DBEA186898E7F511944E975E5E89BBB621B420A97C";
-constexpr const char* kPerformance1StepsHash = "A18E0A4EAB3D038176E1EC972782A799C81E9E44F6A99935F64836FAA6D487F9";
+constexpr const char* kPerformance1SequenceHash = "53B83A719EAC9F578076038B74619D4905D083EDDE2C4D2F25D6063D4673350C";
+constexpr const char* kPerformance1StepsHash = "AE4607B6943E9DA66BBFA9A242F4EF07C1550BF35EA72EC0E4544F5ED7953B29";
 
 // Authored 34035 timing, shared by console and desktop presentation.
 bool load_race_start_timing(const std::filesystem::path&,unsigned event,float& countdown_step,
@@ -28,12 +30,18 @@ bool load_race_start_timing(const std::filesystem::path&,unsigned event,float& c
 // No rendering, pad polling or wall clock affects the recorded state.
 class RaceRun {
 public:
+    struct RoadSceneLoader {
+        FileSystemService& files;
+        std::function<bool(unsigned,RaceStartClock&,std::string&)> load;
+    };
     std::uint32_t track_number() const noexcept { return track_number_; }
     bool set_event(std::uint32_t event, std::string& error,unsigned race_index=0);
     bool set_difficulty(unsigned difficulty,std::string& error);
     bool set_crash_camera(unsigned intensity,std::string& error);
     bool set_initial_camera_pov(int pov,std::string& error);
-    bool set_start_clock(unsigned release_frame,unsigned go_frame,std::string& error);
+    bool set_start_clock(unsigned release_frame,unsigned go_frame,std::string& error,
+                         unsigned road_scene_slots=0,unsigned scene_end_frame=0);
+    bool set_start_clock(const RaceStartClock&,std::string& error);
     bool prepare_metadata(const std::filesystem::path& root, std::string& error,
                           TrackSliceLoadObserver* observer = nullptr);
     bool set_performance_levels(const VehicleUpgradeLevels& levels, std::string& error);
@@ -50,14 +58,17 @@ public:
     bool set_intro_grid(const VehiclePose&,const VehicleHull&,
                         const std::vector<RaceRivalSetup>&,const std::array<int,3>& contexts,std::string& error,
                         unsigned player_grid=1);
-    bool set_intro_traffic(const std::vector<RaceTrafficSetup>&,std::string&);
+    bool set_intro_traffic(const std::vector<RaceTrafficSetup>&,std::string&,
+        std::optional<std::uint32_t> global_random_before_world=std::nullopt);
     bool start(const std::filesystem::path& root, const TrackSlice& track, std::string& error,
-               TrackSliceLoadObserver* observer = nullptr, const std::string& player_name = {});
+               TrackSliceLoadObserver* observer = nullptr, const std::string& player_name = {},
+               const RoadSceneLoader* road_scene = nullptr);
     bool simulate(const GamepadFrame& pad, std::string& error,
                   RaceSimulationProfile* profile=nullptr,TimingService* timer=nullptr);
     bool commit(std::string& error);
     bool skip_start_cinematic();
     bool arm_finish_probe(std::string& error);
+    RaceSession& session() { return *session_; }
     const RaceSession& session() const { return *session_; }
     void consume_drift_notice() noexcept {session_->consume_drift_notice();}
     std::uint32_t* audio_world_random()noexcept{return intro_ai_.world_random();}
@@ -82,19 +93,25 @@ private:
     TrackZoneReport zones_;
     TrackResidencySession residency_;
     std::unique_ptr<RaceSession> session_;
+    bool apply_start_clock(unsigned,unsigned,std::string&,unsigned,unsigned);
     std::set<std::size_t> resident_, prepared_;
     Sha256 sequence_, steps_;
     std::string step_line_;
     std::uint64_t loads_ = 0, releases_ = 0, bytes_read_ = 0;
     std::int8_t laps_ = 0, direction_ = 0, lap_skip_ = 0;
+    int ai_decision_start_ = 0;
     bool metadata_ready_ = false;
     bool pending_ = false;
     bool authored_start_=false;
+    unsigned road_scene_slots_=0;
+    std::optional<RaceStartClock> road_start_clock_;
+    float authored_scene_end_=0;
     float authored_countdown_=0,authored_cinematic_=0;
     bool explicit_performance_ = false;
     bool free_drive_ = false;
     std::optional<QuickRaceOptions> quick_race_;
     bool traffic_configured_ = false;
+    std::optional<std::uint32_t> initial_world_random_;
     VehicleUpgradeLevels levels_;
     unsigned difficulty_=1;
     float catchup_weight_=0;

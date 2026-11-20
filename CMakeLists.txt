@@ -117,6 +117,9 @@ nfsu_enable_warnings(nfsu_quick_rival_probe)
 add_executable(nfsu_intro_grid_viewer tools/intro_grid_viewer.cpp)
 target_link_libraries(nfsu_intro_grid_viewer PRIVATE nfsu_frontend nfsu_track_render nfsu_arg_path nfsu_posix_file_system nfsu_race_hud)
 nfsu_enable_warnings(nfsu_intro_grid_viewer)
+add_executable(nfsu_frontend_art_sources tools/frontend_art_sources.cpp)
+target_link_libraries(nfsu_frontend_art_sources PRIVATE nfsu_core nfsu_arg_path nfsu_race_events nfsu_image)
+nfsu_enable_warnings(nfsu_frontend_art_sources)
 add_executable(nfsu_ug0_three_driver_probe tools/ug0_three_driver_probe.cpp)
 target_link_libraries(nfsu_ug0_three_driver_probe PRIVATE nfsu_frontend)
 nfsu_enable_warnings(nfsu_ug0_three_driver_probe)
@@ -2443,6 +2446,12 @@ if(NFSU_BUILD_TESTS)
             set_tests_properties(nfsu_tournament_start_round${round}_retail PROPERTIES LABELS retail
                 FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
         endforeach()
+        add_test(NAME nfsu_event19_start_motion_retail
+            COMMAND ${CMAKE_COMMAND} -E env NFSU_CAREER_SCENE_CHECK=1 NFSU_CAREER_START_SCENE_CHECK=1
+                NFSU_CAREER_TEST_START_SCENE=2303
+                $<TARGET_FILE:nfsu_career_races_tests> "${NFSU_RETAIL_ROOT}" 19 0)
+        set_tests_properties(nfsu_event19_start_motion_retail PROPERTIES LABELS retail
+            FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
         add_test(NAME nfsu_tournament_start_skip_retail
             COMMAND ${CMAKE_COMMAND} -E env NFSU_CAREER_SCENE_CHECK=1 NFSU_CAREER_START_SCENE_CHECK=1
                 NFSU_CAREER_TEST_ROUND=1 NFSU_CAREER_START_SKIP=1

@@ -52,7 +52,7 @@ struct ProfileResultContext {
     DekoMemoryUsage memory{};
     DekoGpfifoUsage gpfifo{};
     const char* sky = "ON";
-    DekoSceneTarget scene_target{1280, 720, false};
+    DekoSceneTarget scene_target{1280, 720, false, 1280, 720};
     bool tuned = false, particles = true, glows = false;
     bool car_shading = false, wet_road_reflections = false;
 };
@@ -141,7 +141,8 @@ inline ProfilePages build_profile_pages(std::vector<std::string> replay_rows,
     const auto& gpu = context.gpu;
     add_page("GPU SCENE",{
         profile_format("TARGET %ux%u -> %ux%u | %s",context.scene_target.width,context.scene_target.height,
-            1280,720,context.scene_target.upscale ? "LINEAR UPSCALE INCLUDED" : "NATIVE DIRECT"),
+            context.scene_target.output_width,context.scene_target.output_height,
+            context.scene_target.upscale ? "LINEAR UPSCALE INCLUDED" : "NATIVE DIRECT"),
         profile_format("ONE SCENE PAIR | completed %llu | invalid %llu | dropped %llu",
             (unsigned long long)gpu.scene.count(),(unsigned long long)gpu.invalid,
             (unsigned long long)gpu.dropped),

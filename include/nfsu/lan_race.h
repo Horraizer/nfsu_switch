@@ -1,6 +1,9 @@
 #pragma once
 #include "nfsu/lan_protocol.h"
 #include "nfsu/race_session.h"
+#include "nfsu/race_crash_road.h"
+#include "nfsu/race_events.h"
+#include "nfsu/intro_ai.h"
 #include "nfsu/vehicle_tuning.h"
 #include <filesystem>
 #include <memory>
@@ -12,19 +15,29 @@ VehicleUpgradeLevels lan_performance_levels(unsigned tier);
 class LanRaceWorld {
 public:
     bool load(const std::filesystem::path&,std::string&,const LanRaceOptions& options={});
-    bool load_local(const std::filesystem::path&,unsigned event,unsigned round,
-                    const LanRaceOptions&,std::string&);
-    bool advance(const std::array<GamepadFrame,2>&,std::string&);
+    bool load_local(const std::filesystem::path&,unsigned event,unsigned round,QuickRaceMode,
+                    const LanRaceOptions&,std::string&,unsigned traffic_density=0,
+                    const std::vector<RaceTrafficSetup>& traffic={});
+    bool advance(const std::array<GamepadFrame,2>&,std::string&,RaceSimulationProfile* =nullptr,TimingService* =nullptr);
     const RaceSession& session()const{return *session_;}
     LanRaceFrame snapshot()const;
     const ChaseCameraTable& cameras(unsigned actor=0)const{return cameras_.at(actor);}
     const std::array<std::string,2>& models()const{return models_;}
     const VehicleHull& host_hull()const{return host_hull_;}
 private:
+    bool load_course(const std::filesystem::path&,unsigned event,unsigned round,
+                     const LanRaceOptions&,bool split,std::string&,QuickRaceMode=QuickRaceMode::free_run,unsigned traffic_density=0,
+                     const std::vector<RaceTrafficSetup>& traffic={});
     VehicleTrackCourse course_;
     std::array<ChaseCameraTable,2> cameras_;
     std::array<std::string,2> models_;
     VehicleHull host_hull_;
+    std::array<RaceCrashRoad,2> crash_roads_;
+    struct LocalDrag {
+        std::array<IntroAiPlanner,2> planners;
+        std::array<DriveControls,2> controls;
+    };
+    std::unique_ptr<LocalDrag> drag_;
     std::unique_ptr<RaceSession> session_;
 };
 // A materialized render-only view. It never integrates physics, solves a

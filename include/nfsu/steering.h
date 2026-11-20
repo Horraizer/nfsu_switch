@@ -21,7 +21,7 @@ struct SteeringContext {
     float brake = 0; // processed brake component, controls +0x1E4
     float multiplier = 1;
     float predicted_max_speed = 1;
-    float shift_elapsed = 1; // >= 1 means no recent shift
+    float shift_elapsed = 1; // elapsed since body+14C contact; historical probe field name
     bool bypass_mode = false; // retail byte 0x00736514
     bool predicate = false; // result of 0x004607A0
 };

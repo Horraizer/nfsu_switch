@@ -4,10 +4,36 @@
 #include "nfsu/race_run.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/arg_path.h"
+#include "nfsu/ai_path_choice.h"
 #include <iostream>
 #include <stdexcept>
 using namespace nfsu;
 void need(bool okay,const std::string& error){if(!okay)throw std::runtime_error(error);}
+bool same_driver_path(const AiDriverPath& a,const AiDriverPath& b) {
+    if(a.count!=b.count)return false;
+    for(unsigned j=0;j<a.count;++j)if(a.points[j]!=b.points[j])return false;
+    return true;
+}
+struct EpochPaths {
+    std::array<AiDriverPath,3> prior{};
+    bool ready=true; // Native fresh Driver publications are empty.
+    unsigned reads=0,witnesses=0;
+    static void observe(void* context,const AiPathCollisionWorld& world) {
+        auto& s=*static_cast<EpochPaths*>(context);
+        s.reads|=1U<<world.self;
+        if(!s.ready)return;
+        for(unsigned j=0;j<3;++j)if(j!=world.self)
+            need(same_driver_path(s.prior[j],world.actors[j].path.path),
+                "neighbor path changed inside controller epoch: reader="+std::to_string(world.self)+
+                " target="+std::to_string(j)+" tick="+std::to_string(world.tick));
+    }
+    void commit(const RaceRivalPlans& planned) {
+        if(ready)for(unsigned j=0;j<3;++j)
+            if((reads&~((1U<<(j+1))-1U))&&!same_driver_path(prior[j],planned.cars[j].path))++witnesses;
+        for(unsigned j=0;j<3;++j)prior[j]=planned.cars[j].path;
+        ready=true;reads=0;
+    }
+};
 int main(int argc,char** argv){try {
     if(argc!=3)return 2;
     const auto root=argument_path(argv[1]);const unsigned event=unsigned(std::stoul(argv[2]));
@@ -52,7 +78,61 @@ int main(int argc,char** argv){try {
     IntroAiPlanner publication;
     std::array<const VehicleHull*,4> hulls{{&rivals[0].hull,&rivals[1].hull,&rivals[2].hull,&player->hull}};
     need(publication.load(root,contexts,hulls,true,run.track_number()),"publication planner load");
+    if(event==19) {
+        {
+            IntroAiPlanner reset_adapter;
+            need(reset_adapter.load(root,contexts,hulls,true,run.track_number()),"reset road adapter load");
+            RaceRivalPlans plans;
+            need(reset_adapter.inspect_plan(run.session(),plans),"reset road adapter plan");
+            for(unsigned i=0;i<3;++i) {
+                const auto& source=plans.cars[i].road_reset;
+                need(source.resolve&&source.placed,"production rival plan carries road reset owner");
+                const auto& rival=run.session().rival(i);auto displaced=rival.car();
+                VehicleRoadResetPoint before,after;
+                need(source.resolve(source.context,source.slot,displaced,rival.progress(),12345,before),"initial retained road reset resolves");
+                displaced.position={10000000,10000000,0};
+                need(source.resolve(source.context,source.slot,displaced,rival.progress(),12345,after)&&
+                     before.position.x==after.position.x&&before.position.y==after.position.y&&
+                     before.position.z==after.position.z&&before.forward==after.forward,
+                     "rival reset uses retained road even when body is far from every road");
+                displaced.position=before.position;
+                source.placed(source.context,source.slot,displaced,rival.progress(),12345);
+                need(source.resolve(source.context,source.slot,displaced,rival.progress(),12345,after)&&
+                     before.position.x==after.position.x&&before.position.y==after.position.y,
+                     "placement publication preserves the selected road and point");
+            }
+        }
+        // Probe the real adapter with a finite pose beyond its spatial search
+        // limit. Only this independent planner sees the injected pose/time;
+        // restore the race before the normal physics integration below.
+        IntroAiPlanner lost;
+        need(lost.load(root,contexts,hulls,true,run.track_number()),"no-road planner load");
+        auto& session=const_cast<RaceSession&>(run.session());
+        auto& pose=const_cast<VehicleState&>(session.rival(0).car());
+        auto& timing=const_cast<RaceTimingState&>(session.timing());
+        auto& telemetry=const_cast<VehicleTrackTelemetry&>(session.rival(0).telemetry());
+        const auto saved_pose=pose;const auto saved_timing=timing;const auto saved_resets=telemetry.resets;
+        RaceRivalPlans before,stopped,restored,reset;
+        need(lost.inspect_plan(session,before)&&before.cars[0].path.count>0,"no-road witness needs a prior published path");
+        pose.position={10000000,10000000,0};timing.now_ticks+=1000;timing.step=(timing.step/8+1)*8;
+        need(lost.inspect_plan(session,stopped),"normal no-road result must not abort the race");
+        const auto same_path=[](const AiDriverPath& a,const AiDriverPath& b){
+            if(a.count!=b.count)return false;
+            for(unsigned j=0;j<a.count;++j)if(a.points[j]!=b.points[j])return false;
+            return true;
+        };
+        need(stopped.cars[0].desired_speed==0&&stopped.cars[0].enabled&&!stopped.cars[0].physics_full_update&&
+             same_path(before.cars[0].path,stopped.cars[0].path),"no-road stop must preserve Driver path");
+        pose=saved_pose;timing.now_ticks+=1000;timing.step+=8;
+        need(lost.inspect_plan(session,restored)&&restored.cars[0].desired_speed==0&&
+             same_path(before.cars[0].path,restored.cars[0].path),"road return alone must not clear the native stop latch");
+        ++telemetry.resets;timing.now_ticks+=1000;timing.step+=8;
+        need(lost.inspect_plan(session,reset)&&reset.cars[0].desired_speed>0,
+             "completed placement reset must release the no-road stop latch");
+        pose=saved_pose;timing=saved_timing;telemetry.resets=saved_resets;
+    }
     unsigned moving_publications=0;
+    EpochPaths epoch;
     unsigned observed_selectors=0;
     std::array<unsigned,3> last_selector{{1,1,1}};
     unsigned path_exits=0;
@@ -63,7 +143,8 @@ int main(int argc,char** argv){try {
         if(frame<1800) {
             need(publication.observe_human(run.session()),"publication human observation");
             RaceRivalPlans planned;
-            need(publication.plan(run.session(),planned),"publication plan refused");
+            need(publication.inspect_plan(run.session(),planned,0,nullptr,{&epoch,EpochPaths::observe}),"publication plan refused");
+            epoch.commit(planned);
             for(unsigned i=0;i<3;++i) {
                 const float distance=run.session().rival(i).travelled_distance();
                 need(planned.cars[i].route_distance==distance,
@@ -93,6 +174,7 @@ int main(int argc,char** argv){try {
             std::cout<<'\n';
         }
         if(event==19&&frame==6000) {
+            need(epoch.witnesses>0,"path epoch needs an earlier changed path and a later reader");
             need((observed_selectors&0x1aU)==0x1aU&&path_exits>0,
                  "Stadium selector mask="+std::to_string(observed_selectors)+
                  " path exits="+std::to_string(path_exits));
@@ -111,6 +193,7 @@ int main(int argc,char** argv){try {
                      " support="+std::to_string(rival.car().published_support));
             }
             need(moving_publications>0,"moving actor publication coverage");
+            need(epoch.witnesses>0,"path epoch needs an earlier changed path and a later reader");
             need((observed_selectors&0x0aU)==0x0aU,"ordinary rival selector1 to selector3 transition absent");
             for(unsigned i=0;i<3;++i)
                 need(run.session().rival(i).physical_selector()==1,"finished rival must return to selector1");

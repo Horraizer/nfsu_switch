@@ -23,7 +23,8 @@ def main():
         (0x5a6150,0x5a6306),(0x5a7390,0x5a7449),(0x462a60,0x462a99),(0x435ca0,0x435d30),
         (0x44cf30,0x44d3d4),(0x462840,0x4629dc),(0x4629e0,0x4629ff),
         (0x458bd0,0x458cbb),(0x4216f0,0x421740),(0x44bad0,0x44baef),(0x44adc0,0x44b060),
-        (0x5a6d20,0x5a6e0f),(0x462a00,0x462a52)]:
+        (0x5a6d20,0x5a6e0f),(0x462a00,0x462a52),(0x5a75c0,0x5a7688),
+        (0x57b31c,0x57b332)]:
         m.instructions.update({i.address:i.size for i in md.disasm(im.read(a,b-a),a)})
     store,result=0x119f100,0x119f000;code=b'\xd9\x1d'+struct.pack('<I',result)+b'\xc3'
     m.uc.mem_write(store,code);m.instructions.update({i.address:i.size for i in md.disasm(code,store)})
@@ -31,10 +32,11 @@ def main():
         m.run(address,budget=300000,**regs);m.run(store,budget=20);return m.get(result,'f')
     def virt(slot):return m.get(m.get(CONTROLLER)+slot)
     chain=m.get(CTX+0x3a8);world=m.get(0x7361f8);ride=m.get(ACTOR+0x10)
+    capture_raw_category=False
     def snapshot():
         route=m.get(CTX+0x38c);raw=m.get(CTX+0x390)
         state=dict(selected=bool(route),road=[m.get(route+0xa,'h'),(raw-route-0x27c)//0x88] if route else [0,0],
-            category=m.get(CTX+0x394,'i') if route else m.get(ride+0x424,'b'),nearest=m.get(CONTROLLER+0x4a4,'b'),
+            category=m.get(CTX+0x394,'i') if route or capture_raw_category else m.get(ride+0x424,'b'),nearest=m.get(CONTROLLER+0x4a4,'b'),
             origin=m.get(chain+0xac,'i'),cells=[],rng=m.get(world+0x2d0),
             cache=[m.get(CONTROLLER+0xc+4*k) for k in range(8)],marker=m.get(CONTROLLER+0x478,'i'),
             flags=[bool(m.get(chain+0xb0+k,'B')) for k in range(7)],limited=m.get(chain+0xb8,'i'),
@@ -62,7 +64,12 @@ def main():
         (37,25,False),(36,0,False),(10,0,False),(11,0,False),(12,0,True),(13,0,False))]
     poses += [(35,90,0,False),(35,93,0,False),(35,95,0,False),(37,12,0,False),(37,13,0,False),(37,15,0,False),
               (1,30,10000,False),(1,30,0,False)]
+    original_count=len(poses)
+    poses += [(1,31,0,False),(1,30,10000,False),(1,30,0,False)]
     for seq,(route_id,pose,offset,cold) in enumerate(poses):
+        capture_raw_category=seq>=original_count
+        if seq in (original_count,original_count+1):
+            m.put(CTX+0x38c,0);m.put(CTX+0x390,0);m.put(CTX+0x394,-1,'i')
         route=m.get(0x77af30+4*route_id)
         if not route or not 0<=pose<m.get(route+0x10,'h'):raise ValueError('invalid supplied pose')
         raw=route+0x27c+pose*0x88
@@ -96,6 +103,7 @@ def main():
         m.run(0x44cf30,(CTX,CONTROLLER),budget=3000000)
         if 'after' not in observations:raise ValueError('missing spatial publication')
         records.append(dict(route=route_id,pose=pose,offset=offset,cold=cold,before=before,after=observations['after'],
+            raw_category=capture_raw_category,ride_category=m.get(ride+0x424,'b'),
             selection=selection,values=[width,m.get(0x6ccc30,'f'),initial,retained],keep=keep,allow=allow,policy=policy,
             reselected=observations['reselect'],clear=observations['clear'],passed=observations['passed'],category_available=observations['category_available']))
     def lit(v):
@@ -119,7 +127,8 @@ def main():
             if ids!=[255,255]:lines.append(lit([rid,index,*ids])+',')
     lines+=['};','const ContextCase context_cases[]={']
     for r in records:
-        lines.append('{'+','.join([snap(r['before']),snap(r['after']),'{'+','.join([lit(r['selection']),*map(lit,r['values']),lit(r['keep']),lit(r['allow'])])+'}',
+        probe=[str(r['ride_category']),'3','0','AiRoadCategoryProbe::ride'] if r['raw_category'] else []
+        lines.append('{'+','.join([snap(r['before']),snap(r['after']),'{'+','.join([lit(r['selection']),*map(lit,r['values']),lit(r['keep']),lit(r['allow']),*probe])+'}',
             lit(r['policy']),lit(r['reselected']),lit(r['clear']),lit(r['category_available']),lit(len(r['passed'])),lit(r['passed'])])+'},')
     lines.append('};');args.output.write_text('\n'.join(lines)+'\n',encoding='ascii')
     args.evidence.write_text(json.dumps(dict(executable_sha256=identity,cases=records),indent=2)+'\n',encoding='ascii')

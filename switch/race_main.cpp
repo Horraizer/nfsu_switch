@@ -63,7 +63,7 @@ nfsu::RacePresentationOptions read_presentation_options(bool road_default) {
         if(!(file>>version>>blur>>car>>road>>metric) ||
            version<1 || version>4 || blur>1 || car>1 || road>1 || metric>1)
             continue;
-        if(version>=2 && (!(file>>height) || (height!=0 && height!=540 && height!=720)))
+        if(version>=2 && (!(file>>height) || !nfsu::valid_race_resolution(height)))
             continue;
         std::string logs,extra;
         if(version>=3 && (!(file>>logs) || (logs!="0"&&logs!="1")))continue;
@@ -323,11 +323,13 @@ public:
         blit_movie(frame,pixels,width,height,stride);
         framebufferEnd(&fb_);
     }
-    void startup_splash(const FrontendArt& art,unsigned tick) {
+    void startup_splash(const FrontendArt& art,unsigned tick,const FrontendArt* song_card=nullptr,
+                        const FrontendMenu* song=nullptr) {
         if (!opened_ && !open()) throw std::runtime_error("framebuffer unavailable");
         u32 stride=0; auto* pixels=static_cast<unsigned char*>(framebufferBegin(&fb_,&stride));
         if (!pixels) throw std::runtime_error("framebuffer unavailable");
         art.draw_startup_splash({pixels,width,height,stride},tick);
+        if(song_card&&song)song_card->draw_song_card({pixels,width,height,stride},*song);
         framebufferEnd(&fb_);
     }
     void show(const std::vector<std::string>& lines, const std::vector<unsigned char>* rgba = nullptr) {
@@ -661,6 +663,12 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     LoadingScreen loading_screen(screen,root,!profile_frame&&!panel_mode&&!replay_mode,
         post_art&&!sweep?screen.tips.current():0U);
     std::unique_ptr<IntroGrid> intro_grid;
+    // Initial value of the PC executable's global race-setup RNG at 6F227C.
+    static std::uint32_t campaign_random=0x12345678U;
+    const bool authored_race=post_art&&!quick&&!sweep&&
+        (selected_race.type==RaceType::circuit||selected_race.type==RaceType::sprint||
+         selected_race.type==RaceType::lap_knockout);
+    const auto campaign_seed=authored_race?std::optional{campaign_random}:std::nullopt;
     std::vector<IntroGridActor> solo_traffic;
     CarAssets race_car=selected_car;
     RaceCarDress intro_dress;
@@ -672,7 +680,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         std::puts("UG0_LOAD grid begin");std::fflush(stdout);
         drag_mark("drag.grid.before");
         require(load_race_grid(root,event_number,selected_car.car_type_name,difficulty,*intro_grid,error,
-            performance,dress,race_index,GridPlayerVisuals::load_with_scene,quick),error);
+            performance,dress,race_index,GridPlayerVisuals::load_with_scene,quick,std::nullopt,campaign_seed),error);
         drag_mark("drag.grid.ready");
         std::puts("UG0_LOAD grid ready");std::fflush(stdout);
         auto human=std::find_if(intro_grid->actors.begin(),intro_grid->actors.end(),[](const auto& a){return a.config.role==Event0Role::human;});
@@ -756,7 +764,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         std::vector<RaceTrafficSetup> traffic_setup;
         for(const auto& car:traffic_actors)
             traffic_setup.push_back({car.placement_spec,car.hull,car.assets.car_type_name,unsigned(car.assets.car_type)});
-        require(race.set_intro_traffic(traffic_setup,error),error);
+        require(race.set_intro_traffic(traffic_setup,error,intro_grid&&intro_grid->startup_random?
+            std::optional{intro_grid->startup_random->before_world}:std::nullopt),error);
     }
     std::printf("steering %s\n",race_steering_name(steering));
     if (performance) {
@@ -790,31 +799,16 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     drag_mark("drag.metadata.before");
     require(race.prepare_metadata(root,error,&progress),error);
     drag_mark("drag.scene.before");
-    const auto scene_variant=[] {
-        // 4216B0 advances the NIS playlist stream independently of driving.
+    const auto finish_variant=[] {
         static audio::TrafficAudioRandom random{std::uint32_t(armGetSystemTick()),0};
         const auto value=random.state;
         (void)random.integer(1);
         return value;
     };
-    unsigned start_scene=0;
-    if(intro_grid && event_number>0 && !drag_mode && !drift_mode) {
-        require(select_road_start_scene(posix_file_system(),root,unsigned(intro_grid->actors.size()),
-            unsigned(intro_grid->setup->desired_player_grid),scene_variant(),start_scene,error),error);
-        require(scene.set_start_scene(start_scene,selected_race.region),"start crowd selection refused");
-    }
     sweep_mark("race.scene");
     require(scene.load(posix_file_system(), root, error, &progress, &progress,
                        tuned, glows, car_shading, &race_car, dress, event_number, true,race_index), error);
     drag_mark("drag.scene.ready");
-    if(intro_grid && event_number>0 && !drag_mode && !drift_mode) {
-        sweep_mark("race.start_camera");
-        RaceStartClock clock;
-        require(scene.load_start_camera(posix_file_system(),root,start_scene,selected_race.region,clock,error),error);
-        require(race.set_start_clock(clock.release,clock.go,error),error);
-        std::printf("RACE_START scene=%u release=%u go=%u end=%u grid=%u round=%u\n",start_scene,clock.release,clock.go,clock.end,
-            unsigned(intro_grid->setup->desired_player_grid),race_index);
-    }
     sweep_mark("race.actors");
     if(intro_grid) {
         for(auto& actor:intro_grid->actors) {
@@ -837,7 +831,18 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     progress.checkpoint("race course");
     sweep_mark("race.session");
     drag_mark("drag.session.before");
-    require(race.start(root,scene.track(),error,&progress,player_name),error);
+    std::optional<RaceRun::RoadSceneLoader> road_scene;
+    if(intro_grid && event_number>0 && !free_drive && !drag_mode && !drift_mode) {
+        road_scene.emplace(RaceRun::RoadSceneLoader{posix_file_system(),[&](unsigned id,RaceStartClock& clock,std::string& message) {
+            sweep_mark("race.start_camera");
+            if(!scene.load_road_start_scene(posix_file_system(),root,id,selected_race.region,clock,message))return false;
+            std::printf("RACE_START scene=%u release=%u go=%u end=%u grid=%u round=%u\n",
+                id,clock.release,clock.go,clock.end,unsigned(intro_grid->setup->desired_player_grid),race_index);
+            return true;
+        }});
+    }
+    require(race.start(root,scene.track(),error,&progress,player_name,road_scene?&*road_scene:nullptr),error);
+    if(intro_grid&&intro_grid->startup_random)campaign_random=intro_grid->startup_random->next_global;
     drag_mark("drag.session.ready");
     if (race.session().spec().nitrous.installed) {
         const auto& nos=race.session().spec().nitrous;
@@ -854,9 +859,10 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     std::string audio_note;
     const auto render_core = svcGetCurrentProcessorNumber();
     const auto audio_core = render_core == 2 ? 1 : 2;
+    bool audio_started=false;
     if (R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
             static_cast<s32>(render_core), 1U << render_core))) {
-        const bool audio_started = sound.start(std::filesystem::path(root), audio_note,
+        audio_started = sound.start(std::filesystem::path(root), audio_note,
             [&](const char* phase) { progress.checkpoint(phase); },
             [audio_core] {
                 return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),
@@ -865,7 +871,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             },!replay_mode,race_car.car_type_name,performance?performance->engine_a:0,
             performance?performance->nitrous:0,performance?performance->tyres:0,rival_audio,performance?performance->induction:0,
             unsigned(traffic_actors.size()),
-            race.session().props()?race.session().props()->sound_materials():0U);
+            race.session().props()?race.session().props()->sound_materials():0U,scene.track().track_number,
+            intro_grid&&intro_grid->startup_random?std::optional{intro_grid->startup_random->sound_seed}:std::nullopt);
         if (!audio_started && audio_note.empty())
             audio_note = "audio disabled: startup failed without diagnostic";
     } else audio_note = "audio disabled: render core pin failed";
@@ -884,6 +891,16 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         screen.show({"DRAG: ZR gas / ZL brake / right stick up/down shifts / R/L also shift / A nitrous"});
         std::puts("DRAG CONTROLS ZR=gas ZL=brake right_stick_up=up right_stick_down=down R=up L=down A=nitrous");std::fflush(stdout);
     }
+    FrontendArt race_song_art;
+    FrontendMenu race_song;
+    FrontendUiFrame race_song_ui;
+    unsigned song_atlas_height=0;
+    if(audio_started&&hud_mode&&post_art&&!panel_mode&&!ab_enabled&&!replay_mode&&!sweep) {
+        require(post_art->prepare_song_card(race_song_art,kRaceHudAtlasWidth,error),error);
+        const auto& song_atlas=race_song_art.atlas();
+        song_atlas_height=song_atlas.height;
+        hud_atlas.rgba.insert(hud_atlas.rgba.end(),song_atlas.rgba.begin(),song_atlas.rgba.end());
+    }
     const RacePersistentPayload payload{scene.car_bytes(),race.persistent_bytes(),
         scene.track().contacts.memory.resident_bytes,scene.cache_bytes(),
         sound.resident_bytes(),hud_atlas.rgba.size()};
@@ -892,6 +909,19 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     const auto persistent=payload.total();
     if(sweep)sweep_mark("race.frame_build",payload.description().c_str());
     RaceResultStatistics result_stats;
+    if(road_scene&&!sweep&&!replay_mode&&!ab_enabled&&race.session().timing().stage==RaceStage::none) {
+        // Keep the pre-NIS world setup under the loading screen. The first
+        // visible scene uses the original camera, with traffic and audio
+        // owners already advanced through the two-second warmup.
+        progress.checkpoint("Starting race scene");
+        const GamepadFrame waiting_pad{};
+        do {
+            require(race.simulate(waiting_pad,error)&&race.commit(error),error);
+            scene.advance_particles(race.session());
+            sound.on_tick(audio::race_audio_snapshot(race.session()),race.audio_world_random());
+        } while(race.session().timing().stage==RaceStage::none);
+        progress.checkpoint("Race scene ready");
+    }
     drag_mark("drag.frame.before");
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
     drag_mark("drag.frame.ready");
@@ -905,12 +935,18 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     scene_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
     require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
             "invalid scene target after operation mode change");
+    FrontendArt pause_art;
+    const bool ordinary_ui=post_art&&!panel_mode&&!ab_enabled&&!replay_mode;
+    if(ordinary_ui)require(post_art->prepare_post_race(pause_art,error),error);
+    const auto* pause_atlas=ordinary_ui?&pause_art.atlas():nullptr;
     DekoRenderer renderer;
     sweep_mark("race.gpu_upload");
     drag_mark("drag.gpu.before");
-    require(renderer.open(frame.commands,error,!panel_mode,scene.draw_capacity(),profile_frame || !panel_mode,true,
-                          sky == "early",scene_height,
-                          hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
+    if(panel_mode)require(renderer.open(frame.commands,error,false,scene.draw_capacity(),profile_frame,true,
+                                       sky == "early",scene_height),error);
+    else require(renderer.open_race_target(frame.commands,error,scene.draw_capacity(),true,sky == "early",
+                                           scene_height,hud_mode?&hud_atlas:nullptr,false,pause_atlas),error);
+    require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),"invalid opened scene target");
     renderer.enable_speed_blur_probe(nos_self_check);
     drag_mark("drag.gpu.ready");
     if(drag_trace)require(drag_journal.close(),drag_journal.error());
@@ -942,9 +978,6 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     std::vector<unsigned char> rgba;
     RaceTickDebt clock;
     auto previous = armGetSystemTick();
-    FrontendArt pause_art;
-    const bool ordinary_ui=post_art&&!panel_mode&&!ab_enabled&&!replay_mode;
-    if(ordinary_ui)require(post_art->prepare_post_race(pause_art,error),error);
     RacePauseMenu pause_menu(free_drive,tournament&&tournament->event);RaceReturn pause_return=RaceReturn::menu;bool pause_exit=false;
     bool paused = false, printed_result = false, printed_final_perf = false;
     std::uint64_t presented = 0;
@@ -989,7 +1022,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             fps_history={}; fps_previous_present=0;
             require(!ab_enabled,"AB invalid: operation mode changed");
             docked = now_docked;
-            const auto next_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
+            auto next_height = deko_effective_scene_height(requested_height,docked,!panel_mode);
             if (next_height != scene_height) {
                 if(presentation.low_car_reflections) {
                     scene.set_low_car_reflections(false);
@@ -998,7 +1031,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 }
                 require(renderer.reconfigure_target(frame.commands,error,scene.draw_capacity(),
                         profile_frame || !panel_mode,sky == "early",next_height,
-                        hud_mode && !panel_mode ? &hud_atlas : nullptr),error);
+                        hud_mode && !panel_mode ? &hud_atlas : nullptr,false,pause_atlas),error);
                 scene_height = next_height;
                 require(plan_deko_scene_target(width,height,!panel_mode,scene_height,scene_target),
                         "invalid scene target on operation mode change");
@@ -1357,12 +1390,18 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             require(append_race_minimap(race.session(),hud_atlas,frame.commands.width,
                     frame.commands.height,minimap_state,hud_frame),"minimap geometry invalid or HUD capacity exceeded");
         if(hud_mode && finished) {
+            std::string finish_message;
             std::string_view message="Race Over";
-            const auto status=race.session().timing().racers[0].status;
+            const auto& finish=race.session().timing().racers[0];
+            const auto status=finish.status;
             if(status==RacerStatus::knocked_out)message="You were knocked out!"; // English C246A543, 4A7EF9.
             else if(race.session().is_drag()) {
                 if(status==RacerStatus::blown_engine)message=hud_atlas.drag_failure_labels[0];
                 else if(status==RacerStatus::totalled)message=hud_atlas.drag_failure_labels[1];
+                else if(status==RacerStatus::normal_completion&&finish.finish_valid) {
+                    finish_message=drag_finish_message(hud_atlas,race.session().player_position(),finish.finish_ticks);
+                    message=finish_message;
+                }
             }
             append_race_over(hud_atlas,finish_seconds,frame.commands.width,frame.commands.height,hud_frame,message);
         }
@@ -1370,10 +1409,29 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         if (fps_overlay && hud_mode)
             append_race_fps_overlay(hud_atlas,fps_history,frame.commands.width,
                                     frame.commands.height,hud_frame);
+        if(song_atlas_height) {
+            const float atlas_height=float(hud_atlas.height+song_atlas_height);
+            for(std::size_t i=0;i<4*hud_frame.quads;++i)
+                hud_frame.vertices[i].v*=float(hud_atlas.height)/atlas_height;
+            race_song_ui.vertices.clear();
+            race_song_ui.additive.clear();
+            if(const auto* song=sound.now_playing();song&&pause_menu.hud()) {
+                race_song.song(song->artist,song->title,song->album);
+                race_song_art.advance(float(elapsed)*.000001F);
+                race_song_art.append_song_card(frame.commands.width,frame.commands.height,race_song,race_song_ui);
+                for(auto& vertex:race_song_ui.vertices)
+                    vertex.v=(float(hud_atlas.height)+vertex.v*song_atlas_height)/atlas_height;
+                if(hud_frame.quads+race_song_ui.additive.size()>kRaceHudMaxQuads) {
+                    race_song_ui.vertices.clear();
+                    race_song_ui.additive.clear();
+                }
+            }
+        }
         const bool nos_probe_was_complete=nos_self_check && renderer.speed_blur_probe_complete();
         if(sweep&&!presented)sweep_mark("race.first_frame_submit");
         require(renderer.present(error,ab_minimal?nullptr:&present,&scene_frame,
-                                 hud_mode ? &hud_frame : nullptr),error);
+                                 hud_mode ? &hud_frame : nullptr,
+                                 race_song_ui.vertices.empty()?nullptr:&race_song_ui),error);
         if(hud_mode&&hud_frame.shown_drift_notice)race.consume_drift_notice();
         // The first complete capture must be submitted before recording partial
         // frames. A simulation tick may replace the frame prepared at load.
@@ -1698,14 +1756,14 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         sound.set_suspended(false);
         try {
             FrontendArt results_art;
-            require(post_art->prepare_post_race(results_art,error),error);
+            require(post_art->prepare_post_race(results_art,error,frontend_music!=nullptr),error);
             std::snprintf(flow_detail,sizeof flow_detail,"atlas=%ux%u bytes=%lu",
                 results_art.atlas().width,results_art.atlas().height,(unsigned long)results_art.atlas().rgba.size());
             flow_mark("post.atlas",flow_detail);
             require(renderer.set_frontend_overlay(results_art.atlas(),error),error);
             std::string finish_scene_error;
             bool staged_finish=scene.load_finish_scene(posix_file_system(),root,race.session(),
-                selected_race.region,scene_variant(),finish_scene_error);
+                selected_race.region,finish_variant(),finish_scene_error);
             flow_mark(staged_finish?"post.scene":"post.scene_unavailable",finish_scene_error.c_str());
             bool frontend_audio=false;
             bool tried_frontend_audio=false;
@@ -1739,6 +1797,13 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 }
             };
             double finish_scene_seconds=0;
+            FrontendMenu finished_song;
+            const auto append_finished_song=[&](FrontendUiFrame& ui) {
+                if(!frontend_audio)return;
+                const auto song=frontend_music->now_playing();
+                finished_song.song(song.artist,song.title,song.album);
+                results_art.append_song_card(frame.commands.width,frame.commands.height,finished_song,ui);
+            };
             const auto record_finish_scene=[&] {
                 scene.set_finish_scene_seconds(finish_scene_seconds);
                 if(scene.frame(race.session(),frame,finish_scene_error) &&
@@ -1760,12 +1825,18 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 FrontendClock finish_clock;
                 finish_clock.sample(armTicksToNs(armGetSystemTick()));
                 constexpr double minimum_scene_seconds=2.0;
+                FrontendUiFrame intro_ui;
                 while(finish_scene_seconds<=minimum_scene_seconds && appletMainLoop()) {
                     padUpdate(&pad);
                     if(finish_sweep&&(padGetButtonsDown(&pad)&HidNpadButton_Plus))throw Cancel{};
                     if(!record_finish_scene())break;
-                    require(renderer.present(error),error);
-                    finish_scene_seconds+=double(finish_clock.sample(armTicksToNs(armGetSystemTick())))/1000000000.0;
+                    intro_ui.vertices.clear();intro_ui.additive.clear();
+                    append_finished_song(intro_ui);
+                    if(intro_ui.vertices.empty())require(renderer.present(error),error);
+                    else require(renderer.present_frontend(intro_ui,error),error);
+                    const double seconds=double(finish_clock.sample(armTicksToNs(armGetSystemTick())))/1000000000.0;
+                    finish_scene_seconds+=seconds;
+                    results_art.advance(float(seconds));
                     update_results_music();
                 }
             }
@@ -1921,6 +1992,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                     values["RewardBlurbString"]=unlocked.empty()?"":unlocked.back();
                 }
                 results_art.record_post_race(frame.commands.width,frame.commands.height,menu,values,ui);
+                append_finished_song(ui);
                 if(staged_finish && record_finish_scene())finish_scene_seconds+=seconds;
                 require(renderer.present_frontend(ui,error),error);
                 if(finish_sweep&&!sweep_results_presented&&menu.page()==PostRacePage::results) {
@@ -2300,10 +2372,21 @@ int main(int argc, char** argv) {
                 require(art.load_startup(root,frontend_error,true),frontend_error);
                 frontend_loading.finish();
                 audio::FrontendMusic music;
+                FrontendMenu menu(true,true,true);
+                const auto append_frontend_song=[&](FrontendUiFrame& ui) {
+                    if(!music.playing())return;
+                    const auto song=music.now_playing();
+                    menu.song(song.artist,song.title,song.album);
+                    art.append_song_card(width,height,menu,ui);
+                };
                 std::string startup_music_error;
                 const auto show_startup_splash=[&](bool start_music) {
                     trace("splash.before");
                     const auto splash_start=armGetSystemTick();
+                    FrontendClock title_song_clock;
+                    unsigned song_revision=0;
+                    std::uint64_t song_elapsed_ns=0;
+                    bool drew_song=false;
                     screen.startup_splash(art,0);
                     auto prompt_alpha=art.startup_prompt_alpha(0);
                     padUpdate(&pad);
@@ -2324,9 +2407,22 @@ int main(int argc, char** argv) {
                             const auto elapsed_ns=armTicksToNs(armGetSystemTick()-splash_start);
                             const auto tick=static_cast<unsigned>((elapsed_ns/1000)*3/2500);
                             const auto alpha=art.startup_prompt_alpha(tick);
-                            if(alpha!=prompt_alpha) {
-                                screen.startup_splash(art,tick);
+                            const auto delta=title_song_clock.sample(elapsed_ns);
+                            bool draw_song=false;
+                            if(music.playing()) {
+                                const auto song=music.now_playing();
+                                menu.song(song.artist,song.title,song.album);
+                                if(song_revision!=menu.song_revision()) {
+                                    song_revision=menu.song_revision();
+                                    song_elapsed_ns=0;
+                                } else song_elapsed_ns+=delta;
+                                art.advance(float(delta)*1.e-9F);
+                                draw_song=song_elapsed_ns<6300000000ULL;
+                            }
+                            if(alpha!=prompt_alpha || draw_song || drew_song) {
+                                screen.startup_splash(art,tick,draw_song?&art:nullptr,&menu);
                                 prompt_alpha=alpha;
+                                drew_song=draw_song;
                                 continue;
                             }
                         }
@@ -2385,7 +2481,6 @@ int main(int argc, char** argv) {
                     return garage_fps.chord.update(padIsConnected(&pad),
                         (held&HidNpadButton_StickL)!=0,(held&HidNpadButton_StickR)!=0);
                 };
-                FrontendMenu menu(true,true,true);
                 CareerInfoMenu statistics;
                 std::optional<CareerCatalog> statistics_catalog;
                 CareerProfile statistics_profile;
@@ -2395,14 +2490,6 @@ int main(int argc, char** argv) {
                 unsigned option_row=0;
                 std::string option_notice;
                 std::uint32_t career_hints=0;
-                const auto play_career_hint=[&](int group) {
-                    const auto bit=1U<<unsigned(group-62);
-                    if(career_hints&bit)return;
-                    career_hints|=bit;
-                    std::string speech_error;
-                    if(!music.speech(group,speech_error))
-                        std::fprintf(stderr,"CAREER hint %d failed: %s\n",group,speech_error.c_str());
-                };
                 if(!startup_music_error.empty())menu.notice("MUSIC: "+startup_music_error);
                 if (intro.outcome==IntroOutcome::error) {
                     std::printf("INTRO ERROR: %s\n",intro.error.c_str());
@@ -2423,6 +2510,7 @@ int main(int argc, char** argv) {
                         art.advance(float(elapsed/1000000000.0));
                         require(frontend_renderer->update(frontend_scene.commands(),frontend_error),frontend_error);
                         art.record_profiles(width,height,entries,selected,notice,frontend_ui);
+                        append_frontend_song(frontend_ui);
                         require(frontend_renderer->present_frontend(frontend_ui,frontend_error),frontend_error);
                         padUpdate(&pad);const auto pressed=padGetButtonsDown(&pad);
                         if(startup&&(pressed&HidNpadButton_Plus))throw Cancel{};
@@ -2483,7 +2571,12 @@ int main(int argc, char** argv) {
                 QuickRaceOptions quick_options;
                 FrontendAction pending=FrontendAction::none;
                 const auto run_career_action=[&](FrontendAction action,const std::string* garage_car,
-                        unsigned garage_tier,const std::function<void()>& lobby_poll) {
+                        unsigned garage_tier,const std::function<void()>& lobby_poll,LocalGarageSlot* local_garage=nullptr) {
+                        PadState& career_pad=local_garage?local_garage->pad:pad;
+                        const auto career_buttons=[&] {
+                            const auto down=padGetButtonsDown(&career_pad);
+                            return local_garage?local_garage->buttons(career_pad,down):down;
+                        };
                         // The welcome is an overlay on the resident main menu.
                         // Keep the GPU/atlas alive until accepting the career transition.
                         bool career_scene_changed=false;
@@ -2518,7 +2611,8 @@ int main(int argc, char** argv) {
                                     if(garage_car){
                                         require(career.free_profile(*garage_car,profile,frontend_error),frontend_error);
                                         const auto saved=free_rides.find(*garage_car);
-                                        if(saved!=free_rides.end())profile.ride=saved->second;
+                                        if(local_garage)profile.ride=local_garage->ride;
+                                        else if(saved!=free_rides.end())profile.ride=saved->second;
                                         profile.ride.performance.fill(garage_tier);
                                         profile.ride.unique.fill(false);
                                         profile.page=CareerPage::garage;
@@ -2540,14 +2634,33 @@ int main(int argc, char** argv) {
                                         if(garage_car){
                                             // Performance is a host lobby rule, not a garage edit.
                                             const auto saved=free_rides.find(profile.car);
-                                            ride.performance=saved==free_rides.end()?CareerRide{}.performance:saved->second.performance;
-                                            ride.unique=saved==free_rides.end()?CareerRide{}.unique:saved->second.unique;
+                                            if(local_garage) {
+                                                ride.performance=local_garage->ride.performance;
+                                                ride.unique=local_garage->ride.unique;
+                                                local_garage->ride=ride;
+                                            } else {
+                                                ride.performance=saved==free_rides.end()?CareerRide{}.performance:saved->second.performance;
+                                                ride.unique=saved==free_rides.end()?CareerRide{}.unique:saved->second.unique;
+                                            }
                                         }else free_profile=profile;
-                                        if(profile.bonus_preset.empty())free_rides[profile.car]=ride;
+                                        if(!local_garage&&profile.bonus_preset.empty())free_rides[profile.car]=ride;
                                     }
                                     std::printf("CAREER saved page=%u car=%s bank=%lu event=%u\n",unsigned(profile.page),
                                         profile.car.c_str(),static_cast<unsigned long>(profile.bank),profile.selected_event);
                                     std::fflush(stdout);
+                                };
+                                const auto play_career_hint=[&](int group) {
+                                    const auto bit=career_hint_bit(group);
+                                    if(sandbox||!bit||((career_hints|profile.frontend_hints)&bit))return;
+                                    std::string speech_error;
+                                    if(!music.speech(group,speech_error)) {
+                                        std::fprintf(stderr,"CAREER hint %d failed: %s\n",group,speech_error.c_str());
+                                        return;
+                                    }
+                                    career_hints|=bit;
+                                    profile.frontend_hints|=bit;
+                                    if(!save_career(save_base,career,profile,speech_error))
+                                        std::fprintf(stderr,"CAREER hint save %d failed: %s\n",group,speech_error.c_str());
                                 };
                                 const auto movie_poll=[&] {
                                     if(!appletMainLoop())return IntroControl::quit;
@@ -2788,6 +2901,7 @@ int main(int argc, char** argv) {
                                                 }
                                             }
                                             std::string notice;bool change=false,confirm=false,previous_negative=false,previous_positive=false,previous_color_up=false,previous_color_down=false;
+                                            int active_hint=-1;
                                             std::optional<CareerProfile> starter_purchase;
                                             bool starter_purchase_spoken=false;
                                             garage_fps.reset();
@@ -2805,19 +2919,22 @@ int main(int argc, char** argv) {
                                                 }
                                                 if(starter_purchase&&music.speech_drained()) {
                                                     if(starter_purchase_spoken) {
+                                                        starter_purchase->frontend_hints=profile.frontend_hints;
                                                         store(*starter_purchase);change=true;continue;
                                                     }
                                                     starter_purchase_spoken=true;
                                                     play_career_hint(audio::kStarterCarPurchaseSpeech);
                                                 }
-                                                padUpdate(&pad);
+                                                padUpdate(&career_pad);
+                                                if(local_garage&&!padIsConnected(&career_pad)){leave=true;continue;}
                                                 const bool in_garage=profile.page==CareerPage::garage||profile.page==CareerPage::unique_reward;
-                                                if(garage_fps_chord()&&in_garage) {
+                                                if(!local_garage&&garage_fps_chord()&&in_garage) {
                                                     garage_fps.visible=!garage_fps.visible;
                                                     garage_fps.reset();
                                                 }
-                                                const auto pressed=starter_purchase?0:padGetButtonsDown(&pad);
-                                                const auto stick=starter_purchase?decltype(padGetStickPos(&pad,0)){}:padGetStickPos(&pad,0);
+                                                const auto pressed=starter_purchase?0:career_buttons();
+                                                const auto stick=starter_purchase?HidAnalogStickState{}:
+                                                    local_garage?local_garage->stick(career_pad):padGetStickPos(&career_pad,0);
                                                 const bool vertical=profile.page==CareerPage::menu&&!career_info.active();
                                                 const bool negative=vertical?stick.y>16000:stick.x<-16000;
                                                 const bool positive=vertical?stick.y<-16000:stick.x>16000;
@@ -3097,26 +3214,33 @@ int main(int argc, char** argv) {
                                                 else if(profile.page!=CareerPage::magazines)frontend_scene.road_target(50.F);
                                                 const auto elapsed=frontend_clock.sample(armTicksToNs(armGetSystemTick()));
                                                 if(in_garage) {
-                                                    const auto orbit=padGetStickPos(&pad,1);
+                                                    const auto orbit=local_garage&&padGetStyleSet(&career_pad)==HidNpadStyleTag_NpadJoyRight?
+                                                        HidAnalogStickState{}:padGetStickPos(&career_pad,1);
                                                     const auto axis=[](int value){return std::abs(value)>6000?float(value)/32767.F:0.F;};
                                                     frontend_scene.orbit(axis(orbit.x)*float(elapsed/1000000000.0)*90,
                                                         -axis(orbit.y)*float(elapsed/1000000000.0)*45);
                                                 }
                                                 require(frontend_scene.frame(static_cast<float>(elapsed/1000000000.0),frontend_clock.original_ticks(),frontend_error),frontend_error);
                                                 art.advance(static_cast<float>(elapsed/1000000000.0));
-                                                if(!sandbox&&!change&&!leave&&music.speech_drained()) {
+                                                if(!sandbox) {
                                                     int hint=-1;
                                                     if(career_info.active())
                                                         hint=career_info.screen()==CareerInfoScreen::rankings?76:78;
                                                     else if(profile.page==CareerPage::map)hint=72;
                                                     else if(profile.page==CareerPage::magazines)hint=71;
                                                     else if(profile.page==CareerPage::garage)hint=career_garage_speech(garage);
-                                                    if(hint>=0)play_career_hint(hint);
+                                                    // 4CD490/4CD535: a package-open request. The
+                                                    // one-shot mask is shared across the running frontend.
+                                                    if(hint!=active_hint) {
+                                                        active_hint=hint;
+                                                        if(hint>=0)play_career_hint(hint);
+                                                    }
                                                 }
                                                 if(career_info.active())art.record_career_info(width,height,career,profile,career_info,frontend_ui);
                                                 else if(profile.page==CareerPage::magazines)art.record_magazine(width,height,magazine_recipe,profile.magazine_covers[selection].car,frontend_ui);
                                                 else if(sandbox&&profile.page==CareerPage::menu)art.record_free_drive(width,height,career,profile,selection,free_course,notice,frontend_ui,&quick_options,choose_quick_mode);
                                                 else art.record_career(width,height,career,profile,selection,notice,frontend_ui,in_garage?&garage:nullptr);
+                                                append_frontend_song(frontend_ui);
                                                 const bool show_garage_fps=in_garage&&garage_fps.visible;
                                                 if(show_garage_fps)art.append_fps(width,height,garage_fps.history,frontend_ui);
                                                 require(frontend_renderer->update(frontend_scene.commands(),frontend_error),frontend_error);
@@ -3205,9 +3329,8 @@ int main(int argc, char** argv) {
                                 bool* values[]={&presentation.motion_blur,&presentation.low_car_reflections,
                                                 &presentation.road_reflections,&presentation.metric_speed};
                                 if(option_row==4) {
-                                    constexpr std::uint32_t heights[]={0,540,720};
-                                    const unsigned current=presentation.race_height==540?1U:presentation.race_height==720?2U:0U;
-                                    presentation.race_height=heights[(current+(left&&!right?2U:1U))%3U];
+                                    const bool docked=appletGetOperationMode()==AppletOperationMode_Console;
+                                    presentation.race_height=cycle_race_resolution(presentation.race_height,docked,left&&!right);
                                 }else if(option_row==5) presentation.diagnostic_logs=!presentation.diagnostic_logs;
                                 else *values[option_row]=!*values[option_row];
                                 option_notice=write_presentation_options(presentation)?"":"Could not save options to SD.";
@@ -3258,10 +3381,10 @@ int main(int argc, char** argv) {
                         require(frontend_renderer->close(frontend_error),frontend_error);
                         frontend_renderer.reset();frontend_gpu_profile.reset();
                         try {
-                            run_switch_multiplayer(root,pad,presentation.diagnostic_logs,presentation.metric_speed,free_rides,
+                            run_switch_multiplayer(root,pad,presentation.diagnostic_logs,presentation.metric_speed,presentation.race_height,free_rides,
                                 [&](const std::string& car,unsigned tier,
-                                                                 const std::function<void()>& poll) {
-                                run_career_action(FrontendAction::free_drive,&car,tier,poll);
+                                                                 const std::function<void()>& poll,LocalGarageSlot* local) {
+                                run_career_action(FrontendAction::free_drive,&car,tier,poll,local);
                             });
                             menu.notice("");
                         }
@@ -3288,9 +3411,14 @@ int main(int argc, char** argv) {
                     const auto scene_done=armGetSystemTick();
                     art.advance(static_cast<float>(elapsed_ns/1000000000.0));
                     trace("frame.ui.before");
-                    if(options_open)art.record_options(width,height,presentation,option_row,option_notice,frontend_ui);
+                    if(options_open) {
+                        auto shown=presentation;
+                        if(shown.race_height==1080&&appletGetOperationMode()!=AppletOperationMode_Console)shown.race_height=0;
+                        art.record_options(width,height,shown,option_row,option_notice,frontend_ui);
+                    }
                     else if(statistics.active())art.record_career_info(width,height,*statistics_catalog,statistics_profile,statistics,frontend_ui);
                     else art.record_ui(width,height,menu,frontend_ui);
+                    if(options_open||statistics.active())append_frontend_song(frontend_ui);
                     trace("frame.ui.after");
                     const auto ui_done=armGetSystemTick();
                     DekoUpdateTiming update_timing;

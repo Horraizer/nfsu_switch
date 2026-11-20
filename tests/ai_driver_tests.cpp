@@ -25,6 +25,13 @@ const Sequence original[] = {
 const Sequence original_air[] = {
 #include "ai_driver_air_native.inc"
 };
+struct ContactDriverCase {
+    int side;unsigned selector;bool grounded;float normal_up;
+    std::int32_t elapsed;float magnitude;Output frames[8];
+};
+const ContactDriverCase contact_cases[]={
+#include "ai_driver_contact_native.inc"
+};
 struct PublicationCase {
     unsigned count;float points[20][3];std::uint32_t expected[20][3];
     std::uint32_t length,cursor,cursor_tick,prediction_tick;
@@ -33,7 +40,7 @@ const PublicationCase publication_cases[]={
 #include "ai_publication_native.inc"
 };
 struct ReverseFrame {
-    float speed,desired;std::array<bool,4> contact;bool enabled,reset;
+    float speed,desired;std::array<bool,4> contact;bool enabled;unsigned reset;
     unsigned steer;std::uint32_t throttle,brake;int gear;bool ready;
     std::uint32_t target_x,target_y,speed_error;
 };
@@ -54,6 +61,19 @@ bool same(const nfsu::AiDriverForwardState& a,const nfsu::AiDriverForwardState& 
 }
 int main() {
     using namespace nfsu;
+    for(const auto& c:contact_cases) {
+        AiDriverForwardInput in;AiDriverForwardState state;
+        in.path.count=2;in.path.points[0]={10,float(c.side)*.01F,0};
+        in.path.points[1]={100,float(c.side)*.06F,0};in.velocity={20,0,0};
+        in.absolute_speed=in.forward_speed=20;in.desired_speed=30;in.category=1;
+        in.contact={c.grounded,c.grounded,false,false};in.physical_selector=c.selector;
+        in.recent_wall_contact=ai_driver_wall_contact(c.normal_up,c.elapsed,c.magnitude);
+        for(const auto& expected:c.frames) {
+            check(ai_driver_ordinary_step(in,1.F/60,state)&&state.steering.word==expected.steer&&
+                  bits(state.pedals.throttle)==expected.throttle&&bits(state.pedals.brake)==expected.brake,
+                  "original contact filter and steering override before shared slew");
+        }
+    }
     for(const auto& row:kNativeDragSteering) {
         AiDriverForwardInput in;AiDriverForwardState state;
         in.path.count=2;in.path.points[0]={10,float(row.side)*10,0};
@@ -177,6 +197,23 @@ int main() {
     check(!ai_driver_slip_limit(true,2,20,false,0),"held driver excludes slip limit");
     check(!ai_driver_slip_limit(false,3,20,false,0),"role3 excludes slip limit");
     check(!ai_driver_slip_limit(false,2,20,true,1),"finished racer excludes slip limit");
+    {
+        AiDriverForwardInput in;
+        in.path.count=2;in.path.points[1]={100,0,0};
+        in.forward_speed=in.absolute_speed=41.418F;
+        in.velocity={in.forward_speed,0,0};in.desired_speed=50.074F;
+        in.race_seconds=13.17175F;in.contact.fill(true);
+        in.wheel_slip[0]=4.04141235F;
+        AiDriverForwardState racing;
+        racing.pedals.throttle=1.F;
+        auto classified=racing;
+        check(ai_driver_ordinary_step(in,.007F,racing),"racing slip sample");
+        in.racer_status=1;
+        check(ai_driver_ordinary_step(in,.007F,classified),"classified slip sample");
+        check(racing.pedals.throttle==0.F && classified.pedals.throttle==1.F &&
+              racing.pedals.brake==0.F && classified.pedals.brake==0.F,
+              "only the unclassified driver lifts on the same wheel slip");
+    }
     for(const auto& sequence:reverse_sequences) {
         AiDriverForwardState state;AiDriverForwardInput in;
         const float direction=sequence.category%2?1.F:-1.F;
@@ -189,7 +226,8 @@ int main() {
             in.desired_speed=f.desired;in.contact=f.contact;in.enabled=f.enabled;
             in.race_seconds=float(double(39999+step*67)*.00025);
             const auto before=failures;
-            if(f.reset)check(ai_driver_recovery_reset(in,state),"original recovery reset executes");
+            if(f.reset==1)check(ai_driver_recovery_reset(in,state),"original recovery reset executes");
+            if(f.reset==2)ai_driver_placement_reset(state);
             check(ai_driver_ordinary_step(in,1.F/60,state),"signed driver executes");
             check(state.steering.word==f.steer,"signed original steering word");
             check(bits(state.pedals.throttle)==f.throttle&&bits(state.pedals.brake)==f.brake,"signed original pedal bits");
@@ -200,6 +238,31 @@ int main() {
                 <<" gear="<<state.gear_request<<'/'<<f.gear<<" ready="<<state.direction_ready<<'/'<<f.ready<<'\n';
             ++step;
         }
+    }
+    {
+        // Target coordinates from PC 1.4 USA 45FB30 with the supplied paths.
+        AiDriverForwardInput in;
+        in.forward_speed=in.absolute_speed=20.F;
+        in.desired_speed=30.F;
+        in.category=1;
+        in.path.count=3;
+        in.path.points[0]={10,0,0};
+        in.path.points[1]={10,80,0};
+        in.path.points[2]={90,80,0};
+        for(float vertical:{20.F,-20.F}) {
+            in.velocity={0,0,vertical};
+            AiDriverForwardState state;
+            check(ai_driver_ordinary_step(in,.02F,state) &&
+                  bits(state.target.point[0])==0x41200000U && bits(state.target.point[1])==0x3fae6660U,
+                  "vertical velocity retains the original planar path cursor");
+        }
+        in.velocity={20,0,0};
+        in.path.count=2;
+        in.path.points[0]=in.path.points[1]={1,1,0};
+        AiDriverForwardState state;
+        check(ai_driver_ordinary_step(in,.02F,state) &&
+              bits(state.target.point[0])==0x412f2c2eU && bits(state.target.point[1])==0x3f800000U,
+              "coincident final waypoints extend the original target without refusing the driver");
     }
     for(const auto& c:short_path_cases) {
         AiDriverForwardState state;AiDriverForwardInput in;

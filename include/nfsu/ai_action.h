@@ -4,6 +4,10 @@
 #include "nfsu/ai_strategy.h"
 
 namespace nfsu {
+// 462D6A..462DC8. A straight/nondecreasing road must persist for more
+// than one second. The original timestamp treats0 and7FFFFFFF as unset.
+bool ai_nitrous_road_window(bool nondecreasing,std::uint32_t clock,
+                           std::uint32_t& since) noexcept;
 struct AiActionOffsetInput {
     int mode=0,physics_selector=3; // actor24 owner/controller kind; not actor28
     float absolute_speed=0,race_seconds=-1;
@@ -27,6 +31,35 @@ bool ai_action_forward_path(const AiPlannedPath& previous_driver_path,
                             AiPlannedPath& output,bool rebuild=false,bool category_available=true) noexcept;
 
 struct AiSpeedPolicyState {std::uint32_t offset_tick=0;int point_offset=0;};
+struct AiRivalNitrousTuning {
+    float earliest_secs=0,final_lap_secs=0;
+    unsigned drag_minimum_gear=0;
+    bool save_for_finish=false;
+    float minimum_burst_secs=0,maximum_burst_secs=0;
+};
+struct AiRivalNitrousState {
+    std::uint32_t started=0,stopped=0,road_since=0;
+};
+struct AiRivalNitrousRoad {
+    float speed=50;
+    bool traffic_lane=false,nondecreasing=false;
+};
+// 59BAB0 raw descriptor speed and5A6EF0 per-cell virtual speed scan.
+bool ai_rival_nitrous_road(const Route*,unsigned point,int category,
+                          const AiRoadChain&,unsigned first,AiRivalNitrousRoad&) noexcept;
+struct AiRivalNitrousInput {
+    std::uint32_t clock=0,remaining=0;
+    float speed=0;
+    unsigned selector=1;
+    bool active=false,drag=false,last_lap=false,finish_approach=false,physical=false;
+    AiRivalNitrousRoad road;
+};
+// 462B30 request and462DF0 minimum-burst guard. Explicit lifecycle stamps
+// come from45D650 on start and583D70 on controller-requested stop.
+bool ai_rival_nitrous_request(const AiRivalNitrousInput&,const AiRivalNitrousTuning&,
+                             AiRivalNitrousState&) noexcept;
+bool ai_rival_nitrous_can_stop(const AiRivalNitrousInput&,const AiRivalNitrousTuning&,
+                              const AiRivalNitrousState&) noexcept;
 // Consumed fields of original GLOBALB chunk34B00, copied by462070 to779C78.
 // The race selects a signed actor context; -1 uses row0 and suppresses jitter.
 struct AiSpeedConfiguration {
@@ -36,6 +69,7 @@ struct AiSpeedConfiguration {
     float drag_launch_min=0,drag_launch_max=0;
     // Consumer order: UP min/max (+2C/+30), DOWN min/max (+24/+28).
     std::array<float,4> drag_shift_offsets{{-100.F,0.F,-100.F,0.F}};
+    AiRivalNitrousTuning nitrous;
     unsigned offset_amplitude=0;
 };
 bool ai_speed_configuration(const unsigned char* payload,std::size_t size,
@@ -48,6 +82,7 @@ struct AiSpeedPolicyInput {
     float offset_interval=0,context_scale=1,catchup_scale=1,strategy_cap=99999;
     unsigned offset_amplitude=0; // original difficulty row77A048 byte
     const RoutePoint* marker_point=nullptr;
+    bool marker_columns_reversed=false;
     bool queued_override=false,route_speed=true,enabled=true;
     bool debug_constant=false,debug_route=false;
     float action_speed=0,duration=0,auxiliary=0,debug_auxiliary=0;
@@ -70,6 +105,7 @@ struct AiActionNeighborState {
     int role=0; // original race row:1 human,2 rival
     AiDriverPoint velocity{}; // refreshed original body-state velocity
     AiStrategyKind strategy=AiStrategyKind::none; // actual owner policy, not actor role
+    bool recovering=false;
 };
 // Speed stage4504EF..450654 of fallback action4, AFTER its45AE10 path update.
 // Tests only the immediate preceding entry in the original sorted list.

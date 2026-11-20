@@ -40,6 +40,7 @@ for the accumulated r23-r26 changes.
 | NOS blur wrong; only while NOS active | Reopen actual original effect chain and current GPU passes; pixel-coordinate correction alone is insufficient |
 | Garage black screens, stalls and preview omissions | Recheck live preview, camera movement, body/rim/color/neon/unique vinyl, icons/labels/reputation and garage lamps |
 | Welcome/music, map multi-events, spoken sender, ducking, playlist | Trace current frontend transitions and original metadata/mix; r23 claims are not new hardware evidence |
+| Font quality in menu and race HUD | Backlog requested after event 22 testing | Audit authored typefaces, glyph filtering and placement at 540p, 720p and docked 1080p |
 | Finish freezes/brakes, Race Over, results/statistics/style/reward/menu | Verify all supported modes and saved event completion; older direct-map bug requires actual route coverage |
 | Traffic routes/types, piles, lights/sound/shadows | Trace current route lifecycle and original setup; deterministic port model selection is not native RNG parity |
 | Near miss, traffic penalty, tailgating/drafting | Recheck contact and proximity producers with original score/admission consumers |

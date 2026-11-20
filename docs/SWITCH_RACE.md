@@ -37,18 +37,59 @@ Full finish rendering is available with
 
 From the main menu choose Multiplayer, then Quick Race / Split Screen.
 The Switch controller-selection applet assigns slots 1 and 2. Player 1
-uses the upper view and Player 2 uses the lower view. Each selects a car.
-Player 1 can also set the track, lap count and shared performance tier.
-The initial modes are Circuit and Sprint with two human cars and no traffic.
+can choose Top / Bottom or Left / Right under Split. Each player selects a
+car and presses Y on their own controller to open its garage. The room
+opens one garage at a time and remembers each player's appearance per car
+until they leave Multiplayer. Player 1 can set the track, lap count, shared performance tier and
+civilian traffic (Off, Low, Medium or High). Circuit, Sprint, Drag and
+Drift have two human racers. Drift runs without civilian traffic and
+placement is decided by the drift score. Both drivers can finish their
+run after the other driver has crossed the line.
 On a paired controller use ZR/ZL to accelerate/brake. On a sideways
-Joy-Con use SR/SL. Press + (or - on a left Joy-Con) to leave the race.
-Controller reconnection stops the race clock and reopens controller selection.
+Joy-Con use SR/SL. Use A (the right face button in the sideways layout)
+for nitrous when the selected tier installs it. Press + (or - on a left
+Joy-Con) to leave. Reconnection stops the race clock and reopens controller
+selection. In Drag, use the left stick to change lanes and R/L or the
+right stick up/down to shift. On a sideways Joy-Con, the upper face button
+shifts up and the lower face button shifts down.
 
-The two views share the loaded track and cars. Each has its own camera,
-HUD and minimap. Post-processing is disabled in this mode. The retail PC
-test `nfsu_split_screen_retail` verifies input ownership, the roster, camera,
-HUD and shared draw resources in both modes. The Switch controller
-applet and deko3d output require the usual hardware playthrough.
+The room has a Steering option for each player. Tilt uses the connected
+motion sensor while Stick is the default. Hold the controller straight at
+the countdown, then rotate it like a wheel. L3 re-centers on a Pro
+Controller or paired Joy-Cons. On one sideways Joy-Con, press its original
+L or R shoulder button. Moving the stick takes priority. A disconnected
+or stale sensor falls back to the stick.
+
+Both views draw one live world with separate chase cameras, HUDs and
+headlight projections. Circuit and Sprint have individual minimaps.
+Track animation and movable scenery are shared. Effects in the room
+controls particles from the cars and the track, including wheel spray,
+sparks, exhaust smoke and active scenery emitters. Wet Reflections enables
+the wet-road pass for each view. Particles default to On and Wet Reflections
+default to Off. Full-screen blur and the dynamic
+reflection capture are disabled in split-screen. The retail PC test
+`nfsu_split_screen_retail` covers the four modes, individual controls and
+HUD, the start of each Drag and Drift course, pre-start purge, on-track
+boost, scene animation and shared GPU resources.
+In Circuit and Sprint, each player can trigger the single-player landing
+shake and roadside shot in their own view, with the shared simulation
+clock unchanged. The Switch
+controller applet and deko3d output require a hardware playthrough.
+
+Options > Race Resolution offers 1080p while docked, for standard races
+and local split-screen. It renders the world and presents at 1920x1080.
+The saved 1080p choice uses the normal portable defaults when undocked.
+If the measured GPU allocations do not fit, the renderer retries at 720p.
+Menu resolution is independent.
+
+Build with `-DNFSU_SPLIT_DIAGNOSTICS=ON` to record
+`sdmc:/nfsu-split-profile-NNNN.csv` during a local race. Leave the race to
+flush the file. It includes simulation, traffic, contact solving, audio,
+scene preparation, submitted geometry, GPU passes and resident GPU memory.
+The GPU column `gpu_frame` identifies the completed frame being reported.
+For comparisons use the same track and resolution, and vary one of layout,
+traffic, effects or wet reflections at a time. The normal build omits
+this capture.
 
 ## Install and use
 

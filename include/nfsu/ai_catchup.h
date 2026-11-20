@@ -17,7 +17,7 @@ struct AiCatchupInput {
     std::uint32_t tick=0,target_id=0;
     std::int32_t elapsed_ticks=0;
     int difficulty=0,self_rank=0,target_rank=0,human_count=1;
-    bool has_race=true,enabled=true,finished=false,special_context=false;
+    bool has_race=true,enabled=true,has_player_view=false,special_context=false;
     bool action_allows=true,suppressed=false,comparison_enabled=true,wrap_progress=false;
     float self_progress=0,target_progress=0,route_length=0,self_speed=0,target_speed=0;
     float target_weight=0,target_history=0;

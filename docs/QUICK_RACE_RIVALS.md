@@ -31,8 +31,10 @@ Difficulty selects a cumulative distribution of original driver contexts.
 4B4590 includes equality at each threshold; the native captures include zero
 and rounded boundary samples. Context data reaches the existing road-speed,
 throttle, steering and drag-shift controllers. Quick Race keeps its own
-original catch-up switch and difficulty-specific drag clutch behavior; it
-must not borrow an arbitrary career event's global throttle ceiling.
+original catch-up switch and difficulty-specific drag clutch behavior.
+Quick Drag 4B55B0/4B5951 also uses difficulty as the moving throttle-cap
+selector. The ordinary Quick Race builders select the full cap.
+Career races take the cap from the event record.
 
 ## Appearance
 

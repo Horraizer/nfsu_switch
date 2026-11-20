@@ -62,7 +62,7 @@ bool ai_driver_pedals(const AiDriverPedalInput& input,
 
 // Original 460100 role/hold/race-time/finish gate; time is in seconds.
 bool ai_driver_slip_limit(bool hold, std::uint32_t role, float race_seconds,
-                          bool has_status, std::int16_t finish_place) noexcept;
+                          bool has_status, std::int16_t racer_status) noexcept;
 
 // History storage is fixed-size: no allocations in an AI tick. Constructor
 // lengths are five for steering and four for speed/slip (45DBB0).
@@ -120,6 +120,10 @@ bool ai_driver_ground_steering(float heading_error, float velocity_error,
                               AiDriverSteeringState& state,bool reverse_command=false,
                               bool moving_reverse=false) noexcept;
 
+// 45F22E..45F295; caller supplies an active kind3 track-plane contact.
+bool ai_driver_wall_contact(float normal_up,std::int32_t elapsed_ticks,
+                            float magnitude) noexcept;
+
 struct AiDriverForwardInput {
     AiDriverPath path;
     AiDriverPoint position{}, velocity{};
@@ -133,6 +137,10 @@ struct AiDriverForwardInput {
     int category = 0;
     float race_seconds = 0;
     bool enabled = true;
+    bool nitrous_active = false;
+    unsigned physical_selector = 3;
+    bool recent_wall_contact = false;
+    std::int16_t racer_status = 0; // Actor+1C, lap record+10. Zero while racing.
 };
 struct AiDriverForwardState {
     AiDriverSteeringState steering;
@@ -141,6 +149,8 @@ struct AiDriverForwardState {
     AiDriverTarget target;
     bool direction_ready=true; // original driver+218 hysteresis latch
     int gear_request=-1; // original driver+1D4: automatic=-1, reverse=0
+    bool nitrous_pedal_latch=false; // 45F909, Driver+229
+    float previous_desired_speed=0; // Driver+22C
 };
 
 // Ordinary forward control, selector3/controller3/role2, including loss of
@@ -170,5 +180,8 @@ bool ai_driver_traffic_impact_step(const AiDriverForwardInput&,float dt,AiDriver
 // 452190's driver+5C/45E650 cleanup. Uses the retained target, not a new path
 // sample. Does not reset direction hysteresis, speed history or steering word.
 bool ai_driver_recovery_reset(const AiDriverForwardInput&,AiDriverForwardState&) noexcept;
+//427D87..427DB3 placement: clear steering word, steering/speed error samples
+//and gear request. Retain time rings, cached averages, slip and pedal state.
+void ai_driver_placement_reset(AiDriverForwardState&) noexcept;
 
 } // namespace nfsu

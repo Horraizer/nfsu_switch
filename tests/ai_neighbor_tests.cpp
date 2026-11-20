@@ -5,7 +5,7 @@ using namespace nfsu;
 namespace {
 #include "ai_obstacle_query_native.inc"
 float from_bits(std::uint32_t u){float x;std::memcpy(&x,&u,4);return x;}
-struct Road {AiDriverPoint position;float forward[2],offset[5],lane[12],distance,compact[7];};
+struct Road {AiDriverPoint position;float forward[2],offset[5],lane[12],distance,compact[7],path_distance;};
 struct Case {
     unsigned roads;Road road[40];AiNeighborInput input;unsigned actors;AiNeighborActor actor[2];
     unsigned count;std::uint32_t entry[16][14];int self_index;
@@ -25,7 +25,7 @@ AiRoadChain road(const Case& c) {
         for(unsigned k=0;k<5;++k)p.driving_offset[k]=r.offset[k];
         for(unsigned k=0;k<12;++k)p.lane_offset[k]=r.lane[k];
         for(unsigned k=0;k<7;++k)cell.offset[k]=r.compact[k];
-        cell.distance=r.distance;
+        cell.distance=r.distance;p.path_distance=r.path_distance;
     }
     return chain;
 }

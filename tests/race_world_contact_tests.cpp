@@ -156,6 +156,14 @@ static int run(const char* root) {
  if(strong_traffic){
   a.velocity={45,crash.vy,0};b.velocity={crash.bvx,0,0};b.position={3.8,crash.y,.2};
  }
+ // The original fixture publishes identity actor axes and these velocities
+ // before426110 constructs the component. The proving-ground reset above
+ // contains sloping owner axes; changing only the quaternion is not enough.
+ const PlayerRigidMatrix identity{{{{1,0,0}},{{0,1,0}},{{0,0,1}}}};
+ for(auto* actor:{&a,&b}) {
+  player_publish_owner_motion(actor->owner_motion,
+   {{float(actor->velocity.x),float(actor->velocity.y),float(actor->velocity.z)}},{{0,0,0}},identity);
+ }
  if(expected.floor) {
   // Same initialized neutral/native ordinary-grip inputs as the native
   // grounded fixture. This does not assert original reset or race policy.

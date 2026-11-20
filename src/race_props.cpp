@@ -56,7 +56,7 @@ void RaceProps::convert_proxy(RaceProp& p,const TrackContactWorld& world) {
     if(query_track_ground(world,{origin[0],origin[1],origin[2]},cache,contact)) {
         float minimum=0;const auto centre=p.spec.handling.centre_of_mass[2];
         for(const auto& point:p.points)minimum=std::min(minimum,point[2]-centre);
-        const auto lift=prop_conversion_lift(contact.point[2],minimum,centre,p.state.rigid_body.axes[2][2],origin[2]);
+        const auto lift=prop_conversion_lift(contact.point[2],minimum,centre,contact.normal[2],origin[2]);
         p.support_lift=p.render_support_lift=lift;
         p.state.rigid_body.position[2]+=lift;publish(p.state);
     }
@@ -183,7 +183,7 @@ void RaceProps::observe_contact(RaceProp& p,const RacePairContact& result,
     }
 }
 void RaceProps::maintain_pool(const TrackContactWorld& world,const VehicleVec3& human,
-    std::uint32_t tick,std::uint64_t frame) {
+    std::uint32_t tick,std::uint64_t frame,const VehicleVec3* second) {
     unsigned live=0;for(const auto& p:objects_)live+=p.body_id>=0&&!p.expired;
     const unsigned free_slots=live<32?32-live:0;
     if(!prop_pool_maintenance_due(free_slots,frame))return;
@@ -196,12 +196,16 @@ void RaceProps::maintain_pool(const TrackContactWorld& world,const VehicleVec3& 
             if(query_track_ground(world,p.state.position,maintenance_ground_[p.world_slot],ground))
                 retire=float(p.state.position.z)+p.sphere_radius<ground.point[2];
         }
-        const V delta{{float(p.state.position.x)-float(human.x),
-            float(p.state.position.y)-float(human.y),float(p.state.position.z)-float(human.z)}};
+        const auto distance=[&](const VehicleVec3& at) {
+            const V delta{{float(p.state.position.x)-float(at.x),
+                float(p.state.position.y)-float(at.y),float(p.state.position.z)-float(at.z)}};
+            return prop_speed(delta);
+        };
+        const float nearest=second?std::min(distance(human),distance(*second)):distance(human);
         //420B40 copies human actor+60 to world+280.421400 measures nearest
         //human; AI rivals and traffic do not keep distant debris alive.
         if(retire||prop_pool_reclaims(free_slots,p.awake,p.reclamation_exempt,
-                prop_speed(delta),tick,p.first_activation_tick)) {
+                nearest,tick,p.first_activation_tick)) {
             p.expired=true;p.awake=false;
         }
     }
@@ -241,7 +245,9 @@ bool RaceProps::advance_body(RaceProp& p,const TrackContactWorld& world,std::str
     // Two equal substeps satisfy the recovered Smokeable .01s maximum.
     for(unsigned slice=0;slice<slices;++slice) {
         const auto before=b;
-        player_rigid_body_refresh(h,b);player_rigid_body_integrate(h,b,slice_dt);
+        // 597420 enters 46AA40 with the velocities cached before 40BD40
+        // normalized the axes at the end of the previous substep.
+        player_rigid_body_integrate(h,b,slice_dt);
         // Original integration-interface callback 597FA0 follows refresh,
         // before outer 40BD40 normalization. It uses the last live contact.
         p.motion_state=prop_motion_state(b.velocity,b.angular_velocity,

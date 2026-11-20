@@ -43,17 +43,22 @@ bool ai_road_lane_transition(const AiLaneTransitionInput&,int from,int to,
 struct DragLaneState {
     int mode=2,exclude_first=255,exclude_last=255,category=11;
 };
+struct AiRoadCursor;
 struct AiRoadChain;
 //45D800/45D970/4605E0, held lane controls (retail7003D8=1). The caller
 //supplies route and context availability plus actual track/direction/progress.
 //Owner2 uses header availability even when future chain flags are false.
-bool drag_lane_step(const Route&,unsigned point,const AiDriverPoint&,
+bool drag_lane_step(const RacingLineTrack&,const AiRoadCursor&,const AiDriverPoint&,
                     const AiRoadChain&,const std::array<bool,7>& available,
                       int held_direction,float travelled_distance,DragLaneState&,const AiLaneTransitionInput& = {}) noexcept;
 struct AiRoadPolicy {
     // Original458BD0: eight packed decision slots. +478 is a distinct marker.
     std::array<std::uint32_t,8> cache{};
     int marker=-1;
+    int speed_override_ticks=0; // controller+47C
+    void pass_racer_event(const AiRoadEvent&,unsigned id) noexcept;
+    void advance_speed_override(float frame_seconds) noexcept;
+    bool speed_override_active() const noexcept;
 };
 enum class AiRoadDecisionPolicy {racer,traffic};
 struct AiRoadPolicyInput {
@@ -165,6 +170,12 @@ struct AiRoadContext {
     AiRoadChain chain;
     AiRoadFlags flags;
 };
+// 44D2F4..44D384: a successful road calculation can still yield no usable
+// road. An owner strictly beyond the refreshed chain end also returns false
+// in retail, but preserves that nonempty chain. Invalid data stays an error.
+bool ai_road_context_ready(const AiRoadContext&,const AiDriverPoint&,
+                           bool& ready,AiRoadLocation&) noexcept;
+enum class AiRoadCategoryProbe {retain,ride,nearest_lane};
 struct AiRoadContextInput {
     AiRoadSelectionInput selection;
     float body_width=0,back_margin=0;
@@ -173,6 +184,7 @@ struct AiRoadContextInput {
     int ride_category=-1; // actual ride+424 for compact slot0; -1 retains old API
     int controller_kind=3; // actor+24, not physical selector+28
     int track_number=0; // actual setup6C, for5A7700 divider admission
+    AiRoadCategoryProbe category_probe=AiRoadCategoryProbe::retain;
 };
 struct AiRoadHorizons {float initial=0,retained=0;};
 //462390/458B90/57A910. The caller supplies current7006EC/7006F0;
@@ -186,9 +198,12 @@ struct AiRoadContextResult {
     unsigned passed_count=0;
 };
 // Spatial owner44CF30 through44D2F4. Inputs are original controller virtual
-// results. Racer policy retains its category; traffic583B20 chooses the
+// results. Rival44BAF0 invokes its action category probe after raw-road
+// reselection, before chain growth. Other owners may retain their category;
+// traffic583B20 chooses the
 // nearest enabled lane on reselection and549130 leaves passed markers alone.
-// Traffic may enter with category-1 only while no road/chain is selected.
+// A failed44C250 can retain a chain with category-1. Readmission restores
+// the raw pointers without changing that category; query defaults apply.
 // Supply ride_category separately from its selected lane. Emits notifications
 // for the caller; neighbor publication57A910 is a subsequent distinct step.
 bool ai_road_update_context(const RacingLineTrack&,const std::vector<AiRoadEvent>&,

@@ -47,7 +47,9 @@ bool refresh_car_contact_velocity(ContactBody& body, float raw_mass,
         const float x=next.angular_momentum[0]*next.inverse_inertia[0][i];
         const float y=next.angular_momentum[1]*next.inverse_inertia[1][i];
         const float z=next.angular_momentum[2]*next.inverse_inertia[2][i];
-        next.cached_angular_velocity[i]=((z+y)+x)+0.0F;
+        // 585810 uses the same dispatched packed transform after a contact
+        // impulse as it does when refreshing the rigid body during a drive.
+        next.cached_angular_velocity[i]=(x+y)+(z+0.0F);
     }
     const float spin=norm(next.cached_angular_velocity);
     if(!std::isfinite(spin)) return false;
@@ -199,7 +201,8 @@ float rotational_denominator(const ContactBody& b, const ContactVector& r,
 static bool calculate_response(const ContactBody& a, const ContactBody& b,
                                     const ContactGeometry& geometry,
                                     ContactResponse& response, float callback_factor,
-                                    float restitution,float friction_coefficient) noexcept {
+                                    float restitution,float friction_coefficient,
+                                    const ContactResponse* prior_pass=nullptr) noexcept {
     if (!valid(a) || !valid(b) || a.identity == b.identity
         || !finite(a.position) || !finite(b.position)
         || !finite(a.cached_velocity) || !finite(b.cached_velocity)
@@ -210,9 +213,15 @@ static bool calculate_response(const ContactBody& a, const ContactBody& b,
     for(const auto* body:{&a,&b})if(body->separate_response_inertia)
         for(const auto& row:body->response_inverse_inertia)if(!finite(row))return false;
     ContactResponse out;
-    for (unsigned i=0;i<3;++i) {
-        out.arm_a[i] = geometry.point[i]-a.position[i];
-        out.arm_b[i] = geometry.point[i]-b.position[i];
+    if (prior_pass) {
+        // 46C601 resumes at 46BB94, after the arms were initialized.
+        out.arm_a = prior_pass->arm_a;
+        out.arm_b = prior_pass->arm_b;
+    } else {
+        for (unsigned i=0;i<3;++i) {
+            out.arm_a[i] = geometry.point[i]-a.position[i];
+            out.arm_b[i] = geometry.point[i]-b.position[i];
+        }
     }
     const auto spin_a = cross(a.cached_angular_velocity,out.arm_a);
     const auto spin_b = cross(b.cached_angular_velocity,out.arm_b);
@@ -260,7 +269,8 @@ static bool calculate_response(const ContactBody& a, const ContactBody& b,
 bool calculate_car_contact_response(const ContactBody& a,const ContactBody& b,
     const ContactGeometry& geometry,ContactResponse& response,float callback_factor,
     ContactMaterial other_material,bool pinned_prop_against_upright_car,
-    ContactMaterial own_material,bool pinned_prop_against_upright_car_b) noexcept {
+    ContactMaterial own_material,bool pinned_prop_against_upright_car_b,
+    const ContactResponse* prior_pass) noexcept {
     // 46BAE0 selects the greater value returned by the two body material getters.
     if(!std::isfinite(other_material.restitution)||other_material.restitution<0||
        !std::isfinite(other_material.friction)||other_material.friction<0||
@@ -269,7 +279,7 @@ bool calculate_car_contact_response(const ContactBody& a,const ContactBody& b,
     const float friction=pinned_prop_against_upright_car||pinned_prop_against_upright_car_b?
         .1F:std::max(own_material.friction,other_material.friction);
     if(!calculate_response(a,b,geometry,response,callback_factor,
-        std::max(own_material.restitution,other_material.restitution),friction))return false;
+        std::max(own_material.restitution,other_material.restitution),friction,prior_pass))return false;
     // 46C09B..46C342 adds horizontal drag to the car above 30 m/s and
     // shortens its impulse arm. The impulse on the prop is unaffected.
     if((pinned_prop_against_upright_car||pinned_prop_against_upright_car_b)&&response.closing) {

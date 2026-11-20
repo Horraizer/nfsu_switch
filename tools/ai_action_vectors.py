@@ -19,7 +19,7 @@ def main():
     if hashlib.sha256(data).hexdigest()!=identity:raise ValueError('unsupported executable')
     im=Image(data);pair=PairedController(im,inputs(args.root),event_rides=True);m=pair.m
     md=capstone.Cs(capstone.CS_ARCH_X86,capstone.CS_MODE_32)
-    for a,b in list(EXEC_RANGES)+[(0x45c550,0x45c636),(0x583f20,0x583fe5),(0x44c550,0x44c7f1),(0x442110,0x442131)]:
+    for a,b in list(EXEC_RANGES)+[(0x45c550,0x45c636),(0x583f20,0x583fe5),(0x44c550,0x44c7f1),(0x442110,0x442131),(0x59bb80,0x59bbac)]:
         m.instructions.update({i.address:i.size for i in md.disasm(im.read(a,b-a),a)})
     store,result=0x119f100,0x119f000;code=b'\xd9\x1d'+struct.pack('<I',result)+b'\xc3'
     m.uc.mem_write(store,code);m.instructions.update({i.address:i.size for i in md.disasm(code,store)})
@@ -42,31 +42,37 @@ def main():
     publications=[];snapshot={}
     def capture(uc,address,size,user):
         if address!=0x44c578:return
-        route=m.get(descriptor);point=m.get(descriptor+4);category=m.get(descriptor+8)
+        route=m.get(descriptor);point=m.get(descriptor+4);category=m.get(descriptor+8,'i')
         context=m.get(m.get(ACTOR+0x14)+0x735,'b');row=0x779ff8+max(0,context)*0x54
         marker=m.get(CONTROLLER+0x478,'i');marker_speeds=None
         if marker>=0:
             event=m.get(0x736150)+32*marker
             raw=m.get(0x77af30+4*m.get(event+9,'B'))+0x27c+m.get(event+4,'H')*0x88
-            marker_speeds=list(m.uc.mem_read(raw+0x6a,23))
+            marker_speeds=list(m.uc.mem_read(raw+0x69,24))
         snapshot.clear();snapshot.update(route=bool(route),point=(point-route-0x27c)//0x88 if route else 0,category=category,
             direction=m.get(0x78a2fc),context=context,tick=m.get(0x73ad34),interval=m.get(0x77a498,'f'),
             context_scale=m.get(row+0x14,'f'),catchup=m.get(CONTROLLER+0x4b8,'f'),amplitude=m.get(row+0x50,'B'),
             offset_tick=m.get(CONTROLLER+0x400),offset=m.get(CONTROLLER+0x404,'i'),rng=m.get(world+0x2d0),
-            rows=[list(m.uc.mem_read(route+0x27c+j*0x88+0x6a,23)) for j in range(m.get(route+0x10,'h'))] if route else [],
+            rows=[list(m.uc.mem_read(route+0x27c+j*0x88+0x69,24)) for j in range(m.get(route+0x10,'h'))] if route else [],
             marker=marker_speeds,route_speed=bool(m.get(ACTION+0x1f0,'B')),enabled=bool(m.get(ACTION+0x1f1,'B')),
             action_speed=m.get(ACTION+0x1e4,'f'),duration=m.get(ACTION+0x1e8,'f'),auxiliary=m.get(ACTION+0x1ec,'f'),
             debug_constant=bool(m.get(0x7360b8)),debug_route=bool(m.get(0x736090)),debug_auxiliary=m.get(0x6b77f8,'f'))
     hook=m.uc.hook_add(UC_HOOK_CODE,capture,begin=0x44c578,end=0x44c578)
-    for case in range(12):
+    for case in range(24):
         m.uc.mem_write(descriptor,saved);m.put(CONTROLLER+0x478,0xffffffff)
         m.put(0x73ad34,600000+case*8000);m.put(CONTROLLER+0x400,600000 if case%2==0 else 0)
         m.put(CONTROLLER+0x404,case-6,'i');m.put(world+0x2d0,0x12345678+case)
-        m.put(ACTION+0x1f0,int(case!=7),'B');m.put(ACTION+0x1f1,int(case!=8),'B')
+        m.put(ACTION+0x1f0,int(case not in (7,18,19)),'B');m.put(ACTION+0x1f1,int(case!=8),'B')
         m.put(ACTION+0x1e4,33.5,'f');m.put(ACTION+0x1e8,.75,'f');m.put(ACTION+0x1ec,.2,'f')
-        m.put(0x7360b8,int(case==9));m.put(0x736090,int(case==10))
-        if case==6:m.put(CONTROLLER+0x478,0)
-        if case==11:m.put(descriptor,0)
+        m.put(0x7360b8,int(case in (9,20,21)));m.put(0x736090,int(case in (10,16,17)))
+        if case in (6,14,15):m.put(CONTROLLER+0x478,0)
+        m.put(0x78a2fc,(case%2) if case>=12 else 0)
+        if case>=12:
+            m.put(descriptor+8,-1,'i')
+            raw_route=m.get(descriptor)
+            for j in range(m.get(raw_route+0x10,'h')):
+                m.put(raw_route+0x27c+j*0x88+0x69,37+j%90,'B')
+        if case in (11,22,23):m.put(descriptor,0)
         m.run(0x44c550,(CONTROLLER,),end=0x44c7f1,budget=3000000)
         driver=m.get(CONTROLLER+8);strategy=m.get(CONTROLLER+0x3fc)
         cap=scalar(m.get(m.get(strategy)+0x10),ecx=strategy)
@@ -77,7 +83,7 @@ def main():
     for c in offsets:lines.append('{{%d,%d,%s,%s,%s},0x%08Xu},'%(c['mode'],c['selector'],literal(c['speed']),literal(c['seconds']),str(c['special']).lower(),c['value']))
     lines.append('};');lines.append('const PublicationCase publications[]={')
     for c in publications:
-        i=c['input'];rows=i['rows'];marker=i['marker'] or [0]*23
+        i=c['input'];rows=i['rows'];marker=i['marker'] or [0]*24
         lines.append('{%d,{%s},{%s},%s,%d,%d,%d,%d,%du,%s,%s,%s,%s,%d,%du,%d,0x%08Xu,%s,%s,%s,%s,%s,%s,%s,%s,%s,{%s},%du,%d,0x%08Xu},'%(
             len(rows),','.join('{'+','.join(map(str,r))+'}' for r in rows),','.join(map(str,marker)),str(i['marker'] is not None).lower(),
             i['point'],i['category'],i['direction'],i['context'],i['tick'],literal(i['interval']),literal(i['context_scale']),literal(i['catchup']),literal(c['cap']),

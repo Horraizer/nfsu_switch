@@ -167,7 +167,7 @@ endif()
 # moved with the handbrake fix: the handbrake segments are the brake axis
 # as max(service, 0.5 x handbrake) (0x00474B4B), not an added rear lock torque.
 nfsu_case("the mixed script" 0
-          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 3177600 sha256 0BD6A3668B340A4A24AC61D36D710FE8556013069D893892EBEFE3D36008B9BD\n"
+          "vehicle-sim: script mixed segments 8 steps 2400 ;telemetry: records 2400 bytes 3177600 sha256 BA45FD978A3442B6F2F18D2BBD69627CC563C78D74DBEB7FB7A170BC578F44DD\n"
           "error"
           mixed --every 0)
 set(mixed_hash "${last_hash}")

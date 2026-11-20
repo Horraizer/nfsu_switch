@@ -83,6 +83,76 @@ int main() {
               "native traffic spacing inputs admitted");
         check(random==row[10]&&bits(spacing)==row[11],"original traffic spacing and world RNG bits");
     }
+    {
+        // Retail 4563D0 on two raw roads with 10 m chords and one connector.
+        struct Case {
+            unsigned points;
+            int type,traffic;
+            bool event_reverse,direct,forward;
+            AiRoadCursor start,source,target;
+            float distance;
+            AiRoadCursor end;
+        };
+        const Case cases[]={
+            {6,-1,0,false,false,true,{0,0},{0,1},{1,0},25.F,{0,2}},
+            {6, 0,1,false,false,true,{0,0},{0,1},{1,0},25.F,{1,0}},
+            {6, 1,1,false,false,true,{0,0},{0,1},{1,0},25.F,{0,2}},
+            {3, 1,1,false,false,true,{0,0},{0,1},{1,0},35.F,{1,1}},
+            {6, 1,2,false,true, true,{0,0},{0,1},{1,0},25.F,{1,0}},
+            {6, 1,7,false,true, true,{0,0},{0,1},{1,0},25.F,{0,2}},
+            {6, 3,1,false,false,true,{0,0},{0,1},{1,0},25.F,{0,1}},
+            {6, 0,1,true, false,true,{0,0},{0,1},{1,0},25.F,{0,2}},
+            {6, 0,1,true, false,false,{1,2},{1,1},{0,2},15.F,{0,0}},
+            {3,-1,0,false,false,true,{0,0},{0,1},{1,0},35.F,{-1,0}},
+        };
+        for(const auto& entry:cases) {
+            RacingLineTrack lines;
+            lines.routes.resize(2);
+            for(unsigned i=0;i<lines.routes.size();++i) {
+                auto& route=lines.routes[i];
+                route.index=std::int16_t(i);
+                route.points.resize(i?6:entry.points);
+                for(unsigned j=0;j<route.points.size();++j) {
+                    auto& point=route.points[j];
+                    point.position[0]=float(i*20+j*10);
+                    point.forward[0]=1.F;
+                    point.distance_to_next=10.F;
+                    point.unknown_84={0x40,0,0x08,0};
+                }
+            }
+            std::vector<AiRoadEvent> events;
+            if(entry.type>=0) {
+                auto& point=lines.routes[entry.source.route].points[entry.source.point];
+                point.event_a=0;
+                if(entry.direct)point.unknown_84[3]=0x0a;
+                AiRoadEvent event;
+                event.type=std::uint8_t(entry.type);
+                event.traffic_type=std::uint8_t(entry.traffic);
+                event.direction=entry.event_reverse;
+                event.target_route=std::uint8_t(entry.target.route);
+                event.target_point=entry.target.point;
+                events.push_back(event);
+            }
+            AiRoadCursor end{-1,0};
+            const bool found=ai_traffic_walk_road(lines,events,entry.start,entry.distance,entry.forward,end);
+            check(found==(entry.end.route>=0)&&end.route==entry.end.route&&end.point==entry.end.point,
+                  "native traffic connector queue and traversal result");
+        }
+    }
+    {
+        const std::array<float,8> base{{8.F,.5F,3.F,0.F,1.5F,-2.F,.125F,1.F}};
+        const std::array<float,8> spread{{2.F,.25F,0.F,.25F,1.F,.5F,.1F,1.F}};
+        // PC 1.4 USA 5AB080 at FPCW 007F.
+        const std::array<unsigned,8> original{{
+            0x4111bd16u,0x3f1ff7e8u,0x40400000u,0xbe400d6au,
+            0x3fe927b9u,0xbff1b758u,0x3e5dca60u,0x3ffe7195u}};
+        std::array<float,8> ranges{};
+        std::uint32_t random=0xe37a2badu;
+        ai_traffic_placement_ranges(base,spread,random,ranges);
+        for(unsigned i=0;i<ranges.size();++i)
+            check(bits(ranges[i])==original[i],"native 34124 placement range bits");
+        check(random==0xbf15ff0fu,"all placement ranges consume world draws, including zero spread");
+    }
     for(float delta:{-101.F,-100.F,-99.F,0.F,99.F,100.F,101.F}) {
         check(ai_traffic_spawn_gap_blocked(delta,100,true)==(delta>-100&&delta<100),"traffic spacing is symmetric and strict");
         check(ai_traffic_spawn_gap_blocked(delta,100,false)==(delta>0&&delta<100),"racer spacing protects only a spawn ahead");

@@ -304,7 +304,9 @@ public:
     bool load_post_race(const std::filesystem::path& root,std::string& error);
     // Independent result-screen atlas. Career maps and garage textures stay
     // out of the race renderer; source art and its UVs remain unchanged.
-    bool prepare_post_race(FrontendArt& target,std::string& error) const;
+    bool prepare_post_race(FrontendArt& target,std::string& error,bool include_song_card=false) const;
+    bool prepare_song_card(FrontendArt& target,unsigned width,std::string& error) const;
+    void draw_song_card(ScreenImage image,const FrontendMenu& menu) const;
     void draw_post_race(ScreenImage image,const PostRaceMenu& menu,const PostRaceValues& values)const;
     void record_post_race(unsigned width,unsigned height,const PostRaceMenu& menu,
                           const PostRaceValues& values,FrontendUiFrame& frame)const;
@@ -332,9 +334,10 @@ public:
     void draw_overlay(ScreenImage image,const FrontendMenu& menu) const;
     const FrontendUiAtlas& atlas() const;
     void record_ui(unsigned width,unsigned height,const FrontendMenu& menu,FrontendUiFrame& frame) const;
+    void append_song_card(unsigned width,unsigned height,const FrontendMenu&,FrontendUiFrame&)const;
 private:
     bool load_assets(const std::filesystem::path&,std::string&,bool background,bool startup,bool splash=false);
-    void decode_startup_splash(const std::vector<unsigned char>&,std::string&);
+    void decode_startup_splash(const std::filesystem::path&,const std::vector<unsigned char>&,std::string&);
     void decode_welcome(const std::vector<unsigned char>&,const std::vector<unsigned char>&,
                         const std::vector<unsigned char>&,std::string&);
     void decode_profiles(const std::vector<unsigned char>&,const std::vector<unsigned char>&,std::string&);

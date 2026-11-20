@@ -181,6 +181,11 @@ def compare(root, out, probe):
             for speed in (13,14,17,18,35):
                 reset(); contexts.append('reset')
                 for k in range(3): sample('assist',.7,10000+67*k,speed,slip,predicate=predicate)
+    # 460C2F includes equality when selecting the actor's signed slip angle.
+    for speed in (.9999999403953552,1.0,1.0000001192092896):
+        for strength in (.2,.6,1):
+            reset(); contexts.append('reset')
+            sample('slip-boundary',strength,10000,speed=speed,slip=-120,predicate=1)
     for elapsed in (0,.1,.2,.4,.5,.7,.999,1):
         for speed in (15,25,35,45):
             for controls in ((0,0,0),(1,0,0),(0,.7,0),(0,0,1)):

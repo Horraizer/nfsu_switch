@@ -53,10 +53,10 @@ inline void prop_expire_ground(std::vector<PropGroundContact>& contacts,std::uin
         return prop_contact_expired(prop_clock_age(now,contact.touched));
     }),contacts.end());
 }
-// 596649..596686: bounds are COM-relative; the initial lift is physical.
+// 596617 passes the normal output of 440A40; 596659 reads its Z component.
 inline float prop_conversion_lift(float ground,float minimum,float centre,
-    float up,float translation) noexcept {
-    return std::max(0.F,(ground-((minimum+centre)*up+translation))+.05F);
+    float ground_normal_z,float translation) noexcept {
+    return std::max(0.F,(ground-((minimum+centre)*ground_normal_z+translation))+.05F);
 }
 // 597614..59765D: render uses the old compensation, then active bodies decay it.
 inline float prop_next_lift(float lift,bool awake,float activation,float dt) noexcept {

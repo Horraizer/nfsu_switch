@@ -129,6 +129,10 @@ struct RoutePoint {
     std::array<std::uint8_t, 4> unknown_84{};
 };
 
+// Original byte at raw+0x6A+category. Category-1 reads the high byte of
+// the final raw lane offset. columns_reversed describes port storage only.
+float route_raw_speed(const RoutePoint&,int category,bool columns_reversed=false) noexcept;
+
 // One route record.
 struct Route {
     std::uint64_t offset = 0;
@@ -141,6 +145,7 @@ struct Route {
     std::int16_t point_count = 0;
     // +0x15 and +0x18..+0x2C: traversal and spatial admission44ADC0/442690.
     bool reverse = false;
+    bool category_columns_reversed = false; // port storage orientation, not header+15
     float progress_begin = 0, progress_end = 0;
     std::array<float,4> bounds{}; // minX,minY,maxX,maxY
     // Ten category records: five forward, five reverse. 45AD30/5A75C0

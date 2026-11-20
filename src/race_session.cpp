@@ -15,6 +15,8 @@
 
 namespace nfsu {
 float RaceSession::next_world_frame_seconds()const noexcept {
+    if(external_frame_seconds_>0)return float(external_frame_seconds_);
+    if(shared_local_camera_)return float(kDriveFrameSeconds);
     return float(kDriveFrameSeconds)*crash_camera_.scale(float(kDriveFrameSeconds));
 }
 bool RaceSession::set_crash_camera(const CrashCameraRoadSource* source,unsigned intensity,unsigned track,std::string& error) {
@@ -26,11 +28,6 @@ bool RaceSession::set_crash_camera(const CrashCameraRoadSource* source,unsigned 
 }
 bool RaceSession::set_traffic(const std::filesystem::path& root,const std::vector<RaceTrafficSetup>& setup,std::string& error,unsigned density,std::uint32_t* random) {
     if(started_||traffic_){error="traffic must be configured before start";return false;}
-    std::unique_ptr<RaceTraffic> next;
-    if(!setup.empty()) {
-        next=std::make_unique<RaceTraffic>();
-        if(!next->load(root,course_,setup,error,density,random?random:&contact_seed_,drag_))return false;
-    }
     auto props=std::make_unique<RaceProps>();
     if(!props->load(root,error,course_.name))return false;
     // Only the world owner has traffic caches. Rival sessions must not each
@@ -39,13 +36,57 @@ bool RaceSession::set_traffic(const std::filesystem::path& root,const std::vecto
     contact_traffic_epochs_.resize(setup.size());
     near_pass_cache_.resize(3+setup.size());
     if(!prepare_world_motion(root,error))return false;
+    const auto previous_seed=contact_seed_;
     contact_seed_=0x60000000U;
+    std::unique_ptr<RaceTraffic> next;
+    if(!setup.empty()) {
+        next=std::make_unique<RaceTraffic>();
+        if(!next->load(root,course_,setup,error,density,random?random:&contact_seed_,drag_)) {
+            contact_seed_=previous_seed;
+            return false;
+        }
+    }
     world_random_=random;
     props_=std::move(props);traffic_=std::move(next);return true;
 }
 
+bool RaceSession::recycle_traffic_before_controllers(const AiRoadCursor* human_road,std::string& error) {
+    if(!traffic_||external_contact_owner_)return true;
+    std::array<const VehicleState*,4> racers{{&car()}};
+    std::array<const RaceContactBox*,4> shapes{{&contact_box_}};
+    std::array<bool,4> ghosts{{timing_.racers[0].permanent_ghost}};
+    for(unsigned i=0;i<rivals_.size();++i) {
+        racers[i+1]=&rivals_[i]->car();
+        shapes[i+1]=&rivals_[i]->contact_box_;
+        ghosts[i+1]=timing_.racers[i+1].permanent_ghost;
+    }
+    // Traffic drivers can move at countdown release, but the scatter
+    // manager stays disabled until the start NIS is destroyed at 423611.
+    const bool relocation_held=race_car_held(timing_)||road_scene_seconds_<road_scene_end_;
+    return traffic_->recycle_before_controllers(racers,shapes,ghosts,timing_.step,timing_.now_ticks,
+        next_world_frame_seconds(),relocation_held,progress().wrong_way,human_road,error);
+}
+
+bool RaceSession::place_road_grid_car(const VehiclePose& pose,std::string& error) {
+    if(started_||road_grid_placed_||!course_.has_route||!vehicle_.valid()||!vehicle_.start(pose)) {
+        error="road grid vehicle placement refused";return false;
+    }
+    if(physical_selector()==1&&world_random_)vehicle_.initialize_gearbox_offsets(*world_random_);
+    road_grid_placed_=true;
+    return true;
+}
+
+bool RaceSession::prepare_road_grid(float spacing,float clearance,std::string& error) {
+    // 422A70 constructs the participants before the traffic factory. 421F00
+    // enters the road scene after that factory and before controller updates.
+    if(!place_road_grid_car(course_.start,error))return false;
+    for(std::size_t i=0;i<rivals_.size();++i)
+        if(!rivals_[i]->place_road_grid_car(rival_setup_[i].pose,error))return false;
+    return spacing<=0||stage_traffic_grid(spacing,clearance,error);
+}
+
 bool RaceSession::stage_traffic_grid(float spacing,float clearance,std::string& error) {
-    if(!started_||timing_.step) {error="traffic staging requires the start grid";return false;}
+    if((!started_&&!road_grid_placed_)||timing_.step) {error="traffic staging requires the start grid";return false;}
     if(!traffic_)return true;
     std::array<const VehicleState*,4> racers{{&car()}};
     std::array<const RaceContactBox*,4> shapes{{&contact_box_}};
@@ -53,7 +94,7 @@ bool RaceSession::stage_traffic_grid(float spacing,float clearance,std::string& 
         racers[i+1]=&rivals_[i]->car();
         shapes[i+1]=&rivals_[i]->contact_box_;
     }
-    return traffic_->stage_grid(racers,shapes,spacing,clearance,timing_.now_ticks,error);
+    return traffic_->stage_grid(racers,shapes,spacing,clearance,started_?timing_.now_ticks:kRaceWorldStartTicks,error);
 }
 
 namespace {
@@ -157,7 +198,16 @@ std::array<unsigned,4> RaceSession::result_positions() const noexcept {
 std::vector<RaceResultRow> RaceSession::result_rows() const {
     auto rows=race_timing_results(course_.route,timing_);
     const auto places=result_positions();
-    for(auto& row:rows)row.position=int(places.at(row.racer));
+    for(auto& row:rows) {
+        row.position=int(places.at(row.racer));
+        // 435A70 closes remaining race rows through 4350D0/433E20.
+        // Keep the projected time separate from an observed crossing.
+        if(!row.racer||row.status!=RacerStatus::not_finished||!timing_.race_start_valid||
+           timing_.outcome!=RaceOutcome::finished||!gap_map_.valid||spec_.drift_mode)continue;
+        row.total_ticks=race_result_estimate_ticks(gap_map_,gap_actors_[row.racer],gap_actors_[0],
+            course_.route.laps,timing_.now_ticks-timing_.race_start_ticks);
+        row.total_estimated=row.total_ticks>0;
+    }
     std::sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){return a.position<b.position;});
     return rows;
 }
@@ -216,20 +266,42 @@ bool RaceSession::set_rivals(const std::vector<RaceRivalSetup>& setup,std::strin
                              RacePresentation presentation,unsigned player_grid) {
     return set_rivals_impl(setup,error,presentation,nullptr,player_grid);
 }
-bool RaceSession::set_human_rival(const RaceRivalSetup& setup,std::string& error) {
-    if(drag_||spec_.drift_mode||lap_knockout_||time_limit_ticks_) {
-        error="LAN prototype requires an ordinary circuit";return false;
+bool RaceSession::set_human_rival(const RaceRivalSetup& setup,std::string& error,const ChaseCameraTable* local_camera) {
+    if((!local_camera&&(drag_||spec_.drift_mode))||lap_knockout_||time_limit_ticks_||
+       (local_camera&&setup.spec.drift_mode!=spec_.drift_mode)) {
+        error="unsupported two-human race configuration";return false;
     }
     // Construct with the same player strut-query policy, then suppress only
     // presentation. A baseline headless AI constructor uses a different query.
     if(!set_rivals_impl({setup},error,RacePresentation::player,nullptr))return false;
-    rivals_[0]->presentation_=RacePresentation::none;
+    auto& guest=*rivals_[0];
+    if(local_camera) {
+        if(spec_.drift_mode) {
+            set_player_name("PLAYER 1");
+            guest.set_player_name(setup.name);
+        }
+        guest.drag_shift_scale_=drag_shift_scale_;
+        if(!guest.set_camera_table(*local_camera,error))return false;
+        use_retail_race_camera();guest.use_retail_race_camera();
+        shared_local_camera_=guest.shared_local_camera_=true;
+    } else guest.presentation_=RacePresentation::none;
     human_rival_=lan_player_=true;rivals_[0]->lan_player_=true;
     return true;
 }
-bool RaceSession::advance_humans(const std::array<GamepadFrame,2>& input,std::string& error) {
+bool RaceSession::set_local_crash_cameras(const CrashCameraRoadSource& first,const CrashCameraRoadSource& second,
+                                         unsigned track,std::string& error) {
+    if(!human_rival_||!shared_local_camera_) {error="local camera world is not configured";return false;}
+    return set_crash_camera(&first,kCrashCameraDefaultIntensity,track,error)&&
+        rivals_.front()->set_crash_camera(&second,kCrashCameraDefaultIntensity,track,error);
+}
+bool RaceSession::advance_humans(const std::array<GamepadFrame,2>& input,std::string& error,
+                                const std::array<RaceRivalPlans,2>* drag_plans,RaceSimulationProfile* profile,TimingService* timer) {
     if(!human_rival_||rivals_.size()!=1||planned_rivals_) {
         error="two-human world is not configured";return false;
+    }
+    if(drag_&&(!drag_plans||!(*drag_plans)[0].drag_steering||!(*drag_plans)[1].drag_steering||
+       (*drag_plans)[0].step!=timing_.step||(*drag_plans)[1].step!=rivals_[0]->timing().step)) {
+        error="two current drag steering paths required";return false;
     }
     auto pads=input;
     // Validate the complete pair before mutating either actor.
@@ -244,7 +316,12 @@ bool RaceSession::advance_humans(const std::array<GamepadFrame,2>& input,std::st
         pads[i].pads[0]={};pads[i].pads[0].connected=true;
         pads[i].pads[0].buttons=gamepad_button_bit(GamepadButton::trigger_left);
     }
-    return advance_impl(&pads[0],nullptr,error,-1,nullptr,nullptr,nullptr,&pads[1]);
+    if(traffic_) {
+        update_start_stage();
+        if(!start_cinematic()&&!recycle_traffic_before_controllers(nullptr,error))return false;
+    }
+    return advance_impl(&pads[0],nullptr,error,-1,drag_plans?&(*drag_plans)[0]:nullptr,
+                        profile,timer,&pads[1],nullptr,drag_plans?&(*drag_plans)[1]:nullptr);
 }
 bool RaceSession::set_drag(bool enabled,std::string& error,float shift_scale) {
     if(started_||!rivals_.empty()||!std::isfinite(shift_scale)||shift_scale<=0) {
@@ -287,10 +364,141 @@ bool RaceSession::set_rivals_impl(const std::vector<RaceRivalSetup>& setup,std::
     error.clear();return true;
 }
 
-void RaceSession::select_rival_physics(unsigned selector) noexcept {
+void RaceSession::select_rival_physics(unsigned selector) {
+    select_rival_physics(selector,timing_.now_ticks,world_random_);
+}
+
+void RaceSession::select_rival_physics(unsigned selector,std::int32_t world_clock,
+                                      std::uint32_t* world_random) {
     if(physical_selector_==selector)return;
+    vehicle_.select_rival_physics(selector,world_clock);
     physical_selector_=selector;
-    vehicle_.select_rival_physics(selector);
+    if(selector==1&&world_random)vehicle_.initialize_gearbox_offsets(*world_random);
+}
+
+//44B378 precedes strategy selection; constructor RNG belongs to that actor.
+void RaceSession::begin_rival_controller(unsigned slot,std::uint32_t* random,float world_dt) {
+    if(!switch_rival_physics_||slot>=rivals_.size()||race_car_held(timing_))return;
+    auto& r=*rivals_[slot];
+    if(r.rival_controller_step_==timing_.step)return;
+    r.rival_controller_step_=timing_.step;
+    const bool finished=timing_.racers[slot+1].status!=RacerStatus::not_finished;
+    if(finished)r.select_rival_physics(1,timing_.now_ticks,random);
+    else if(r.rival_full_ticks_!=0&&r.rival_full_ticks_!=std::numeric_limits<std::int32_t>::max()) {
+        const auto elapsed=static_cast<std::int32_t>(world_dt*kRaceTicksPerSecond);
+        r.rival_full_ticks_=std::max(0,r.rival_full_ticks_-elapsed);
+        if(r.rival_full_ticks_!=0)r.select_rival_physics(1,timing_.now_ticks,random);
+        else if(r.car().published_support<4) {
+            //44B3C4 rearms without reconstructing in this controller call.
+            r.rival_full_ticks_=kRaceTicksPerSecond;
+        }else r.select_rival_physics(3);
+    }
+    //44B4E8 prevents path motion while the contact/recovery timer is active.
+    if(r.physical_selector()==4&&r.rival_path_block_ticks_>0&&
+       r.rival_path_block_ticks_!=std::numeric_limits<std::int32_t>::max())
+        r.select_rival_physics(3);
+    if(r.rival_path_block_ticks_!=std::numeric_limits<std::int32_t>::max())
+        r.rival_path_block_ticks_=std::max(0,r.rival_path_block_ticks_-
+            static_cast<std::int32_t>(world_dt*kRaceTicksPerSecond));
+}
+
+void RaceSession::end_rival_controller(unsigned slot,const RaceRivalPlan& plan) {
+    if(!planned_rivals_||slot>=rivals_.size()||race_car_held(timing_))return;
+    auto& r=*rivals_[slot];
+    if(r.rival_controller_end_==timing_.step)return;
+    r.rival_controller_end_=timing_.step;
+    // Stop/request read the pre-44B060 solver. Driver consumes the resulting
+    // resource state later; do not defer this beyond the path-solver change.
+    r.update_rival_nitrous(plan.nitrous,*this,slot+1);
+    if(!switch_rival_physics_||!plan.physics_full_update)return;
+    const auto& state=r.car();
+    const auto& human=car().position;
+    const float dx=float(state.position.x)-float(human.x);
+    const float dy=float(state.position.y)-float(human.y);
+    const float dz=float(state.position.z)-float(human.z);
+    const float human_distance=std::sqrt((dz*dz+dy*dy)+dx*dx);
+    //44B060/44BA04 run after action/path publication. A refused path switch
+    //only demotes selector4; it must not silently replace selector1.
+    const bool path=plan.path_physics_allowed&&plan.path.count>2&&
+        (r.rival_full_ticks_==0||r.rival_full_ticks_==std::numeric_limits<std::int32_t>::max())&&
+        (r.rival_path_block_ticks_==0||r.rival_path_block_ticks_==std::numeric_limits<std::int32_t>::max())&&
+        timing_.racers[slot+1].status==RacerStatus::not_finished&&
+        state.published_support>=1&&!state.dynamic_ground_candidate&&state.owner_speeds.forward>=5.F&&
+        human_distance>=120.F&&
+        timing_.race_ticks>=30*kRaceTicksPerSecond;
+    if(path)r.select_rival_physics(4);
+    else if(r.physical_selector()==4)r.select_rival_physics(3);
+}
+
+void RaceSession::update_rival_nitrous(const RaceRivalNitrousPlan& plan,const RaceSession& world,
+                                      unsigned actor) noexcept {
+    if(!spec_.nitrous.installed)return;
+    const auto clock=world.timing_.now_ticks;
+    const auto& racer=world.timing_.racers[actor];
+    nitrous_clock_=std::uint32_t(clock);
+    nitrous_engine_.update(nitrous_resource_,nitrous_clock_);
+    if(racer.status!=RacerStatus::not_finished)return;
+
+    const auto& car_state=car();
+    const auto& tuning=plan.tuning;
+    AiRivalNitrousInput input;
+    input.clock=nitrous_clock_;input.remaining=nitrous_resource_.remaining_at(nitrous_clock_);
+    input.active=nitrous_engine_.active;input.drag=drag_;input.selector=physical_selector();
+    input.speed=car_state.owner_speeds.magnitude;
+    input.last_lap=racer.lap==course_.route.laps-1;
+    const auto& route=course_.route;
+    // 462BDA compares race-direction progress with the start boundary.
+    float percent=progress().coordinate.fraction*100.F-route.boundaries[route.start].percent;
+    if(percent>100.F)percent-=100.F;
+    if(percent<0.F)percent+=100.F;
+    input.finish_approach=input.last_lap&&percent*.01F>.75F;
+    const auto minimum_gear=drag_?tuning.drag_minimum_gear:unsigned(kVehicleGearFirst);
+    input.physical=car_state.published_support==4&&car_state.published_gear>=int(minimum_gear)&&
+        (input.selector==4||vehicle_.rival_nitrous_rpm_allowed(drag_));
+
+    // 44CCA0 averages absolute longitudinal slip on the driven axles.
+    const float rear=spec_.handling.rear_drive_fraction;
+    const unsigned begin=rear>.9F?2U:0U,end=rear<.1F?2U:4U;
+    float slip=0;
+    for(unsigned i=begin;i<end;++i)slip+=std::abs(car_state.published_wheel_slip[i][0]);
+    if(slip>2.F*float(end-begin))input.physical=false;
+
+    // 44CAC0 checks the actor's pair list through 466500. Kind 3
+    // polygons with a near-horizontal normal veto the burst.
+    if(std::any_of(world.world_contact_pairs_.begin(),world.world_contact_pairs_.end(),
+        [&](const WorldContactPair& pair) {
+            return pair.a==actor&&pair.track()&&
+                std::abs(course_.world.triangles[2*pair.polygon].up)<.10000000149011612F;
+        }))input.physical=false;
+
+    // 44B71E/44B897 stop before action publication. A retained/partial
+    // controller checks physical safety only; a full controller reads the
+    // freshly admitted road. Do not substitute the action's later category.
+    if(input.active&&plan.stop_check!=RaceRivalNitrousPlan::StopCheck::none) {
+        input.road=plan.before_action;
+        const bool keep=plan.stop_check==RaceRivalNitrousPlan::StopCheck::physical?
+            input.physical:ai_rival_nitrous_request(input,tuning,rival_nitrous_);
+        if(!keep&&ai_rival_nitrous_can_stop(input,tuning,rival_nitrous_)) {
+            nitrous_resource_.stop(nitrous_clock_);
+            rival_nitrous_.stopped=nitrous_clock_; //583D70
+            input.active=false;input.remaining=nitrous_resource_.remaining_at(nitrous_clock_);
+        }
+    }
+    if(plan.published_action&&plan.published_action!=nitrous_action_) {
+        nitrous_action_=plan.published_action;
+        action_nitrous_request_=false; // 44E31C initializes each new action
+    }
+    if(plan.evaluate) {
+        input.road={plan.road_speed,plan.traffic_lane,plan.nondecreasing_road_speed};
+        action_nitrous_request_=!input.active&&ai_rival_nitrous_request(input,tuning,rival_nitrous_);
+    }
+    // 44C7FB reads the action's retained byte even when its update skipped
+    // the producer. A path-only refresh never reaches this publication.
+    if((plan.published_action||plan.evaluate)&&action_nitrous_request_) {
+        if(!input.active)rival_nitrous_.started=nitrous_clock_;
+        nitrous_resource_.start(nitrous_clock_,true);
+    }
+    nitrous_engine_.update(nitrous_resource_,nitrous_clock_);
 }
 
 void RaceSession::enable_rival_physics_switching() noexcept {
@@ -306,17 +514,16 @@ unsigned RaceSession::registration_rank(unsigned actor) const noexcept {
     return actor<player_grid_?actor-1:actor;
 }
 bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& error) {
-    const auto& s = car(); const auto& q = s.orientation;
-    const double fx = 1-2*(q.y*q.y+q.z*q.z), fy = 2*(q.x*q.y+q.w*q.z);
-    const std::uint16_t difference = static_cast<std::uint16_t>(
-        chase_angle(fx,fy)-chase_angle(s.velocity.x,s.velocity.y));
+    const auto& s=car();
+    const auto& v=s.owner_motion.velocity;
     SteeringContext context;
     context.raw = float(input.steer);
     context.seconds = float(1+(crash_source_?steering_seconds_:double(steering_steps_)/60));
     context.dt = static_cast<float>(frame_seconds_);
-    context.forward_speed = float(forward_speed(s));
-    context.speed = float(vehicle_sqrt(s.velocity.x*s.velocity.x+s.velocity.y*s.velocity.y+s.velocity.z*s.velocity.z));
-    context.heading_minus_velocity_deg = float(double(static_cast<std::int16_t>(difference))*(360.0/65536));
+    // 460A80 uses the published longitudinal speed, velocity and heading.
+    context.forward_speed=s.owner_speeds.forward;
+    context.speed=std::sqrt((v[0]*v[0]+v[1]*v[1])+v[2]*v[2]);
+    context.heading_minus_velocity_deg=player_owner_slip_angle({v[0],v[1],v[2]},s.owner_motion.heading)*57.2957763671875F;
     // Traced consumers are processed controls, not separate digital/analog
     // sources. Use the applied port values, including reverse assist. The
     // native speed/gear brake normalizer itself remains unrecovered here.
@@ -324,7 +531,9 @@ bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& err
     context.handbrake = input.handbrake ? 1 : 0;
     context.brake = float(input.brake);
     context.predicted_max_speed = steering_max_speed_;
-    context.shift_elapsed = shifted_ ? float(crash_source_?steering_seconds_-shift_seconds_:double(steering_steps_-shift_step_)/60) : 1;
+    // 460B69 reads the collision body clock, measured in world ticks.
+    if(steering_contact_tick_!=0&&steering_contact_tick_!=0x7FFFFFFFU)
+        context.shift_elapsed=prop_clock_age(std::uint32_t(timing_.now_ticks),steering_contact_tick_);
     context.predicate = steering_mode_ == RaceSteering::recovered_predicate1;
     if (!steering_step(context,steering_state_,steering_result_)) {
         error = "recovered steering context refused at substep "+std::to_string(substep); return false;
@@ -446,11 +655,44 @@ bool RaceSession::skip_start_cinematic() {
     // Advance the authored scene to its release frame. The race clock and
     // physics keep their current time, and GO still requires the countdown.
     cinematic_skip_ticks_=std::max(0,cinematic_end_ticks_-timing_.now_ticks);
+    road_scene_seconds_=road_scene_release_;
+    road_scene_release_pending_=road_scene_slots_!=0;
     for(auto& rival:rivals_)rival->skip_start_cinematic();
     return true;
 }
-bool RaceSession::start(std::string& error,const VehiclePose* pose,float countdown_step,float cinematic_seconds) {
-    crash_camera_.reset();camera_shake_.reset();frame_seconds_=kDriveFrameSeconds;steering_seconds_=shift_seconds_=visual_frames_=0;
+void RaceSession::update_start_stage() {
+    if(road_scene_end_>0&&timing_.stage==RaceStage::none&&timing_.now_ticks>cinematic_start_ticks_)
+        set_race_stage(timing_,RaceStage::prerace,timing_events_);
+    const bool released=road_scene_end_>0?road_scene_seconds_>=road_scene_release_:
+        timing_.now_ticks>=cinematic_end_ticks_;
+    if(start_cinematic()&&released) {
+        set_race_stage(timing_,RaceStage::countdown,timing_events_);
+        road_scene_release_pending_=road_scene_slots_!=0;
+    }
+}
+
+void RaceSession::set_road_release_pose(unsigned actor,const VehicleVec3& position,const PlayerRigidMatrix& axes) {
+    auto& car=actor?*rivals_.at(actor-1):*this;
+    car.road_release_pose_=RoadReleasePose{position,axes};
+}
+
+std::int64_t RaceSession::start_scene_ticks() const noexcept {
+    if(road_scene_end_>0&&timing_.stage!=RaceStage::none) {
+        if(road_scene_release_pending_)return cinematic_end_ticks_-cinematic_start_ticks_;
+        return std::lround(road_scene_seconds_*kRaceTicksPerSecond);
+    }
+    return std::int64_t(timing_.now_ticks)-cinematic_start_ticks_+cinematic_skip_ticks_;
+}
+
+bool RaceSession::start_scene_finished(unsigned post_go_frames) const noexcept {
+    if(road_scene_end_>0)return road_scene_seconds_>=road_scene_end_;
+    return timing_.go_valid&&(std::int64_t(timing_.now_ticks)-timing_.go_ticks)*30>=
+        std::int64_t(post_go_frames)*kRaceTicksPerSecond;
+}
+
+bool RaceSession::start(std::string& error,const VehiclePose* pose,float countdown_step,float cinematic_seconds,
+                        unsigned road_scene_slots,float road_scene_end_seconds) {
+    crash_camera_.reset();camera_shake_.reset();frame_seconds_=kDriveFrameSeconds;steering_seconds_=visual_frames_=0;
     prop_contacts_={};
     if (started_) { error = "race session is one-shot"; return false; }
     crash_windows_damaged_=false;
@@ -461,27 +703,48 @@ bool RaceSession::start(std::string& error,const VehiclePose* pose,float countdo
     }
     if (steering_mode_ != RaceSteering::baseline && steering_mode_ != RaceSteering::recovered_predicate0 &&
         steering_mode_ != RaceSteering::recovered_predicate1) { error="invalid steering mode"; return false; }
-    if (!course_.has_route || !vehicle_.valid() || !vehicle_.start(pose?*pose:course_.start)) {
+    if (!course_.has_route || !vehicle_.valid() || (!road_grid_placed_&&!vehicle_.start(pose?*pose:course_.start))) {
         error = "race course/vehicle: " + vehicle_.error(); return false;
     }
     if(!std::isfinite(countdown_step) || countdown_step<=0 || double(countdown_step)*180>=std::numeric_limits<unsigned>::max()) {
         error="invalid grid countdown interval";return false;
     }
-    if(!std::isfinite(cinematic_seconds)||cinematic_seconds<0||cinematic_seconds>60) {
+    if(!std::isfinite(cinematic_seconds)||cinematic_seconds<0||cinematic_seconds>60||
+       !std::isfinite(road_scene_end_seconds)||road_scene_end_seconds<0||
+       (road_scene_end_seconds>0&&road_scene_end_seconds<cinematic_seconds)) {
         error="invalid start cinematic interval";return false;
     }
-    cinematic_end_ticks_=kRaceWorldStartTicks+std::int32_t(std::ceil(cinematic_seconds*kRaceTicksPerSecond));
+    road_scene_slots_=road_scene_slots;
+    road_scene_end_=road_scene_end_seconds;
+    road_scene_release_=cinematic_seconds;
+    // 422FE9 keeps the world live for two seconds before the road NIS.
+    cinematic_start_ticks_=kRaceWorldStartTicks+(road_scene_end_>0?2*kRaceTicksPerSecond:0);
+    cinematic_end_ticks_=cinematic_start_ticks_+std::int32_t(std::ceil(cinematic_seconds*kRaceTicksPerSecond));
     if(!vehicle_.prepare_grid(static_cast<unsigned>(std::ceil(countdown_step*3*60)))) {
         error="grid physical preparation: "+vehicle_.error();return false;
     }
-    for(std::size_t i=0;i<rivals_.size();++i)
-        if(!rivals_[i]->start(error,&rival_setup_[i].pose,countdown_step,cinematic_seconds))return false;
+    if(!road_grid_placed_&&physical_selector()==1&&world_random_)
+        vehicle_.initialize_gearbox_offsets(*world_random_);
+    for(std::size_t i=0;i<rivals_.size();++i) {
+        auto& rival=*rivals_[i];
+        if(!rival.start(error,&rival_setup_[i].pose,countdown_step,cinematic_seconds,
+                        road_scene_slots_,road_scene_end_))return false;
+        if(road_scene_slots_&&switch_rival_physics_)rival.select_rival_physics(3);
+    }
+    if(!external_contact_owner_ && road_scene_slots_) {
+        for(unsigned actor=0;actor<=rivals_.size();++actor) {
+            if(!(road_scene_slots_&(1U<<registration_rank(actor))))continue;
+            auto& racer=actor?*rivals_[actor-1]:*this;
+            racer.vehicle_.publish_start_car_speeds(false);
+        }
+    }
     if (!make_race_timing_config(60, 1+rivals_.size(), timing_config_, error))return false;
     if(human_rival_)timing_config_.humans=2;
     timing_config_.countdown_step_seconds=countdown_step;
     timing_config_.time_limit_ticks=time_limit_ticks_;
     if (!start_race_timing(course_.route, timing_config_, timing_, error)) return false;
-    set_race_stage(timing_, cinematic_seconds>0?RaceStage::prerace:RaceStage::countdown, timing_events_);
+    if(road_scene_end_==0)
+        set_race_stage(timing_, cinematic_seconds>0?RaceStage::prerace:RaceStage::countdown, timing_events_);
     update_standings();
 
     // Drift starts in the fourth configured view. Ordinary races retain the
@@ -549,12 +812,13 @@ RaceDriverWallContact RaceSession::driver_wall_contact(unsigned actor) const noe
     for(const auto& pair:world_contact_pairs_) {
         if(!pair.record.active||!pair.track()||pair.a!=actor||
            pair.polygon>=course_.world.collision.polygons.size())continue;
-        //4534F0/45F1BD distinguish the kind3 vertical plane from ground.
-        if(course_.world.triangles[2*pair.polygon].up>=.1F)continue;
-        out.active=true;
+        const float up=course_.world.triangles[2*pair.polygon].up;
+        // The strategy and driver have separate tests. The latter takes
+        // the absolute normal and also requires a recent strong contact.
+        if(std::abs(up)<.1F)out.active=true;
         const auto elapsed=std::uint32_t(timing_.now_ticks)-pair.record.creation_tick;
         std::int32_t signed_elapsed;std::memcpy(&signed_elapsed,&elapsed,4);
-        out.recent_strong|=float(signed_elapsed)*.00025F<.2F&&pair.record.magnitude_sum>10.F;
+        out.recent_strong|=ai_driver_wall_contact(up,signed_elapsed,pair.record.magnitude_sum);
     }
     return out;
 }
@@ -568,7 +832,8 @@ void RaceSession::visit_actor_pairs(unsigned actor,void* context,
 
 bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direct,std::string& error,int ai_gear_request,
                                const RaceRivalPlans* plans,RaceSimulationProfile* profile,TimingService* timer,
-                               const GamepadFrame* remote_pad,const RaceRivalPlan* rival_plan) {
+                               const GamepadFrame* remote_pad,const RaceRivalPlan* rival_plan,
+                               const RaceRivalPlans* remote_drag) {
     if(profile && !timer){error="simulation profiling requires a clock";return false;}
     auto profile_start=profile?timer->now_us():0;
     const auto stage=[&](double RaceSimulationProfile::*field) {
@@ -579,7 +844,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     // Timing already freezes each finished racer's result. Freezing its body
     // instead leaves a collidable stack on the finish line.
     const bool finished_ai=(ai_physics_||drag_)&&direct&&timing_.outcome==RaceOutcome::finished;
-    const bool finished_human=pad&&plans&&presentation_==RacePresentation::player&&timing_.outcome==RaceOutcome::finished;
+    const bool finished_human=pad&&plans&&!lan_player_&&presentation_==RacePresentation::player&&timing_.outcome==RaceOutcome::finished;
     const bool finished_lan=lan_player_&&pad&&timing_.outcome==RaceOutcome::finished;
     if(human_rival_&&!remote_pad) {error="missing remote human input";return false;}
     if (!started_ || (timing_.outcome != RaceOutcome::running&&!finished_ai&&!finished_human&&!finished_lan)) {
@@ -588,19 +853,21 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     crash_camera_.begin_frame(float(kDriveFrameSeconds));
     if(crash_camera_.consume_damage_reset())crash_windows_damaged_=false;
     frame_seconds_=external_frame_seconds_>0?external_frame_seconds_:
-        (crash_camera_.event()?double(float(kDriveFrameSeconds)*.4F):kDriveFrameSeconds);
+        (!shared_local_camera_&&crash_camera_.event()?double(float(kDriveFrameSeconds)*.4F):kDriveFrameSeconds);
     const float world_dt=float(frame_seconds_);
     const unsigned solver_slices=unsigned(world_dt/.004399999976158142F)+1;
     const double solver_dt=frame_seconds_/solver_slices;
     if(ai_physics_&&!direct) {error="rival physics needs processed AI controls";return false;}
-    if(start_cinematic() && timing_.now_ticks>=cinematic_end_ticks_)
-        set_race_stage(timing_,RaceStage::countdown,timing_events_);
+    update_start_stage();
+    if(start_cinematic()&&!recycle_traffic_before_controllers(nullptr,error))return false;
     const bool held_grid=race_car_held(timing_);
     vehicle_.defer_body_contacts(true);
     if(traffic_)traffic_->defer_body_contacts(true);
     if(planned_rivals_&&!held_grid&&(!plans||plans->step!=timing_.step||plans->count!=rivals_.size())) {
         error="current complete rival plans required";return false;
     }
+    // 46D760 uses the same race RNG in ordinary and drag full physics.
+    auto* gearbox_random=plans&&plans->gearbox_world_random?plans->gearbox_world_random:world_random_;
     std::array<RaceContactPose,4> previous_poses{};
     std::array<std::uint64_t,4> previous_resets{};
     previous_poses[0]=race_contact_pose(car());previous_resets[0]=telemetry().resets;
@@ -616,25 +883,34 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             }
         auto next_drivers=original_drivers_;
         for(std::size_t i=0;i<rivals_.size();++i) {
-            const auto& r=*rivals_[i];
+            auto& r=*rivals_[i];
             if(r.timing().outcome!=RaceOutcome::running&&r.timing().outcome!=RaceOutcome::finished)continue;
-            const auto& p=plans->cars[i];const auto& s=r.car();const auto& q=s.orientation;
+            const auto& p=plans->cars[i];
+            // Direct plan callers still enter the physical lifecycle once.
+            // IntroAiPlanner performs these phases around each action instead.
+            if(r.rival_controller_step_!=timing_.step) {
+                begin_rival_controller(unsigned(i),gearbox_random,world_dt);
+            }
+            end_rival_controller(unsigned(i),p);
+            const auto& s=r.car();const auto& q=s.orientation;
+            r.vehicle_.set_road_reset_source(p.road_reset);
             if(p.reset_car)rivals_[i]->vehicle_.request_reset();
-            // A newly placed car has not yet imported its component body. Its
-            // public pose is authoritative until the first physical frame.
-            const AiDriverPoint forward=s.rigid_body_ready?s.rigid_body.axes[0]:AiDriverPoint{{
-                float(1-2*(q.y*q.y+q.z*q.z)),float(2*(q.x*q.y+q.w*q.z)),float(2*(q.x*q.z-q.w*q.y))}};
             AiDriverForwardInput in;in.path=p.path;in.desired_speed=p.desired_speed;
             in.throttle_cap=p.throttle_cap;in.route_distance=p.route_distance;in.category=p.driver_category;in.enabled=p.enabled;
             in.position={float(s.position.x),float(s.position.y),float(s.position.z)};
-            in.velocity={float(s.velocity.x),float(s.velocity.y),float(s.velocity.z)};
-            in.heading=track_angle(forward[0],forward[1]);
-            in.forward_speed=(in.velocity[0]*forward[0]+in.velocity[1]*forward[1])+in.velocity[2]*forward[2];
-            in.absolute_speed=float(vehicle_sqrt(double(in.velocity[0])*in.velocity[0]+
-                double(in.velocity[1])*in.velocity[1]+double(in.velocity[2])*in.velocity[2]));
+            in.velocity=s.owner_motion.velocity;
+            // 45E970 reads the last actor publication (+3B4/+3D0/+3D4).
+            in.heading=s.rigid_body_ready?s.owner_motion.heading:
+                player_owner_heading({1-2*(q.y*q.y+q.z*q.z),2*(q.x*q.y+q.w*q.z),2*(q.x*q.z-q.w*q.y)});
+            in.forward_speed=s.owner_speeds.forward;
+            in.absolute_speed=s.owner_speeds.magnitude;
             in.rear_drive_fraction=r.spec().handling.rear_drive_fraction;
             in.race_seconds=timing_.race_start_valid?float(timing_.now_ticks-timing_.race_start_ticks)*.00025F:-1.F;
-            for(unsigned k=0;k<4;++k){in.contact[k]=s.wheels[k].contact;in.wheel_slip[k]=s.wheels[k].prepared_slip;}
+            in.racer_status=static_cast<std::int16_t>(timing_.racers[i+1].status);
+            in.nitrous_active=r.nitrous_engine_.active;
+            in.physical_selector=r.physical_selector();
+            in.recent_wall_contact=driver_wall_contact(unsigned(i+1)).recent_strong;
+            for(unsigned k=0;k<4;++k){in.contact[k]=s.wheels[k].contact;in.wheel_slip[k]=s.published_wheel_slip[k][0];}
             if((p.recovery_cleanup&&!ai_driver_recovery_reset(in,next_drivers[i]))||
                !(drag_?ai_driver_drag_step(in,world_dt,next_drivers[i]):
                        ai_driver_ordinary_step(in,world_dt,next_drivers[i]))) {
@@ -642,8 +918,14 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             }
             auto& control=rival_controls[i];const auto& driver=next_drivers[i];
             control.throttle=driver.pedals.throttle;control.brake=driver.pedals.brake;
+            control.nitrous_active=r.nitrous_engine_.active;
+            control.nitrous_clock=r.nitrous_clock_;
+            control.nitrous_activation_seconds=r.nitrous_engine_.activation_seconds;
             control.race_active=true;
-            control.drag_world_random=drag_?plans->drag_world_random:nullptr;
+            control.gearbox_world_random=gearbox_random;
+            if(switch_rival_physics_&&r.physical_selector()==1)
+                control.direction_request=driver.gear_request==0?VehicleDirectionRequest::reverse:
+                    VehicleDirectionRequest::automatic;
             control.road_steering=true;control.road_angle_word_valid=true;control.road_angle_word=driver.steering.word;
             control.road_angle=double(static_cast<std::int16_t>(driver.steering.word))*(6.28318530717958647692/65536);
             control.road_target=control.road_angle;
@@ -655,11 +937,28 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         }
         original_drivers_=next_drivers;
     }
-    if(drag_&&held_grid&&planned_rivals_) {
-        if(!plans||plans->step!=timing_.step||plans->count!=rivals_.size()) {
+    if(held_grid&&planned_rivals_) {
+        if(drag_&&(!plans||plans->step!=timing_.step||plans->count!=rivals_.size())) {
             error="current drag launch plans required";return false;
         }
-        for(unsigned i=0;i<rivals_.size();++i)rival_controls[i].throttle=plans->cars[i].grid_throttle;
+        // 45DB80 holds both pedals at 1 for all rival controllers.
+        // 45F745/45F778 override the speed-demand pedals and event cap.
+        for(std::size_t i=0;i<rivals_.size();++i) {
+            rival_controls[i].throttle=1;
+            rival_controls[i].brake=1;
+            original_drivers_[i].pedals={1.F,1.F};
+            if(!switch_rival_physics_)continue;
+            auto& rival=*rivals_[i];
+            // 420C8A calls the controllers in registered actor order,
+            // before 420310 sorts physical bodies. Selector1 construction
+            // consumes its two shared gearbox draws in controller order.
+            if(road_scene_slots_&&rival.physical_selector()!=1) {
+                rival.select_rival_physics(1,timing_.now_ticks,gearbox_random);
+            }
+            // 44B35B arms the timer and 586640 subtracts this controller step.
+            rival.rival_full_ticks_=std::max(0,5*kRaceTicksPerSecond-
+                static_cast<std::int32_t>(world_dt*kRaceTicksPerSecond));
+        }
     }
     drafting_=0;
     if(!held_grid&&!spec_.drift_mode) {
@@ -698,7 +997,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     //The world continues traffic motion during racer staging/countdown.
     //Holding grid cars must not postpone traffic admission/movement until GO.
     if(!external_contact_owner_) {
-        if(traffic_) {
+        if(traffic_&&timing_.stage!=RaceStage::prerace) {
             std::array<const VehicleState*,4> racers{{&car()}};
             for(unsigned i=0;i<rivals_.size();++i)racers[i+1]=&rivals_[i]->car();
             const auto begin=profile?timer->now_us():0;
@@ -717,48 +1016,13 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
            ((planned_rivals_||human_rival_)&&r.timing().outcome==RaceOutcome::finished)) {
             bool ok;
             if(planned_rivals_) {
-                if(switch_rival_physics_&&!held_grid) {
-                    // 44B35B arms 5 s on the grid. 44B3BB retries in 1 s
-                    // if it expires before all four wheels have support.
-                    if(timing_.step==timing_.go_step+1)
-                        r.rival_full_until_=timing_.go_ticks+5*kRaceTicksPerSecond;
-                    if(r.rival_full_until_&&timing_.now_ticks>=r.rival_full_until_) {
-                        r.rival_full_until_=r.car().published_support<4?
-                            timing_.now_ticks+kRaceTicksPerSecond:0;
-                    }
-                    const auto& plan=plans->cars[i];
-                    const auto& car_state=r.car();
-                    const auto near=[&](const VehicleVec3& point) {
-                        const auto& pos=car_state.position;
-                        const auto dx=pos.x-point.x,dy=pos.y-point.y,dz=pos.z-point.z;
-                        return dx*dx+dy*dy+dz*dz<120.0*120.0;
-                    };
-                    if(r.rival_full_until_!=0||timing_.racers[i+1].status!=RacerStatus::not_finished)
-                        r.select_rival_physics(1);
-                    else if(plan.reset_car||car_state.published_support==0||
-                            (r.physical_selector()==4&&(!plan.path_physics_allowed||near(car().position)||near(view_.eye)))||
-                            r.rival_path_blocked_until_>timing_.now_ticks)
-                        r.select_rival_physics(3);
-                    else if(plan.physics_full_update) {
-                        // 44B060 admits path motion on full controller decisions.
-                        const bool path=plan.path_physics_allowed&&plan.path.count>2&&plan.enabled&&
-                            car_state.owner_speeds.forward>=5.F&&
-                            !r.vehicle_.owner_recovery_active(timing_.now_ticks)&&
-                            !near(car().position)&&!near(view_.eye)&&
-                            timing_.now_ticks-timing_.go_ticks>=30*kRaceTicksPerSecond;
-                        r.select_rival_physics(path?4U:3U);
-                    } else if(r.physical_selector()==1)r.select_rival_physics(3);
-                    if(r.physical_selector()==1)rival_controls[i].direction_request=
-                        original_drivers_[i].gear_request==0?VehicleDirectionRequest::reverse:
-                        VehicleDirectionRequest::automatic;
-                }
                 ok=r.advance_impl(nullptr,&rival_controls[i],error,
                     drag_?-1:original_drivers_[i].gear_request,nullptr,nullptr,nullptr,nullptr,
                     held_grid?nullptr:&plans->cars[i]);
                 if(!held_grid)++work_.rival_driver_updates;
             } else if(human_rival_) {
                 r.external_human_drafting_=float(rival_controls[i].drafting);
-                ok=r.advance(*remote_pad,error);
+                ok=r.advance_impl(remote_pad,nullptr,error,-1,remote_drag);
             }
             else ok=r.advance(rival_drivers_[i]->sample(r),error);
             if(!ok){error="rival "+std::to_string(i)+": "+error;started_=false;return false;}
@@ -773,7 +1037,8 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     const auto advance_player=[&]() {
     const bool countdown=timing_.stage==RaceStage::countdown;
     if(!held_grid||countdown)nitrous_clock_=static_cast<std::uint32_t>(timing_.now_ticks);
-    if((!held_grid||countdown)&&!direct&&!finished_human) {
+    const bool local_drag_stopped=drag_&&lan_player_&&timing_.racers[0].status!=RacerStatus::not_finished;
+    if((!held_grid||countdown)&&!direct&&!finished_human&&!local_drag_stopped) {
         // 431C0F starts the resource before branching on stage; 42ABF0
         // awards the discrete purge while the grid still holds the car.
         const auto transition=nitrous_dispatch(nitrous_resource_,nitrous_clock_,controls_.held(),{});
@@ -797,7 +1062,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         drafting_=held.drafting;
         held.drag_mode=drag_;held.drag_clock=timing_.now_ticks;
         held.drag_category=drag_category_;held.drag_shift_scale=drag_shift_scale_;
-        if(plans&&drag_)held.drag_world_random=plans->drag_world_random;
+        if(!held.gearbox_world_random)held.gearbox_world_random=gearbox_random;
         if(!direct && car().gear==kVehicleGearNeutral &&
             held.direction_request!=VehicleDirectionRequest::reverse)
             held.throttle=drive_neutral_throttle(float(held.throttle),float(inputs_[kDriveStepsPerFrame-1].throttle),
@@ -811,17 +1076,19 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             if(!steer_input(held,1,error)) {started_=false;return false;}
             ++steering_steps_;steering_seconds_+=frame_seconds_;
         }
-        if(drag_&&!direct&&!finished_human) {
+        if(drag_&&!direct&&!finished_human&&!local_drag_stopped) {
             if(!plans||!plans->drag_steering){error="current drag steering path required";return false;}
-            const auto& p=plans->human;const auto& s=car();const auto& q=s.orientation;
+            const auto& p=plans->human;const auto& s=car();
             AiDriverForwardInput in;in.path=p.path;in.desired_speed=p.desired_speed;
             in.position={float(s.position.x),float(s.position.y),float(s.position.z)};
-            in.velocity={float(s.velocity.x),float(s.velocity.y),float(s.velocity.z)};
-            in.heading=track_angle(float(1-2*(q.y*q.y+q.z*q.z)),float(2*(q.x*q.y+q.w*q.z)));
-            in.forward_speed=float(forward_speed(s));in.absolute_speed=float(speed(s));
+            in.velocity=s.owner_motion.velocity;
+            in.heading=s.owner_motion.heading;
+            in.forward_speed=s.owner_speeds.forward;in.absolute_speed=s.owner_speeds.magnitude;
             in.category=p.driver_category;in.route_distance=p.route_distance;
             in.rear_drive_fraction=spec_.handling.rear_drive_fraction;
-            for(unsigned k=0;k<4;++k){in.contact[k]=s.wheels[k].contact;in.wheel_slip[k]=s.wheels[k].prepared_slip;}
+            in.physical_selector=physical_selector();
+            in.recent_wall_contact=driver_wall_contact(0).recent_strong;
+            for(unsigned k=0;k<4;++k){in.contact[k]=s.wheels[k].contact;in.wheel_slip[k]=s.published_wheel_slip[k][0];}
             if(!ai_driver_drag_step(in,world_dt,drag_driver_)) {error="drag human steering refused";return false;}
             //4603D0: real pedals/shift/nitrous, AI road steering. Do not pass
             //the lane button through ordinary player steering a second time.
@@ -833,16 +1100,19 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             //4352F3 changes the human controller to3; action17/4537D0
             //publishes an enabled path at desired speed0. Keep the original
             //car physics and let the same ordinary driver brake it to rest.
-            const auto& p=plans->human;const auto& c=car();const auto& q=c.orientation;
+            const auto& p=plans->human;const auto& c=car();
             AiDriverForwardInput in;in.path=p.path;in.desired_speed=0;in.enabled=true;
             in.position={float(c.position.x),float(c.position.y),float(c.position.z)};
-            in.velocity={float(c.velocity.x),float(c.velocity.y),float(c.velocity.z)};
-            in.heading=track_angle(float(1-2*(q.y*q.y+q.z*q.z)),float(2*(q.x*q.y+q.w*q.z)));
-            in.forward_speed=float(forward_speed(c));in.absolute_speed=float(speed(c));
+            in.velocity=c.owner_motion.velocity;
+            in.heading=c.owner_motion.heading;
+            in.forward_speed=c.owner_speeds.forward;in.absolute_speed=c.owner_speeds.magnitude;
             in.category=p.driver_category;in.route_distance=p.route_distance;
             in.rear_drive_fraction=spec_.handling.rear_drive_fraction;
             in.race_seconds=float(timing_.now_ticks-timing_.race_start_ticks)*.00025F;
-            for(unsigned k=0;k<4;++k){in.contact[k]=c.wheels[k].contact;in.wheel_slip[k]=c.wheels[k].prepared_slip;}
+            in.racer_status=static_cast<std::int16_t>(timing_.racers[0].status);
+            in.physical_selector=physical_selector();
+            in.recent_wall_contact=driver_wall_contact(0).recent_strong;
+            for(unsigned k=0;k<4;++k){in.contact[k]=c.wheels[k].contact;in.wheel_slip[k]=c.published_wheel_slip[k][0];}
             if(!ai_driver_ordinary_step(in,world_dt,finish_driver_)){error="finish driver refused";return false;}
             held={};held.race_active=true;held.throttle=finish_driver_.pedals.throttle;held.brake=finish_driver_.pedals.brake;
             held.road_steering=true;held.road_angle_word_valid=true;held.road_angle_word=finish_driver_.steering.word;
@@ -851,12 +1121,17 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         }
         if(first.shift!=VehicleShift::none) held.shift=first.shift;
         held.world_frame_seconds=world_dt;held.world_clock_valid=true;held.world_clock=timing_.now_ticks;
-        if(physical_selector()==4&&
-           (!rival_plan||!vehicle_.step_rival_path(rival_plan->path,rival_plan->desired_speed,
-                rival_plan->speed_duration,rival_plan->physics_full_update,held,track_telemetry_.back()))) {
-            // 463D50/463F20 drops a path that cannot be followed.
-            rival_path_blocked_until_=timing_.now_ticks+2*kRaceTicksPerSecond;
-            select_rival_physics(3);
+        if(physical_selector()==4) {
+            bool departure=false;
+            if(!rival_plan||!vehicle_.step_rival_path(rival_plan->path,rival_plan->desired_speed,
+                    rival_plan->speed_duration,rival_plan->physics_full_update,held,track_telemetry_.back(),departure)) {
+                rival_path_block_ticks_=2*kRaceTicksPerSecond;
+                select_rival_physics(3);
+            } else if(departure) {
+                // 463F20 publishes this body before 44B4E8 drops its
+                // selector on the next controller pass. The timer is 1 s.
+                rival_path_block_ticks_=kRaceTicksPerSecond;
+            }
         }
         if(physical_selector()!=1) {
             if(physical_selector()==3) {
@@ -877,11 +1152,12 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                 animation_.wheel_phase[w]=phase;
             }
         } else for (std::size_t k = 0; k < solver_slices; ++k) {
-            inputs_[k]=held;
-            if(k) inputs_[k].shift=VehicleShift::none;
+            const auto sample=std::min(k,track_telemetry_.size()-1);
+            inputs_[sample]=held;
+            if(k) inputs_[sample].shift=VehicleShift::none;
             const int previous_gear = car().gear;
             ++work_.physics_steps;
-            if (!vehicle_.step(inputs_[k], track_telemetry_[k],
+            if (!vehicle_.step(inputs_[sample], track_telemetry_[sample],
                 k+1==solver_slices?frame_seconds_:0.0,
                 solver_dt,k==0,solver_slices,true)) {
                 started_ = false; error = vehicle_.error(); return false;
@@ -890,15 +1166,11 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                 ++drag_shifts_;
                 if(car().transmission.shift_quality>=.85F)++drag_perfect_shifts_;
             }
-            if (track_telemetry_[k].reset!=VehicleTrackReset::none) {
+            if (track_telemetry_[sample].reset!=VehicleTrackReset::none) {
                 turbo_={};crash_camera_.reset();crash_windows_damaged_=false;
             }
-            if (recovered) {
-                if (track_telemetry_[k].reset != VehicleTrackReset::none) {
-                    steering_state_={}; steering_result_={}; shifted_=false;
-                } else if (previous_gear != car().gear) {
-                    shift_step_ = steering_steps_;shift_seconds_=steering_seconds_; shifted_=true;
-                }
+            if (recovered && track_telemetry_[sample].reset != VehicleTrackReset::none) {
+                steering_state_={}; steering_result_={};
             }
             for (std::size_t w = 0; w < kVehicleWheelCount; ++w) {
                 double phase = animation_.wheel_phase[w] +
@@ -921,8 +1193,8 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             engine.cutoff_until==0?engine.throttle_multiplier*float(held.throttle):0,
             engine.cutoff_until!=0,nitrous_clock_);
     } else {
-        // Body and wheels stay fixed; the human engine still receives gas.
-        // AI pre-race rev policy is separate and remains unchanged here.
+        // The authored road scene hands the chassis back before GO. Its driver
+        // still holds the service brake and neutral throughout the countdown.
         const double raw_throttle=direct?direct->throttle:
             (frame.throttle_from_button?frame.throttle_digital:frame.throttle_analog);
         const double throttle=direct?raw_throttle:drive_neutral_throttle(float(raw_throttle),
@@ -930,25 +1202,36 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             world_dt);
         // Consume countdown shift edges without carrying them through GO.
         if(!direct) controls_.step(0,kVehicleGearNeutral,VehicleGearbox::manual);
-        for (std::size_t k = 0; k < kDriveStepsPerFrame; ++k) {
-            inputs_[k] = {};
+        const unsigned slices=road_scene_end_>0?solver_slices:kDriveStepsPerFrame;
+        const auto duration=road_scene_end_>0?frame_seconds_:kDriveFrameSeconds;
+        const bool advance_chassis=countdown && road_scene_end_>0 && !road_scene_release_pending_ && !drag_;
+        for (std::size_t k = 0; k < slices; ++k) {
+            const auto sample=std::min(k,track_telemetry_.size()-1);
+            inputs_[sample] = {};
             if(physical_selector()==1) {
-                auto& input=inputs_[k];
-                input.throttle=throttle;input.handbrake=true;
+                auto& input=inputs_[sample];
+                input.throttle=throttle;input.brake=1;
+                input.world_clock_valid=true;input.world_clock=timing_.now_ticks;
+                input.world_frame_seconds=world_dt;
+                input.road_steering=true;input.road_angle_word_valid=true;
                 if(!direct&&countdown&&nitrous_engine_.active) {
                     input.nitrous_active=true;
                     input.nitrous_clock=nitrous_clock_;
                     input.nitrous_activation_seconds=nitrous_engine_.activation_seconds;
                     input.drag_mode=drag_;
                 }
-                if(!vehicle_.step_grid_engine(input,track_telemetry_[k],
-                    k+1==kDriveStepsPerFrame?kDriveFrameSeconds:0.0,kDriveSolverSeconds,drag_,timing_.now_ticks)) {
+                if(!vehicle_.step_grid_engine(input,track_telemetry_[sample],
+                    k+1==slices?duration:0.0,duration/slices,drag_,timing_.now_ticks,advance_chassis)) {
                     started_=false;error="grid engine update refused";return false;
                 }
             } else {
-                track_telemetry_[k].position = car().position;
-                track_telemetry_[k].orientation = car().orientation;
+                track_telemetry_[sample].position = car().position;
+                track_telemetry_[sample].orientation = car().orientation;
             }
+        }
+        for(unsigned k=slices;k<kDriveStepsPerFrame;++k) {
+            inputs_[k]=inputs_[slices-1];
+            track_telemetry_[k]=track_telemetry_[slices-1];
         }
     }
         return true;
@@ -961,14 +1244,15 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     physical[physical_count++]={0,float(car().position.x)+contact_bounds_.radius};
     for(unsigned i=0;i<rivals_.size();++i)
         physical[physical_count++]={i+1,float(rivals_[i]->car().position.x)+rivals_[i]->contact_bounds_.radius};
-    if(traffic_&&!external_contact_owner_)for(unsigned i=0;i<traffic_->actors().size();++i) {
+    if(traffic_&&!external_contact_owner_&&timing_.stage!=RaceStage::prerace)for(unsigned i=0;i<traffic_->actors().size();++i) {
         const auto& t=traffic_->actors()[i];if(t.active)
             physical[physical_count++]={i+4,float(t.car.position.x)+t.bounds.radius};
     }
     if(props_&&!race_car_held(timing_)&&!external_contact_owner_) {
         const auto begin=profile?timer->now_us():0;
         props_->queued_contacts_=true;props_->clock_=std::uint32_t(timing_.now_ticks);
-        props_->maintain_pool(course_.world,car().position,props_->clock_,timing_.step);
+        props_->maintain_pool(course_.world,car().position,props_->clock_,timing_.step,
+            shared_local_camera_?&rivals_.front()->car().position:nullptr);
         if(!props_->prepare_frame(course_.world,error,world_dt))return false;
         props_->world_frame_ready_=true;
         for(std::size_t i=0;i<props_->objects_.size();++i) {
@@ -1011,8 +1295,13 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     }
     if(traffic_&&!external_contact_owner_)traffic_->finish_frame();
     if(profile)profile_start=timer->now_us();
-    if(!race_car_held(timing_) && !external_contact_owner_) {
-        if(!resolve_world_contacts(previous_poses,previous_resets,error,profile,timer))return false;
+    const bool traffic_start_contacts=held_grid&&road_scene_end_>0&&traffic_&&
+        !traffic_->actors().empty()&&!start_cinematic();
+    if(!external_contact_owner_&&(!held_grid||traffic_start_contacts)) {
+        // Traffic bodies can collide while the racing drivers still hold
+        // the brake. Only the NIS motion phase parks those bodies.
+        if(!resolve_world_contacts(previous_poses,previous_resets,error,profile,timer,nullptr,
+                                   traffic_start_contacts))return false;
     }
     if(!external_contact_owner_) {
         //426930 runs once after the shared contact branch, with the saved
@@ -1023,7 +1312,13 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                 previous_poses[i].velocity,world_dt);
         };
         publish_acceleration(*this,0);
-        for(std::size_t i=0;i<rivals_.size();++i)publish_acceleration(*rivals_[i],unsigned(i+1));
+        for(std::size_t i=0;i<rivals_.size();++i) {
+            publish_acceleration(*rivals_[i],unsigned(i+1));
+            // Completed placement calls Controller44AD00 -> Driver45E520.
+            // Action10 cleanup uses 45E650 and has different seeded errors.
+            if(rivals_[i]->telemetry().resets!=previous_resets[i+1])
+                ai_driver_placement_reset(original_drivers_[i]);
+        }
         //426A73..426A8B: actor3B8 accumulates published absolute speed*dt.
         //The owning world publishes once after the contact queue, not again
         //for every rewind/continuation or the nested rival advance.
@@ -1036,7 +1331,8 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         for(auto& rival:rivals_)publish_distance(*rival);
         //420E51 updates animation movers after contact/426930 publication;
         //4281E0 then admits train release for the NEXT world frame.
-        if(!advance_world_motion(world_dt,plans&&plans->drag_steering?plans->human.driver_category:-1,error)){
+        if(!advance_world_motion(world_dt,plans?plans->human_drag_lane:-1,error,
+                                 remote_drag?remote_drag->human_drag_lane:-1)){
             started_=false;return false;
         }
     }
@@ -1050,8 +1346,16 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                           timing_events_, error,lap_knockout_?standings_.order.data():nullptr)) { started_ = false; return false; }
     finish_probe_events_.clear();
     if(held_grid && !race_car_held(timing_)) {
-        vehicle_.release_grid_engine(drag_,drag_category_,drag_shift_scale_);
+        if(!vehicle_.release_grid_engine(drag_,drag_category_,drag_shift_scale_)) {
+            started_=false;error="grid force preparation refused";return false;
+        }
         vehicle_.begin_race();
+        // 434BCE/434BDA publish the released pedals before the next
+        // driver update. Moving pedal regulation starts from full gas.
+        if(planned_rivals_)for(std::size_t i=0;i<rivals_.size();++i) {
+            original_drivers_[i].pedals={1.F,0.F};
+            original_drivers_[i].gear_request=-1;
+        }
     }
     update_standings();
     if(drag_&&timing_.go_valid) {
@@ -1070,17 +1374,83 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             row.status=failed_car.drag_totalled?RacerStatus::totalled:RacerStatus::blown_engine;row.position=place;
             row.finish_valid=false;row.finish_step=timing_.step;
         }
-        if(timing_.racers[0].status!=RacerStatus::not_finished)timing_.outcome=RaceOutcome::finished;
+        const bool ended=timing_.racers[0].status!=RacerStatus::not_finished;
+        if(ended&&(!human_rival_||timing_.racers[1].status!=RacerStatus::not_finished))
+            timing_.outcome=RaceOutcome::finished;
     }
     if ((race_car_held(timing_)&&timing_.stage!=RaceStage::countdown) ||
         timing_.outcome!=RaceOutcome::running) {
         nitrous_resource_.stop(nitrous_clock_);nitrous_engine_.active=false;
     }
-    update_style();
+    if(road_scene_slots_&&(start_cinematic()||road_scene_release_pending_)) {
+        // 47C580 parks the animated actors at the end of the world frame.
+        // The first countdown frame still starts detached, then 47C9E0
+        // restores the player and the normal rival selector for the road.
+        const bool release=road_scene_release_pending_;
+        if(!external_contact_owner_) {
+            const auto update_placement=[&](RaceSession& actor,unsigned slot) {
+                RoadReleasePose pose;
+                if(release && actor.road_release_pose_) {
+                    pose=*actor.road_release_pose_;
+                    actor.road_release_pose_.reset();
+                } else if(!release && road_start_motion_) {
+                    // 47C580 advances the half-speed car channels before grounding
+                    // the actor. The next world frame observes this placement.
+                    if(!road_start_motion_->sample(slot,road_scene_seconds_+world_dt,actor.spec_,
+                                                   pose.position,pose.axes,error))return false;
+                } else {
+                    actor.vehicle_.publish_start_car_speeds(!release);
+                    return true;
+                }
+                actor.vehicle_.place_start_car(pose.position,pose.axes,!release);
+                ++actor.cinematic_placements_;
+                return true;
+            };
+            if(road_scene_slots_&(1U<<(player_grid_-1))) {
+                if(!update_placement(*this,player_grid_-1))return false;
+                select_rival_physics(release?1U:0U,timing_.now_ticks,gearbox_random);
+                // 47CA7E selects the human's full body via 426110. The
+                // newly constructed gearbox draws through 46D436/46D760.
+            }
+            for(unsigned i=0;i<rivals_.size();++i) {
+                if(!(road_scene_slots_&(1U<<registration_rank(i+1))))continue;
+                auto& rival=*rivals_[i];
+                const auto placement=rival.placement_generation();
+                if(!update_placement(rival,registration_rank(i+1)))return false;
+                if(!switch_rival_physics_)continue;
+                if(placement!=rival.placement_generation())ai_driver_placement_reset(original_drivers_[i]);
+                rival.select_rival_physics(release?3U:0U);
+            }
+        }
+        if(release)road_start_motion_.reset();
+        road_scene_release_pending_=false;
+    }
+    // 47F4E0 advances the authored clock with the frame interval. The NIS
+    // ends from this clock, even when A skipped directly to release.
+    if(timing_.stage!=RaceStage::none&&road_scene_seconds_<road_scene_end_)
+        road_scene_seconds_+=world_dt;
+    if(!(shared_local_camera_&&spec_.drift_mode&&external_contact_owner_))update_style();
+    if(human_rival_&&spec_.drift_mode)rivals_[0]->update_style(&pair_frame_,1);
+    visual_frames_+=frame_seconds_/kDriveFrameSeconds;
+    // Both local views consume the pose and acceleration after the shared
+    // contact pass, including impacts applied while advancing the other car.
+    if(!external_contact_owner_||!shared_local_camera_) {
+        if(!update_race_camera(telemetry().resets!=previous_resets[0],plans&&
+            timing_.outcome==RaceOutcome::finished&&crash_camera_.event()!=0,error))return false;
+        if(human_rival_&&shared_local_camera_) {
+            auto& guest=*rivals_[0];
+            if(!guest.update_race_camera(guest.telemetry().resets!=previous_resets[1],false,error))return false;
+        }
+    }
+    record_dirty_=true;
+    stage(&RaceSimulationProfile::tail);
+    return true;
+}
+
+bool RaceSession::update_race_camera(bool reset,bool finishing,std::string& error) {
     if(presentation_==RacePresentation::player&&controls_.frame_state().camera)
         chase_.next_pov(spec_.drift_mode);
-    visual_frames_+=frame_seconds_/kDriveFrameSeconds;
-    if(crash_source_&&timing_.stage==RaceStage::racing)
+    if((crash_source_||shared_local_camera_)&&timing_.stage==RaceStage::racing)
         camera_shake_.observe(car().owner_motion.acceleration,crash_camera_.event()==7);
     bool cinematic_active=false;
     if(crash_source_) {
@@ -1088,7 +1458,6 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         // 42C2FB extends the finish hold when a roadside shot is active.
         // 42DA40 permits the follow-up while the world is still driving.
         // A terminal session with no post-finish driver must release the view.
-        const bool finishing=plans&&timing_.outcome==RaceOutcome::finished&&crash_camera_.event()!=0;
         ChaseCameraView cinematic;
         if(crash_camera_.update(timing_.step_ticks,timing_.step-1,allowed,car(),spec_.handling,float(animation_.wheel_phase[0]),
             progress().coordinate.fraction*100.F,*crash_source_,camera_world_,view_,cinematic,finishing)) {
@@ -1099,7 +1468,6 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     }
     if(crash_camera_.consume_damage_reset())crash_windows_damaged_=false;
     if (presentation_==RacePresentation::player) {
-        const bool reset=telemetry().resets!=previous_resets[0];
         // The roadside shot replaces the chase mover. Keep the latter's
         // history at the cut, then advance it once on the first chase frame.
         if(!cinematic_active||reset) {
@@ -1119,7 +1487,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             }
         }
     }
-    if(crash_source_) {
+    if(crash_source_||shared_local_camera_) {
         // 575040 reads the current world scale after 42DDC0 restores it.
         // The landing frame can already use the chase view while its physics
         // and the 574EB0 envelope still use the earlier scaled delta.
@@ -1132,20 +1500,19 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         const bool rear=controls_.frame_state().look_back;
         const unsigned event=crash_camera_.event();
         const bool cut=event!=presented_crash_||view_.pov!=presented_pov_||(event==0&&rear!=presented_look_back_)||
-            telemetry().resets!=previous_resets[0];
+            reset;
         //47D070 receives73AD38, not scaled73457C. Keep simulation and view
         //motion clocks distinct during the roadside slow-motion sequence.
         camera_motion_.update({{float(view_.eye.x),float(view_.eye.y),float(view_.eye.z)}},float(kDriveFrameSeconds),cut);
         presented_crash_=event;presented_pov_=view_.pov;presented_look_back_=rear;
     }
-    record_dirty_=true;
-    stage(&RaceSimulationProfile::tail);
     return true;
 }
 
 bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& previous_poses,
     const std::array<std::uint64_t,4>& previous_resets,std::string& error,
-    RaceSimulationProfile* profile,TimingService* timer,std::vector<RaceQueuedContact>* trace) {
+    RaceSimulationProfile* profile,TimingService* timer,std::vector<RaceQueuedContact>* trace,
+    bool held_racers) {
     const bool measure_contacts=profile&&profile->detailed_contacts;
     auto contact_start=measure_contacts?timer->now_us():0;
     const auto contact_stage=[&](double RaceSimulationProfile::*field) {
@@ -1163,7 +1530,8 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         // 420310 advances active prop bodies before 420380 searches for contacts.
         const auto begin=profile?timer->now_us():0;
         if(!props_->world_frame_ready_) {
-            props_->maintain_pool(course_.world,car().position,tick,timing_.step);
+            props_->maintain_pool(course_.world,car().position,tick,timing_.step,
+                shared_local_camera_?&rivals_.front()->car().position:nullptr);
             if(!props_->advance(course_.world,error,float(frame_seconds_))){started_=false;return false;}
         }
         props_->world_frame_ready_=false;
@@ -1186,7 +1554,7 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
     const unsigned body_limit=object_begin+object_count;
     std::array<Body,4+kRaceTrafficCapacity+32+kRaceWorldObjectCapacity> bodies{};
     std::array<bool,4+kRaceTrafficCapacity+32+kRaceWorldObjectCapacity> reset{};
-    for(unsigned i=0;i<=rivals_.size();++i) {
+    if(!held_racers)for(unsigned i=0;i<=rivals_.size();++i) {
         reset[i]=actors[i]->telemetry().resets!=previous_resets[i];
         bodies[i]={&actors[i]->car(),&actors[i]->model_.spec(),&actors[i]->contact_box_,
             reset[i]?race_contact_pose(actors[i]->car()):previous_poses[i],
@@ -1204,7 +1572,7 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         bodies[actor_limit+p.world_slot]={&p.state,&p.spec,&p.box,p.history,p.bounds,&p};
     }
     for(unsigned i=0;i<object_count;++i) {
-        auto& object=world_objects_[i];if(!object.enabled)continue;
+        auto& object=world_objects_[i];if(!object.enabled||course_.world_objects[i].visual_motion)continue;
         object.state.simulation_seconds=car().simulation_seconds;
         auto history=race_contact_pose(object.state);history.time-=frame_seconds_;
         bodies[object_begin+i]={&object.state,&object.spec,&object.box,history,object.bounds,nullptr,&course_.world_objects[i]};
@@ -1482,6 +1850,16 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
         // same pair. Only its first-in-queue candidate can run: resolving it
         // invalidates every other pending job involving either moving body.
         if(j.valid) {
+            // 4681E8 stamps the bodies on overlap, even if this job never wins
+            // the response budget. Ghost pairs already returned via body+148.
+            // 467360 accepts kinds 0..2 and kind 3 with polygon flag 0x02.
+            const bool qualifies=pair.track()
+                ? (course_.world.collision.polygons[pair.polygon].unknown0[3]&2U)!=0
+                : !pair.object;
+            if(qualifies) {
+                if(pair.a<4)actors[pair.a]->steering_contact_tick_=tick;
+                if(!pair.track()&&pair.b<4)actors[pair.b]->steering_contact_tick_=tick;
+            }
             j.serial=serial++;
             if(!queued.valid||j.remaining>queued.remaining)queued=j;
         }
@@ -1511,10 +1889,10 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
             if(!switch_rival_physics_||id==0||id>rivals_.size())return;
             auto& actor=*actors[id];
             if(actor.physical_selector()==4)
-                actor.rival_path_blocked_until_=timing_.now_ticks+2*kRaceTicksPerSecond;
+                actor.rival_path_block_ticks_=2*kRaceTicksPerSecond;
             if(other==0||timing_.racers[id].status!=RacerStatus::not_finished) {
-                actor.rival_full_until_=timing_.now_ticks+5*kRaceTicksPerSecond;
-                actor.select_rival_physics(1);
+                actor.rival_full_ticks_=5*kRaceTicksPerSecond;
+                actor.select_rival_physics(1,timing_.now_ticks,world_random_?world_random_:&contact_seed_);
             } else {
                 // 44C860 leaves the existing selector1 timer armed.
                 actor.select_rival_physics(3);
@@ -1704,19 +2082,22 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
             if(ok&&a>=4)ok=traffic_->continue_contact(a-4,contact.remaining_a,error,&published_a,true);
             if(ok&&b>=4)ok=traffic_->continue_contact(b-4,contact.remaining_b,error,&published_b,true);
             if(ok&&contact.applied) {
-                if(crash_source_&&(a==0||b==0)) {
-                    const auto& before=a==0?published_a:published_b;
+                const auto notify_camera=[&](RaceSession& driver,const VehicleState& before) {
+                    if(!driver.crash_source_)return;
                     const auto& j=contact.impulse;
                     const float magnitude=std::min(50.F,float(vehicle_sqrt((j[0]*j[0]+j[1]*j[1])+j[2]*j[2])));
                     // 42C4B0 and 42C6D0 read the published actor transform and
                     // velocity inside 465D00, before either body continues.
-                    if(crash_camera_.contact(magnitude,before.collision_state==0&&car().collision_state==1,tick,
-                        timing_.stage==RaceStage::racing&&timing_.outcome==RaceOutcome::running&&!spec_.drift_mode,
-                        before,progress().coordinate.fraction*100.F,*crash_source_,camera_world_)) {
+                    if(driver.crash_camera_.contact(magnitude,before.collision_state==0&&driver.car().collision_state==1,tick,
+                        driver.timing_.stage==RaceStage::racing&&driver.timing_.outcome==RaceOutcome::running&&!driver.spec_.drift_mode,
+                        before,driver.progress().coordinate.fraction*100.F,*driver.crash_source_,driver.camera_world_)) {
                         // 466300 calls 58DBE0 only after the collision shot is accepted.
-                        crash_windows_damaged_=true;
+                        driver.crash_windows_damaged_=true;
                     }
-                }
+                };
+                if(a==0||b==0)notify_camera(*this,a==0?published_a:published_b);
+                if(shared_local_camera_&&(a==1||b==1))
+                    notify_camera(*rivals_.front(),a==1?published_a:published_b);
                 if(style_.ready()&&!spec_.drift_mode&&timing_.stage==RaceStage::racing&&
                    timing_.outcome==RaceOutcome::running&&
                    ((a==0&&b>=4)||(b==0&&a>=4))&&context.record.magnitude_sum>=5&&
@@ -1807,7 +2188,8 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
     return true;
 }
 
-bool RaceSession::prepare_style(const std::filesystem::path& root,std::string& error,unsigned event) {
+bool RaceSession::prepare_style(const std::filesystem::path& root,std::string& error,unsigned event,
+                                bool virtual_opponents) {
     if(started_){error="style must be prepared before start";return false;}
     if(!style_.load(root,error,spec_.drift_mode))return false;
     if(spec_.drift_mode) {
@@ -1816,12 +2198,12 @@ bool RaceSession::prepare_style(const std::filesystem::path& root,std::string& e
             error="drift performance setup refused";return false;
         }
         drift_class_=area>500?0U:area>390?1U:area>280?2U:3U;
-        if(!drift_competition_.load(root,event,spec_.drift_difficulty,drift_class_,area,0x60000000U,error,player_name_))return false;
+        if(virtual_opponents&&!drift_competition_.load(root,event,spec_.drift_difficulty,drift_class_,area,0x60000000U,error,player_name_))return false;
     }
     style_shortcuts_.assign(course_.track.zones.size(),false);
     return true;
 }
-void RaceSession::update_style() {
+void RaceSession::update_style(const RacePairFrame* shared_contacts,unsigned actor) {
     if(!style_.ready())return;
     if(timing_.stage==RaceStage::countdown) {
         style_.update(timing_.now_ticks,float(frame_seconds_));
@@ -1870,6 +2252,7 @@ void RaceSession::update_style() {
     }
     if(spec_.drift_mode) {
         DriftDrivingSample d;d.now=s.now;d.seconds=s.seconds;d.finished=s.finished;
+        if(shared_local_camera_)d.finished=timing_.racers[0].status!=RacerStatus::not_finished;
         d.motion.speed=s.speed;d.motion.yaw=s.yaw_rate;d.motion.grade=drift_class_;
         // 464EA0 consumes the retained owner heading/velocity publication.
         d.motion.slip=s.forward_speed<1.F?0.F:c.owner_slip_angle;
@@ -1890,10 +2273,12 @@ void RaceSession::update_style() {
                 d.impact_strength=strength;d.wall_impact=true;
             }
         }
-        for(std::size_t i=0;i<pair_frame_.count;++i) {
-            const auto& pair=pair_frame_.pairs[i];const auto& j=pair.contact.impulse;
+        const auto& contacts=shared_contacts?*shared_contacts:pair_frame_;
+        for(std::size_t i=0;i<contacts.count;++i) {
+            const auto& pair=contacts.pairs[i];const auto& j=pair.contact.impulse;
             const float strength=float(std::sqrt(j[0]*j[0]+j[1]*j[1]+j[2]*j[2]));
-            if(pair.first==0 && pair.contact.applied && strength>=5) {
+            if((pair.first==actor||(shared_local_camera_&&pair.other_kind==0&&pair.second==actor))&&
+               pair.contact.applied&&strength>=5) {
                 d.impact_strength=strength;d.wall_impact=pair.other_kind!=0;
             }
         }
@@ -1967,7 +2352,7 @@ void RaceSession::encode() const {
         u32(record_,static_cast<std::uint32_t>(r.lap_total_ticks[k]));
     }
     if (steering_mode_ != RaceSteering::baseline) {
-        u32(record_,0x31525453); // STR1, recovered-only state extension
+        u32(record_,0x32525453); // STR2: world contact clock replaces shift counters
         u32(record_,static_cast<std::uint32_t>(steering_mode_));
         const auto history = [this](const auto& h) {
             for (float v : h.values) f32(record_,v);
@@ -1978,10 +2363,9 @@ void RaceSession::encode() const {
         history(steering_state_.input); history(steering_state_.rate);
         u32(record_,steering_state_.angle); f32(record_,steering_state_.previous_limit);
         f32(record_,steering_state_.previous_raw); u32(record_,steering_state_.assist);
-        for (auto v : {steering_steps_,shift_step_}) {
-            u32(record_,static_cast<std::uint32_t>(v)); u32(record_,static_cast<std::uint32_t>(v>>32));
-        }
-        u32(record_,shifted_); f32(record_,steering_max_speed_);
+        u32(record_,static_cast<std::uint32_t>(steering_steps_));
+        u32(record_,static_cast<std::uint32_t>(steering_steps_>>32));
+        u32(record_,steering_contact_tick_); f32(record_,steering_max_speed_);
     }
     if (spec_.nitrous.installed) {
         u32(record_,0x31534F4E); // NOS1 extension; uninstalled recordings unchanged.

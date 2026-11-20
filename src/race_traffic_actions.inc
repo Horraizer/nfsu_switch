@@ -101,6 +101,15 @@ struct RaceTraffic::ActionContext {
         if(!a.road.selected||a.road.nearest<0||!a.road.chain.count)return world.retire(index,error);
         if(a.road.category<11||a.road.category>16)return false;
         a.lane=direction*6+unsigned(a.road.category-11);a.cursor=a.road.road;
+        if(a.authored_placement>=0) {
+            const auto& record=world.spawn_records_[unsigned(a.authored_placement)];
+            if(a.cursor.route==record.road) {
+                const auto* road=roads().find(a.cursor.route);
+                const int point=record.exit_points[direction];
+                const int exit=direction?(point<0?int(road->points.size())-2:point):std::max(1,point);
+                a.left_authored_road|=direction?int(a.cursor.point)>exit:int(a.cursor.point)<exit;
+            }
+        }
         if(road_result.reset_maneuver)a.maneuver={};
         if(!ai_road_locate_actor(a.road.chain,in.selection.position,a.road.category,a.location))return false;
         auto nodes=world.world_nodes_;
@@ -198,7 +207,7 @@ struct RaceTraffic::ActionContext {
         if(!ai_path_publish(driver))return false;a.driver_path=driver;a.path=driver.path;a.action_speed=speed;
         const auto& self=a.neighbors.entries[unsigned(a.neighbors.self_index)];
         AiTrafficSpeedInput limit;limit.first=self.cell;limit.category=a.road.category;
-        limit.distance=self.distance;limit.absolute_speed=a.car.owner_speeds.magnitude;limit.cap=24.58650016784668F;
+        limit.distance=self.distance;limit.absolute_speed=a.car.owner_speeds.magnitude;limit.cap=a.speed_cap;
         limit.stopped=a.crash_stop;limit.route_speed=speed.route_speed;limit.action={speed.speed,speed.duration,speed.auxiliary};
         std::array<float,3> result;if(!ai_traffic_speed(a.road.chain,limit,result))return false;
         a.target_speed=result[0];a.ended=false;return true;
@@ -207,7 +216,8 @@ struct RaceTraffic::ActionContext {
 bool RaceTraffic::retire(unsigned index,std::string& error) {
     if(index>=actors_.size()){error="invalid traffic retirement";return false;}
     for(auto& table:intersections_)if(!ai_traffic_intersection_clear(table,50+int(index))){error="traffic intersection retirement failed";return false;}
-    auto& a=actors_[index];if(a.active){a.active=false;a.previous_valid=false;++retirements;}return true;
+    auto& a=actors_[index];a.relocation_pending=true;
+    if(a.active){a.active=false;a.previous_valid=false;++retirements;}return true;
 }
 bool RaceTraffic::prepare_world(std::string& error) {
     const float length=course_->route.spline.path_length;

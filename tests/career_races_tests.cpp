@@ -316,6 +316,16 @@ int main(int argc,char** argv) {
             check(values.at("PlayerRow")=="1"&&values.at("Time1")!="0:00.00");
             check(values.at("Name1")==player_name&&values.at("UserName")==player_name&&
                 values.at("RacerName")==player_name+" - P");
+            if(event==22&&round==0) {
+                unsigned projected=0;
+                for(const auto& row:run.session().result_rows()) {
+                    if(!row.racer||row.status!=RacerStatus::not_finished)continue;
+                    check(row.total_estimated&&!row.total_valid&&row.total_ticks>0&&
+                        values.at("Time"+std::to_string(row.position))!="--:--.--");
+                    ++projected;
+                }
+                check(projected!=0);
+            }
             if(event) {
                 FrontendArt art,results;
                 check(art.load_startup(root,error)&&art.load_post_race(root,error)&&art.prepare_post_race(results,error));
@@ -543,7 +553,7 @@ int main(int argc,char** argv) {
         RaceRun run;check(run.set_event(event,error,round));check(run.set_difficulty(difficulty,error));
         check(run.set_car(selected_car,error));check(run.set_performance_levels(*human->config.performance,error));
         check(run.set_steering(RaceSteering::recovered_predicate1,error));
-        check(run.set_intro_grid(human->pose,human->hull,rivals,contexts,error));
+        check(run.set_intro_grid(human->pose,human->hull,rivals,contexts,error,human->config.final_grid));
         std::vector<RaceTrafficSetup> traffic;
         for(auto& a:grid.traffic)traffic.push_back({a.placement_spec,a.hull,a.assets.car_type_name});
         check(run.set_intro_traffic(traffic,error));
@@ -583,16 +593,41 @@ int main(int argc,char** argv) {
             complete_backing?TrackStreamSet::zones:TrackStreamSet::permanent));
         const bool start_scene_check=selection.type!=RaceType::drag && std::getenv("NFSU_CAREER_START_SCENE_CHECK")!=nullptr;
         StartCrowd start_camera;RaceStartClock start_clock;unsigned start_scene=0;
+        std::optional<RaceRun::RoadSceneLoader> live_scene;
         if(start_scene_check) {
-            check(select_road_start_scene(posix_file_system(),root,unsigned(grid.actors.size()),unsigned(grid.setup->desired_player_grid),round,start_scene,error));
-            if(const char* value=std::getenv("NFSU_CAREER_TEST_START_SCENE"))start_scene=unsigned(std::stoul(value));
-            check(start_camera.load_camera(posix_file_system(),root,start_scene,selection.region,start_clock,error));
-            check(run.set_start_clock(start_clock.release,start_clock.go,error));
+            if(const char* value=std::getenv("NFSU_CAREER_TEST_START_SCENE")) {
+                start_scene=unsigned(std::stoul(value));
+                check(start_camera.load_camera(posix_file_system(),root,start_scene,selection.region,start_clock,error));
+                check(run.set_start_clock(start_clock,error));
+            } else {
+                live_scene.emplace(RaceRun::RoadSceneLoader{posix_file_system(),
+                    [&](unsigned id,RaceStartClock& clock,std::string& message) {
+                        start_scene=id;
+                        if(!start_camera.load_camera(posix_file_system(),root,id,selection.region,clock,message))return false;
+                        start_clock=clock;
+                        return true;
+                    }});
+            }
         }
-        check(run.start(root,track,error,nullptr,player_name));
+        check(run.start(root,track,error,nullptr,player_name,live_scene?&*live_scene:nullptr));
         check(run.session().leaderboard_label(0)==player_name);
         if(start_scene_check) {
-            check(run.session().start_cinematic());
+            check(run.session().timing().stage==(start_clock.animated_slots?RaceStage::none:RaceStage::prerace));
+            for(unsigned actor=0;actor<=run.session().rival_count();++actor) {
+                const auto player_grid=grid.setup->desired_player_grid;
+                const unsigned slot=actor?actor+(actor>=player_grid):player_grid;
+                const auto& racer=actor?run.session().rival(actor-1):run.session();
+                if(racer.car().engine_rpm!=1000.F ||
+                   racer.car().engine.angular_speed!=1000.F*kPlayerRpmToRadS)
+                    throw std::runtime_error("parked race actor inherited settling RPM at construction");
+                if(!(start_clock.animated_slots&(1U<<(slot-1))))continue;
+                if(racer.car().owner_speeds.forward!=0 || racer.car().owner_speeds.magnitude!=0 ||
+                   racer.travelled_distance()!=0)
+                    throw std::runtime_error("animated grid slot inherited settling speed or distance");
+            }
+            if(std::getenv("NFSU_CAREER_SHADOW_FRAME"))while(!run.session().start_cinematic()) {
+                check(run.simulate(race_input_frame({0,0,0},run.session().timing().step),error));check(run.commit(error));
+            }
             if(const char* tick=std::getenv("NFSU_CAREER_START_CAPTURE_TICK"))for(unsigned t=0;t<unsigned(std::stoul(tick));++t) {
                 check(run.simulate(race_input_frame({0,0,0},run.session().timing().step),error));check(run.commit(error));
             }
@@ -672,7 +707,7 @@ int main(int argc,char** argv) {
             scene.set_silhouette_shadows(silhouettes);
             check(scene.set_complete_zone_backing(complete_backing));
             check(scene.set_original_draw_distance(true));
-            if(start_scene_check)check(scene.set_start_scene(start_scene,selection.region));
+            if(start_scene_check && (!event||selection.type==RaceType::drift))check(scene.set_start_scene(start_scene,selection.region));
             // Switch career races supply a dress even when the selected parts
             // are stock. That preparation consumes the raw geometry buffer.
             RaceCarDress dress;
@@ -685,11 +720,6 @@ int main(int argc,char** argv) {
             };
             check(scene.load(posix_file_system(),root,error,nullptr,nullptr,
                 false,true,true,&human->assets,silhouettes?&dress:nullptr,event,true,round));
-            if(start_scene_check) {
-                RaceStartClock gpu_clock;
-                check(scene.load_start_camera(posix_file_system(),root,start_scene,selection.region,gpu_clock,error));
-                check(gpu_clock.go==start_clock.go && gpu_clock.release==start_clock.release);
-            }
             std::vector<CarShadowPlacement> rival_shadow_poses;
             for(const auto& actor:grid.actors)if(actor.config.role==Event0Role::opponent)
                 rival_shadow_poses.push_back(place_car_shadow(actor.shadow,run.session().rival(rival_shadow_poses.size())));
@@ -707,6 +737,15 @@ int main(int argc,char** argv) {
                 check(scene.add_rival(std::move(actor.frame->scene),std::move(actor.base_instances),
                     kNoHandle,std::move(actor.shadow),error,true,actor.glow_anchors,&actor.hull));
                 actor.frame.reset();
+            }
+            if(start_scene_check) {
+                RaceStartClock gpu_clock;
+                if(event && selection.type!=RaceType::drift)
+                    check(scene.load_road_start_scene(posix_file_system(),root,start_scene,selection.region,gpu_clock,error));
+                else
+                    check(scene.load_start_camera(posix_file_system(),root,start_scene,selection.region,gpu_clock,error));
+                check(gpu_clock.go==start_clock.go && gpu_clock.release==start_clock.release &&
+                      gpu_clock.animated_slots==start_clock.animated_slots);
             }
             if(!finish_sweep||entry_check)verify_payload(scene,run,hud,selected_car,*human->config.performance,&grid);
             if(finish_sweep) {
@@ -790,8 +829,45 @@ int main(int argc,char** argv) {
                 const auto origin=run.session().car().position;
                 std::vector<VehicleVec3> rival_origins(run.session().rival_count());
                 for(std::size_t i=0;i<rival_origins.size();++i)rival_origins[i]=run.session().rival(i).car().position;
-                const auto end=kRaceWorldStartTicks+std::int32_t(std::ceil(double(start_clock.go)*kRaceTicksPerSecond/30))+500;
+                std::array<VehicleVec3,4> release_positions{origin};
+                std::copy(rival_origins.begin(),rival_origins.end(),release_positions.begin()+1);
+                const auto player_grid=grid.setup->desired_player_grid;
+                for(unsigned actor=0;actor<=rival_origins.size();++actor) {
+                    const unsigned slot=actor?actor+(actor>=player_grid):player_grid;
+                    if(!(start_clock.animated_slots&(1U<<(slot-1))))continue;
+                    const auto& car=actor?run.session().rival(actor-1):run.session();
+                    PlayerRigidMatrix axes;
+                    check(place_road_start_car(run.session().course(),car.spec(),
+                        start_clock.release_cars[slot-1],release_positions[actor],axes,error));
+                }
+                auto expected_positions=release_positions;
+                expected_positions[0]=origin;
+                std::copy(rival_origins.begin(),rival_origins.end(),expected_positions.begin()+1);
+                auto expected_motion=start_clock.car_keys?
+                    make_road_start_motion(run.session().course(),start_clock.car_keys,error):nullptr;
+                if(start_clock.car_keys)check(bool(expected_motion));
+                if(event==19 && start_scene==2303) {
+                    // PC 1.4 world 12052, selector callback before the next NIS update.
+                    // This is the pose left by the first 1/144 s authored step.
+                    const std::array<std::array<float,2>,3> native_xy{{
+                        {{1671.04736F,-463.72772F}},{{1665.59802F,-463.25156F}},{{1664.90515F,-467.36963F}}}};
+                    check(bool(expected_motion));
+                    for(unsigned i=0;i<native_xy.size();++i) {
+                        VehicleVec3 position;PlayerRigidMatrix axes;
+                        check(expected_motion->sample(i+1,1.F/144,run.session().rival(i).spec(),position,axes,error));
+                        if(std::hypot(position.x-native_xy[i][0],position.y-native_xy[i][1])>.002)
+                            throw std::runtime_error("event 19 start car differs from the captured native slot");
+                    }
+                }
+                float clip_seconds=0;
+                bool released=false;
+                const auto end=kRaceWorldStartTicks+(start_clock.animated_slots?2*kRaceTicksPerSecond:0)+
+                    std::int32_t(std::ceil(double(start_clock.go)*kRaceTicksPerSecond/30))+500;
                 unsigned camera_frames=0;
+                unsigned held_chassis_mask=0;
+                std::vector<double> rival_idle_rpm;
+                for(std::size_t i=0;i<rival_origins.size();++i)
+                    rival_idle_rpm.push_back(run.session().rival(i).car().engine_rpm);
                 while(run.session().timing().now_ticks<end) {
                     if(skip_check && camera_frames==12 && run.session().start_cinematic()) {
                         const auto now=run.session().timing().now_ticks;
@@ -809,16 +885,70 @@ int main(int argc,char** argv) {
                         check(rival.timing().now_ticks==run.session().timing().now_ticks);
                         check(rival.timing().stage==run.session().timing().stage);
                         if(race_car_held(run.session().timing())) {
-                            check(distance2(rival.car().position,rival_origins[i])<1e-10);
+                            const auto& expected=expected_positions[i+1];
+                            check(distance2(rival.car().position,expected)<1e-10);
                         }
                     }
                     if(race_car_held(run.session().timing())) {
-                        check(distance2(run.session().car().position,origin)<1e-10);
+                        check(distance2(run.session().car().position,expected_positions[0])<1e-10);
                     }
                     camera_frames+=run.session().start_cinematic();
+                    const bool before_go=!run.session().timing().go_valid;
+                    const float world_dt=run.session().next_world_frame_seconds();
+                    std::array<float,4> next_distance{};
+                    std::array<std::uint64_t,4> previous_body_steps{};
+                    const bool held_countdown=run.session().timing().stage==RaceStage::countdown;
+                    for(unsigned actor=0;actor<=rival_origins.size();++actor) {
+                        const auto& racer=actor?run.session().rival(actor-1):run.session();
+                        next_distance[actor]=racer.travelled_distance()+world_dt*racer.car().owner_speeds.magnitude;
+                        previous_body_steps[actor]=racer.car().step;
+                    }
                     check(run.simulate(race_input_frame({0,0,0},run.session().timing().step),error));check(run.commit(error));
+                    if(before_go && race_car_held(run.session().timing())) {
+                        for(unsigned actor=0;actor<=rival_origins.size();++actor) {
+                            const auto& racer=actor?run.session().rival(actor-1):run.session();
+                            if(held_countdown && event==19 && start_scene==2303 && racer.physical_selector()==1) {
+                                if(racer.car().step<=previous_body_steps[actor] || !racer.car().forces_prepared ||
+                                   racer.car().gear!=kVehicleGearNeutral)
+                                    throw std::runtime_error("held full chassis did not advance in neutral");
+                                held_chassis_mask|=1U<<actor;
+                            }
+                            const unsigned slot=actor?actor+(actor>=player_grid):player_grid;
+                            if(!(start_clock.animated_slots&(1U<<(slot-1))))continue;
+                            const float speed=run.session().start_cinematic()?.1F:0.F;
+                            if(racer.car().owner_speeds.forward!=0 || std::abs(racer.car().owner_speeds.magnitude-speed)>1e-7F ||
+                               std::abs(racer.travelled_distance()-next_distance[actor])>1e-6F)
+                                throw std::runtime_error("start placement speed or distance published in wrong world frame");
+                        }
+                    }
+                    if(run.session().start_cinematic()) {
+                        clip_seconds+=world_dt;
+                        if(expected_motion)for(unsigned actor=0;actor<=rival_origins.size();++actor) {
+                            const unsigned slot=actor?actor+(actor>=player_grid):player_grid;
+                            if(!(start_clock.animated_slots&(1U<<(slot-1))))continue;
+                            const auto& car=actor?run.session().rival(actor-1):run.session();
+                            PlayerRigidMatrix axes;
+                            check(expected_motion->sample(slot-1,clip_seconds,car.spec(),
+                                                          expected_positions[actor],axes,error));
+                            for(unsigned k=0;k<3;++k)
+                                if(car.car().owner_motion.velocity[k]!=axes[0][k]*.1F)
+                                    throw std::runtime_error("start car velocity differs from its authored road axis");
+                        }
+                    } else if(run.session().timing().stage==RaceStage::countdown) {
+                        expected_positions=release_positions;
+                        released=true;
+                    }
+                    if(before_go&&run.session().timing().go_valid) {
+                        for(std::size_t i=0;i<rival_idle_rpm.size();++i) {
+                            const auto& rival=run.session().rival(i);
+                            check(rival.car().gear==kVehicleGearNeutral&&
+                                  rival.car().transmission.requested_gear==kVehicleGearFirst&&
+                                  rival.car().engine_rpm>rival_idle_rpm[i]*2);
+                        }
+                    }
                 }
-                check(run.session().timing().go_valid && !run.session().start_cinematic());
+                check(released && run.session().timing().go_valid && !run.session().start_cinematic());
+                if(event==19 && start_scene==2303)check(held_chassis_mask==(1U<<(1+rival_origins.size()))-1);
                 if(skip_check)check(camera_frames==12);
                 std::cout<<"PASS career event "<<event<<" selected grid and bounded runtime; authored start round="<<round<<" camera_frames="<<camera_frames<<" synchronized GO\n";
             }
@@ -1022,6 +1152,8 @@ int main(int argc,char** argv) {
         const bool idle_launch=event==4&&std::getenv("NFSU_DRAG_IDLE_LAUNCH_PROBE");
         bool idle_accelerated=false;float idle_go_rpm=0;
         const bool lane_probe=event==4&&std::getenv("NFSU_DRAG_LANE_PROBE");
+        const bool trace_drag_contacts=std::getenv("NFSU_DRAG_CONTACT_TRACE")!=nullptr;
+        if(trace_drag_contacts)run.set_recovery_trace(true);
         std::array<double,3> lane_y{};
         std::array<RacerStatus,4> last_status{};
         std::array<double,3> rival_speed_peaks{};
@@ -1114,7 +1246,15 @@ int main(int argc,char** argv) {
             }
             for(std::size_t i=0;i<run.session().timing().racers.size();++i) {
                 const auto status=run.session().timing().racers.at(i).status;
-                if(status!=last_status[i])std::cout<<"STATUS "<<n+1<<" actor="<<i<<" status="<<int(status)<<'\n';
+                if(status!=last_status[i]) {
+                    std::cout<<"STATUS "<<n+1<<" actor="<<i<<" status="<<int(status)<<'\n';
+                    if(trace_drag_contacts) {
+                        const auto& driver=i?run.session().rival(i-1):run.session();
+                        const auto& car=driver.car();
+                        std::cout<<"DRAG_TERMINAL actor="<<i<<" x="<<car.position.x<<" y="<<car.position.y
+                            <<" speed="<<car.owner_speeds.forward<<'\n';
+                    }
+                }
                 last_status[i]=status;
             }
             if(n%3000==2999||(event==4&&n%300==299)) {

@@ -38,6 +38,10 @@ struct DrawExecutionPlan {
 bool plan_draw_execution(const RecordedCommands& commands, DrawExecutionPlan& plan,
                          std::string& error);
 
+// Build the sparse id-to-slot table used by the prepared scenery package.
+bool prepare_static_group_slots(const RecordedCommands& commands,
+                                std::vector<std::size_t>& slots, std::string& error);
+
 // An update may change frame/draw uniforms and selection, but cannot replace
 // uploaded payloads. Caller keeps both payload owners and next commands alive.
 bool validate_draw_update(const UploadTable& uploaded, const RecordedCommands& next,

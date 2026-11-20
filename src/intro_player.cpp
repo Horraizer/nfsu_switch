@@ -65,7 +65,9 @@ static IntroResult play_sequence(const std::string& root,const char* const* name
         for(std::size_t index=0;index<count;++index) {
             const auto* name=names[index];
             const auto initial=poll(); if(initial!=IntroControl::continue_playback) {result.outcome=control_outcome(initial);return result;}
-            MovieReader movie(root+"/Movies/"+name);
+            const std::string basename(name);
+            MovieReader movie(root+"/Movies/"+basename,
+                root+"/Movies720/"+basename.substr(0,basename.size()-4)+".nfm");
             MovieFrame frame;
             if(!movie.next_video(frame)) throw std::runtime_error("movie contains no video");
             MovieAudio pcm(movie);

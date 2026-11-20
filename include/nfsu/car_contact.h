@@ -94,7 +94,8 @@ bool calculate_car_contact_response(const ContactBody& a, const ContactBody& b,
                                     ContactMaterial other_material = {},
                                     bool pinned_prop_against_upright_car = false,
                                     ContactMaterial own_material = {},
-                                    bool pinned_prop_against_upright_car_b = false) noexcept;
+                                    bool pinned_prop_against_upright_car_b = false,
+                                    const ContactResponse* prior_pass = nullptr) noexcept;
 //46BAE0 kind0 against an immovable kind3 polygon. Surface friction comes
 //from46A910 (polygon flags), and axes are the current rigid body axes.
 bool calculate_track_contact_response(const ContactBody& car,const ContactGeometry&,

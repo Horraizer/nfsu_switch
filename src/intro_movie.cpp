@@ -1,4 +1,5 @@
 // Native EA MAD streaming decode. Transform/VLC portions are adapted from
+#include "nfsu/lz4_block.h"
 // FFmpeg n7.1 eamad.c, eaidct.c and mpeg12data.c, copyright (c) 2007-2009
 // Peter Ross and (c) 2001-2003 The FFmpeg project.
 // SPDX-License-Identifier: LGPL-2.1-or-later
@@ -107,14 +108,36 @@ Bytes chunk(std::ifstream& f,std::uint64_t size,std::uint64_t& cursor) {
 }
 bool tag(const Bytes& b,const char* t) { return b.size()>=4 && std::memcmp(b.data(),t,4)==0; }
 std::int16_t be_sample(const Bytes& b,std::size_t p) { range(b,p,2); return static_cast<std::int16_t>((unsigned(b[p])<<8)|b[p+1]); }
+
+void movie_rgba(MovieFrame& frame) {
+    const auto w=frame.width,h=frame.height,luma=w*h;
+    frame.rgba.resize(luma*4);
+    for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x) {
+        const int yy=int(frame.yuv[y*w+x])-16;
+        const int u=int(frame.yuv[luma+(y/2)*(w/2)+x/2])-128;
+        const int v=int(frame.yuv[luma+luma/4+(y/2)*(w/2)+x/2])-128;
+        const auto p=(y*w+x)*4;
+        frame.rgba[p]=static_cast<std::uint8_t>(clip((298*yy+409*v+128)>>8));
+        frame.rgba[p+1]=static_cast<std::uint8_t>(clip((298*yy-100*u-208*v+128)>>8));
+        frame.rgba[p+2]=static_cast<std::uint8_t>(clip((298*yy+516*u+128)>>8));
+        frame.rgba[p+3]=255;
+    }
+}
+
+constexpr unsigned enhanced_width=960,enhanced_height=720;
+constexpr std::size_t enhanced_bytes=enhanced_width*enhanced_height*3/2;
+
 }
 struct MovieReader::Impl {
-    std::ifstream video,audio;
+    std::ifstream video,audio,enhanced;
+    Bytes coded;
+    std::uint64_t last_key=0,last_key_time=0;
+    unsigned enhanced_frames=0;
     std::uint64_t size=0,vcursor=0,acursor=0,timestamp=0,total_audio=0,decoded_audio=0;
     unsigned rate=0,channels=0,w=0,h=0;
     Bytes previous;
     std::array<std::int32_t,2> h1{},h2{};
-    explicit Impl(const std::string& path):video(path,std::ios::binary),audio(path,std::ios::binary) {
+    Impl(const std::string& path,const std::string& enhanced_path):video(path,std::ios::binary),audio(path,std::ios::binary) {
         if(!video || !audio) bad("cannot open retail movie");
         video.seekg(0,std::ios::end); const auto end=video.tellg();
         if(end<8 || end>512LL*1024*1024) bad("invalid movie size");
@@ -143,6 +166,35 @@ struct MovieReader::Impl {
             break;
         }
         if(!rate) bad("missing movie audio header");
+        if(!enhanced_path.empty()) {
+            enhanced.open(enhanced_path,std::ios::binary);
+            Bytes header(16);
+            if(enhanced.read(reinterpret_cast<char*>(header.data()),header.size())&&tag(header,"NFM1")&&
+               (std::uint64_t(le32(header,12))<<32|le32(header,8))==size) {
+                enhanced_frames=le32(header,4);
+                if(!enhanced_frames||enhanced_frames>100000)enhanced.close();
+            } else enhanced.close();
+        }
+    }
+    bool enhanced_video(const Bytes& native,MovieFrame& frame) {
+        if(!enhanced_frames||native.size()<26)return false;
+        const auto duration=le32(native,12);
+        Bytes header(8);
+        if(!enhanced.read(reinterpret_cast<char*>(header.data()),header.size())||
+           duration<65535U||duration>1000U*65535U||duration!=le32(header,0))return false;
+        const auto n=le32(header,4);
+        if(!n||n>enhanced_bytes+enhanced_bytes/255+16)return false;
+        coded.resize(n);
+        frame.yuv.resize(enhanced_bytes);
+        if(!enhanced.read(reinterpret_cast<char*>(coded.data()),n)||
+           !expand_lz4_block(coded,frame.yuv))return false;
+        --enhanced_frames;
+        frame.width=enhanced_width;frame.height=enhanced_height;
+        frame.timestamp_units=timestamp;frame.duration_units=duration;
+        frame.timestamp_ms=timestamp/65535;frame.duration_ms=duration/65535;
+        timestamp+=duration;
+        movie_rgba(frame);
+        return true;
     }
     void decode_video(const Bytes& b,MovieFrame& frame) {
         range(b,0,26); const auto nw=le16(b,16),nh=le16(b,18),duration=le32(b,12);
@@ -199,17 +251,7 @@ struct MovieReader::Impl {
         }
         if(!tag(b,"MADe")) previous=frame.yuv;
         timestamp+=duration;
-        frame.rgba.resize(luma*4);
-        for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x) {
-            const int yy=int(frame.yuv[y*w+x])-16;
-            const int u=int(frame.yuv[luma+(y/2)*(w/2)+x/2])-128;
-            const int v=int(frame.yuv[luma+luma/4+(y/2)*(w/2)+x/2])-128;
-            const auto p=(y*w+x)*4;
-            frame.rgba[p]=static_cast<std::uint8_t>(clip((298*yy+409*v+128)>>8));
-            frame.rgba[p+1]=static_cast<std::uint8_t>(clip((298*yy-100*u-208*v+128)>>8));
-            frame.rgba[p+2]=static_cast<std::uint8_t>(clip((298*yy+516*u+128)>>8));
-            frame.rgba[p+3]=255;
-        }
+        movie_rgba(frame);
     }
     void decode_audio(const Bytes& b,std::vector<std::int16_t>& out) {
         const auto frames=le32(b,8); const std::size_t base=20;
@@ -245,12 +287,31 @@ struct MovieReader::Impl {
         decoded_audio+=frames;
     }
 };
-MovieReader::MovieReader(const std::string& path):impl_(std::make_unique<Impl>(path)) {}
+MovieReader::MovieReader(const std::string& path,const std::string& enhanced_path):
+    impl_(std::make_unique<Impl>(path,enhanced_path)) {}
 MovieReader::~MovieReader()=default;
 bool MovieReader::next_video(MovieFrame& frame) {
     auto& p=*impl_;
-    while(p.vcursor<p.size) {const auto b=chunk(p.video,p.size,p.vcursor);
-        if(tag(b,"MADk")||tag(b,"MADm")||tag(b,"MADe")) {p.decode_video(b,frame);return true;}}
+    while(p.vcursor<p.size) {
+        const auto start=p.vcursor;
+        const auto b=chunk(p.video,p.size,p.vcursor);
+        const bool key=tag(b,"MADk");
+        if(!key&&!tag(b,"MADm")&&!tag(b,"MADe"))continue;
+        if(key){p.last_key=start;p.last_key_time=p.timestamp;}
+        if(!p.enhanced.is_open()){p.decode_video(b,frame);return true;}
+        if(p.enhanced_video(b,frame))return true;
+
+        // Resume the original predictive chain at the last native keyframe.
+        const auto end=p.vcursor;
+        p.enhanced.close();p.coded.clear();
+        p.vcursor=p.last_key;p.timestamp=p.last_key_time;
+        while(p.vcursor<end) {
+            const auto fallback=chunk(p.video,p.size,p.vcursor);
+            if(tag(fallback,"MADk")||tag(fallback,"MADm")||tag(fallback,"MADe"))
+                p.decode_video(fallback,frame);
+        }
+        return true;
+    }
     return false;
 }
 bool MovieReader::next_audio(std::vector<std::int16_t>& pcm) {
@@ -264,17 +325,58 @@ unsigned MovieReader::audio_rate() const noexcept{return impl_->rate;}
 std::uint64_t MovieReader::audio_frames() const noexcept{return impl_->total_audio;}
 void blit_movie(const MovieFrame& f,std::uint8_t* dest,unsigned w,unsigned h,std::size_t stride) {
     if(!dest||!w||!h||stride<std::size_t(w)*4||!f.width||!f.height||f.rgba.size()!=std::size_t(f.width)*f.height*4) bad("invalid movie destination");
-    for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x) {auto* p=dest+y*stride+x*4;p[0]=p[1]=p[2]=0;p[3]=255;}
     if(bool(f.display_width)!=bool(f.display_height)) bad("incomplete movie display aspect");
     const unsigned aspect_w=f.display_width?f.display_width:f.width;
     const unsigned aspect_h=f.display_height?f.display_height:f.height;
     unsigned dw=w,dh=unsigned(std::uint64_t(w)*aspect_h/aspect_w);
     if(std::uint64_t(w)*aspect_h>std::uint64_t(h)*aspect_w){dh=h;dw=unsigned(std::uint64_t(h)*aspect_w/aspect_h);}
-    if(!dw||!dh)return;
+    const auto black=[](std::uint8_t* first,unsigned pixels) {
+        for(unsigned i=0;i<pixels;++i,first+=4) {
+            first[0]=first[1]=first[2]=0;
+            first[3]=255;
+        }
+    };
+    if(!dw||!dh) {
+        for(unsigned y=0;y<h;++y)black(dest+y*stride,w);
+        return;
+    }
     const unsigned left=(w-dw)/2,top=(h-dh)/2;
-    for(unsigned y=0;y<dh;++y) for(unsigned x=0;x<dw;++x) {
-        const auto src=(std::size_t(y)*f.height/dh*f.width+std::size_t(x)*f.width/dw)*4;
-        std::memcpy(dest+(top+y)*stride+(left+x)*4,f.rgba.data()+src,4);
+    // Sample pixel centres with fixed-point weights. Retain the authored
+    // display rectangle and do not touch framebuffer stride padding.
+    struct Tap {unsigned first,second,weight;};
+    const auto tap=[](unsigned out,unsigned source,unsigned target) {
+        constexpr std::int64_t unit=256;
+        const auto centre=(std::int64_t(out)*2+1)*source*(unit/2)/target-unit/2;
+        const auto fixed=std::clamp(centre,std::int64_t(0),std::int64_t(source-1)*unit);
+        const auto first=unsigned(fixed/unit);
+        return Tap{first,std::min(first+1,source-1),unsigned(fixed%unit)};
+    };
+    std::vector<Tap> columns;
+    columns.reserve(dw);
+    if(dw!=f.width||dh!=f.height)
+        for(unsigned x=0;x<dw;++x)columns.push_back(tap(x,f.width,dw));
+    for(unsigned y=0;y<h;++y) {
+        auto* output=dest+y*stride;
+        if(y<top||y-top>=dh){black(output,w);continue;}
+        black(output,left);
+        black(output+std::size_t(left+dw)*4,w-left-dw);
+        output+=std::size_t(left)*4;
+        if(dw==f.width&&dh==f.height) {
+            std::memcpy(output,f.rgba.data()+std::size_t(y-top)*dw*4,std::size_t(dw)*4);
+            continue;
+        }
+        const auto row=tap(y-top,f.height,dh);
+        const auto* upper=f.rgba.data()+std::size_t(row.first)*f.width*4;
+        const auto* lower=f.rgba.data()+std::size_t(row.second)*f.width*4;
+        for(const auto& col:columns) {
+            const auto a=std::size_t(col.first)*4,b=std::size_t(col.second)*4;
+            for(unsigned channel=0;channel<4;++channel) {
+                const auto u=upper[a+channel]*(256-col.weight)+upper[b+channel]*col.weight;
+                const auto l=lower[a+channel]*(256-col.weight)+lower[b+channel]*col.weight;
+                output[channel]=std::uint8_t((u*(256-row.weight)+l*row.weight+32768)>>16);
+            }
+            output+=4;
+        }
     }
 }
 } // namespace nfsu

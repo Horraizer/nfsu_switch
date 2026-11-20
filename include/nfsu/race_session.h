@@ -12,6 +12,7 @@
 #include "nfsu/nitrous_controls.h"
 #include "nfsu/race_contacts.h"
 #include "nfsu/race_props.h"
+#include "nfsu/ai_action.h"
 #include "nfsu/ai_driver.h"
 #include "nfsu/race_standings.h"
 #include "nfsu/race_leaderboard.h"
@@ -25,6 +26,13 @@
 namespace nfsu {
 class RaceRouteDriver;
 class TimingService;
+// Physical placement of cars bound to the original road-start animation.
+class RaceStartCarMotion {
+public:
+    virtual ~RaceStartCarMotion() = default;
+    virtual bool sample(unsigned slot,float seconds,const VehicleSpec&,VehicleVec3&,
+                        PlayerRigidMatrix&,std::string& error) = 0;
+};
 // Optional CPU measurements, in milliseconds. No clocks are read when null.
 // Six disjoint simulation stages; renderer/presentation are measured separately.
 struct RaceSimulationProfile {
@@ -45,21 +53,33 @@ struct RaceSessionWork {
 };
 // A completed planner/publication result for one world step. Bodies, wheel
 // feedback and driver history come from the actual session, never this packet.
+struct RaceRivalNitrousPlan {
+    AiRivalNitrousTuning tuning;
+    float road_speed=50.F;
+    bool evaluate=false,traffic_lane=false,nondecreasing_road_speed=false;
+    enum class StopCheck {none,physical,road};
+    StopCheck stop_check=StopCheck::none;
+    AiRivalNitrousRoad before_action;
+    std::uint32_t published_action=0; // zero on a path-only update
+};
 struct RaceRivalPlan {
+    VehicleRoadResetSource road_reset;
     AiDriverPath path;
     float desired_speed=0,throttle_cap=1,route_distance=0,physical_scale=1;
     int driver_category=0;
     bool enabled=true,recovery_cleanup=false,reset_car=false;
-    float grid_throttle=0,speed_duration=0;
+    float speed_duration=0;
     bool physics_full_update=false, path_physics_allowed=false;
+    RaceRivalNitrousPlan nitrous;
 };
 struct RaceRivalPlans {
     std::size_t step=0,count=0,dropped=0;
     std::array<RaceRivalPlan,3> cars{};
     RaceRivalPlan human;
     bool drag_steering=false;
+    int human_drag_lane=-1;
     // Owned by the planner for the entire live race; never points into plans.
-    std::uint32_t* drag_world_random=nullptr;
+    std::uint32_t* gearbox_world_random=nullptr;
 };
 struct RacePairObservation {
     unsigned first=0,second=0; // Player0, then the configured rival slots1..3.
@@ -157,25 +177,40 @@ public:
     // to the test route driver when planning is missing or refuses.
     // Experimental two-human world. Both use the ordinary player controls;
     // no AI planning or physical assistance is applied to the remote human.
-    bool set_human_rival(const RaceRivalSetup&,std::string& error);
-    bool advance_humans(const std::array<GamepadFrame,2>&,std::string& error);
+    bool set_human_rival(const RaceRivalSetup&,std::string& error,const ChaseCameraTable* local_camera=nullptr);
+    bool set_local_crash_cameras(const CrashCameraRoadSource&,const CrashCameraRoadSource&,
+                                 unsigned track,std::string&);
+    bool advance_humans(const std::array<GamepadFrame,2>&,std::string& error,
+                        const std::array<RaceRivalPlans,2>* drag_plans=nullptr,
+                        RaceSimulationProfile* profile=nullptr,TimingService* timer=nullptr);
     bool human_rival() const noexcept {return human_rival_;}
     void enable_rival_physics_switching() noexcept;
     unsigned physical_selector() const noexcept {return physical_selector_;}
+    // Physical lifecycle is interleaved with per-actor controller decisions.
+    void begin_rival_controller(unsigned slot,std::uint32_t* random,float world_dt);
+    void end_rival_controller(unsigned slot,const RaceRivalPlan&);
     bool set_planned_rivals(const std::vector<RaceRivalSetup>&,
                             const std::array<float,3>& low_slip,std::string& error,
                             unsigned player_grid = 1);
     bool set_traffic(const std::filesystem::path&,const std::vector<RaceTrafficSetup>&,std::string&,unsigned density=1,std::uint32_t* random=nullptr);
+    bool prepare_road_grid(float spacing,float clearance,std::string& error);
+    std::uint32_t& world_random_state() noexcept {return world_random_?*world_random_:contact_seed_;}
     bool stage_traffic_grid(float spacing,float clearance,std::string& error);
     const RaceProps* props() const {return props_.get();}
     const VehiclePropContactFrame& prop_contacts() const {return prop_contacts_;}
+    bool recycle_traffic_before_controllers(const AiRoadCursor* human_road,std::string& error);
     const RaceTraffic* traffic() const {return traffic_.get();}
     bool start(std::string& error,const VehiclePose* pose=nullptr,
-               float countdown_step=kRaceCountdownStepSeconds,float cinematic_seconds=0);
+               float countdown_step=kRaceCountdownStepSeconds,float cinematic_seconds=0,
+               unsigned road_scene_slots=0,float road_scene_end_seconds=0);
+    void set_road_start_motion(std::unique_ptr<RaceStartCarMotion> motion) {
+        road_start_motion_=std::move(motion);
+    }
+    void set_road_release_pose(unsigned actor,const VehicleVec3&,const PlayerRigidMatrix&);
     // Diagnostics: replay authored route crossings at the finish scene.
     bool arm_finish_probe(std::string& error);
     bool prepare_leaderboard(const std::filesystem::path&,const std::string& player_car,std::string&);
-    bool prepare_style(const std::filesystem::path&,std::string&,unsigned event=3);
+    bool prepare_style(const std::filesystem::path&,std::string&,unsigned event=3,bool virtual_opponents=true);
     const RaceStyle& style() const {return style_;}
     void consume_drift_notice() noexcept {style_.consume_drift_notice();}
     const RaceDrift& drift() const {return drift_;}
@@ -219,10 +254,10 @@ public:
     }
     const RaceTimingConfig& timing_config() const { return timing_config_; }
     bool start_cinematic() const { return timing_.stage==RaceStage::prerace; }
+    void update_start_stage();
     bool skip_start_cinematic();
-    std::int64_t start_scene_ticks() const {
-        return std::int64_t(timing_.now_ticks)-kRaceWorldStartTicks+cinematic_skip_ticks_;
-    }
+    std::int64_t start_scene_ticks() const noexcept;
+    bool start_scene_finished(unsigned post_go_frames) const noexcept;
     const ChaseCameraView& camera() const { return view_; }
     const std::array<float,3>& camera_velocity()const {return camera_motion_.velocity();}
     const VehicleSpec& spec() const { return spec_; }
@@ -237,6 +272,7 @@ public:
     }
     float turbo_pressure() const { return turbo_.value; }
     const VehicleTrackTelemetry& telemetry() const { return track_telemetry_.back(); }
+    std::uint64_t placement_generation() const {return telemetry().resets+cinematic_placements_;}
     const std::array<VehicleTrackTelemetry,kDriveStepsPerFrame>& physics_telemetry() const { return track_telemetry_; }
     const std::vector<std::uint8_t>& record() const;
     const RaceSessionWork& work() const { return work_; }
@@ -245,6 +281,7 @@ public:
     const SteeringState& steering_state() const { return steering_state_; }
     const SteeringResult& steering_result() const { return steering_result_; }
     std::size_t rival_count() const {return rivals_.size();}
+    RaceSession& rival(std::size_t i) {return *rivals_.at(i);}
     const RaceSession& rival(std::size_t i) const {return *rivals_.at(i);}
     const AiDriverForwardState& rival_driver(std::size_t i) const {return original_drivers_.at(i);}
     const std::string& rival_name(std::size_t i) const {return rival_setup_.at(i).name;}
@@ -275,9 +312,12 @@ private:
     bool advance_impl(const GamepadFrame*, const VehicleInput*, std::string&,int ai_gear_request=-1,
                        const RaceRivalPlans* plans=nullptr,
                        RaceSimulationProfile* profile=nullptr,TimingService* timer=nullptr,
-                       const GamepadFrame* remote_pad=nullptr,const RaceRivalPlan* rival_plan=nullptr);
+                       const GamepadFrame* remote_pad=nullptr,const RaceRivalPlan* rival_plan=nullptr,
+                      const RaceRivalPlans* remote_drag=nullptr);
     bool set_rivals_impl(const std::vector<RaceRivalSetup>&,std::string&,RacePresentation,
         const std::array<float,3>*,unsigned player_grid=1);
+    void update_rival_nitrous(const RaceRivalNitrousPlan&,const RaceSession& world,
+                              unsigned actor) noexcept;
     void encode() const;
     const VehicleTrackCourse& course_;
     VehicleSpec spec_;
@@ -288,15 +328,25 @@ private:
     std::optional<NitrousSnapshot> lan_nitrous_view_;
     NitrousEngineState nitrous_engine_;
     std::uint32_t nitrous_clock_ = 0;
+    AiRivalNitrousState rival_nitrous_;
+    std::uint32_t nitrous_action_=0;
+    bool action_nitrous_request_=false;
     TurboDisplayState turbo_;
     ChaseCamera chase_;
     RaceCameraWorld camera_world_;
     RaceCrashCamera crash_camera_;
     const CrashCameraRoadSource* crash_source_=nullptr;
     double frame_seconds_=kDriveFrameSeconds,external_frame_seconds_=0;
-    double steering_seconds_=0,shift_seconds_=0,visual_frames_=0;
+    double steering_seconds_=0,visual_frames_=0;
+    std::int32_t cinematic_start_ticks_=kRaceWorldStartTicks;
     std::int32_t cinematic_end_ticks_=0;
     std::int32_t cinematic_skip_ticks_=0;
+    unsigned road_scene_slots_=0;
+    struct RoadReleasePose { VehicleVec3 position;PlayerRigidMatrix axes; };
+    std::optional<RoadReleasePose> road_release_pose_;
+    std::unique_ptr<RaceStartCarMotion> road_start_motion_;
+    float road_scene_seconds_=0,road_scene_release_=0,road_scene_end_=0;
+    bool road_scene_release_pending_=false;
     ChaseCameraView view_;
     CameraMotion camera_motion_;
     CameraImpactShake camera_shake_;
@@ -314,6 +364,8 @@ private:
     RacePresentation presentation_;
     CarAnimationState animation_;
     double service_brake_ = 0;
+    bool place_road_grid_car(const VehiclePose&,std::string&);
+    bool road_grid_placed_=false;
     bool started_ = false;
     bool lap_knockout_ = false;
     std::int32_t time_limit_ticks_=0;
@@ -325,14 +377,16 @@ private:
     AiDriverForwardState drag_driver_;
     bool ai_physics_ = false;
     unsigned physical_selector_ = 1;
-    std::int32_t rival_full_until_ = 0;
-    void select_rival_physics(unsigned selector) noexcept;
-    std::int32_t rival_path_blocked_until_=0;
+    std::int32_t rival_full_ticks_ = 0;
+    void select_rival_physics(unsigned selector);
+    void select_rival_physics(unsigned selector,std::int32_t world_clock,
+                              std::uint32_t* world_random);
+    std::int32_t rival_path_block_ticks_=0;
     RaceSteering steering_mode_ = RaceSteering::baseline;
     SteeringState steering_state_;
     SteeringResult steering_result_;
-    std::uint64_t steering_steps_ = 0, shift_step_ = 0;
-    bool shifted_ = false;
+    std::uint64_t steering_steps_ = 0;
+    std::uint32_t steering_contact_tick_ = kRaceWorldStartTicks; // CarCollisionBody +14C
     float steering_max_speed_ = 1;
     bool steer_input(VehicleInput&, int substep, std::string& error);
     RaceContactBox contact_box_;
@@ -346,12 +400,15 @@ private:
     unsigned registration_rank(unsigned actor) const noexcept;
     std::vector<std::unique_ptr<RaceRouteDriver>> rival_drivers_;
     std::array<AiDriverForwardState,3> original_drivers_{};
+    std::uint64_t cinematic_placements_=0;
     AiDriverForwardState finish_driver_;
     std::vector<RaceProgressEvent> finish_probe_events_;
     bool planned_rivals_=false;
     bool switch_rival_physics_=false;
+    std::uint64_t rival_controller_step_=~std::uint64_t(0),rival_controller_end_=~std::uint64_t(0);
     bool human_rival_=false,lan_player_=false;
     friend class LanRaceView;
+    friend class LanRaceWorld;
     std::uint64_t pair_impulses_=0;
     RacePairFrame pair_frame_;
     // Four racers and a bounded authored traffic pool. Records
@@ -365,7 +422,7 @@ private:
         bool animated=false;
         WorldMotionClock clock;
         RaceContactPose history;
-        std::array<std::size_t,2> clips{};
+        std::array<std::size_t,2> clips{{kNoHandle,kNoHandle}};
         std::array<float,16> placement{};
         TrackPathCoordinate reference;
         bool reference_ready=false;
@@ -376,7 +433,7 @@ private:
     void initialize_world_object(unsigned);
     bool prepare_world_motion(const std::filesystem::path&,std::string&);
     bool reset_world_motion(std::string&);
-    bool advance_world_motion(float,int,std::string&);
+    bool advance_world_motion(float,int,std::string&,int second_lane=-1);
     bool place_world_motion(unsigned,bool,std::string&);
     struct WorldContactPair {
         unsigned a=0,b=0;
@@ -407,7 +464,7 @@ private:
     friend struct RaceWorldContactProbe;
     bool resolve_world_contacts(const std::array<RaceContactPose,4>&,
         const std::array<std::uint64_t,4>&,std::string&,RaceSimulationProfile*,TimingService*,
-        std::vector<RaceQueuedContact>* trace=nullptr);
+        std::vector<RaceQueuedContact>* trace=nullptr,bool held_racers=false);
     std::vector<std::uint64_t> contact_traffic_epochs_;
     std::uint32_t contact_seed_=12345;
     std::uint32_t* world_random_=nullptr;
@@ -420,6 +477,8 @@ private:
     std::string player_name_="YOU";
     std::array<RaceGapActor,4> gap_actors_{};
     void update_standings();
+    bool update_race_camera(bool reset,bool finishing,std::string& error);
+    bool shared_local_camera_=false;
     RaceStyle style_;
     RaceDrift drift_;
     DriftCompetition drift_competition_;
@@ -431,7 +490,7 @@ private:
     float drafting_=0;
     float external_human_drafting_=-1;
     std::vector<bool> style_shortcuts_;
-    void update_style();
+    void update_style(const RacePairFrame* shared_contacts=nullptr,unsigned actor=0);
 };
 
 struct RaceInputRun {

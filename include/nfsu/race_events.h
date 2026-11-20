@@ -71,6 +71,7 @@ struct TrackInfoRecord {
     std::int16_t number = 0;
     std::int16_t number_copy = 0;
     std::uint32_t mode_mask = 0;
+    std::int16_t ai_decision_start = 0; // Original TrackInfo+B8.
     std::array<std::int8_t,8> traffic_pool{};
     std::array<std::int16_t,8> rival_start_roads{{-1,-1,-1,-1,-1,-1,-1,-1}};
     std::array<float,2> traffic_start_spacing{},traffic_start_clearance{};

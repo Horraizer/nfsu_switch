@@ -3,6 +3,18 @@
 #include <cmath>
 #include <algorithm>
 namespace nfsu {
+bool ai_traffic_blocks_pass(const AiPathActorSnapshot& self,const AiPathActorSnapshot& target,
+                            int passing_side) noexcept {
+    if(target.role!=3)return false;
+    // 578730 returns the target body's first orientation axis. 45C02E
+    // skips its traffic maneuver unless the horizontal dot is negative.
+    const float alignment=target.forward[0]*self.forward[0]+target.forward[1]*self.forward[1];
+    if(!(alignment<0.F))return false;
+    const auto& other=target.maneuver;
+    const bool conflicting_side=other.target==self.id&&
+        ((other.kind==2&&passing_side==3)||(other.kind==3&&passing_side==2));
+    return conflicting_side||(target.action==9&&passing_side==2);
+}
 namespace {
 bool linear_motion(const AiDriverPoint& position,const AiDriverPoint& velocity,
     std::uint16_t heading,float length,AiPlannedPath& output) noexcept {
@@ -178,6 +190,8 @@ bool ai_path_evaluate(const AiActionPathInput& path,const AiPathFitnessInput& fi
     const AiPathCollisionQuery& query,float scale,float horizon,AiPathCandidate& output) noexcept {
     if(!std::isfinite(scale)||!std::isfinite(horizon))return false;
     auto next=output;next.score=-1;next.obstacle=0;next.collision_time=99999;next.accepted=false;
+    // 45AE10 clears the controller's ignore target before 45B050.
+    if(query.ignored_actor)*query.ignored_actor=0;
     if(!ai_action_plan_path(next.descriptor,path,next.geometry))return false;
     if(next.geometry.maneuver) {
         auto input=fitness;input.transition_end=next.geometry.transition_end;
@@ -185,6 +199,7 @@ bool ai_path_evaluate(const AiActionPathInput& path,const AiPathFitnessInput& fi
         if(next.score> -1) {
             const auto ignored=next.side_admitted&&!next.geometry.clipped?next.descriptor.target:0;
             if(next.side_admitted&&!next.geometry.clipped)next.score*=scale;
+            if(query.ignored_actor)*query.ignored_actor=ignored;
             if(!std::isfinite(next.score)||!query.run||!query.run(query.context,next.geometry.path,
                 ignored,horizon,next.obstacle,next.collision_time)||!std::isfinite(next.collision_time))return false;
             next.accepted=next.collision_time>horizon;
@@ -308,25 +323,25 @@ namespace {
 struct Planner {
     const AiPathPlannerInput& in;
     const AiPathCollisionWorld& world;
+    std::uint32_t* ignored_actor;
     static bool evaluate(void* p,AiPathCandidate& candidate) {
         const auto& s=*static_cast<Planner*>(p);auto path=s.in.path;
         path.target=nullptr;path.resolved_target=0;
-        if(candidate.descriptor.kind!=1) {
-            bool found=false;
+        if(candidate.descriptor.kind==2||candidate.descriptor.kind==3) {
+            path.category_available=false;
             for(unsigned i=0;i<s.in.target_count;++i)if(s.in.target_ids[i]==candidate.descriptor.target) {
                 path.target=&s.in.targets[i];path.resolved_target=s.in.target_ids[i];
-                path.category_available=s.in.target_available[i];found=true;break;
+                path.category_available=true;break;
             }
-            if(!found)return false;
         }
-        return ai_path_evaluate(path,s.in.fitness,{&s.world,ai_path_collision_query},
+        return ai_path_evaluate(path,s.in.fitness,{&s.world,ai_path_collision_query,s.ignored_actor},
                                s.in.side_score_scale,s.in.choice.horizon,candidate);
     }
     static bool available(void* p,const AiContactManeuver& d,bool& output) {
         const auto& s=*static_cast<Planner*>(p);output=false;
         if(d.kind==1)output=s.in.path.category_available;
         else if(d.kind==2||d.kind==3)for(unsigned i=0;i<s.in.target_count;++i)
-            if(s.in.target_ids[i]==d.target){output=s.in.target_available[i];break;}
+            if(s.in.target_ids[i]==d.target){output=true;break;}
         return true;
     }
     static bool fallback(void* p,AiPlannedPath& output) {
@@ -336,15 +351,25 @@ struct Planner {
     }
 };
 }
-bool ai_plan_path(const AiPathPlannerInput& in,const AiPathCollisionWorld& world,AiPathChoiceResult& output) noexcept {
+bool ai_plan_path(const AiPathPlannerInput& in,const AiPathCollisionWorld& world,
+    AiPathChoiceResult& output,std::uint32_t* ignored_actor) noexcept {
     if(in.target_count>in.targets.size()||in.path.tick!=world.tick||in.fitness.tick!=world.tick)return false;
-    Planner planner{in,world};const AiPathChoiceOps ops{Planner::evaluate,Planner::available,Planner::fallback};
+    Planner planner{in,world,ignored_actor};const AiPathChoiceOps ops{Planner::evaluate,Planner::available,Planner::fallback};
     return ai_path_choose(in.choice,ops,&planner,output);
+}
+bool ai_path_maneuver_vehicle(const AiPathActorSnapshot& actor,const AiNeighborEntry& entry,
+                              int category,AiManeuverVehicle& output) noexcept {
+    if(!(category==-1||(category>=0&&category<5)||(category>=11&&category<=16)))return false;
+    const float lateral=category<0?0.F:category<5?entry.lateral:entry.lane_lateral[unsigned(category-11)];
+    if(!std::isfinite(lateral))return false;
+    output={actor.position,actor.velocity,lateral,entry.half_extent[0],entry.distance,
+            int(entry.cell),actor.role,true,false};
+    return true;
 }
 bool ai_path_neighbor_policy(const AiRoadChain& chain,const AiNeighborhood& neighbors,unsigned target,
     int category,const AiPathNeighborPolicy& p,bool& eligible,unsigned& sides) noexcept {
     if(neighbors.count>16||neighbors.self_index<0||unsigned(neighbors.self_index)>=neighbors.count||
-       target>=neighbors.count||!((category>=0&&category<5)||(category>=11&&category<=16))||chain.count>40)return false;
+       target>=neighbors.count||!(category==-1||(category>=0&&category<5)||(category>=11&&category<=16))||chain.count>40)return false;
     for(float f:{p.eligibility_padding,p.width_margin,p.center_limit,p.lateral_limit,p.distant_limit,
                  p.gap_margin,p.curvature_limit})if(!std::isfinite(f))return false;
     const auto& a=neighbors.entries[unsigned(neighbors.self_index)];const auto& b=neighbors.entries[target];
@@ -356,14 +381,18 @@ bool ai_path_neighbor_policy(const AiRoadChain& chain,const AiNeighborhood& neig
     const bool admitted=distance> -((a.half_extent[1]+b.half_extent[1])+p.eligibility_padding);
     float curve=0;if(!ai_road_curvature(chain,a.cell,category,-1,curve))return false;
     const bool ahead=distance-((p.gap_margin+a.half_extent[1])+b.half_extent[1])>0;
+    const float self_lateral=category<0?0.F:category<5?a.lateral:a.lane_lateral[unsigned(category-11)];
+    const float target_lateral=category<0?0.F:category<5?b.lateral:b.lane_lateral[unsigned(category-11)];
+    if(!std::isfinite(self_lateral)||!std::isfinite(target_lateral))return false;
     unsigned result=3;
-    if(std::fabs(a.lateral)<=p.center_limit&&std::fabs(b.lateral)<=p.center_limit&&
+    if(std::fabs(self_lateral)<=p.center_limit&&std::fabs(target_lateral)<=p.center_limit&&
        distance>p.distant_limit&&std::fabs(curve)>=p.curvature_limit)result=curve>0?3U:2U;
-    else if(std::fabs(a.lateral-b.lateral)<p.lateral_limit&&ahead)result=1;
-    else result=a.lateral>b.lateral?3U:2U;
+    else if(std::fabs(self_lateral-target_lateral)<p.lateral_limit&&ahead)result=1;
+    else result=self_lateral>target_lateral?3U:2U;
     const float clearance=(a.half_extent[0]+b.half_extent[0])+p.width_margin;
-    const bool left=b.lateral-clearance>=chain.cells[b.cell].lower[category<5?0:unsigned(category-10)];
-    const bool right=b.lateral+clearance<=chain.cells[b.cell].upper[category<5?0:unsigned(category-10)];
+    const auto slot=category<5?0U:unsigned(category-10);
+    const bool left=target_lateral-clearance>=(category<0?0.F:chain.cells[b.cell].lower[slot]);
+    const bool right=target_lateral+clearance<=(category<0?0.F:chain.cells[b.cell].upper[slot]);
     if((result==1||result==2)&&!left&&right&&ahead)result=3;
     else if((result==1||result==3)&&!right&&left&&ahead)result=2;
     eligible=admitted;sides=result;return true;

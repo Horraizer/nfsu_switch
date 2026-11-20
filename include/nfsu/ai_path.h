@@ -11,7 +11,12 @@ struct AiPathRoadPoint {
     std::uint16_t point_index=0;
     float distance=0; // original compact chain coordinate +58
     std::array<float,7> offset{},lower{},upper{}; // ordinary, lanes11..16
+    bool reverse=false; // selects original category virtual4553D0
+    bool category_columns_reversed=false;
 };
+//5A7270/5A7390 lateral origin. Category-1 has zero compact correction,
+//but retains the raw signed-word read selected by the direction virtual.
+float ai_path_lateral_origin(const AiPathRoadPoint&,int category) noexcept;
 struct AiPlannedPath {
     AiDriverPath path;
     std::array<std::uint8_t,20> route{};
@@ -33,6 +38,7 @@ struct AiPathExtension {
     AiDriverPoint actor_position{};
     AiDriverPoint actor_velocity{},actor_forward{1,0,0};
     float absolute_speed=0;
+    bool raw_road_available=true; //45C37E checks raw road before category
 };
 // 5A7960/5A78B0 forward bounds for the selected ordinary category and lanes.
 bool ai_path_road_bounds(AiPathRoadPoint&,int category) noexcept;
@@ -114,7 +120,6 @@ struct AiManeuverInput {
     bool extra_clearance=false;
     // Original6B74F8,6B74FC,6B7500,6B7504,6B7508,6B750C,6B7510,6B74F4.
     std::array<float,8> policy{};
-    float self_signed_speed=0;
     // Current4596B0 cursor, resolved by the target path's owner before this
     // consumer. It must refer to the same refreshed target body/path epoch.
     AiPlannedPath target_path;

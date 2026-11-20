@@ -84,6 +84,24 @@ bool plan_draw_execution(const RecordedCommands& c, DrawExecutionPlan& plan, std
     return true;
 }
 
+bool prepare_static_group_slots(const RecordedCommands& commands,
+                                std::vector<std::size_t>& slots, std::string& error) {
+    slots.clear();
+    error.clear();
+    for (std::size_t i = 0; i < commands.static_track_definition_count(); ++i) {
+        const auto group = commands.static_track_definition(i).group;
+        if (group >= kDekoStaticGroupCapacity) {
+            error = "prepared group ID exceeds capacity"; return false;
+        }
+        if (group >= slots.size()) slots.resize(group + 1, kNoHandle);
+        if (slots[group] != kNoHandle) {
+            error = "duplicate prepared group ID"; return false;
+        }
+        slots[group] = i;
+    }
+    return true;
+}
+
 bool validate_draw_update(const UploadTable& uploaded, const RecordedCommands& next,
                           std::size_t draw_capacity, std::string& error) {
     error.clear();
@@ -95,6 +113,7 @@ bool validate_draw_update(const UploadTable& uploaded, const RecordedCommands& n
     for (std::size_t i = 0; i < uploaded.resources.size(); ++i) {
         const auto& a = uploaded.resources[i]; const auto& b = next.resource_table().resources[i];
         if (a.kind != b.kind || a.data != b.data || a.bytes != b.bytes || a.streamed_vertices != b.streamed_vertices ||
+            a.streamed_elements != b.streamed_elements ||
             a.element_bytes != b.element_bytes || a.elements != b.elements ||
             a.texture.format != b.texture.format || a.texture.width != b.texture.width ||
             a.texture.height != b.texture.height || a.texture.mip_count != b.texture.mip_count || a.texture.row_bytes != b.texture.row_bytes) {

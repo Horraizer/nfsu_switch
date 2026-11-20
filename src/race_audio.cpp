@@ -73,7 +73,111 @@ PcmClip decode_clip(const std::vector<std::uint8_t>& bytes,
     return clip;
 }
 
+constexpr std::array<unsigned,2> scenery_slots{{113,114}};
+static_assert(scenery_slots.back()<kMixVoices);
+
+PcmClip plane_clip(std::istream& input,const Bank& bank,unsigned entry) {
+    if(bank.entries.size()<=entry+1||bank.entries[entry].type!=1)
+        throw std::runtime_error("plane stream entry absent");
+    const auto segment=index_ast_segment_by_boundary(input,bank.entries[entry].value,bank.entries[entry+1].value);
+    if(segment.channels!=1||segment.frames==0||segment.frames>segment.rate*16)
+        throw std::runtime_error("invalid plane stream segment");
+    PcmClip clip;
+    clip.rate=segment.rate;clip.channels=segment.channels;clip.pcm.reserve(segment.frames);
+    decode_ast_segment(input,segment,[&](const std::uint8_t* pcm,std::size_t size) {
+        if(size%2)throw std::runtime_error("odd plane PCM byte count");
+        for(std::size_t i=0;i<size;i+=2)
+            clip.pcm.push_back(std::int16_t(std::uint16_t(pcm[i])|(std::uint16_t(pcm[i+1])<<8)));
+    });
+    if(!clip.valid()||clip.frames()!=segment.frames)throw std::runtime_error("invalid plane PCM");
+    return clip;
+}
+
 } // namespace
+
+bool RaceScenerySound::supported(unsigned track) noexcept {
+    return track==1001||track==1104||track==1004;
+}
+
+bool RaceScenerySound::load(const std::filesystem::path& root,unsigned track,std::string& error) {
+    try {
+        if(!supported(track))throw std::runtime_error("track has no bridge or plane sound source");
+        PcmClip clip;
+        std::array<PcmClip,3> plane_clips;
+        if(track==1004) {
+            const auto bank=parse_abk(bank_bytes(root/"Sound/STRMBANK/STRM_SpecialStream_MB.abk"));
+            std::ifstream input(root/"SNDSTREAMS/STRM_SpecialStream_MB.ast",std::ios::binary);
+            if(!input)throw std::runtime_error("plane stream unavailable");
+            // 5381EE requests group 4. 539B70 applies the prefix sum of
+            // the native 6F6B48 group counts (three entries per group).
+            for(unsigned i=0;i<plane_clips.size();++i)
+                plane_clips[i]=plane_clip(input,bank,12+i);
+        }else {
+            const auto bank=bank_bytes(root/"Sound/IG_GLOBAL/ENV_COMMON_MB.abk");
+            // 5342B0 selects ENV_STATIC event 2, resolved to sample 3 by the bank.
+            clip=decode_clip(bank,parse_abk(bank),3);
+        }
+        clip_=std::move(clip);
+        plane_clips_=std::move(plane_clips);
+        track_=track;plane_in_range_=false;plane_available_=0b111;error.clear();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+
+void RaceScenerySound::update(const RaceAudioSnapshot& snapshot,Mixer& mixer,int category_gain,TrafficAudioRandom& random) {
+    if(!track_)return;
+    const auto position=[&](bool plane,const auto& source) {
+        return scenery_audio_position(plane,source,snapshot.human_position,snapshot.listener_eye,snapshot.listener_forward);
+    };
+    const auto gain=[&](const SceneryAudioPosition& p) {
+        return unsigned((p.gain*std::clamp(category_gain,0,32767))>>15);
+    };
+    if(track_==1004) {
+        const auto p=position(true,snapshot.plane_position);
+        const bool in_range=snapshot.plane_present&&p.distance<150.F;
+        const auto slot=scenery_slots.front();
+        if(in_range&&!plane_in_range_&&!mixer.active(slot)) {
+            const unsigned pick=random.integer(unsigned(plane_clips_.size()));
+            unsigned variant=pick;
+            // 5399F4 searches toward zero first, then above the pick.
+            // After this group's three flags clear, 539DD0 redraws.
+            if(plane_available_) {
+                while(variant && !(plane_available_&(1U<<variant)))--variant;
+                if(!(plane_available_&(1U<<variant))) {
+                    variant=pick+1;
+                    while(!(plane_available_&(1U<<variant)))++variant;
+                }
+                plane_available_&=~(1U<<variant);
+            }else variant=random.integer(unsigned(plane_clips_.size()));
+            mixer.play(slot,&plane_clips_[variant],false,gain(p));
+        }
+        mixer.control(slot,snapshot.plane_present?gain(p):0U,65536);
+        mixer.pan(slot,p.pan);
+        plane_in_range_=in_range;
+        return;
+    }
+    // Original 53320D registers these two emitters in both track directions.
+    constexpr std::array<std::array<float,3>,2> bridge{{{{1429.F,-983.F,50.F}},{{1397.F,-838.F,51.F}}}};
+    for(unsigned i=0;i<bridge.size();++i) {
+        const auto p=position(false,bridge[i]);
+        const auto slot=scenery_slots[i];
+        if(p.gain==0){mixer.stop(slot);continue;}
+        if(!mixer.active(slot))mixer.play(slot,&clip_,true,gain(p));
+        else mixer.control(slot,gain(p),65536);
+        mixer.pan(slot,p.pan);
+    }
+}
+
+void RaceScenerySound::stop(Mixer& mixer) noexcept {
+    for(const auto slot:scenery_slots)mixer.stop(slot);
+    plane_in_range_=false;
+    plane_available_=0b111;
+}
+
+std::size_t RaceScenerySound::resident_bytes() const noexcept {
+    std::size_t frames=clip_.pcm.capacity();
+    for(const auto& clip:plane_clips_)frames+=clip.pcm.capacity();
+    return frames*sizeof(std::int16_t);
+}
 
 bool RaceEngineSound::load(const std::filesystem::path& root,const std::string& car,
                           int upgrade,std::string& error) {
@@ -639,11 +743,24 @@ RaceAudioSnapshot race_audio_snapshot(const RaceSession& session) noexcept {
     const auto vector=[](const VehicleVec3& p){return std::array<float,3>{{float(p.x),float(p.y),float(p.z)}};};
     snapshot.listener_eye=vector(session.camera().eye);snapshot.listener_forward=vector(session.camera().forward);
     snapshot.human_position=vector(car.position);snapshot.human_forward=vector(telemetry.forward);
+    if(!session.course().plane_triggers.empty()) {
+        const auto& objects=session.course().world_objects;
+        const auto plane=std::find_if(objects.begin(),objects.end(),[](const auto& object) {
+            return object.name==kPlaneWorldObject;
+        });
+        if(plane!=objects.end())
+            if(const auto* state=session.world_object_state(unsigned(plane-objects.begin()))) {
+                snapshot.plane_position=vector(state->position);snapshot.plane_present=true;
+            }
+    }
     for(unsigned i=0;i<session.rival_count()&&i<snapshot.rivals.size();++i) {
         auto& out=snapshot.rivals[i];const auto& rival=session.rival(i);const auto& model=rival.telemetry().model;
         out.active=true;out.nitrous=rival.nitrous().active;
         out.position=vector(rival.car().position);out.forward=vector(model.forward);
         out.engine.rpm=float(rival.car().engine_rpm);out.engine.maximum_rpm=rival.spec().handling.max_rpm;
+        // The rev script advances on the world interval. Its random draws
+        // feed the shared world stream before the next traffic update.
+        out.engine.dt=float(session.world_frame_seconds());
         out.engine.drive_load=model.audio_transmitted_torque;out.engine.throttle=float(model.throttle);
         out.engine.brake=float(model.brake);out.engine.handbrake=model.handbrake;
         out.engine.gear=rival.car().gear;out.engine.game_state=int(session.timing().stage);
@@ -766,7 +883,9 @@ struct RaceAudioService::Impl {
     std::array<RaceAudioMix,3> remote_mix;
     std::array<bool,3> has_remote{};
     TrafficAudioRandom sound_random,feedback_world_random;
+    std::uint32_t initial_sound_seed=TrafficAudioRandom{}.state;
     RaceTrafficSound traffic;bool has_traffic=false;
+    RaceScenerySound scenery;bool has_scenery=false;
     RaceEffectsSound effects;
     RaceTurboSound turbo;bool has_turbo=false;
     RacePropSound props;bool has_props=false;
@@ -876,12 +995,13 @@ bool RaceAudioService::start(const std::filesystem::path& root,
                              std::string& diagnostic,
                              const std::function<void(const char*)>& progress,
                              const std::function<bool()>& decoder_thread_setup,
-                             bool original_ig_playlist,const std::string& car,int engine_upgrade,int nitrous_upgrade,int tyre_upgrade,const std::vector<RaceRemoteEngineBinding>& rivals,int induction_upgrade,unsigned traffic_count,std::uint32_t prop_materials) {
+                             bool original_ig_playlist,const std::string& car,int engine_upgrade,int nitrous_upgrade,int tyre_upgrade,const std::vector<RaceRemoteEngineBinding>& rivals,int induction_upgrade,unsigned traffic_count,std::uint32_t prop_materials,unsigned track,std::optional<std::uint32_t> sound_seed) {
     auto& p = *impl_;
     if (p.active) { diagnostic = "audio already running"; return false; }
     if(rivals.size()>p.remote_engines.size()){diagnostic="remote sound roster exceeds capacity";return false;}
     p.mix=RaceAudioMix{};p.have_mix_tick=false;p.mix_tick=0;p.post_voice.stop();p.post_voice_duck=SpeechMusicDuck{};
-    p.sound_random={};p.feedback_world_random={};p.feedback_world_random.state=0x60000000U;
+    p.initial_sound_seed=sound_seed.value_or(TrafficAudioRandom{}.state);
+    p.sound_random={p.initial_sound_seed};p.feedback_world_random={};p.feedback_world_random.state=0x60000000U;
     p.has_remote.fill(false);p.has_remote_shifts.fill(false);p.has_remote_turbos.fill(false);p.remote_mix={};
     p.collisions.clear(); p.impact_bindings = {};
     p.scrape_pairs = {UINT32_MAX,UINT32_MAX};
@@ -933,6 +1053,10 @@ bool RaceAudioService::start(const std::filesystem::path& root,
     if(progress)progress("audio traffic horns and pass-by");
     std::string traffic_error;p.has_traffic=traffic_count&&p.traffic.load(root,traffic_error,traffic_count);
     if(traffic_count&&!p.has_traffic)notes<<"traffic: "<<traffic_error<<"; ";
+    if(progress&&RaceScenerySound::supported(track))progress("audio scenery");
+    std::string scenery_error;
+    p.has_scenery=RaceScenerySound::supported(track)&&p.scenery.load(root,track,scenery_error);
+    if(!scenery_error.empty())notes<<"scenery: "<<scenery_error<<"; ";
     if(progress)progress("audio small props");
     std::string prop_error;p.has_props=p.props.load(root,prop_error,prop_materials);
     if(!p.has_props)notes<<"small props: "<<prop_error<<"; ";
@@ -1032,8 +1156,9 @@ void RaceAudioService::on_tick(const RaceAudioSnapshot& snapshot,std::uint32_t* 
     std::lock_guard<std::mutex> lock(p.mixer_mutex);
     if(!p.have_mix_tick || snapshot.tick!=p.mix_tick) {
         if(p.have_mix_tick && snapshot.tick<p.mix_tick){
-            p.mix=RaceAudioMix{};p.remote_mix={};p.sound_random={};p.feedback_world_random={};
+            p.mix=RaceAudioMix{};p.remote_mix={};p.sound_random={p.initial_sound_seed};p.feedback_world_random={};
             p.feedback_world_random.state=0x60000000U;
+            p.scenery.stop(p.mixer);
         }
         p.mix.begin_frame(snapshot.nitrous_active);
         for(unsigned i=0;i<p.remote_mix.size();++i)p.remote_mix[i].race(snapshot.rivals[i].nitrous,false);
@@ -1070,6 +1195,7 @@ void RaceAudioService::on_tick(const RaceAudioSnapshot& snapshot,std::uint32_t* 
         try {p.traffic.update(snapshot,p.mixer,p.mix.environment(),&p.sound_random);}
         catch(const std::exception& e){p.traffic.stop(p.mixer);p.has_traffic=false;p.note+="; traffic controls: "+std::string(e.what());}
     }
+    if(p.has_scenery)p.scenery.update(snapshot,p.mixer,p.mix.environment(),p.sound_random);
     bool props_ready=false;
     if(p.has_props) {
         try {props_ready=p.props.prepare(snapshot,p.mixer);}
@@ -1199,6 +1325,15 @@ void RaceAudioService::set_suspended(bool suspended) noexcept {
     impl_->suspended = suspended;
 }
 
+const MenuSong* RaceAudioService::now_playing() const noexcept {
+    const auto& p=*impl_;
+    if(!p.original_music||p.music_lengths.empty())return nullptr;
+    const auto frames=std::min(p.output.stats().played_frames,p.music_frames.load(std::memory_order_relaxed));
+    if(!frames)return nullptr;
+    const unsigned next=original_music_next(p.music_first,p.music_lengths,frames);
+    const auto count=unsigned(p.music_lengths.size());
+    return original_race_song((next+count-1)%count);
+}
 void RaceAudioService::stop() {
     auto& p = *impl_;
     p.active = false;
@@ -1213,6 +1348,7 @@ void RaceAudioService::stop() {
     p.turbo.stop(p.mixer);
     p.props.stop(p.mixer);
     p.traffic.stop(p.mixer);
+    p.scenery.stop(p.mixer);
     p.engine.stop(p.mixer);
     for(auto& remote:p.remote_engines)remote.stop(p.mixer);
     for(auto& shift:p.remote_shifts)shift.stop(p.mixer);
@@ -1249,6 +1385,7 @@ std::size_t RaceAudioService::resident_bytes() const noexcept {
     bytes += p.turbo.resident_bytes();
     bytes += p.props.resident_bytes();
     bytes += p.traffic.resident_bytes();
+    bytes += p.scenery.resident_bytes();
     bytes += p.scrape.pcm.capacity() * sizeof(std::int16_t);
     for (const auto& clip : p.impacts) bytes += clip.pcm.capacity() * sizeof(std::int16_t);
     for (const auto& clip : p.cue_clips)
