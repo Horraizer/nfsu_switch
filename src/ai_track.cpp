@@ -275,7 +275,8 @@ void VehicleTrackSession::select_rival_physics(unsigned selector,std::int32_t cl
         state_=placed;
     } else {
         ai_started_=false;ai_import_={};
-        if(selector==1)reconstruct_full_physics(state_,clock);
+        if(selector==1&&!reconstruct_full_physics(state_,clock))
+            throw std::runtime_error("full mover construction refused");
     }
     ai_active_=ai_configured_&&selector==3;
     rival_path_={};
@@ -319,7 +320,9 @@ bool VehicleTrackSession::reconstruct_ai_physics(VehicleState& s,const VehicleIn
     ai_=next;ai_started_=true;return true;
 }
 
-void VehicleTrackSession::reconstruct_full_physics(VehicleState& s,std::int32_t clock) const noexcept {
+bool VehicleTrackSession::reconstruct_full_physics(VehicleState& state,std::int32_t clock) const {
+    auto s=state;
+    s.motion_before_first_move.reset();
     // 426110 constructs fresh components.478383/47839B restore only the
     // published RPM/gear, not the old solver's cutoff or clutch history.
     // This also applies to the human when47C9E0 releases the road NIS.
@@ -332,6 +335,7 @@ void VehicleTrackSession::reconstruct_full_physics(VehicleState& s,std::int32_t 
         const float spin=float(wheel.spin);
         const bool contact=wheel.contact; // published Actor350, read by Driver
         wheel={};wheel.spin=spin;wheel.contact=contact;
+        wheel.spin_direction=player_wheel_spin_direction(spin);
     }
     s.body_rest_state=0;s.body_gravity=true;s.grip_recovery=1.F;
     s.rigid_body={};s.alternate_yaw_active=false;
@@ -356,6 +360,24 @@ void VehicleTrackSession::reconstruct_full_physics(VehicleState& s,std::int32_t 
     // 476F13 refreshes the new engine before its first derivative.
     player_engine_cutoff_update(h,s.gear,s.engine,float(clock)*.00025F);
 
+    // PC 476F13..476F2F and GC 80080898..800808A0 refresh the newly
+    // constructed components before the driver's first steering input.
+    s.steer_angle=0;
+    s.steering_word=0;
+    s.steering_word_ready=false;
+    VehicleTelemetry telemetry;
+    VehicleInput initial;
+    initial.world_clock=clock;
+    initial.world_clock_valid=true;
+    if(!model_->step(s,initial,ground_,telemetry,0,0,false,true,true,true,0,0,
+                     VehicleSteeringState::before_first_command))return false;
+    // 476F13 prepares the mover. Only the following 4789D0 publishes motion.
+    s.velocity=state.velocity;
+    s.angular_velocity=state.angular_velocity;
+    s.motion_before_first_move=VehiclePublishedMotion{s.velocity,s.angular_velocity};
+    s.steering_word_ready=false;
+    state=s;
+    return true;
 }
 
 bool VehicleTrackSession::rival_nitrous_rpm_allowed(bool drag) const noexcept {

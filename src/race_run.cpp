@@ -429,7 +429,6 @@ bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
     AiRoadCursor human_road;
     if(!session_->recycle_traffic_before_controllers(
         intro_ai_.human_road_cursor(human_road)?&human_road:nullptr,error))return false;
-    if(!rivals_.empty()&&!intro_ai_.observe_human(*session_)){error="human difficulty history refused";return false;}
     int held_lane=0;
     if(race_type_==RaceType::drag) {
         drag_controls_.update(pad);const auto& f=drag_controls_.frame_state();
@@ -438,7 +437,8 @@ bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
         held_lane=steer<0?-1:steer>0?1:0;
     }
     const bool finishing=session_->timing().outcome==RaceOutcome::finished;
-    if((!rivals_.empty()||race_type_==RaceType::drag||finishing)&&(!race_car_held(session_->timing())||race_type_==RaceType::drag)) {
+    const bool has_planner=!rivals_.empty()||race_type_==RaceType::drag||finishing;
+    if(has_planner&&(!race_car_held(session_->timing())||race_type_==RaceType::drag)) {
         RaceRivalPlans plans;
         const auto before=profile?timer->now_us():0;
         if(!intro_ai_.plan(*session_,plans,held_lane)) {error="intro path planner refused";return false;}
@@ -448,7 +448,15 @@ bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
             plans.cars[i].throttle_cap=std::min(plans.cars[i].throttle_cap,rival_throttle_cap_);
         if(profile)profile->planner=(timer->now_us()-before)/1000.0;
         if(!session_->advance_planned(pad,plans,error,profile,timer))return false;
-    } else if (!session_->advance(pad, error,profile,timer)) return false;
+    } else {
+        if(has_planner&&!intro_ai_.prepare_frame(*session_)){error="held-grid AI preparation refused";return false;}
+        if(!session_->advance(pad,error,profile,timer))return false;
+    }
+    // PC 421137 samples the controller road and the speed published by
+    // this world step, after the physics/contact loops. Rivals read it next frame.
+    if(has_planner&&!intro_ai_.sample_human_history(*session_,float(session_->world_frame_seconds()))) {
+        error="human difficulty history refused";return false;
+    }
     pending_ = true; return true;
 }
 bool RaceRun::commit(std::string& error) {

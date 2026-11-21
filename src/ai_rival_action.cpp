@@ -501,6 +501,7 @@ bool AiRivalActionController::predicate(void* opaque,const AiOwnedAction& action
 }
 bool AiRivalActionController::cleanup(void* opaque,const AiOwnedAction& action) {
     auto& c=*static_cast<AiRivalActionController*>(opaque);if(!c.find(action.handle))return false;
+    if(action.kind==2)c.maneuver_={}; //453060: leave cross traffic on the forward maneuver.
     if(action.kind==10) {
         c.pending_.clear_road=true;
         if(c.input_->reset_road&&!c.input_->reset_road(c.input_->road_context))return false;

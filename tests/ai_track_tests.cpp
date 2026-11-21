@@ -126,6 +126,30 @@ int main() {
     VehicleTrackTelemetry telemetry;
     VehicleTrackSession car(model,course);
     {
+        auto placement=course.start;
+        placement.heading=0;
+        placement.speed=.1F;
+        VehicleState actor;
+        check(model.reset(actor,placement),"slow full-mover placement");
+        actor.published_gear=kVehicleGearNeutral;
+        actor.published_support=4;
+        VehicleTrackSession placed(model,course);
+        check(placed.start(actor),"start slow full-mover fixture");
+        placed.select_rival_physics(1,12135);
+        auto first=placed.state();
+        check(first.velocity.x==actor.velocity.x&&std::abs(first.velocity.x-.1)<.00001&&
+              first.rigid_body.velocity[0]==0&&first.rigid_body.momentum[0]==0,
+              "constructor rest settles private momentum before the actor publishes");
+        auto edited=first;
+        vehicle_import_rigid(model.spec().handling,first);
+        check(first.rigid_body.momentum[0]==0&&first.velocity.x==0,
+              "first solver import keeps settled momentum");
+        edited.velocity.x=2;
+        vehicle_import_rigid(model.spec().handling,edited);
+        check(std::abs(edited.rigid_body.velocity[0]-2)<.00001,
+              "explicit velocity edit before first move is imported");
+    }
+    {
         // 474801 publishes the reduced body's heading through floating bATan.
         // Exercise both sides of the point where the full body's integer lookup differs.
         bool distinguished=false;
@@ -178,17 +202,28 @@ int main() {
             old.published_wheel_slip[k]={6.F+float(k),-2.F};
             wheel.prepared_effect_slip={99.F,88.F};
         }
+        // The two front steering matrices are still empty during the constructor
+        // pass. Straight steering later publishes identity matrices instead.
+        old.wheels[1].spin=-13.F;
+        old.steering_word=0x1200;
+        old.steering_word_ready=true;
         check((!rival||replacement.configure_ai(1))&&replacement.start(old),"replacement solver setup");
         replacement.select_rival_physics(1,12135);
         const auto& fresh=replacement.state();
         bool wheels=true;
         for(unsigned k=0;k<4;++k) {
             const auto& wheel=fresh.wheels[k];
-            wheels=wheels&&wheel.spin==12.F+float(k)&&wheel.compression==0&&
-                wheel.previous_compression==0&&wheel.compression_rate==0&&wheel.history_torque==0&&
-                wheel.spin_direction==1&&!wheel.brake_locked&&wheel.contact==(k!=3);
+            const float spin=float(old.wheels[k].spin);
+            wheels=wheels&&wheel.spin==spin&&wheel.previous_compression==0&&
+                wheel.compression_rate==0&&wheel.history_torque==0&&!wheel.brake_locked&&
+                wheel.spin_direction==(spin>0?0:2);
+            const float rim_speed=model.spec().handling.wheels[k].radius*spin;
+            if(k<2)check(wheel.prepared_slip==rim_speed,
+                "new steering matrices project zero hub velocity before the first driver command");
+            else check(std::abs(wheel.prepared_slip-rim_speed)>1,
+                "unsteered rear wheels project the moving hub during construction");
         }
-        check(wheels,"new solver preserves published wheel speed without old strut or torque history");
+        check(fresh.forces_prepared&&!fresh.steering_word_ready&&wheels,"new solver preserves published wheel speed without old strut or torque history");
         check(fresh.published_wheel_slip==old.published_wheel_slip&&
             fresh.wheels[0].prepared_effect_slip==std::array<float,2>{},
             "fresh components cannot erase previous actor wheel-slip publication");

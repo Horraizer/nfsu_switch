@@ -1317,7 +1317,8 @@ void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
         s.gear=kVehicleGearNeutral;s.published_gear=kVehicleGearNeutral;
         s.engine_rpm=1000.F;
         if(selector==1) {
-            reconstruct_full_physics(s,world_tick);
+            if(!reconstruct_full_physics(s,world_tick))
+                throw std::runtime_error("full mover construction refused after placement");
             if(input.gearbox_world_random) {
                 player_gear_seed(s.transmission,*input.gearbox_world_random);
                 *input.gearbox_world_random=s.transmission.rng_state;
