@@ -645,6 +645,8 @@ public:
             //45C370/57A8E0 consume the owner's neighborhood sample. The
             //first-ahead cell from5A6700 would skip an extra path point.
             in.path.selected=self.cell;
+            // 45C640 reads the selected neighbor entry's lateral half-extent.
+            in.path.extension.clearance=self.half_extent[0];
             in.path.initial_offset=contexts[i].category<0?0.F:contexts[i].category<5?self.lateral:
                 self.lane_lateral[unsigned(contexts[i].category-11)];
             for(unsigned j=0;j<neighbors.count;++j) {

@@ -61,3 +61,45 @@ Peugeot's route planner draws from 462792, the rejected-target gate, while
 the host has no corresponding draw. The seeds had reconverged at 99531.
 Identify the producer of the six draws and compare both rejected-target
 arguments before changing RNG ownership. Do not advance the seed by hand.
+
+## First divergence before Golf meets the player
+
+At 58a7da9, the connected Hard event 19 replay used the owner's
+world-20261114T092640Z-fd78a5b5 capture. Times below are relative to GO.
+The player's recorded motion and pad and the recorded physics intervals
+drive the host. The rivals and collision responses evolve in the host.
+
+- At 5.7455 s Nissan's contact with the first bus sign has a different
+  outgoing impulse. At 7.89825 s Peugeot's road boundary clamp uses half
+  the model width. The original instruction at 0045C653 loads the selected
+  neighborhood entry's lateral half-extent. The two inputs differ even
+  when the incoming coordinates are identical.
+- At 8.2475 s Peugeot contacts another bus sign. Its incoming pose and
+  momentum match the PC frame; its outgoing momentum differs. At 8.27625 s
+  its position first differs. At 12.12525 s Golf publishes a different
+  passing path. Substituting just Peugeot's recorded heading for that
+  decision recovers all 13 points. Golf's position first differs at
+  12.18825 s. The PC first admits Golf/Tiburon at 13.1285 s.
+- The corrected planner uses the neighborhood half-extent. Comparing both
+  point arrays around the roadside contact requires separating earlier
+  collision errors. With the two recorded sign impulses in the diagnostic
+  only, all raw and resampled coordinates at the five sampled publications
+  match. The independent full rerun with autonomous contacts still admits
+  Golf/Tiburon at 13.0375 s and misses the first park gate. Feeding the
+  port the two native gate endpoints gives the exact PC time and position
+  for Peugeot's continuation. Do not change the gate geometry.
+- On the two port sign jobs the authenticated PC contact search, rewind
+  and impulse routines return the same witnesses, sampled pose and
+  outgoing momenta as the port. Those synthetic inputs do not establish
+  the witnesses the PC used live. The owner's archive has the car state
+  on each side of the contact. The live pair's two witness points inside
+  the dispatch and the sign's full rigid state are the missing comparison.
+
+Local reproducer in the outer workspace: build/gc-ai-telemetry/road19-first-touch.
+Run full_tape.py race full-event-fixed for the complete connected replay,
+early_path.py read for the five publications, combined_native.py for the
+two native sign responses, and report.py for the recorded-versus-host plot.
+The separate pc-sign capture matches the original executable and records
+the pair before and after one actual roadside sign response. A new live
+capture must be compared on its own inputs; a new run can have a different
+grid or a different car hitting a sign.
