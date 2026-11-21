@@ -52,8 +52,14 @@ RaceRun now reads the authored traffic selector and passes it through the
 planner to the decoder. No arbitrary difficulty, boost cap or finish time
 was introduced.
 
+The PC rank byte used at 44BF69 is the human's one-based race position.
+The port passes a zero-based standings slot. The decoder converts this slot
+before indexing either of the two history-gain tables. The difference
+between two ranks in 44C1F7 is independent of that conversion.
+
 The original-code witness is tools/ai_catchup_vectors.py. Its fixture is
-checked by nfsu_ai_catchup_tests, including the decoded retail table, startup
+checked by nfsu_ai_catchup_tests and nfsu_ai_catchup_rank_retail, covering
+the decoded retail table for all four positions, startup
 grace boundaries, both directions of distance/rank advantage, history,
 traffic selectors, long races and point-to-point courses. It executes the
 authenticated speed.exe instructions with supplied race snapshots and no
