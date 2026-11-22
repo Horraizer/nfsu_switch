@@ -988,6 +988,16 @@ int main() {
         check(sample_race_contact(sample,model.spec(),start_a,first,job.remaining)&&
             std::abs(sample.velocity.z-(start_a.velocity.z+(15-start_a.velocity.z)*float((double(.016F)-job.remaining)/.016F)))<2e-6,
             "contact sample uses early history velocity instead of final suspension velocity");
+        // A newly activated mover can hit another car before its first Move.
+        // Its owner still exposes the old mover's velocity until the rewind.
+        first.motion_before_first_move=VehiclePublishedMotion{first.velocity,first.angular_velocity};
+        first.rigid_body.angular_momentum={{.002F,-.06F,-1.44F}};
+        first.rigid_body.axes[0][2]+=.02F;
+        check(sample_race_contact(sample,model.spec(),start_a,first,job.remaining),
+            "sample newly activated mover during a contact");
+        vehicle_import_rigid(model.spec().handling,sample);
+        check(sample.rigid_body.angular_momentum==first.rigid_body.angular_momentum,
+            "contact refresh preserves the new mover's sampled angular momentum");
     }
 
     {

@@ -88,6 +88,9 @@ bool publish(VehicleState& s,const VehicleSpec& spec,ContactBody& b,VehicleVec3 
     s.rigid_body.momentum=b.linear_momentum;s.rigid_body.angular_momentum=b.angular_momentum;
     s.rigid_body.velocity=b.cached_velocity;s.rigid_body.angular_velocity=b.cached_angular_velocity;
     s.velocity=wide(b.cached_velocity);s.angular_velocity=wide(b.cached_angular_velocity);
+    // The contact has published the rewound motion. The first refresh must
+    // keep its angular momentum when the car just switched to a full mover.
+    s.motion_before_first_move.reset();
     s.collision_state=b.collision_state;s.collision_support_since=b.state_timer;
     s.body_rest_state=0;return true;
 }

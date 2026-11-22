@@ -86,6 +86,14 @@ It computes the strut preloads from the incoming actor speed at 477100.
 The first Move copies the driver throttle and published wheel count at
 477BED..477C12. Contact refreshes before Move use the constructor cache.
 
+When a collision triggers that replacement, the constructor imports angular
+momentum at 4782DA. The subsequent rewind at 469390 replaces the pose and
+linear momentum while retaining the imported angular momentum. Publishing
+the sampled velocity ends the temporary constructor/actor velocity override.
+The next component refresh must not infer a second angular momentum from the
+sampled angular velocity. The contact epoch case in nfsu_ai_track_tests
+checks this transition.
+
 ## Evidence limits
 
 These checks establish the isolated arithmetic, table selection and bounded
