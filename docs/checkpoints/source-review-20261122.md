@@ -23,6 +23,13 @@ CHECKPOINT
   logo is square; nfsu_kr_vinyl_retail covers the playable car roster.
 - StereoRing waits on space under its mutex and closure wakes blocked writes.
   No console timing measurement attributes the Lite stutter to this primitive.
-- State: targeted checks passed, repeated host validation and packaging in
-  progress at checkpoint. Existing whole-race replay and physics fixture
-  failures still block a release verdict. Event 19 parity is open.
+- At ce6149b, the full host run reported 27 failures out of 362 tests in the
+  default configuration and 28 out of 365 in Release. Both failure sets were
+  present in the earlier run. Event 19 parity remains open.
+- Packaging correction for ce6149b: building nfsu_switch_race linked the ELF
+  but left the history-source-r74 NRO beside it. The former package check
+  looked for the configured tag only in the ELF. The NRO check now also
+  reads the tag from the packaged read-only segment and rejected that stale
+  artifact. Building nfsu_switch_race_nro produced the contact-heat-audit
+  package. Its text, read-only data, initialized data and GNU build ID were
+  compared with the linked ELF. Console execution remains unverified.
