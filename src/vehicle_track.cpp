@@ -1598,11 +1598,16 @@ bool VehicleTrackSession::refresh_contact(VehicleState& sampled,const VehicleSta
         sampled.owner_traction=published_actor->owner_traction;
     }
     // 469460 refreshes the existing components. A newly created full mover
-    // receives its first steering matrices and engine throttle in 4775F4/477607.
+    // receives steering and throttle at 4775F4/477607 and the two brake
+    // commands at 4778B0..4779A0, all inside its first Move.
     const auto steering=sampled.steering_word_ready?VehicleSteeringState::initialized:
         VehicleSteeringState::before_first_command;
     auto input=last_input_;
-    if(steering==VehicleSteeringState::before_first_command)input.throttle=0;
+    if(steering==VehicleSteeringState::before_first_command) {
+        input.throttle=0;
+        input.brake=0;
+        input.handbrake=false;
+    }
     if(!model_->step(sampled,input,ground_,telemetry,0,0,false,true,true,true,interval,-1,steering))return false;
     interval=telemetry.component_interval;
     return true;
@@ -1621,7 +1626,10 @@ bool VehicleTrackSession::continue_contact(double seconds,const VehicleState* pu
     //469460 refreshes component forces before the outer4774A0 policy latch.
     //The first resumed derivative consumes those forces even when state1
     //then disables aero. Do not replace them with a new-policy force sample.
-    if(!refreshed&&!model_->step(next,last_input_,recording,t.model,0,0,false,true,true,true))return false;
+    if(!refreshed) {
+        float interval=0;
+        if(!refresh_contact(next,published_actor,interval))return false;
+    }
     update_car_collision_state(next.collision_state,next.collision_support_since,
         next.published_support,next.collision_body_flag,
         double(last_input_.world_clock_valid?last_input_.world_clock:static_cast<std::int32_t>((ticks_*4000)/60))*double(.00025F));

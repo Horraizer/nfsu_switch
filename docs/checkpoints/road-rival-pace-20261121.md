@@ -128,3 +128,11 @@ free replay finished, still admitted Golf at 13.03750 s and missed the
 gate. Restoring only the sign impulses or only the junction choice also
 missed. Restoring both produced Peugeot's first gate contact at 19.393 s
 against 19.414 s in the recording. None of these controls drive the game.
+
+Independent review found the same boundary for the brake fields. The
+wheel constructor starts them at zero. 4778B0..4779A0 writes service and
+parking brake during Move. A contact refresh before Move used to apply a
+held pedal, including locking the rear wheels. Both contact entry points
+now use the same refresh. The paired pedal case in nfsu_ai_track_tests
+checks throttle, service brake and parking brake individually on fresh and
+initialized components. Run firstmove_controls.py pedals for this replay.

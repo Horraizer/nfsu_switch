@@ -269,6 +269,41 @@ int main() {
             "constructor refresh arms a new neutral cutoff before the first derivative");
     }
     {
+        VehicleState moving;
+        check(model.reset(moving,course.start),"pedal latch fixture");
+        moving.gear=moving.published_gear=kVehicleGearFirst;
+        moving.engine_rpm=4500;
+        moving.velocity={10,0,0};
+        for(auto& w:moving.wheels)w.spin=18;
+        VehicleTrackSession released(model,course);
+        check(released.start(moving),"coasting mover setup");
+        released.select_rival_physics(1);
+        const auto fresh=released.state();
+        for(unsigned pedal=0;pedal<3;++pedal) {
+            VehicleTrackSession held(model,course);
+            VehicleInput command;
+            command.throttle=pedal==0;
+            command.brake=pedal==1;
+            command.handbrake=pedal==2;
+            VehicleTrackTelemetry t;
+            check(held.start(moving)&&held.step(command,t),"driver holds pedal before contact");
+            for(bool published:{false,true}) {
+                auto coast=fresh,pressed=fresh;
+                coast.steering_word_ready=pressed.steering_word_ready=published;
+                float coast_dt=0,pressed_dt=0;
+                check(released.refresh_contact(coast,&fresh,coast_dt)&&
+                    held.refresh_contact(pressed,&fresh,pressed_dt),"paired pedal refresh");
+                bool different=coast.engine.feedback_torque!=pressed.engine.feedback_torque;
+                for(unsigned k=0;k<4;++k) {
+                    const auto& a=coast.wheels[k];const auto& b=pressed.wheels[k];
+                    different|=a.spin!=b.spin||a.brake_locked!=b.brake_locked||
+                        a.prepared_torque!=b.prepared_torque;
+                }
+                check(different==published,"wheel and engine components accept pedals on first Move");
+            }
+        }
+    }
+    {
         VehicleTrackSession follower(model,course);
         VehicleState moving;
         auto pose=course.start;
