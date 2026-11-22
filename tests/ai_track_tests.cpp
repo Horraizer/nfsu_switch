@@ -224,6 +224,20 @@ int main() {
                 "unsteered rear wheels project the moving hub during construction");
         }
         check(fresh.forces_prepared&&!fresh.steering_word_ready&&wheels,"new solver preserves published wheel speed without old strut or torque history");
+        auto before_move=fresh;
+        float refresh_dt=0;
+        for(unsigned pass=0;pass<2;++pass) {
+            check(replacement.refresh_contact(before_move,&fresh,refresh_dt),
+                "contact refresh before the replacement mover's first Move");
+            check(!before_move.steering_word_ready,
+                "collision callbacks leave the first steering command for Move");
+            for(unsigned k=0;k<2;++k) {
+                const auto& wheel=before_move.wheels[k];
+                const float rim_speed=model.spec().handling.wheels[k].radius*float(wheel.spin);
+                check(wheel.prepared_slip==rim_speed,
+                    "pre-Move contact refresh retains both unpublished front wheel axes");
+            }
+        }
         check(fresh.published_wheel_slip==old.published_wheel_slip&&
             fresh.wheels[0].prepared_effect_slip==std::array<float,2>{},
             "fresh components cannot erase previous actor wheel-slip publication");

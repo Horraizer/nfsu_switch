@@ -1597,7 +1597,13 @@ bool VehicleTrackSession::refresh_contact(VehicleState& sampled,const VehicleSta
         sampled.owner_motion=published_actor->owner_motion;
         sampled.owner_traction=published_actor->owner_traction;
     }
-    if(!model_->step(sampled,last_input_,ground_,telemetry,0,0,false,true,true,true,interval))return false;
+    // 469460 refreshes the existing components. A newly created full mover
+    // receives its first steering matrices and engine throttle in 4775F4/477607.
+    const auto steering=sampled.steering_word_ready?VehicleSteeringState::initialized:
+        VehicleSteeringState::before_first_command;
+    auto input=last_input_;
+    if(steering==VehicleSteeringState::before_first_command)input.throttle=0;
+    if(!model_->step(sampled,input,ground_,telemetry,0,0,false,true,true,true,interval,-1,steering))return false;
     interval=telemetry.component_interval;
     return true;
 }

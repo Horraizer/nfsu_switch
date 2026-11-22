@@ -103,3 +103,28 @@ The separate pc-sign capture matches the original executable and records
 the pair before and after one actual roadside sign response. A new live
 capture must be compared on its own inputs; a new run can have a different
 grid or a different car hitting a sign.
+
+## Contact before the first full Move
+
+At d7e6424, in the control with the two roadside sign continuations
+restored, Peugeot met the human at clock 76060 and switched from the
+reduced to the full mover. Both car positions after the impulse matched
+the PC. The driver's throttle and steering word already matched, but the
+port used them during the two force refreshes before the first full Move.
+The original engine field at +78 was zero on entry to Move and one on
+return. 4775F4 sets the front steering matrices; 477607 writes the
+throttle. The original constructor at 476ECE also clears the shared
+component interval before refresh. Both operations belong to all such
+contacts, independent of event and car model.
+
+The contact refresh now retains the fresh mover's initial front wheel
+axes and throttle until Move. The registered nfsu_ai_track_tests case
+refreshes a replacement twice before its first Move. The constructor's
+shared interval reset applies only when the rival actually changes to the
+full mover.
+
+Retest with firstmove_controls.py in the same local reproducer: the full,
+free replay finished, still admitted Golf at 13.03750 s and missed the
+gate. Restoring only the sign impulses or only the junction choice also
+missed. Restoring both produced Peugeot's first gate contact at 19.393 s
+against 19.414 s in the recording. None of these controls drive the game.

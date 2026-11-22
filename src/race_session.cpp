@@ -1892,6 +1892,9 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                 actor.rival_path_block_ticks_=2*kRaceTicksPerSecond;
             if(other==0||timing_.racers[id].status!=RacerStatus::not_finished) {
                 actor.rival_full_ticks_=5*kRaceTicksPerSecond;
+                // 476ECE clears the shared interval when constructing the full
+                // mover, before the contact refreshes either participant.
+                if(actor.physical_selector()!=1)contact_component_interval_=0;
                 actor.select_rival_physics(1,timing_.now_ticks,world_random_?world_random_:&contact_seed_);
             } else {
                 // 44C860 leaves the existing selector1 timer armed.

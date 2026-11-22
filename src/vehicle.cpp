@@ -1404,7 +1404,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             s.published_support,s.rigid_body.axes[0][2]);
     }
     const bool original_steering=raw_input.road_steering&&raw_input.road_angle_word_valid;
-    if(original_steering&&(select_request||!s.steering_word_ready)) {
+    if(steering==VehicleSteeringState::initialized&&original_steering&&(select_request||!s.steering_word_ready)) {
         //4775E4 consumes the processed word before the solver loop.
         // Each subsequent strut callback consumes the retained front matrices.
         s.steering_word=raw_input.road_angle_word;s.steering_word_ready=true;
@@ -1499,12 +1499,13 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         target = raw_input.road_steering ?
             sanitize(raw_input.road_target,-3.14159265358979323846,3.14159265358979323846) : steer * lock;
         const double max_change = a.steer_rate * suspension_dt;
-        if(original_steering) s.steer_angle=
+        if(steering==VehicleSteeringState::before_first_command)s.steer_angle=0;
+        else if(original_steering) s.steer_angle=
             static_cast<double>(static_cast<std::int16_t>(s.steering_word))*9.58738019107841e-5F;
         else if (raw_input.road_steering) s.steer_angle =
             sanitize(raw_input.road_angle,-3.14159265358979323846,3.14159265358979323846);
         else s.steer_angle = s.steer_angle + clamp(target - s.steer_angle, -max_change, max_change);
-        if(!original_steering) {
+        if(!original_steering&&steering==VehicleSteeringState::initialized) {
             // Qualified compatibility adapter for callers that supply radians
             // or the approximate lock/slew instead of original controls1D0.
             const double scaled=s.steer_angle*10430.378350470453;
