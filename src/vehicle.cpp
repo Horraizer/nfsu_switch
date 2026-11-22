@@ -1698,6 +1698,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             const double denominator=std::max(absolute(vlong),a.slip_speed_floor);
             out.slip_lateral=vlat/denominator;
         }
+        // 46CA90 clears Engine+7C on every component refresh, including
+        // rewinds without an integration step. The gearbox rebuilds it below.
+        s.engine.feedback_torque=0.F;
         //46ABD0 updates the gearbox after wheel/strut component refresh. Force
         // inputs/slip160 were cleared; retained164 is the previous completed
         // prepared_slip.58747D replaces both copies in the new producer later.

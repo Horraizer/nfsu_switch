@@ -195,6 +195,9 @@ int main() {
         old.rigid_body.momentum={99,88,77};old.rigid_body.angular_momentum={66,55,44};
         old.rigid_body.adaptive_damping=.5F;
         old.body_rest_state=2;old.body_gravity=false;old.grip_recovery=.5F;
+        old.owner_speeds.forward=7.F;
+        old.published_support=3;
+        old.aero={1.F,.5F,.8F,.75F,false};
         for(unsigned k=0;k<4;++k) {
             auto& wheel=old.wheels[k];wheel.spin=12.F+float(k);
             wheel.compression=.03;wheel.previous_compression=.02;wheel.compression_rate=3;
@@ -210,6 +213,10 @@ int main() {
         check((!rival||replacement.configure_ai(1))&&replacement.start(old),"replacement solver setup");
         replacement.select_rival_physics(1,12135);
         const auto& fresh=replacement.state();
+        check(fresh.aero_ready&&fresh.aero.enabled&&fresh.aero.drag_scale==1.F&&
+            fresh.aero.support_kind==0.F&&fresh.aero.processed_throttle==0.F&&
+            fresh.aero_preloads==player_aero_preloads(model.spec().handling,7.F,true),
+            "new aero component loads speed-dependent struts before its first driver or support sample");
         bool wheels=true;
         for(unsigned k=0;k<4;++k) {
             const auto& wheel=fresh.wheels[k];
@@ -279,6 +286,13 @@ int main() {
         check(released.start(moving),"coasting mover setup");
         released.select_rival_physics(1);
         const auto fresh=released.state();
+        auto prior_force=fresh,clean=fresh;
+        prior_force.engine.feedback_torque=4.F;
+        float prior_dt=0,clean_dt=0;
+        check(released.refresh_contact(prior_force,&fresh,prior_dt)&&
+              released.refresh_contact(clean,&fresh,clean_dt)&&
+              prior_force.engine.feedback_torque==clean.engine.feedback_torque,
+              "component refresh rebuilds gearbox reaction from the current contact");
         for(unsigned pedal=0;pedal<3;++pedal) {
             VehicleTrackSession held(model,course);
             VehicleInput command;

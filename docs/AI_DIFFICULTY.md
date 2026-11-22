@@ -80,6 +80,12 @@ slip. The sign of imported spin also participates in the reversal clamp.
 The replacement-mover cases in nfsu_ai_track_tests exercise both properties.
 Traffic layout and the decision to change movers are independent inputs.
 
+At 476EA4..476EDF the replacement mover initializes both aero scale factors
+to one, enables the component and clears its cached throttle and support.
+It computes the strut preloads from the incoming actor speed at 477100.
+The first Move copies the driver throttle and published wheel count at
+477BED..477C12. Contact refreshes before Move use the constructor cache.
+
 ## Evidence limits
 
 These checks establish the isolated arithmetic, table selection and bounded

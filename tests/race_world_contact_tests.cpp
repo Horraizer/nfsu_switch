@@ -9,6 +9,25 @@ namespace nfsu {
 struct RaceWorldContactProbe {
 static int run(const char* root) {
  int failures=0;
+ // Market Street's second bus sign has a quantized, non-orthogonal placement.
+ // Reference: PC 1.4 placement loader 595468 and rigid-body setup 597140.
+ {
+  RaceProps props;
+  std::string error;
+  if(!props.load(root,error,"TRACKB1001.lzc")) {std::cerr<<error<<'\n';return 1;}
+  const auto& objects=props.objects();
+  const auto sign=std::find_if(objects.begin(),objects.end(),[](const RaceProp& p) {
+   return p.name=="ZCS_BusSignPostA" && std::abs(p.state.position.x-1863.44)<.01;
+  });
+  const PlayerRigidMatrix basis{{{0x1.c6ab8cp-1F,-0x1.d61b66p-2F,0x1.9ffbecp-6F},
+                                {0x1.d648a2p-2F,0x1.c6cf56p-1F,-0x1.1fcb10p-10F},
+                                {-0x1.6942dcp-6F,0x1.9e096ep-7F,0x1.ffd5acp-1F}}};
+  const ContactVector centre{0x1.d1dc70p+10F,-0x1.d6777cp+8F,0x1.1422a6p+6F};
+  if(sign==objects.end() || sign->state.rigid_body.axes!=basis ||
+     sign->state.rigid_body.snapshot_axes!=basis || sign->state.rigid_body.position!=centre) {
+   std::cerr<<"Market Street sign: incorrect collision basis or centre of mass\n";++failures;
+  }
+ }
  //The last actor in a full traffic roster must retain the same original
  //583DA0 magnitude/stop behavior as the first actor, including shared records.
  for(unsigned other:{0U,1+kRaceRivalCapacity+kRaceTrafficCapacity-1}){

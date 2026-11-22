@@ -327,8 +327,13 @@ bool VehicleTrackSession::reconstruct_full_physics(VehicleState& state,std::int3
     // published RPM/gear, not the old solver's cutoff or clutch history.
     // This also applies to the human when47C9E0 releases the road NIS.
     s.forces_prepared=false;
-    s.aero_ready=false;
     const auto& h=model_->spec().handling;
+    // 476EA4..476EDF constructs the aero cache and loads the strut preloads.
+    // Driver throttle and wheel support first enter this cache at 477BED.
+    s.aero=PlayerAeroCache{};
+    s.aero.enabled=model_->spec().aero.enabled;
+    s.aero_preloads=player_aero_preloads(h,s.owner_speeds.forward,s.aero.enabled,s.collision_state);
+    s.aero_ready=true;
     //4782C0 imports published wheel speeds, but constructs new struts and
     //wheel torque history. Old compression rates must not damp the new body.
     for(auto& wheel:s.wheels) {

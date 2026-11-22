@@ -129,6 +129,8 @@ bool RaceProps::load(const std::filesystem::path& root,std::string& error,const 
         p.bounds=race_track_body_bounds(p.spec,p.box);
         auto& b=p.state.rigid_body;
         for(unsigned row=0;row<3;++row)for(unsigned col=0;col<3;++col)b.axes[row][col]=f(at+48+16*row+4*col);
+        // 595468 orthonormalizes every placement before 597140 transforms its centre of mass.
+        player_rigid_body_normalize(b);
         b.position=add({{f(at+96),f(at+100),f(at+104)}},rotated(b,setup.centre_of_mass));
         b.snapshot_axes=b.axes;p.state.alternate_yaw_active=false;
         player_rigid_body_refresh(setup,b);publish(p.state);next.push_back(std::move(p));
