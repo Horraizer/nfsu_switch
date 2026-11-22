@@ -1105,7 +1105,7 @@ void player_drag_heat_update(const VehicleHandling& h,PlayerEngineState& engine,
     engine.heat_time=seconds;
     const float rpm=engine.angular_speed*kPlayerRadSToRpm;
     const float rate=rpm>=h.redline_rpm?0.35F:-0.1F; //6FFFF8,700000; nitro addend is zero
-    if(rate<=0||engine.heat<=1.F)engine.heat+=rate*dt;
+    if(rate<=0||engine.heat<1.F)engine.heat+=rate*dt;
     if(engine.heat<=0)engine.heat=0;
     if(engine.heat>=0.95F) {
         if(engine.overheat_since==0)engine.overheat_since=seconds;

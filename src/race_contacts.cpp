@@ -55,7 +55,7 @@ int overlap_boxes(const Box& a,const Box& b,double& depth,VehicleVec3& normal,do
     std::array<VehicleVec3,15> candidates{};
     for(unsigned i=0;i<3;++i){candidates[i]=a.axis[i];candidates[i+3]=b.axis[i];}
     for(unsigned i=0;i<3;++i)for(unsigned j=0;j<3;++j)candidates[6+3*i+j]=cross(a.axis[i],b.axis[j]);
-    depth=std::numeric_limits<double>::max();
+    depth=std::numeric_limits<double>::infinity();
     for(auto n:candidates) {
         const double length=vehicle_sqrt(dot(n,n));if(length<1e-8)continue;n=mul(n,1/length);
         const double overlap=radius(a,n)+radius(b,n)-std::abs(dot(delta,n));
@@ -63,7 +63,7 @@ int overlap_boxes(const Box& a,const Box& b,double& depth,VehicleVec3& normal,do
         if(overlap<=-margin)return false;
         if(overlap<depth){depth=overlap;normal=dot(delta,n)<0?mul(n,-1):n;}
     }
-    return true;
+    return std::isfinite(depth)?1:-1;
 }
 ContactBody body(const VehicleState& s,const VehicleSpec& spec,unsigned id) {
     ContactBody out;out.identity=id;out.inverse_mass=1/spec.handling.mass;
@@ -293,9 +293,16 @@ static bool resolve_pair_impl(VehicleState& sa,const VehicleSpec& as,const RaceC
     }
     // Normal-mode body callback is enabled by an explicit world record/seed.
     // Standalone legacy probes and Smokeable activation keep their own boundary.
-    const double invsum=double(ba.inverse_mass)+bbod.inverse_mass;
-    if((!fixed_world[0]&&!publish(na,as,ba,mul(normal,prop&&!job?-depth*ba.inverse_mass/invsum:0))) ||
-       (!fixed_world[1]&&!publish(nb,bs,bbod,mul(normal,prop&&!job?depth*bbod.inverse_mass/invsum:0))))return false;
+    VehicleVec3 move_a{},move_b{};
+    if(prop&&!job) {
+        const double invsum=double(ba.inverse_mass)+bbod.inverse_mass;
+        if(invsum>0) {
+            move_a=mul(normal,-depth*ba.inverse_mass/invsum);
+            move_b=mul(normal,depth*bbod.inverse_mass/invsum);
+        }
+    }
+    if((!fixed_world[0]&&!publish(na,as,ba,move_a)) ||
+       (!fixed_world[1]&&!publish(nb,bs,bbod,move_b)))return false;
     //46B755..46B762 refresh BOTH components before either outer continuation.
     if(context){context->record=pending_record;context->world_seed=pending_seed;}
     if(job&&context&&context->refresh) {

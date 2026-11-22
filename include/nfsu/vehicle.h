@@ -163,8 +163,10 @@ struct VehicleHandling {
     float alternate_yaw_scale = 1.0F;           // +0x270; rigid properties+50
     std::array<VehicleAxleStrut, 2> struts{};   // [0] front, [1] rear
     float shift_fraction = 0.0F;                // +0x2C0
-    float final_drive_rear = 0.0F;              // +0x2C8, sub +0x1B8: wheels 2 and 3
-    float final_drive_front = 0.0F;             // +0x2CC, sub +0x1BC: wheels 0 and 1
+    // Names follow the AI wheel torque loop at 47563D. The player gearbox
+    // (46D680, 46E020) applies the same stored ratios to the opposite axles.
+    float final_drive_rear = 0.0F;              // +0x2C8, sub +0x1B8
+    float final_drive_front = 0.0F;             // +0x2CC, sub +0x1BC
     float rear_drive_fraction = 0.0F;           // +0x2D0, sub +0x1C0
     float clutch_stiffness = 0.0F;              // +0x2D4, kN m per rad/s
     std::uint32_t forward_gears = 0;            // +0x2D8, sub +0x1C8
