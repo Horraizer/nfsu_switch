@@ -136,3 +136,40 @@ held pedal, including locking the rear wheels. Both contact entry points
 now use the same refresh. The paired pedal case in nfsu_ai_track_tests
 checks throttle, service brake and parking brake individually on fresh and
 initialized components. Run firstmove_controls.py pedals for this replay.
+
+## Standing road start, 2026-11-23
+
+At 59a13cf, event 92 stage 3 on Hard, the Dolphin reference Celica
+reached 33.18 km/h at one second. The port reached 42.12. Changing only
+the replay timestep in the GameCube world reproduced the effect inside
+the original: 33.55 km/h at 30 Hz and 41.64 at 60 Hz. Throttle was
+already fully open. The seed and upgrades were held fixed.
+
+Two consumers explain the early advantage. The body rest decision
+reads the published gear, and the launch traction decision reads the
+published forward speed before sampling the previous load and slip of
+each tyre. With intermediate 60 Hz publications the body releases sooner
+and the traction decision can latch a different diagonal grip factor.
+After a standing road grid release the port samples these two operands
+together at 30 Hz until leaving the tyre model's standing range. Player
+and full-physics rival cars share this rule; the driver, gearbox,
+contacts and camera keep their normal update rates. Drag and drift use
+their existing launch paths. The sampling and rewind regression is in
+nfsu_player_powertrain_tests.
+
+In the candidate based on 59a13cf, the Celica reached 33.21 km/h after
+one second and 58.11 after 1.5 s, against 33.18 and 57.54 recorded.
+The RSX reached 38.60 against 38.36. The original Eclipse reached
+43.26 and the candidate 44.99. The local comparison is under
+build/gc-ai-telemetry/career-bot/launch-fix in the outer workspace.
+The launch-fix-control recordings contain the original 30/60 Hz runs.
+
+Finish crossings are a separate comparison. The headless field runner
+now ticks the real race audio service with the shared world random state,
+using an in-memory output sink. In spectate-decision-92/neutral-0 the
+original Celica finished in 266.01 s, the otherwise identical control
+in 263.61 and the candidate in 275.28. The RSX won all three. In the
+four event 19 driving cases, the same controller was run against each
+simulation's live state. It can generate different player inputs after
+the trajectories diverge. An opening speed match does not predict the
+finish; compare the crossing of each named car on each individual run.

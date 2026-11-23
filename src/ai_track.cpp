@@ -323,6 +323,7 @@ bool VehicleTrackSession::reconstruct_ai_physics(VehicleState& s,const VehicleIn
 bool VehicleTrackSession::reconstruct_full_physics(VehicleState& state,std::int32_t clock) const {
     auto s=state;
     s.motion_before_first_move.reset();
+    s.road_launch.reset();
     // 426110 constructs fresh components.478383/47839B restore only the
     // published RPM/gear, not the old solver's cutoff or clutch history.
     // This also applies to the human when47C9E0 releases the road NIS.

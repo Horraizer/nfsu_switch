@@ -1570,6 +1570,8 @@ bool VehicleTrackSession::release_grid_engine(bool drag,unsigned category,float 
             state_.engine.angular_speed*kPlayerRadSToRpm,
             model_->request_upshift_rpm()[kVehicleGearNeutral],category,kVehicleGearNeutral,window_scale);
         state_.transmission.requested_gear=kVehicleGearFirst;
+        if(!drag && !model_->spec().drift_mode)
+            state_.road_launch=RoadLaunchSample{0,state_.owner_speeds.forward,state_.published_gear};
     }
     return true;
 }

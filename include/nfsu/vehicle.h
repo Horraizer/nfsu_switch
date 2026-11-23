@@ -645,6 +645,13 @@ struct PlayerOwnerTraction {
     float timer = 0, scale = 1, quiet = 0;
 };
 
+// Actor values consumed by the standing-start rest and traction decisions.
+struct RoadLaunchSample {
+    double elapsed = 0;
+    float forward_speed = 0;
+    int gear = kVehicleGearNeutral;
+};
+
 struct VehicleState {
     std::uint32_t collision_state = 0; // original actor38, distinct from rest
     bool drag_totalled=false; // actor874, latched by465D00 before race status update
@@ -671,6 +678,7 @@ struct VehicleState {
     PlayerOwnerMotion owner_motion;
     float grip_recovery = 1; // physics7C, handbrake recovery
     PlayerOwnerTraction owner_traction;
+    std::optional<RoadLaunchSample> road_launch;
     PlayerOwnerSpeeds owner_speeds; // retained until unsplit frame publication
     PlayerAeroCache aero;
     std::array<float, kVehicleWheelCount> aero_preloads{}; // kN, held per outer call
