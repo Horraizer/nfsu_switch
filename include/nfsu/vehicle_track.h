@@ -625,7 +625,8 @@ public:
     bool step_grid_engine(const VehicleInput&, VehicleTrackTelemetry& telemetry,
                           double publication_dt, double solver_dt,
                           bool drag=false, std::int32_t clock=0, bool advance_chassis=false);
-    bool release_grid_engine(bool drag=false,unsigned category=3,float window_scale=1.F);
+    bool release_grid_engine(bool drag=false,unsigned category=3,float window_scale=1.F,
+                             bool console_clock=false);
     // Port pre-race adapter: settle a stationary grid on its actual terrain
     // before the first visible countdown frame. No race/route clock advances.
     bool prepare_grid(unsigned frames);

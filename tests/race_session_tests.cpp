@@ -14,6 +14,19 @@ void check(bool okay,const char* label) {
 }
 namespace nfsu {
 struct RaceWorldContactProbe {
+    static bool road_launch_clock(const VehicleTrackCourse& course,double recorded_interval,
+                                  std::string& error) {
+        auto world=std::make_unique<RaceSession>(course);
+        auto pose=course.start;pose.ground.x+=16;
+        if(!world->set_rivals({{stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"}},error)||
+           !world->start(error,nullptr,.025F))return false;
+        world->external_frame_seconds_=recorded_interval;
+        for(unsigned frame=0;frame<240&&!world->timing().go_valid;++frame)
+            if(!world->advance({},error))return false;
+        const bool fixed=recorded_interval==0;
+        return world->timing().go_valid && world->rival(0).timing().go_valid &&
+            world->car().road_launch.has_value()==fixed && world->rival(0).car().road_launch.has_value()==fixed;
+    }
     static bool short_frame_wall_sparks(const VehicleTrackCourse& course) {
         RaceSession race(course);
         auto& samples=race.track_telemetry_;
@@ -538,6 +551,9 @@ int main() {
     }
     VehicleTrackCourse course;
     check(build_vehicle_proving_ground(course,error),"synthetic course builds");
+    for(double recorded_interval:{0.,1./60.,1./144.})
+        check(RaceWorldContactProbe::road_launch_clock(course,recorded_interval,error),
+              "road grid uses the clock source for both cars, including a native 60 Hz replay");
     check(RaceWorldContactProbe::short_frame_wall_sparks(course),"shared wall contact survives repeated short-frame samples exactly once");
     check(RaceWorldContactProbe::contact_slip_publication(course),"contact completion publishes wheel slip including zero duration");
     check(RaceWorldContactProbe::component_replacement(course,error),

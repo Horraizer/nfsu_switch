@@ -1552,7 +1552,7 @@ bool VehicleTrackSession::step_grid_engine(const VehicleInput& input, VehicleTra
     state_=next;last_input_=grid_input;telemetry=t;return true;
 }
 
-bool VehicleTrackSession::release_grid_engine(bool drag,unsigned category,float window_scale) {
+bool VehicleTrackSession::release_grid_engine(bool drag,unsigned category,float window_scale,bool console_clock) {
     // Original461510 clears the hold and4615B0 restores the request policy.
     // Keep physical RPM and clutch phase; normal gearbox update engages first.
     if(!ai_active_ && state_.gear==kVehicleGearNeutral) {
@@ -1570,7 +1570,7 @@ bool VehicleTrackSession::release_grid_engine(bool drag,unsigned category,float 
             state_.engine.angular_speed*kPlayerRadSToRpm,
             model_->request_upshift_rpm()[kVehicleGearNeutral],category,kVehicleGearNeutral,window_scale);
         state_.transmission.requested_gear=kVehicleGearFirst;
-        if(!drag && !model_->spec().drift_mode)
+        if(console_clock && !drag && !model_->spec().drift_mode)
             state_.road_launch=RoadLaunchSample{0,state_.owner_speeds.forward,state_.published_gear};
     }
     return true;

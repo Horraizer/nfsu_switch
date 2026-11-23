@@ -173,3 +173,12 @@ four event 19 driving cases, the same controller was run against each
 simulation's live state. It can generate different player inputs after
 the trajectories diverge. An opening speed match does not predict the
 finish; compare the crossing of each named car on each individual run.
+
+Recorded PC intervals are already the native publication clock. Applying
+the 30 Hz adapter there moved the first Golf/Tiburon collision to 8.23 s
+in the event 19 PC input replay. The fixed-step world now passes its clock
+source to the other grid slots. With the native intervals restored, the
+complete opening trace matches the control with sampling disabled, byte
+for byte. The first contact is at 13.04 s, against 13.13 s on PC. Peugeot
+still misses the park gate in this unassisted replay. The session regression
+covers a fixed world and supplied 60 Hz and 144 Hz clocks for both cars.

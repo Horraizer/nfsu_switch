@@ -1010,8 +1010,12 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             if(profile)profile->traffic_motion=(timer->now_us()-begin)/1000.0;
         }
     }
+    // Children inherit the parent interval even at a fixed 60 Hz. Preserve
+    // its source so a recorded native clock also reaches every grid slot.
+    const bool console_clock=external_contact_owner_?parent_uses_console_clock_:external_frame_seconds_==0;
     const auto advance_rival=[&](std::size_t i) {
         auto& r=*rivals_[i];r.external_frame_seconds_=frame_seconds_;
+        r.parent_uses_console_clock_=console_clock;
         if(r.timing().outcome==RaceOutcome::running ||
            ((planned_rivals_||human_rival_)&&r.timing().outcome==RaceOutcome::finished)) {
             bool ok;
@@ -1346,7 +1350,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                           timing_events_, error,lap_knockout_?standings_.order.data():nullptr)) { started_ = false; return false; }
     finish_probe_events_.clear();
     if(held_grid && !race_car_held(timing_)) {
-        if(!vehicle_.release_grid_engine(drag_,drag_category_,drag_shift_scale_)) {
+        if(!vehicle_.release_grid_engine(drag_,drag_category_,drag_shift_scale_,console_clock)) {
             started_=false;error="grid force preparation refused";return false;
         }
         vehicle_.begin_race();

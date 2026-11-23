@@ -337,6 +337,7 @@ private:
     RaceCrashCamera crash_camera_;
     const CrashCameraRoadSource* crash_source_=nullptr;
     double frame_seconds_=kDriveFrameSeconds,external_frame_seconds_=0;
+    bool parent_uses_console_clock_=true;
     double steering_seconds_=0,visual_frames_=0;
     std::int32_t cinematic_start_ticks_=kRaceWorldStartTicks;
     std::int32_t cinematic_end_ticks_=0;
