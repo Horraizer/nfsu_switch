@@ -535,7 +535,9 @@ bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& err
     if(steering_contact_tick_!=0&&steering_contact_tick_!=0x7FFFFFFFU)
         context.shift_elapsed=prop_clock_age(std::uint32_t(timing_.now_ticks),steering_contact_tick_);
     context.predicate = steering_mode_ == RaceSteering::recovered_predicate1;
-    if (!steering_step(context,steering_state_,steering_result_)) {
+    // RealDriver 461674 (GC 800668C4) retains the wheel command and skips
+    // the steering histories until the actor has travelled more than two metres.
+    if (travelled_distance_>2.F && !steering_step(context,steering_state_,steering_result_)) {
         error = "recovered steering context refused at substep "+std::to_string(substep); return false;
     }
     input.road_steering = true;

@@ -182,3 +182,23 @@ complete opening trace matches the control with sampling disabled, byte
 for byte. The first contact is at 13.04 s, against 13.13 s on PC. Peugeot
 still misses the park gate in this unassisted replay. The session regression
 covers a fixed world and supplied 60 Hz and 144 Hz clocks for both cars.
+
+## Human steering at a standing start, 2026-11-23
+
+RealDriver 46166E..4616A9 reads the actor's total distance at +3B8.
+The original requires it to exceed the float at 70031C (2.0 metres)
+before calling 460930. Below and at the boundary the previous wheel
+command and both steering histories are retained. GameCube RealDriver at
+800668C0..800668E4 reads the same named MinDistanceBeforeSteeringAllowed.
+The racing AI already applies its own gate. The missing call guard was in
+the recovered human controller, so the error also changed rival collisions.
+
+At 3746fab, feeding the original pad in event 6 stage 3 made the Civic
+turn into a Miata at 1.156 s. That rival then hit a second Miata at 1.742 s.
+In the corrected run the first contact was at 1.876 s and the rival pair
+never collided within the 3.25 s trace. At original time 0.839 s the Civic
+heading was 112.94 degrees, the old port gave 100.50 and the fix gave
+112.95. The three Miatas are still slower than the original at three
+seconds. The test in nfsu_race_session_tests covers the strict boundary,
+the retained wheel command and both history buffers. This does not change
+AI throttle or remove a valid racing collision.
