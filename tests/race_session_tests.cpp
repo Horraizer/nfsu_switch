@@ -15,23 +15,23 @@ void check(bool okay,const char* label) {
 namespace nfsu {
 struct RaceWorldContactProbe {
     static bool human_grid_steering(const VehicleTrackCourse& course,std::string& error) {
-        RaceSession world(course,stock_240sx_vehicle_spec(),RaceSteering::recovered_predicate1);
-        if(!world.start(error))return false;
+        auto world=std::make_unique<RaceSession>(course,stock_240sx_vehicle_spec(),RaceSteering::recovered_predicate1);
+        if(!world->start(error))return false;
         VehicleInput input;
         input.steer=1;
         for(float distance:{0.F,1.999F,2.F}) {
-            world.travelled_distance_=distance;
-            if(!world.steer_input(input,1,error)||!input.road_angle_word_valid||input.road_angle_word!=0||
-               world.steering_state().input.count||world.steering_state().rate.count)return false;
+            world->travelled_distance_=distance;
+            if(!world->steer_input(input,1,error)||!input.road_angle_word_valid||input.road_angle_word!=0||
+               world->steering_state().input.count||world->steering_state().rate.count)return false;
         }
-        world.travelled_distance_=2.001F;
-        if(!world.steer_input(input,1,error)||world.steering_state().input.count!=1||
-           world.steering_state().rate.count!=1||input.road_angle_word==0)return false;
+        world->travelled_distance_=2.001F;
+        if(!world->steer_input(input,1,error)||world->steering_state().input.count!=1||
+           world->steering_state().rate.count!=1||input.road_angle_word==0)return false;
         const auto previous=input.road_angle_word;
-        world.travelled_distance_=2.F;
+        world->travelled_distance_=2.F;
         input.steer=-1;
-        return world.steer_input(input,1,error)&&input.road_angle_word==previous&&
-               world.steering_state().input.count==1&&world.steering_state().rate.count==1;
+        return world->steer_input(input,1,error)&&input.road_angle_word==previous&&
+               world->steering_state().input.count==1&&world->steering_state().rate.count==1;
     }
     static bool road_launch_clock(const VehicleTrackCourse& course,double recorded_interval,
                                   std::string& error) {
