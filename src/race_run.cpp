@@ -420,11 +420,17 @@ bool RaceRun::arm_finish_probe(std::string& error) {
 }
 bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
                        RaceSimulationProfile* profile,TimingService* timer) {
+    return simulate_frame(pad,kDriveFrameSeconds,error,profile,timer);
+}
+bool RaceRun::simulate_frame(const GamepadFrame& pad,double real_seconds,std::string& error,
+                             RaceSimulationProfile* profile,TimingService* timer) {
+    if(!(real_seconds>=1./3600 && real_seconds<=1)) {error="invalid measured race interval";return false;}
     if(profile && !timer){error="simulation profiling requires a clock";return false;}
     if(profile)*profile={};
     if (!session_ || pending_) { error = "race simulation/commit order violated"; return false; }
     if(session_->timing().outcome!=RaceOutcome::running&&
        !(session_->timing().outcome==RaceOutcome::finished&&session_->has_finish_driver())) {error="race session is not running";return false;}
+    session_->real_frame_seconds_=real_seconds;
     session_->update_start_stage();
     AiRoadCursor human_road;
     if(!session_->recycle_traffic_before_controllers(
@@ -552,6 +558,19 @@ bool RaceReplay::next(std::uint64_t tick, GamepadFrame& pad, std::string& error)
     pad = race_input_frame(runs_[index_], tick);
     if (++used_ == runs_[index_].ticks) { ++index_; used_ = 0; }
     ++tick_; return true;
+}
+double RaceLiveClock::advance(std::uint64_t microseconds) {
+    constexpr float period=1.F/60.F;
+    pending_seconds_+=double(microseconds)/1000000.;
+    // Two sub-frame polls must not each advance the world by its minimum
+    // period. Use the same half-unit rounding as the original frame clock.
+    if(pending_seconds_*3600.+.5<60.)return 0;
+    const float measured=std::clamp(float(pending_seconds_)+remainder_,period,3.F*period);
+    pending_seconds_=0;
+    const int units=int(measured*3600.F+.5F);
+    const int world_ticks=int(float(units)*(4000.F/3600.F)+.5F);
+    remainder_=measured-float(world_ticks)*.00025F;
+    return float(units)*(1.F/3600.F);
 }
 void RaceTickDebt::add(std::uint64_t us) {
     const auto room = std::numeric_limits<std::uint64_t>::max() - units_;

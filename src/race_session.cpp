@@ -16,8 +16,8 @@
 namespace nfsu {
 float RaceSession::next_world_frame_seconds()const noexcept {
     if(external_frame_seconds_>0)return float(external_frame_seconds_);
-    if(shared_local_camera_)return float(kDriveFrameSeconds);
-    return float(kDriveFrameSeconds)*crash_camera_.scale(float(kDriveFrameSeconds));
+    const float real_dt=float(real_frame_seconds_);
+    return shared_local_camera_?real_dt:real_dt*crash_camera_.scale(real_dt);
 }
 bool RaceSession::set_crash_camera(const CrashCameraRoadSource* source,unsigned intensity,unsigned track,std::string& error) {
     if(started_||intensity>255){error="crash camera must be configured before start, intensity 0..255";return false;}
@@ -518,7 +518,7 @@ bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& err
     const auto& v=s.owner_motion.velocity;
     SteeringContext context;
     context.raw = float(input.steer);
-    context.seconds = float(1+(crash_source_?steering_seconds_:double(steering_steps_)/60));
+    context.seconds = float(1+steering_seconds_);
     context.dt = static_cast<float>(frame_seconds_);
     // 460A80 uses the published longitudinal speed, velocity and heading.
     context.forward_speed=s.owner_speeds.forward;
@@ -694,7 +694,7 @@ bool RaceSession::start_scene_finished(unsigned post_go_frames) const noexcept {
 
 bool RaceSession::start(std::string& error,const VehiclePose* pose,float countdown_step,float cinematic_seconds,
                         unsigned road_scene_slots,float road_scene_end_seconds) {
-    crash_camera_.reset();camera_shake_.reset();frame_seconds_=kDriveFrameSeconds;steering_seconds_=visual_frames_=0;
+    crash_camera_.reset();camera_shake_.reset();real_frame_seconds_=frame_seconds_=kDriveFrameSeconds;steering_seconds_=visual_frames_=0;
     prop_contacts_={};
     if (started_) { error = "race session is one-shot"; return false; }
     crash_windows_damaged_=false;
@@ -852,10 +852,10 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     if (!started_ || (timing_.outcome != RaceOutcome::running&&!finished_ai&&!finished_human&&!finished_lan)) {
         error = "race session is not running"; return false;
     }
-    crash_camera_.begin_frame(float(kDriveFrameSeconds));
+    crash_camera_.begin_frame(float(real_frame_seconds_));
     if(crash_camera_.consume_damage_reset())crash_windows_damaged_=false;
     frame_seconds_=external_frame_seconds_>0?external_frame_seconds_:
-        (!shared_local_camera_&&crash_camera_.event()?double(float(kDriveFrameSeconds)*.4F):kDriveFrameSeconds);
+        (!shared_local_camera_&&crash_camera_.event()?double(float(real_frame_seconds_)*.4F):real_frame_seconds_);
     const float world_dt=float(frame_seconds_);
     const unsigned solver_slices=unsigned(world_dt/.004399999976158142F)+1;
     const double solver_dt=frame_seconds_/solver_slices;
@@ -1012,12 +1012,9 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             if(profile)profile->traffic_motion=(timer->now_us()-begin)/1000.0;
         }
     }
-    // Children inherit the parent interval even at a fixed 60 Hz. Preserve
-    // its source so a recorded native clock also reaches every grid slot.
-    const bool console_clock=external_contact_owner_?parent_uses_console_clock_:external_frame_seconds_==0;
     const auto advance_rival=[&](std::size_t i) {
         auto& r=*rivals_[i];r.external_frame_seconds_=frame_seconds_;
-        r.parent_uses_console_clock_=console_clock;
+        r.real_frame_seconds_=real_frame_seconds_;
         if(r.timing().outcome==RaceOutcome::running ||
            ((planned_rivals_||human_rival_)&&r.timing().outcome==RaceOutcome::finished)) {
             bool ok;
@@ -1208,8 +1205,8 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             world_dt);
         // Consume countdown shift edges without carrying them through GO.
         if(!direct) controls_.step(0,kVehicleGearNeutral,VehicleGearbox::manual);
-        const unsigned slices=road_scene_end_>0?solver_slices:kDriveStepsPerFrame;
-        const auto duration=road_scene_end_>0?frame_seconds_:kDriveFrameSeconds;
+        const unsigned slices=solver_slices;
+        const auto duration=frame_seconds_;
         const bool advance_chassis=countdown && road_scene_end_>0 && !road_scene_release_pending_ && !drag_;
         for (std::size_t k = 0; k < slices; ++k) {
             const auto sample=std::min(k,track_telemetry_.size()-1);
@@ -1352,7 +1349,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                           timing_events_, error,lap_knockout_?standings_.order.data():nullptr)) { started_ = false; return false; }
     finish_probe_events_.clear();
     if(held_grid && !race_car_held(timing_)) {
-        if(!vehicle_.release_grid_engine(drag_,drag_category_,drag_shift_scale_,console_clock)) {
+        if(!vehicle_.release_grid_engine(drag_,drag_category_,drag_shift_scale_)) {
             started_=false;error="grid force preparation refused";return false;
         }
         vehicle_.begin_race();
@@ -1509,7 +1506,7 @@ bool RaceSession::update_race_camera(bool reset,bool finishing,std::string& erro
             reset;
         //47D070 receives73AD38, not scaled73457C. Keep simulation and view
         //motion clocks distinct during the roadside slow-motion sequence.
-        camera_motion_.update({{float(view_.eye.x),float(view_.eye.y),float(view_.eye.z)}},float(kDriveFrameSeconds),cut);
+        camera_motion_.update({{float(view_.eye.x),float(view_.eye.y),float(view_.eye.z)}},float(real_frame_seconds_),cut);
         presented_crash_=event;presented_pov_=view_.pov;presented_look_back_=rear;
     }
     return true;

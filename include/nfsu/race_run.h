@@ -65,6 +65,8 @@ public:
                const RoadSceneLoader* road_scene = nullptr);
     bool simulate(const GamepadFrame& pad, std::string& error,
                   RaceSimulationProfile* profile=nullptr,TimingService* timer=nullptr);
+    bool simulate_frame(const GamepadFrame& pad,double real_seconds,std::string& error,
+                        RaceSimulationProfile* profile=nullptr,TimingService* timer=nullptr);
     bool commit(std::string& error);
     bool skip_start_cinematic();
     bool arm_finish_probe(std::string& error);
@@ -148,7 +150,18 @@ private:
     std::uint64_t tick_ = 0;
 };
 
-// Clock debt is never discarded during normal frames: at most eight fixed
+// PC 585C54..585D63: one measured frame, one world update. Fast polls
+// can occur before a displayed frame (startup or a multi-buffer renderer).
+class RaceLiveClock {
+public:
+    double advance(std::uint64_t microseconds);
+    void reset() { pending_seconds_=0;remainder_=0; }
+private:
+    double pending_seconds_=0;
+    float remainder_=0;
+};
+
+// Fixed-tick recordings and lockstep diagnostics retain their clock debt: at most eight fixed
 // steps are consumed per display, leaving excess debt for the next one.
 // Suspended applications reset explicitly; a frame rate is never a dt.
 class RaceTickDebt {

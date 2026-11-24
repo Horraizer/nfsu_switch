@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cfloat>
-#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -94,9 +93,6 @@ bool state_finite(const VehicleState& s) noexcept {
     ok=ok&&finite(s.transmission.up_offset)&&finite(s.transmission.down_offset);
     ok=ok&&finite(s.owner_slip_angle)&&finite(s.grip_recovery)&&s.grip_recovery>=.5F&&s.grip_recovery<=1.F;
     ok=ok&&finite(s.owner_traction.timer)&&finite(s.owner_traction.scale)&&finite(s.owner_traction.quiet);
-    if(s.road_launch)ok=ok&&finite(s.road_launch->elapsed)&&s.road_launch->elapsed>=0&&
-        finite(s.road_launch->forward_speed)&&s.road_launch->gear>=kVehicleGearReverse&&
-        s.road_launch->gear<static_cast<int>(kVehicleGearSlots);
     ok=ok&&finite(s.owner_speeds.forward)&&finite(s.owner_speeds.magnitude)&&s.owner_speeds.magnitude>=0.0F;
     ok=ok&&finite(s.path_powertrain_speed);
     for(const auto& vector:{s.owner_motion.velocity,s.owner_motion.angular_velocity,s.owner_motion.acceleration})
@@ -1369,8 +1365,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             raw_input.world_frame_seconds>=0?raw_input.world_frame_seconds:interval;
         const auto traction=player_owner_traction_update(s.owner_traction,h.rear_drive_fraction,
             raw_input.drag_category,!raw_input.owner_traction_suppressed,raw_input.race_active,
-            s.road_launch?s.road_launch->forward_speed:s.owner_speeds.forward,
-            s.owner_slip_angle,policy_interval,previous_load,previous_slip);
+            s.owner_speeds.forward,s.owner_slip_angle,policy_interval,previous_load,previous_slip);
         //477A17 skips the ordinary rear stabilizer in drift. The shared
         //479640 shift and transient traction policy still runs on all wheels.
         for(unsigned k=0;k<4;++k) {
@@ -1732,8 +1727,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         if(rest_pass==0) {
         s.body_rest_state=allow_rest?player_body_rest_state(s.velocity,s.angular_velocity,
             static_cast<float>(forward.z),static_cast<float>(left.z),static_cast<float>(throttle),
-            s.road_launch?s.road_launch->gear:s.published_gear,
-            s.published_support,s.body_rest_state,raw_input.owner_traction_suppressed):0;
+            s.published_gear,s.published_support,s.body_rest_state,raw_input.owner_traction_suppressed):0;
         s.body_gravity=s.body_rest_state!=2;
         s.rigid_body.gravity=s.body_gravity;
         if(s.body_rest_state==2) {s.rigid_body.momentum={};s.rigid_body.angular_momentum={};}
@@ -1917,23 +1911,6 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         s.owner_speeds=player_publish_owner_speeds(s.velocity,rigid_rotation(s.rigid_body.axes).column(0));
         s.owner_slip_angle=player_owner_slip_angle(s.velocity,s.owner_motion.heading);
         s.published_support=support;s.published_gear=s.gear;
-        // A 60 Hz actor publication can release rest a half-frame early,
-        // then arm 479640 from a different wheel-slip peak. Sample both
-        // launch decisions at the console's 30 Hz cadence until the car
-        // leaves the wheel solver's standing-speed range (one mph).
-        // Only a completed world frame advances this clock, never a rewind.
-        if(s.road_launch) {
-            constexpr double period=1.0/30.0;
-            auto& launch=*s.road_launch;
-            launch.elapsed+=publication_dt;
-            if(launch.elapsed>=period) {
-                launch.elapsed=std::fmod(launch.elapsed,period);
-                launch.forward_speed=s.owner_speeds.forward;
-                launch.gear=s.published_gear;
-                if(std::abs(launch.forward_speed)*2.237F>=1.F || launch.gear==kVehicleGearReverse)
-                    s.road_launch.reset();
-            }
-        }
         for(unsigned k=0;k<4;++k)s.published_wheel_slip[k]=s.wheels[k].prepared_effect_slip;
     }
     s.step = s.step + 1;

@@ -202,3 +202,32 @@ heading was 112.94 degrees, the old port gave 100.50 and the fix gave
 seconds. The test in nfsu_race_session_tests covers the strict boundary,
 the retained wheel command and both history buffers. This does not change
 AI throttle or remove a valid racing collision.
+
+## Measured single-player world frames, 2026-11-24
+
+The fixed 30 Hz launch adapter described above has been removed. At
+095ceac it postponed only two observations on one clock. The original
+has a single world-frame boundary. PC 585C54..585D63 applies the period
+limits, 3600 Hz rounding and the 4000 Hz conversion remainder documented
+in RACE_TIMING.md. The 60 Hz display branch reads 3.0 at 6F0894. GC
+PrepareRealTimestep at 801927F0 has a platform-specific real-time scale
+before quantization. The port uses the PC clock with the Switch display
+period. A delayed display advances the live single-player world once;
+the solver still integrates in slices. Previous wheel load and slip
+feed 479640 at Move entry, and gear, support and speed publish at the
+end of Move. Children receive their parent's scaled world interval.
+Recordings in the fixed-tick format and LAN keep their dedicated clocks.
+
+The strict human steering boundary is retained. nfsu_race_run_tests
+exercises coalescing, the original clock remainder, the upper bound
+and pause. nfsu_race_session_tests alternates intervals through GO
+and checks world time for the human and the rival. For recorded frame
+intervals the host can use RaceRun::simulate_frame before planning and
+supply the original elapsed time. A fixed 60 Hz render and an original
+running under a variable clock are different experiments.
+
+For the owner's PC event 19 trace the first Golf contact and the missed
+Peugeot gate remain open. See the sign response and junction diagnostics
+above. The original GameCube early-event, controlled launch and four
+finished event 19 comparison runs are retained locally; this checkpoint
+makes no claim about unmeasured campaign races.

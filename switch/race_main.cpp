@@ -977,6 +977,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     };
     std::vector<unsigned char> rgba;
     RaceTickDebt clock;
+    RaceLiveClock live_clock;
+    const bool measured_race=!replay_mode&&!ab_enabled&&!sweep&&!panel_mode&&!nos_self_check;
+    const auto reset_clocks=[&]{clock.reset();live_clock.reset();};
     auto previous = armGetSystemTick();
     RacePauseMenu pause_menu(free_drive,tournament&&tournament->event);RaceReturn pause_return=RaceReturn::menu;bool pause_exit=false;
     bool paused = false, printed_result = false, printed_final_perf = false;
@@ -1039,7 +1042,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 if (profile_stats) profile_stats->reset();
                 reset_cpu_probes();
             }
-            clock.reset(); previous = armGetSystemTick();
+            reset_clocks(); previous = armGetSystemTick();
             continue;
         }
         const auto begin = armGetSystemTick();
@@ -1070,7 +1073,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         const bool suspend=elapsed>1000000;
         const bool pause_requested=!sweep&&((down&(HidNpadButton_Plus|HidNpadButton_Y))||suspend);
         if(ordinary_ui&&pause_requested&&race.session().timing().outcome==RaceOutcome::running) {
-            paused=true;pause_menu.open();clock.reset();sound.set_suspended(true);
+            paused=true;pause_menu.open();reset_clocks();sound.set_suspended(true);
             sound.frontend_sound(audio::FrontendSound::select);
             require(renderer.set_frontend_overlay(pause_art.atlas(),error,false),error);
             FrontendUiFrame pause_ui;FrontendClock pause_clock;
@@ -1113,15 +1116,15 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             if(pause_exit||!appletMainLoop())break;
             suppress_nitrous=(padGetButtons(&pad)&HidNpadButton_A)!=0;
             require(renderer.restore_race_overlay(hud_atlas,error),error);
-            paused=false;just_unpaused=true;previous=armGetSystemTick();clock.reset();
+            paused=false;just_unpaused=true;previous=armGetSystemTick();reset_clocks();
             stats.reset();presentation_stats.reset();previous_driving_present=0;fps_previous_present=0;last_perf.clear();++unpause_resets;
             if(profile_stats){profile_stats->reset();renderer.reset_gpu_profile();}reset_cpu_probes();
         }else if(ordinary_ui&&suspend) {
-            clock.reset();previous=armGetSystemTick();continue;
+            reset_clocks();previous=armGetSystemTick();continue;
         }else if(!ordinary_ui) {
             if(down&HidNpadButton_Plus){ab_cancelled=ab_replay;break;}
-            if((down&HidNpadButton_Y)&&!ab_replay){require(!ab_enabled,"AB invalid: pause requested");just_unpaused=paused;paused=!paused;clock.reset();}
-            if(suspend){require(!ab_enabled,"AB invalid: OS suspend");paused=true;clock.reset();}
+            if((down&HidNpadButton_Y)&&!ab_replay){require(!ab_enabled,"AB invalid: pause requested");just_unpaused=paused;paused=!paused;reset_clocks();}
+            if(suspend){require(!ab_enabled,"AB invalid: OS suspend");paused=true;reset_clocks();}
         }
         const bool connected = padIsConnected(&pad);
         const bool running = race.session().timing().outcome == RaceOutcome::running;
@@ -1132,7 +1135,11 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             race.session().timing().stage == RaceStage::racing;
         const bool can_finish_drive=!replay_mode&&!ab_enabled&&race.session().has_finish_driver();
         const bool finish_driving=can_finish_drive&&race.session().timing().outcome==RaceOutcome::finished;
-        if (!paused && !just_unpaused && (running||finish_driving)) clock.add(elapsed); else clock.reset();
+        double live_interval=0;
+        if (!paused && !just_unpaused && (running||finish_driving)) {
+            if(measured_race)live_interval=live_clock.advance(elapsed);
+            else clock.add(elapsed);
+        } else reset_clocks();
         double simulation = 0, residency = 0, record = 0, upload = 0;
         std::array<double,8> simulation_ticks{};
         RaceFrameProfile record_profile;
@@ -1140,7 +1147,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         const bool cpu_probe=!ab_minimal && (spike_probe || presented%60==0);
         DekoUpdateTiming update_timing;
         unsigned ticks = 0;
-        while (!paused && (race.session().timing().outcome == RaceOutcome::running||finish_driving) && ticks < 8 && (ab_replay ? ticks<ab_expected->count : clock.take())) {
+        while (!paused && (race.session().timing().outcome == RaceOutcome::running||finish_driving) && ticks < 8 && (measured_race ? (ticks==0 && live_interval>0) : ab_replay ? ticks<ab_expected->count : clock.take())) {
             GamepadFrame input;
             if(sweep) {
                 const auto& timing=race.session().timing();
@@ -1184,7 +1191,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             const bool probe_tick=cpu_probe && !race_car_held(race.session().timing());
             if(drag_shift_trace)drag_shift_trace->before(race.session());
             const bool crashing=race.session().crash_camera_event()!=0;
-            require(race.simulate(input,error,probe_tick?&sim_probe:nullptr,probe_tick?&profile_clock:nullptr),error);
+            require(race.simulate_frame(input,measured_race?live_interval:kDriveFrameSeconds,error,
+                probe_tick?&sim_probe:nullptr,probe_tick?&profile_clock:nullptr),error);
             if(!replay_mode&&!ab_replay&&!ab_record&&!sweep&&!nos_self_check&&!race.session().is_drift())
                 presentation.camera_pov=race.session().camera().pov;
             if(!finish_seen&&race.session().timing().outcome==RaceOutcome::finished) {
@@ -1462,7 +1470,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         if(nos_self_check && !nos_probe_was_complete && renderer.speed_blur_probe_complete()) {
             // CPU reference and pixel export are intentional diagnostic stalls,
             // not an OS suspend. Resume the automatic run without timing debt.
-            clock.reset();previous=armGetSystemTick();
+            reset_clocks();previous=armGetSystemTick();
         }
         const bool nos_self_check_done=nos_self_check && renderer.speed_blur_probe_complete() &&
             nos_self_check_boost_tick>=0 && race.session().timing().race_ticks>=nos_self_check_boost_tick+8000;

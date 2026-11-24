@@ -33,18 +33,21 @@ struct RaceWorldContactProbe {
         return world->steer_input(input,1,error)&&input.road_angle_word==previous&&
                world->steering_state().input.count==1&&world->steering_state().rate.count==1;
     }
-    static bool road_launch_clock(const VehicleTrackCourse& course,double recorded_interval,
-                                  std::string& error) {
+    static bool shared_world_interval(const VehicleTrackCourse& course,std::string& error) {
         auto world=std::make_unique<RaceSession>(course);
         auto pose=course.start;pose.ground.x+=16;
         if(!world->set_rivals({{stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"}},error)||
            !world->start(error,nullptr,.025F))return false;
-        world->external_frame_seconds_=recorded_interval;
-        for(unsigned frame=0;frame<240&&!world->timing().go_valid;++frame)
-            if(!world->advance({},error))return false;
-        const bool fixed=recorded_interval==0;
-        return world->timing().go_valid && world->rival(0).timing().go_valid &&
-            world->car().road_launch.has_value()==fixed && world->rival(0).car().road_launch.has_value()==fixed;
+        for(unsigned i=0;i<240;++i) {
+            const double dt=i%2?1./30:1./60;
+            world->real_frame_seconds_=dt;
+            const auto before=world->timing().now_ticks;
+            if(world->next_world_frame_seconds()!=float(dt)||!world->advance({},error))return false;
+            if(world->world_frame_seconds()!=dt || world->rival(0).world_frame_seconds()!=dt ||
+               world->timing().now_ticks-before!=std::lround(dt*4000) ||
+               world->rival(0).timing().now_ticks!=world->timing().now_ticks)return false;
+        }
+        return world->timing().go_valid&&world->rival(0).timing().go_valid;
     }
     static bool short_frame_wall_sparks(const VehicleTrackCourse& course) {
         RaceSession race(course);
@@ -572,9 +575,8 @@ int main() {
     check(build_vehicle_proving_ground(course,error),"synthetic course builds");
     check(RaceWorldContactProbe::human_grid_steering(course,error),
         "RealDriver waits for two travelled metres before sampling the stick");
-    for(double recorded_interval:{0.,1./60.,1./144.})
-        check(RaceWorldContactProbe::road_launch_clock(course,recorded_interval,error),
-              "road grid uses the clock source for both cars, including a native 60 Hz replay");
+    check(RaceWorldContactProbe::shared_world_interval(course,error),
+        "alternating world intervals reach both grid slots before and after GO");
     check(RaceWorldContactProbe::short_frame_wall_sparks(course),"shared wall contact survives repeated short-frame samples exactly once");
     check(RaceWorldContactProbe::contact_slip_publication(course),"contact completion publishes wheel slip including zero duration");
     check(RaceWorldContactProbe::component_replacement(course,error),

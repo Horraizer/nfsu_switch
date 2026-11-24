@@ -92,40 +92,6 @@ void runtime_traction_policy() {
     check(stepped&&state.owner_traction.mode==3&&state.owner_traction.timer==.5F,
         "73457C frame interval drives policy, independently of derivative slice");
 }
-void road_launch_sampling() {
-    using namespace nfsu;
-    const VehicleModel model(stock_240sx_vehicle_spec());
-    VehicleState state;
-    VehicleTelemetry telemetry;
-    VehicleInput input;
-    input.race_active=true;
-    input.throttle=1;
-    check(model.reset(state,VehiclePose{}),"road launch starts on the grid");
-    state.road_launch.emplace();
-    // Reproduce the intermediate 60 Hz publication: the driver sees first
-    // gear, forward motion and tyre slip before the next console sample.
-    state.owner_speeds.forward=.1F;
-    for(auto& wheel:state.wheels){wheel.prepared_load=3;wheel.prepared_slip=6;}
-    const VehicleFlatGround ground;
-    check(model.step(state,input,ground,telemetry,1./60,1./240),"first half of road launch");
-    check(state.road_launch && state.road_launch->gear==kVehicleGearNeutral &&
-        state.published_gear==kVehicleGearFirst && state.owner_traction.mode==0,
-        "intermediate driver publication leaves both launch decisions on their grid sample");
-    check(model.step(state,input,ground,telemetry,0,0,false,true,true,true),"contact refresh at launch");
-    check(state.road_launch && state.road_launch->elapsed==1./60,
-        "a contact refresh consumes no launch time");
-    check(model.step(state,input,ground,telemetry,1./60,1./240),"second half of road launch");
-    check(state.road_launch && state.road_launch->gear==state.published_gear &&
-        state.road_launch->forward_speed==state.owner_speeds.forward && state.road_launch->elapsed==0,
-        "completed console interval samples gear and forward speed together");
-    VehiclePose moving;
-    moving.speed=3;
-    check(model.reset(state,moving),"moving test car resets");
-    state.road_launch.emplace();
-    check(model.step(state,input,ground,telemetry,1./30,1./240) && !state.road_launch,
-        "moving car returns to ordinary per-frame publications");
-}
-
 void original_drag_body() {
     using namespace nfsu;
     const auto real=[](std::uint32_t v){float f;std::memcpy(&f,&v,4);return f;};
@@ -1750,7 +1716,7 @@ void original_race_damping() {
 int main() {
     original_gear_policies();original_front_drive_torque();runtime_gear_policy_dispatch();
     original_drag_body();runtime_owner_motion();runtime_nitrous_grip();
-    original_traction_policy();runtime_traction_policy();road_launch_sampling();
+    original_traction_policy();runtime_traction_policy();
     runtime_shift_grip();
     runtime_base_grip();
     original_launch_feedback();
