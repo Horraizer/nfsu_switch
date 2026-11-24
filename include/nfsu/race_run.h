@@ -150,14 +150,17 @@ private:
     std::uint64_t tick_ = 0;
 };
 
-// PC 585C54..585D63: one measured frame, one world update. Fast polls
-// can occur before a displayed frame (startup or a multi-buffer renderer).
+// PC 585B82..585D63: pace a short display frame, then quantize its world interval.
 class RaceLiveClock {
 public:
+    static constexpr unsigned display_hz=60;
+    static constexpr std::uint64_t wait_ns(std::uint64_t elapsed_ns) {
+        constexpr auto period_ns=1000000000ULL/display_hz;
+        return elapsed_ns<period_ns?period_ns-elapsed_ns:0;
+    }
     double advance(std::uint64_t microseconds);
-    void reset() { pending_seconds_=0;remainder_=0; }
+    void reset() { remainder_=0; }
 private:
-    double pending_seconds_=0;
     float remainder_=0;
 };
 

@@ -560,13 +560,9 @@ bool RaceReplay::next(std::uint64_t tick, GamepadFrame& pad, std::string& error)
     ++tick_; return true;
 }
 double RaceLiveClock::advance(std::uint64_t microseconds) {
-    constexpr float period=1.F/60.F;
-    pending_seconds_+=double(microseconds)/1000000.;
-    // Two sub-frame polls must not each advance the world by its minimum
-    // period. Use the same half-unit rounding as the original frame clock.
-    if(pending_seconds_*3600.+.5<60.)return 0;
-    const float measured=std::clamp(float(pending_seconds_)+remainder_,period,3.F*period);
-    pending_seconds_=0;
+    constexpr float period=1.F/display_hz;
+    const float measured=std::clamp(float(double(microseconds)/1000000.)+remainder_,
+                                    period,3.F*period);
     const int units=int(measured*3600.F+.5F);
     const int world_ticks=int(float(units)*(4000.F/3600.F)+.5F);
     remainder_=measured-float(world_ticks)*.00025F;

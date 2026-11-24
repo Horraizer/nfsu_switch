@@ -219,7 +219,7 @@ end of Move. Children receive their parent's scaled world interval.
 Recordings in the fixed-tick format and LAN keep their dedicated clocks.
 
 The strict human steering boundary is retained. nfsu_race_run_tests
-exercises coalescing, the original clock remainder, the upper bound
+exercises short-frame pacing, the original clock remainder, the upper bound
 and pause. nfsu_race_session_tests alternates intervals through GO
 and checks world time for the human and the rival. For recorded frame
 intervals the host can use RaceRun::simulate_frame before planning and

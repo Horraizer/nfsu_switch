@@ -1045,7 +1045,16 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             reset_clocks(); previous = armGetSystemTick();
             continue;
         }
-        const auto begin = armGetSystemTick();
+        auto begin = armGetSystemTick();
+        if(measured_race && !paused) {
+            // 585B82..585C4F waits out a short frame before sampling the pad.
+            // A queued swapchain image can return before the next display period.
+            const auto wait=RaceLiveClock::wait_ns(armTicksToNs(begin-previous));
+            if(wait) {
+                svcSleepThread(static_cast<s64>(wait));
+                begin=armGetSystemTick();
+            }
+        }
         const auto elapsed = armTicksToNs(begin-previous)/1000; previous = begin;
         padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
         if(sweep) {
