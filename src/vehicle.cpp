@@ -257,12 +257,17 @@ void rigid_public_cache(VehicleState& s) noexcept {
     s.position=public_vector(s.rigid_body.position);
     s.velocity=public_vector(s.rigid_body.velocity);
     s.angular_velocity=public_vector(s.rigid_body.angular_velocity);
+    s.motion_before_first_move.reset();
 }
 void rigid_import_public(const VehicleHandling& h,VehicleState& s) noexcept {
     auto& body=s.rigid_body;
     const bool pose_changed=!s.rigid_body_ready||!same_quaternion(s.orientation,s.rigid_orientation);
-    const bool velocity_changed=pose_changed||!same_vector(s.velocity,body.velocity);
-    const bool omega_changed=pose_changed||!same_vector(s.angular_velocity,body.angular_velocity);
+    // A constructor force refresh may settle the body while the actor still
+    // exposes its placement velocity. Only a subsequent external edit should
+    // replace that body's momentum on the first physical step.
+    const auto& prior=s.motion_before_first_move;
+    const bool velocity_changed=pose_changed||!same_vector(s.velocity,prior?rigid_vector(prior->linear):body.velocity);
+    const bool omega_changed=pose_changed||!same_vector(s.angular_velocity,prior?rigid_vector(prior->angular):body.angular_velocity);
     if(pose_changed) body.axes=rigid_axes(rotation(s.orientation));
     body.position=rigid_vector(s.position);
     // Spawn, teleport and explicit public velocity edits are port adapters.
@@ -282,7 +287,7 @@ void rigid_import_public(const VehicleHandling& h,VehicleState& s) noexcept {
     body.gravity=s.body_gravity;body.yaw_torque_limit=h.yaw_torque_limit;
     if(velocity_changed||omega_changed) {
         player_rigid_body_refresh(h,body);rigid_public_cache(s);
-    }
+    } else if(prior) rigid_public_cache(s);
     s.rigid_body_ready=true;s.rigid_orientation=s.orientation;
 }
 
@@ -1297,7 +1302,8 @@ bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
 
 bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
                         const VehicleGround& ground, VehicleTelemetry& telemetry,
-                        double publication_dt, double step_dt, bool select_request, bool allow_rest, bool contact_completion, bool refresh_only,float refresh_interval,double outer_dt) const {
+                        double publication_dt, double step_dt, bool select_request, bool allow_rest, bool contact_completion, bool refresh_only,float refresh_interval,double outer_dt,
+                        VehicleSteeringState steering) const {
     if (!finite(outer_dt)||outer_dt< -1 || !finite(refresh_interval)||refresh_interval<0 || (refresh_only && (!contact_completion || step_dt!=0 || select_request || publication_dt!=0)) ||
         !valid_ || !state_finite(state) || state.gear < kVehicleGearReverse ||
         state.gear > kVehicleGearFirst + static_cast<int>(spec_.handling.forward_gears) - 1 ||
@@ -1398,7 +1404,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             s.published_support,s.rigid_body.axes[0][2]);
     }
     const bool original_steering=raw_input.road_steering&&raw_input.road_angle_word_valid;
-    if(original_steering&&(select_request||!s.steering_word_ready)) {
+    if(steering==VehicleSteeringState::initialized&&original_steering&&(select_request||!s.steering_word_ready)) {
         //4775E4 consumes the processed word before the solver loop.
         // Each subsequent strut callback consumes the retained front matrices.
         s.steering_word=raw_input.road_angle_word;s.steering_word_ready=true;
@@ -1493,12 +1499,13 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         target = raw_input.road_steering ?
             sanitize(raw_input.road_target,-3.14159265358979323846,3.14159265358979323846) : steer * lock;
         const double max_change = a.steer_rate * suspension_dt;
-        if(original_steering) s.steer_angle=
+        if(steering==VehicleSteeringState::before_first_command)s.steer_angle=0;
+        else if(original_steering) s.steer_angle=
             static_cast<double>(static_cast<std::int16_t>(s.steering_word))*9.58738019107841e-5F;
         else if (raw_input.road_steering) s.steer_angle =
             sanitize(raw_input.road_angle,-3.14159265358979323846,3.14159265358979323846);
         else s.steer_angle = s.steer_angle + clamp(target - s.steer_angle, -max_change, max_change);
-        if(!original_steering) {
+        if(!original_steering&&steering==VehicleSteeringState::initialized) {
             // Qualified compatibility adapter for callers that supply radians
             // or the approximate lock/slew instead of original controls1D0.
             const double scaled=s.steer_angle*10430.378350470453;
@@ -1507,7 +1514,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
                 static_cast<std::uint16_t>(static_cast<std::int64_t>(rounded)):0;
             s.steering_word_ready=true;
         }
-        const auto front_axes=player_front_steering_axes(h,s.steering_word);
+        // 476944 creates a zeroed steering object. The constructor force pass
+        // precedes SetSteering at 4775F4. A zero steering word produces unit
+        // axes and is different from the two unpublished matrices.
+        std::array<std::array<VehicleVec3,3>,2> front_axes{};
+        if(steering==VehicleSteeringState::initialized)
+            front_axes=player_front_steering_axes(h,s.steering_word);
 
         force = v3(0.0,0.0,s.body_gravity?-d_.weight:0.0);
         torque = {};
@@ -1686,6 +1698,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             const double denominator=std::max(absolute(vlong),a.slip_speed_floor);
             out.slip_lateral=vlat/denominator;
         }
+        // 46CA90 clears Engine+7C on every component refresh, including
+        // rewinds without an integration step. The gearbox rebuilds it below.
+        s.engine.feedback_torque=0.F;
         //46ABD0 updates the gearbox after wheel/strut component refresh. Force
         // inputs/slip160 were cleared; retained164 is the previous completed
         // prepared_slip.58747D replaces both copies in the new producer later.
@@ -1726,7 +1741,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             if(s.published_support>0&&s.body_rest_state==2) w.spin=0.0F;
             else if(s.body_rest_state==1) w.spin*=0.94999998807907104F;
             if(s.body_rest_state!=0)
-                w.spin_direction=w.spin>1.0e-5F?0:(w.spin<-1.0e-5F?2:1);
+                w.spin_direction=player_wheel_spin_direction(w.spin);
             // The repeated wheel refresh (586DA0) observes the stopped or
             // damped spin before the next derivative can reject a reversal.
             wheel.spin=w.spin;

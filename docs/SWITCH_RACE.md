@@ -154,13 +154,14 @@ Live controls pass the libnx state through `gamepad_buttons_from_npad` into
 | Plus | Show the result screen; press again there to exit |
 
 Release controls during the countdown to clear the shared hot-plug latch.
-Disconnected pads contribute neutral input. A pause or OS suspension longer
-than one second resets wall-clock debt, not simulation state. Ordinary slow
-frames consume at most eight 60 Hz ticks per display and retain the debt;
-no replay input or simulation step is skipped. Each tick contains the same
-two 120 Hz vehicle/contact steps as desktop. Rendering never changes dt.
-A long sustained overload can therefore lag wall time; the nxlink performance
-line shows the debt instead of claiming 60 Hz from the display rate.
+Disconnected pads contribute neutral input. Pause, loss of focus and OS
+suspension reset the frame clocks. In live single-player races the real
+display interval passes through the PC race clock described in RACE_TIMING.md.
+The planner, player, traffic and rivals share one world update per measured
+interval. The vehicle solver divides that interval into smaller slices before
+publishing gear and speed. A stall longer than three display periods advances
+at most three periods. Fixed-tick replay and A/B capture retain the recorded
+input order and consume at most eight 60 Hz ticks per display.
 
 The menu and loading progress use the libnx framebuffer. Direct mode closes
 it before creating the deko3d swapchain. It draws the #64 speed, tachometer,

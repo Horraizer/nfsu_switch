@@ -2639,6 +2639,8 @@ if(NFSU_BUILD_TESTS)
         # The shipped racing line of track 1003: docs/RACING_LINE.md.
         add_test(NAME nfsu_ai_selection_retail COMMAND nfsu_ai_selection_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_ai_selection_retail PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 60)
+        add_test(NAME nfsu_ai_catchup_rank_retail COMMAND nfsu_ai_catchup_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_ai_catchup_rank_retail PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 60)
         add_test(NAME nfsu_racing_line_retail
             COMMAND nfsu_racing_line_tests "${NFSU_RETAIL_ROOT}")
         # The bounded index of the race music: docs/RACE_AUDIO.md.

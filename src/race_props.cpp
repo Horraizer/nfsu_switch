@@ -129,14 +129,15 @@ bool RaceProps::load(const std::filesystem::path& root,std::string& error,const 
         p.bounds=race_track_body_bounds(p.spec,p.box);
         auto& b=p.state.rigid_body;
         for(unsigned row=0;row<3;++row)for(unsigned col=0;col<3;++col)b.axes[row][col]=f(at+48+16*row+4*col);
+        // 595468 orthonormalizes every placement before 597140 transforms its centre of mass.
+        player_rigid_body_normalize(b);
         b.position=add({{f(at+96),f(at+100),f(at+104)}},rotated(b,setup.centre_of_mass));
         b.snapshot_axes=b.axes;p.state.alternate_yaw_active=false;
         player_rigid_body_refresh(setup,b);publish(p.state);next.push_back(std::move(p));
     }
     std::size_t vertices=0;
     for(auto& p:next){vertices=std::max(vertices,p.points.size());p.ground_contacts.reserve(p.points.size());}
-    terrain_queries_.resize(vertices);terrain_hits_.resize(vertices);
-    terrain_statuses_.resize(vertices);terrain_arms_.resize(vertices);
+    size_terrain_buffers(vertices);
     proxy_order_.resize(next.size());widest_proxy_=0;
     for(std::size_t i=0;i<next.size();++i) {
         proxy_order_[i]=i;
@@ -238,7 +239,14 @@ bool RaceProps::advance(const TrackContactWorld& world,std::string& error,float 
 bool RaceProps::continue_contact(RaceProp& p,const TrackContactWorld& world,std::string& error,double remaining) {
     return !p.awake||p.expired||remaining<=0||advance_body(p,world,error,float(remaining));
 }
+void RaceProps::size_terrain_buffers(std::size_t vertices) {
+    terrain_queries_.resize(vertices);
+    terrain_hits_.resize(vertices);
+    terrain_statuses_.resize(vertices);
+    terrain_arms_.resize(vertices);
+}
 bool RaceProps::advance_body(RaceProp& p,const TrackContactWorld& world,std::string& error,float dt) {
+    if(!queued_contacts_&&p.points.size()>terrain_arms_.size())size_terrain_buffers(p.points.size());
     const unsigned slices=unsigned(dt/.01F)+1;const float slice_dt=dt/float(slices);
     const auto age=[&](std::uint32_t at){return prop_clock_age(clock_,at);};
     auto& b=p.state.rigid_body;auto& h=p.spec.handling;

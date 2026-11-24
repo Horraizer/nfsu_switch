@@ -937,10 +937,14 @@ float player_wheel_acceleration(const VehicleHandling& h, std::size_t k,
     return rate;
 }
 
+int player_wheel_spin_direction(float spin) noexcept {
+    return spin>1.0e-5F?0:(spin<-1.0e-5F?2:1);
+}
+
 void player_wheel_integrate(PlayerWheelWork& w, float rate, float dt) noexcept {
     w.spin+=dt*rate;
     if ((w.spin_direction==0&&w.spin<0.0F)||(w.spin_direction==2&&w.spin>0.0F)) w.spin=0.0F;
-    w.spin_direction=w.spin>1.0e-5F?0:(w.spin<-1.0e-5F?2:1);
+    w.spin_direction=player_wheel_spin_direction(w.spin);
 }
 
 void player_engine_feedback_finalize(const VehicleHandling& h,int gear,
@@ -1101,7 +1105,7 @@ void player_drag_heat_update(const VehicleHandling& h,PlayerEngineState& engine,
     engine.heat_time=seconds;
     const float rpm=engine.angular_speed*kPlayerRadSToRpm;
     const float rate=rpm>=h.redline_rpm?0.35F:-0.1F; //6FFFF8,700000; nitro addend is zero
-    if(rate<=0||engine.heat<=1.F)engine.heat+=rate*dt;
+    if(rate<=0||engine.heat<1.F)engine.heat+=rate*dt;
     if(engine.heat<=0)engine.heat=0;
     if(engine.heat>=0.95F) {
         if(engine.overheat_since==0)engine.overheat_since=seconds;

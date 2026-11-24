@@ -65,6 +65,60 @@ void fixed_prop_separation(){
           fast.correction.x==stationary.correction.x&&fast.correction.y==stationary.correction.y,
           "a fixed object uses centre separation independent of a prop's speed");
 }
+
+void pinned_pair_and_degenerate_boxes() {
+    using namespace nfsu;
+    const auto setup=spec();
+    const auto box=race_contact_box(cube());
+    VehicleState a,b;
+    a.orientation=b.orientation={1,0,0,0};
+    b.position.x=1.5;
+    vehicle_import_rigid(setup.handling,a);
+    vehicle_import_rigid(setup.handling,b);
+    RacePropImpact first,second;
+    first.activation=second.activation=20;
+    ContactRecord record;
+    std::uint32_t seed=12;
+    RaceContactContext context{record,seed,1};
+    RaceContactJob job;
+    job.admitted=true;
+    job.correction={.125,0,0};
+    job.query.witness_a=job.query.witness_b={.75F,0,0};
+    RacePairContact result;
+    check(resolve_swept_race_rigid_pair(a,setup,box,&first,b,setup,box,&second,
+          race_contact_pose(a),race_contact_pose(b),job,context,result)&&result.overlapping&&
+          !result.applied&&a.position.x==0&&b.position.x==1.5&&first.activation==20&&second.activation==20,
+          "overlapping pinned props keep both origins despite a queued correction");
+    check(resolve_race_pair(a,setup,box,b,setup,box,result,&second)&&result.overlapping&&
+          a.position.x==-.5&&b.position.x==1.5,
+          "only the movable body receives penetration correction against a pinned prop");
+
+    b.position=a.position;
+    for(auto* state:{&a,&b}) {
+        for(auto& axis:state->rigid_body.axes)for(auto& component:axis)component*=1e-10F;
+    }
+    check(!resolve_race_pair(a,setup,box,b,setup,box,result,&second)&&!result.overlapping,
+          "a pair with no usable box axis cannot publish a penetration depth");
+}
+
+void standalone_prop_hull_growth() {
+    using namespace nfsu;
+    RaceProps props;
+    RaceProp prop;
+    prop.spec=spec();
+    prop.awake=true;
+    prop.points={{0,0,0}};
+    prop.state.rigid_body.position={64,48,70};
+    VehicleTrackCourse course;
+    std::string error;
+    if(!build_vehicle_proving_ground(course,error)){check(false,"prop hull test course");return;}
+    check(props.continue_contact(prop,course.world,error,.015625)&&props.steps==2,
+          "standalone terrain queries accept the initial prop hull");
+    prop.points=cube().points;
+    check(props.continue_contact(prop,course.world,error,.015625)&&props.steps==4&&
+          std::isfinite(prop.state.position.z)&&prop.state.position.z>60,
+          "standalone terrain queries accept a larger replacement hull");
+}
 }
 namespace nfsu {
 struct RaceWorldContactProbe {
@@ -136,7 +190,7 @@ struct RaceWorldContactProbe {
 };
 }
 int main(int argc,char** argv){
-    native_cases();fixed_prop_separation();std::string error;
+    native_cases();fixed_prop_separation();pinned_pair_and_degenerate_boxes();standalone_prop_hull_growth();std::string error;
     for(double d:{-1.,1.})for(bool ghost:{false,true})
         check(nfsu::RaceWorldContactProbe::run(d,ghost,error),error.empty()?"shared kind4 queue including recovering car":error.c_str());
     for(double d:{-1.,1.})check(nfsu::RaceWorldContactProbe::props(d,error),

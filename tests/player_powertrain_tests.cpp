@@ -339,6 +339,18 @@ void original_drag_engine() {
                   "original drag heating, cooling, grid hold and failure state");
         }
     }
+    // PC 1.4 46CA90, gear 3, 400 ticks after the previous update.
+    PlayerEngineState limit;
+    PlayerGearState box;
+    limit.angular_speed=7500.F*kPlayerRpmToRadS;
+    limit.heat_time=10.F;
+    limit.heat=1.F;
+    player_drag_heat_update(h,limit,box,3,40400,false);
+    check(limit.heat==1.F&&!limit.blown,"drag heating stops at exactly one");
+    limit.heat_time=10.F;
+    limit.heat=.99F;
+    player_drag_heat_update(h,limit,box,3,40400,false);
+    check(word(limit.heat)==0x3F833334U&&!limit.blown,"last drag heating step may cross one");
     for(const auto& v:drag_quality_cases)
         check(word(player_drag_shift_quality(real(v.rpm),real(v.up),v.category,v.gear,real(v.scale)))==v.quality,
               "original drag early, good, perfect and late shift quality");

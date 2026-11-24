@@ -65,6 +65,12 @@ TRACKB offsets refer to decompressed bytes; STREAML1RA offsets are file bytes.
 Names, definition hash `+0x80`, placement model hash `+8` and hull hash are
 different roles, not interchangeable identities.
 
+The placement loader calls `0x0040BD40` at `0x00595468` to orthonormalize
+the three authored axes while retaining the world translation. Initial
+rigid-body placement (`0x00597140`) transforms the local centre of mass
+with that corrected basis. The Market Street bus sign case in
+`nfsu_race_world_contact_retail` checks both the pose and the solver snapshot.
+
 **F1 correction.** `0x005952E2` reads sentinel tail `[0x0073777C]`;
 E7 writes old-tail.next, E9 writes sentinel.prev, F5 writes new.prev, and
 F8 writes new.next to sentinel `0x00737778`. This appends. Lookup starts at

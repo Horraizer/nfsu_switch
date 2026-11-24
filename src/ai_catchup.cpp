@@ -81,7 +81,12 @@ bool ai_catchup_tuning(const unsigned char* data,std::size_t size,int context,in
         next.upper[i]={scalar(0x160+row+8*i),scalar(0x164+row+8*i)};
     }
     for(unsigned i=0;i<16;++i){next.rank_lower[i]=scalar(0x2c0+4*i);next.rank_upper[i]=scalar(0x300+4*i);}
-    for(unsigned i=0;i<2;++i){next.history_below[i]=scalar(0x358+8*rank+4*i);next.history_above[i]=scalar(0x338+8*rank+4*i);}
+    // 44BF69 indexes both tables with the racer's one-based finishing order.
+    const unsigned position=rank+1;
+    for(unsigned i=0;i<2;++i) {
+        next.history_below[i]=scalar(0x358+8*position+4*i);
+        next.history_above[i]=scalar(0x338+8*position+4*i);
+    }
     const auto base=0x380+unsigned(std::max(context,0))*0x54;
     next.interval=scalar(0x824);next.maximum_gap=scalar(0x828);
     next.grace=scalar(base+0x4c);next.difficulty_scale=scalar(base+0x18);

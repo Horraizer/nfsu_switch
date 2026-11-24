@@ -337,6 +337,7 @@ private:
     RaceCrashCamera crash_camera_;
     const CrashCameraRoadSource* crash_source_=nullptr;
     double frame_seconds_=kDriveFrameSeconds,external_frame_seconds_=0;
+    double real_frame_seconds_=kDriveFrameSeconds;
     double steering_seconds_=0,visual_frames_=0;
     std::int32_t cinematic_start_ticks_=kRaceWorldStartTicks;
     std::int32_t cinematic_end_ticks_=0;
@@ -461,6 +462,7 @@ private:
     // Reserve only ordinary racer/legacy placeholder slots until traffic is configured.
     std::vector<RaceTrackPolygonCache> world_track_caches_=std::vector<RaceTrackPolygonCache>(10);
     bool external_contact_owner_=false;
+    friend class RaceRun;
     friend struct RaceWorldContactProbe;
     bool resolve_world_contacts(const std::array<RaceContactPose,4>&,
         const std::array<std::uint64_t,4>&,std::string&,RaceSimulationProfile*,TimingService*,

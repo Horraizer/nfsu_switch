@@ -88,6 +88,19 @@ repository-wide license grant yet; do not assume an MIT or GPL license.
 project workflow. Source publication does not retroactively mark open
 research, independent review or console acceptance criteria complete.
 
+## Reading the source by subsystem
+
+Run this command from the checkout root to export the current commit to a new ZIP.
+
+```sh
+python tools/export_source_review.py source-review.zip
+```
+
+Open `00-index.txt` for the subsystem volumes, or search `source-map.tsv`
+for a particular original path. Each entry gives its starting line and byte
+range. Tests and supporting tools keep their original paths under `support/`.
+Use `--revision <commit>` to inspect the same game code as a particular build.
+
 ## Run
 
 Developer diagnostic examples use your own data and separate build outputs.

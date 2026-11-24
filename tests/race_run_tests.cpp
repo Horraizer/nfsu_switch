@@ -120,6 +120,24 @@ int main(int argc, char** argv) {
         require(race_rival_throttle_cap(1,cap)&&cap==.97F,"native event cap1");
         require(race_rival_throttle_cap(2,cap)&&cap==1.F,"native event cap2");
         require(!race_rival_throttle_cap(3,cap)&&cap==1.F,"invalid cap leaves output untouched");
+        RaceLiveClock live;
+        const auto units=[&](std::uint64_t us){return std::lround(live.advance(us)*3600);};
+        require(live.wait_ns(8300000)==8366666 && live.wait_ns(33333333)==0,
+                "a short frame waits for the display period; a late frame proceeds");
+        require(units(8300)==60 && units(16400)==60,
+                "each display publishes at least one period even on a short measured interval");
+        for(int pair=0;pair<3;++pair)
+            require(units(16000)==60 && units(17333)==62,
+                    "alternating early and late displays each publish their own world frame");
+        live.reset();
+        require(units(33333)==120,"a slow frame publishes once at its own interval");
+        require(units(90000)==180,"retail cap is three display periods");
+        require(units(20000)==72,"clamped frame must not leave catch-up debt");
+        require(units(20200)==73 && units(20170)==72,
+                "the real clock carries the remainder after conversion to 4000 Hz");
+        require(units(20200)==73,"prime the frame rounding remainder");
+        live.reset();
+        require(units(20170)==73,"pause discards the previous rounding remainder");
         RaceTickDebt clock;
         clock.add(16666); require(!clock.take(), "clock rounds early");
         clock.add(1); require(clock.take() && !clock.take(), "clock loses fractional debt");
