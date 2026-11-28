@@ -1,4 +1,5 @@
 #include "nfsu/car_shadow.h"
+#include "nfsu/car_parts.h"
 #include "nfsu/ai_driver.h"
 #include "nfsu/texture.h"
 #include "nfsu/texture_decode.h"
@@ -31,6 +32,21 @@ void row(float* values, std::size_t index, VehicleVec3 world) {
     values[4*index] = static_cast<float>(world.x);
     values[4*index+1] = static_cast<float>(world.y);
     values[4*index+2] = static_cast<float>(world.z);
+}
+float console_shadow_sine(std::uint16_t angle) noexcept {
+    // GC bSin80167A28: each fmuls/fsubs rounds to binary32. The two
+    // fmadds at80167AC8/80167AD4 round their product-plus-sum once to
+    // binary32. Use the double fma overload before that rounding: the
+    // host MinGW fmaf implementation rounds the product separately.
+    float x=float(angle)*9.58738019107841e-5F,sign=1.F;
+    if(x>=4.71238899230957F)x-=6.2831854820251465F;
+    else if(x>=1.5707963705062866F){x-=3.1415927410125732F;sign=-1.F;}
+    const float x2=x*x,x3=x*x2,x5=x3*x2,x7=x5*x2,x9=x7*x2;
+    float value=x-x3*.1666666716337204F;
+    value=float(std::fma(double(x5),double(.008333333767950535F),double(value)));
+    value-=x7*.00019841270113829523F;
+    value=float(std::fma(double(x9),double(2.7557318844628753e-6F),double(value)));
+    return value*sign;
 }
 } // namespace
 
@@ -213,26 +229,57 @@ VehicleVec3 car_shadow_light_ray(const VehicleVec3& origin, const VehicleVec3& l
     return light;
 }
 
+float car_shadow_view_pixel_scale(std::uint16_t horizontal_fov) noexcept {
+    // GC CalculateH80005668 shifts the angle WORD before bSin/bCos.
+    // bCos80167B20 wraps a quarter-turn addition before calling bSin.
+    const auto half=static_cast<std::uint16_t>(horizontal_fov>>1);
+    const float tangent=console_shadow_sine(half)/
+        console_shadow_sine(static_cast<std::uint16_t>(half+0x4000U));
+    //80005680 and800056A8 are separate single-precision fdivs operations.
+    return tangent!=0.F ? 256.F/tangent : 10.F;
+}
+
+int car_shadow_pixel_size(const CarShadowView& view,const VehicleVec3& position) noexcept {
+    //545180 rejects a sphere wholly behind the view, then uses radial
+    // distance minus radius, not forward depth or a projected diameter.
+    constexpr double radius=3;
+    const auto& camera=view.camera;
+    const Vec3 delta{position.x-camera.eye.x,position.z-camera.eye.y,-position.y-camera.eye.z};
+    const double depth=delta.x*camera.forward.x+delta.y*camera.forward.y+delta.z*camera.forward.z;
+    const double distance=std::sqrt(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z)-radius;
+    if(depth < -radius || !(view.pixel_scale>0) || !std::isfinite(distance))return 0;
+    const double size=distance>radius*.5 ? double(view.pixel_scale)*radius/distance : double(view.pixel_scale)*2;
+    if(!(size>=0) || size>std::numeric_limits<int>::max())return 0;
+    const int pixels=static_cast<int>(size); //674898 truncates before LOD choice.
+    return view.two_player_views ? static_cast<int>(float(pixels)*.7F) : pixels;
+}
+
+unsigned char car_shadow_silhouette_alpha(int pixel_size,double height_fraction,bool two_player_views) noexcept {
+    if(pixel_size<kCarMinimumPixelSize || !std::isfinite(height_fraction))return 0;
+    const auto lod=car_lod_for_pixel_size(float(pixel_size),two_player_views?1U:0U);
+    if(lod>2)return 0; //56E46B skips the silhouette at LOD D.
+    const double fade=lod==2 ? (double(pixel_size)-kCarLodPixelSizes[2])/
+        (kCarLodPixelSizes[1]-kCarLodPixelSizes[2]) : 1.0;
+    return static_cast<unsigned char>(55.0*(1.0-std::clamp(height_fraction,0.0,1.0))*fade);
+}
+
 void CarShadowSilhouette::update(const VehicleState& state, const VehicleSpec& spec,
-    const TrackContactWorld& world, const VehicleVec3& eye, const VehicleVec3& light_position,
+    const TrackContactWorld& world, const CarShadowView& view, const VehicleVec3& light_position,
     bool visible, RecordedDraw& draw) {
     draw.material.alpha[0] = 0;
     if (!visible || hull_.empty()) return;
-    const auto relative = sub(state.position, eye);
-    const double distance2 = dot(relative, relative);
-    if (!(distance2 < 45.0*45.0)) return;
     auto q = state.orientation;
     const double norm = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
     if (!(norm > 0) || !std::isfinite(norm)) return;
     q.x /= norm; q.y /= norm; q.z /= norm; q.w /= norm;
     const auto& com = spec.handling.centre_of_mass;
     const auto origin = sub(state.position, rotate(q, {com[0], com[1], com[2]}));
+    const int pixel_size=car_shadow_pixel_size(view,origin);
+    if(!car_shadow_silhouette_alpha(pixel_size,0,view.two_player_views))return;
     TrackContact reference;
     if (!query_track_ground(world, origin, ground_cache_, reference)) return;
     const auto height = std::clamp((origin.z - reference.point[2]) / 3.0, 0.0, 1.0);
-    const double distance = std::sqrt(distance2);
-    const double distance_fade = std::clamp((45.0 - distance) / 25.0, 0.0, 1.0);
-    const auto opacity = static_cast<unsigned char>(55.0 * (1.0 - height) * distance_fade);
+    const auto opacity=car_shadow_silhouette_alpha(pixel_size,height,view.two_player_views);
     if (!opacity) return;
 
     const auto light = car_shadow_light_ray(origin, light_position);

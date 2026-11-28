@@ -40,6 +40,19 @@ struct CarShadowPlacement {
     unsigned strip_mask = 0;
 };
 
+struct CarShadowView {
+    CameraFrame camera; // Renderer Y-up basis; positions passed below are vehicle Z-up.
+    float pixel_scale = 0;
+    bool two_player_views = false;
+};
+// GC80005654 uses a fixed logical half-width256, including split views.
+float car_shadow_view_pixel_scale(std::uint16_t horizontal_fov) noexcept;
+// PC545180, radius3, followed by the two-view56DC6C conversion when enabled.
+int car_shadow_pixel_size(const CarShadowView&, const VehicleVec3& position) noexcept;
+// Height is the original clamped0..1 three-unit road-height fraction.
+unsigned char car_shadow_silhouette_alpha(int pixel_size, double height_fraction,
+                                          bool two_player_views = false) noexcept;
+
 // Separate high-quality in-race layer. The topology and upload slots are
 // stable; only the road-projected vertices change between frames.
 class CarShadowSilhouette {
@@ -48,7 +61,7 @@ public:
     bool append(UploadTable&, const RenderTexture&, std::size_t ramp_resource,
                 RecordedDraw&, std::string&) const;
     void update(const VehicleState&, const VehicleSpec&, const TrackContactWorld&,
-                const VehicleVec3& eye, const VehicleVec3& light_position, bool visible, RecordedDraw&);
+                const CarShadowView&, const VehicleVec3& light_position, bool visible, RecordedDraw&);
     std::size_t resident_bytes() const noexcept;
 private:
     static constexpr std::size_t kHullLimit = 64;

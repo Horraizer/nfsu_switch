@@ -126,6 +126,81 @@ int main() {
     VehicleTrackTelemetry telemetry;
     VehicleTrackSession car(model,course);
     {
+        VehicleTrackSession held(model,course);
+        check(held.start(course.start),"held grip source starts");
+        const PlayerRigidMatrix axes{{{{1,0,0}},{{0,1,0}},{{0,0,1}}}};
+        held.place_start_car(held.state().position,axes,false);
+        auto ordinary=held.state();
+        VehicleInput hold;hold.brake=1;hold.world_clock_valid=true;
+        hold.world_frame_seconds=1.F/60.F;
+        VehicleTelemetry ordinary_telemetry;
+        check(model.step(ordinary,hold,VehicleFlatGround{},ordinary_telemetry,0,1.F/240.F),
+              "ordinary Move supplies the held grip reference");
+        VehicleTrackTelemetry staged;
+        check(held.step_grid_engine(hold,staged,0,1.F/240.F),"held engine source advances");
+        for(unsigned k=0;k<4;++k)check(held.state().wheels[k].owner_grip==ordinary.wheels[k].owner_grip,
+            "held outer frame runs the ordinary owner grip source before GO");
+        check(held.release_grid_engine(),"held grip source releases");
+        for(unsigned k=0;k<4;++k)check(held.state().wheels[k].owner_grip==ordinary.wheels[k].owner_grip,
+            "release component refresh retains computed owner grip");
+    }
+    {
+        VehicleTrackSession held(model,course);
+        check(held.configure_ai(1)&&held.start(course.start),"held full-mover constructor setup");
+        held.select_rival_physics(1);
+        auto ordinary=held.state();
+        check(ordinary.aero_ready&&ordinary.wheels[0].owner_grip==1.F,
+              "constructor force refresh precedes the first Move grip source");
+        VehicleInput hold;hold.brake=1;hold.world_clock_valid=true;
+        hold.world_frame_seconds=.02F;hold.road_steering=true;hold.road_angle_word_valid=true;
+        VehicleTelemetry expected;
+        check(model.step(ordinary,hold,VehicleFlatGround{},expected,0,.004F),
+              "fresh full mover ordinary grip reference");
+        const auto rng=held.state().transmission.rng_state;
+        VehicleTrackTelemetry staged;
+        check(held.step_grid_engine(hold,staged,0,.004F,false,0,true,true),
+              "held physical first slice advances");
+        for(unsigned k=0;k<4;++k)check(held.state().wheels[k].owner_grip==ordinary.wheels[k].owner_grip,
+            "held first physical slice samples grip despite a ready constructor aero cache");
+        check(held.state().transmission.rng_state==rng&&held.state().gear==kVehicleGearNeutral&&
+              held.state().transmission.requested_gear==kVehicleGearNeutral,
+              "held grip selection does not select a gear or consume gearbox random");
+    }
+    {
+        VehicleTrackSession held(model,course);
+        check(held.start(course.start),"held grip cadence setup");
+        VehicleInput hold;hold.handbrake=true;hold.world_clock_valid=true;hold.world_frame_seconds=.02F;
+        VehicleTrackTelemetry staged;
+        for(unsigned k=0;k<5;++k)check(held.step_grid_engine(hold,staged,0,.004F,false,0,false,k==0),
+            "held inner slice advances without another grip selection");
+        check(held.state().grip_recovery==1.F-20.F*.02F,
+              "held grip history consumes one outer interval across five engine slices");
+    }
+    {
+        auto placement=course.start;
+        placement.heading=0;
+        placement.speed=.1F;
+        VehicleState actor;
+        check(model.reset(actor,placement),"slow full-mover placement");
+        actor.published_gear=kVehicleGearNeutral;
+        actor.published_support=4;
+        VehicleTrackSession placed(model,course);
+        check(placed.start(actor),"start slow full-mover fixture");
+        placed.select_rival_physics(1,12135);
+        auto first=placed.state();
+        check(first.velocity.x==actor.velocity.x&&std::abs(first.velocity.x-.1)<.00001&&
+              first.rigid_body.velocity[0]==0&&first.rigid_body.momentum[0]==0,
+              "constructor rest settles private momentum before the actor publishes");
+        auto edited=first;
+        vehicle_import_rigid(model.spec().handling,first);
+        check(first.rigid_body.momentum[0]==0&&first.velocity.x==0,
+              "first solver import keeps settled momentum");
+        edited.velocity.x=2;
+        vehicle_import_rigid(model.spec().handling,edited);
+        check(std::abs(edited.rigid_body.velocity[0]-2)<.00001,
+              "explicit velocity edit before first move is imported");
+    }
+    {
         // 474801 publishes the reduced body's heading through floating bATan.
         // Exercise both sides of the point where the full body's integer lookup differs.
         bool distinguished=false;
@@ -171,6 +246,9 @@ int main() {
         old.rigid_body.momentum={99,88,77};old.rigid_body.angular_momentum={66,55,44};
         old.rigid_body.adaptive_damping=.5F;
         old.body_rest_state=2;old.body_gravity=false;old.grip_recovery=.5F;
+        old.owner_speeds.forward=7.F;
+        old.published_support=3;
+        old.aero={1.F,.5F,.8F,.75F,false};
         for(unsigned k=0;k<4;++k) {
             auto& wheel=old.wheels[k];wheel.spin=12.F+float(k);
             wheel.compression=.03;wheel.previous_compression=.02;wheel.compression_rate=3;
@@ -178,17 +256,46 @@ int main() {
             old.published_wheel_slip[k]={6.F+float(k),-2.F};
             wheel.prepared_effect_slip={99.F,88.F};
         }
+        // The two front steering matrices are still empty during the constructor
+        // pass. Straight steering later publishes identity matrices instead.
+        old.wheels[1].spin=-13.F;
+        old.steering_word=0x1200;
+        old.steering_word_ready=true;
         check((!rival||replacement.configure_ai(1))&&replacement.start(old),"replacement solver setup");
         replacement.select_rival_physics(1,12135);
         const auto& fresh=replacement.state();
+        check(fresh.aero_ready&&fresh.aero.enabled&&fresh.aero.drag_scale==1.F&&
+            fresh.aero.support_kind==0.F&&fresh.aero.processed_throttle==0.F&&
+            fresh.aero_preloads==player_aero_preloads(model.spec().handling,7.F,true),
+            "new aero component loads speed-dependent struts before its first driver or support sample");
         bool wheels=true;
         for(unsigned k=0;k<4;++k) {
             const auto& wheel=fresh.wheels[k];
-            wheels=wheels&&wheel.spin==12.F+float(k)&&wheel.compression==0&&
-                wheel.previous_compression==0&&wheel.compression_rate==0&&wheel.history_torque==0&&
-                wheel.spin_direction==1&&!wheel.brake_locked&&wheel.contact==(k!=3);
+            const float spin=float(old.wheels[k].spin);
+            wheels=wheels&&wheel.spin==spin&&wheel.previous_compression==0&&
+                wheel.compression_rate==0&&wheel.history_torque==0&&!wheel.brake_locked&&
+                wheel.spin_direction==(spin>0?0:2);
+            const float rim_speed=model.spec().handling.wheels[k].radius*spin;
+            if(k<2)check(wheel.prepared_slip==rim_speed,
+                "new steering matrices project zero hub velocity before the first driver command");
+            else check(std::abs(wheel.prepared_slip-rim_speed)>1,
+                "unsteered rear wheels project the moving hub during construction");
         }
-        check(wheels,"new solver preserves published wheel speed without old strut or torque history");
+        check(fresh.forces_prepared&&!fresh.steering_word_ready&&wheels,"new solver preserves published wheel speed without old strut or torque history");
+        auto before_move=fresh;
+        float refresh_dt=0;
+        for(unsigned pass=0;pass<2;++pass) {
+            check(replacement.refresh_contact(before_move,&fresh,refresh_dt),
+                "contact refresh before the replacement mover's first Move");
+            check(!before_move.steering_word_ready,
+                "collision callbacks leave the first steering command for Move");
+            for(unsigned k=0;k<2;++k) {
+                const auto& wheel=before_move.wheels[k];
+                const float rim_speed=model.spec().handling.wheels[k].radius*float(wheel.spin);
+                check(wheel.prepared_slip==rim_speed,
+                    "pre-Move contact refresh retains both unpublished front wheel axes");
+            }
+        }
         check(fresh.published_wheel_slip==old.published_wheel_slip&&
             fresh.wheels[0].prepared_effect_slip==std::array<float,2>{},
             "fresh components cannot erase previous actor wheel-slip publication");
@@ -218,6 +325,48 @@ int main() {
         replacement.select_rival_physics(1,12135);
         check(replacement.state().engine.cutoff_until==float(12135)*.00025F+.04F,
             "constructor refresh arms a new neutral cutoff before the first derivative");
+    }
+    {
+        VehicleState moving;
+        check(model.reset(moving,course.start),"pedal latch fixture");
+        moving.gear=moving.published_gear=kVehicleGearFirst;
+        moving.engine_rpm=4500;
+        moving.velocity={10,0,0};
+        for(auto& w:moving.wheels)w.spin=18;
+        VehicleTrackSession released(model,course);
+        check(released.start(moving),"coasting mover setup");
+        released.select_rival_physics(1);
+        const auto fresh=released.state();
+        auto prior_force=fresh,clean=fresh;
+        prior_force.engine.feedback_torque=4.F;
+        float prior_dt=0,clean_dt=0;
+        check(released.refresh_contact(prior_force,&fresh,prior_dt)&&
+              released.refresh_contact(clean,&fresh,clean_dt)&&
+              prior_force.engine.feedback_torque==clean.engine.feedback_torque,
+              "component refresh rebuilds gearbox reaction from the current contact");
+        for(unsigned pedal=0;pedal<3;++pedal) {
+            VehicleTrackSession held(model,course);
+            VehicleInput command;
+            command.throttle=pedal==0;
+            command.brake=pedal==1;
+            command.handbrake=pedal==2;
+            VehicleTrackTelemetry t;
+            check(held.start(moving)&&held.step(command,t),"driver holds pedal before contact");
+            for(bool published:{false,true}) {
+                auto coast=fresh,pressed=fresh;
+                coast.steering_word_ready=pressed.steering_word_ready=published;
+                float coast_dt=0,pressed_dt=0;
+                check(released.refresh_contact(coast,&fresh,coast_dt)&&
+                    held.refresh_contact(pressed,&fresh,pressed_dt),"paired pedal refresh");
+                bool different=coast.engine.feedback_torque!=pressed.engine.feedback_torque;
+                for(unsigned k=0;k<4;++k) {
+                    const auto& a=coast.wheels[k];const auto& b=pressed.wheels[k];
+                    different|=a.spin!=b.spin||a.brake_locked!=b.brake_locked||
+                        a.prepared_torque!=b.prepared_torque;
+                }
+                check(different==published,"wheel and engine components accept pedals on first Move");
+            }
+        }
     }
     {
         VehicleTrackSession follower(model,course);
@@ -496,6 +645,38 @@ int main() {
     check(uneven_start.step_ai(input,telemetry)&&std::abs(uneven_start.state().velocity.z)<1&&
           uneven_start.ai_physics().ground_queries==16,
           "initial strut refresh cannot turn terrain offset into a launch impulse");
+
+    {
+        // Selector2 moves while the reserved selector3 session stays at its
+        // old spawn. Promotion must construct at the live published endpoint.
+        VehicleTrackSession reserved(model,course);
+        auto old_pose=low_pose;old_pose.ground.z+=.12;
+        check(reserved.configure_ai(1)&&reserved.start(old_pose),"reserve old traffic component");
+        auto live=uneven_actor;const auto before=live;
+        check(reserved.construct_ai_body(live,input),"traffic promotion constructs current components");
+        const auto& fresh=reserved.ai_physics();
+        bool settled=fresh.prepared&&fresh.slices==0&&fresh.ground_queries==8;
+        for(const auto& w:fresh.engine.wheels)settled=settled&&w.compression_rate==0;
+        check(settled&&live.position.x==before.position.x&&live.position.y==before.position.y&&
+              live.position.z==before.position.z&&live.velocity.x==before.velocity.x&&
+              live.velocity.y==before.velocity.y&&live.velocity.z==before.velocity.z&&live.step==before.step,
+              "traffic promotion seeds struts twice without advancing or moving the actor");
+        check(reserved.step_ai_body(live,input,telemetry)&&std::abs(live.velocity.z)<1,
+              "new traffic component cannot integrate a spawn-time damper load");
+
+        // The same factory must retain genuine airborne motion and must not
+        // be called again when a live physical body receives a later impulse.
+        auto airborne=course.start;airborne.ground.z+=10;
+        check(model.reset(live,airborne),"airborne traffic seed");live.velocity.z=8;
+        live.owner_motion.velocity[2]=8;live.published_support=0;
+        check(reserved.construct_ai_body(live,input)&&live.velocity.z==8&&
+              reserved.step_ai_body(live,input,telemetry)&&live.velocity.z>7,
+              "traffic construction preserves a real upward velocity in the air");
+        live.velocity.z+=3;live.rigid_body_ready=false;
+        const auto impulse_velocity=live.velocity.z;
+        check(reserved.step_ai_body(live,input,telemetry)&&live.velocity.z>impulse_velocity-.5,
+              "active traffic keeps a later collision impulse instead of reconstructing again");
+    }
 
     {
         VehicleTrackSession rotated(model,course);auto airborne=course.start;
@@ -890,6 +1071,16 @@ int main() {
         check(sample_race_contact(sample,model.spec(),start_a,first,job.remaining)&&
             std::abs(sample.velocity.z-(start_a.velocity.z+(15-start_a.velocity.z)*float((double(.016F)-job.remaining)/.016F)))<2e-6,
             "contact sample uses early history velocity instead of final suspension velocity");
+        // A newly activated mover can hit another car before its first Move.
+        // Its owner still exposes the old mover's velocity until the rewind.
+        first.motion_before_first_move=VehiclePublishedMotion{first.velocity,first.angular_velocity};
+        first.rigid_body.angular_momentum={{.002F,-.06F,-1.44F}};
+        first.rigid_body.axes[0][2]+=.02F;
+        check(sample_race_contact(sample,model.spec(),start_a,first,job.remaining),
+            "sample newly activated mover during a contact");
+        vehicle_import_rigid(model.spec().handling,sample);
+        check(sample.rigid_body.angular_momentum==first.rigid_body.angular_momentum,
+            "contact refresh preserves the new mover's sampled angular momentum");
     }
 
     {

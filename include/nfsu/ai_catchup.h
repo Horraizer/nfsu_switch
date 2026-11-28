@@ -31,6 +31,7 @@ struct AiCatchupState {
 // No allocation, RNG draw or file access. Refusal leaves state unchanged.
 bool ai_catchup_update(const AiCatchupInput&,const AiCatchupTuning&,AiCatchupState&) noexcept;
 // Original GLOBALB34B00 selection: length, traffic density, context and rank.
+// target_rank is a zero-based slot; the PC racer stores its position as 1..4.
 //44C0E0..44C101 chooses the alternate bank for traffic selectors2/3.
 bool ai_catchup_tuning(const unsigned char*,std::size_t,int context,int laps,
     bool point_to_point,unsigned traffic_selector,unsigned target_rank,AiCatchupTuning&) noexcept;

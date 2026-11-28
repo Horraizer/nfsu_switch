@@ -61,6 +61,7 @@ private:
     void convert_proxy(RaceProp&,const TrackContactWorld&);
     void maintain_pool(const TrackContactWorld&,const VehicleVec3&,std::uint32_t,std::uint64_t,const VehicleVec3* second=nullptr);
     bool advance_body(RaceProp&,const TrackContactWorld&,std::string&,float dt);
+    void size_terrain_buffers(std::size_t vertices);
     bool prepare_frame(const TrackContactWorld&,std::string&,float dt);
     bool refresh_contact(RaceProp&,VehicleState&);
     void restore_proxy(RaceProp&);
@@ -71,7 +72,7 @@ private:
     std::array<TrackGroundCache,32> maintenance_ground_{};
     std::vector<std::size_t> proxy_order_;
     float widest_proxy_=0;
-    // Sized once at load to the largest authored hull; reused across substeps.
+    // Pre-sized for authored hulls and reused by the standalone terrain adapter.
     std::vector<TrackContactSegmentPair> terrain_queries_;
     std::vector<TrackContact> terrain_hits_;
     std::vector<TrackContactStatus> terrain_statuses_;

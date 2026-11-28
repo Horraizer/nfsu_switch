@@ -19,3 +19,11 @@ static constexpr unsigned kNativeStartLens[][2]={
     {50,7210},
     {80,4616},
 };
+// Native48E54B terrain history and local authored height.
+static constexpr float kNativeNisTerrain[][4]={
+    {24.5F,0.5F,24.5F,25.F},
+    {26.F,0.25F,24.545002F,24.795002F},
+    {27.5F,1.25F,24.6336536F,25.8836536F},
+    {22.F,0.1F,24.5546436F,24.654644F},
+    {0.F,3.F,23.8180046F,26.8180046F},
+};

@@ -41,6 +41,10 @@ def main():
     for column,value in ((9,False),(10,False),(12,0)):
         s=list(base);s[column]=value;specs.append(tuple(s))
     selections=[(s,2,False,1,1.) for s in specs]
+    for slot in range(4):
+        for history in (.75,1.25):
+            selections.append(((.3,.3,30.,30.,(slot+1)%4,slot,history,6,2000,
+                                True,True,False,240000),2,False,1,1.))
     # Original44C010 selects the alternate bank by traffic density2/3,
     # not by race type. Exercise both banks, event lengths, ranks and history.
     length=m.get(0x7372b0,'f')
@@ -63,7 +67,10 @@ def main():
         m.put(0x78a404,reference_weight,'f')
         tick=500000;previous=tick-age
         m.put(cfg+0x735,difficulty,'b');m.put(own+0x14,sp,'f');m.put(other+0x14,tp,'f')
-        m.put(own+0xa,srank,'b');m.put(other+0xa,trank,'b')
+        # The port represents ranks as zero-based slots. The live PC racer
+        # records contain positions 1..4, including for memory-indexed gains.
+        position=trank+1
+        m.put(own+0xa,srank+1,'b');m.put(other+0xa,position,'b')
         m.put(ACTOR+0x3d4,ss,'f');m.put(ACTOR+0x3d0,ss,'f');m.put(HUMAN+0x3d4,ts,'f')
         m.put(ACTOR+0x18,0);m.put(CONTROLLER+0x46c,1,'B');m.put(CONTROLLER+0x3f8,ACTION)
         m.put(ACTION+0x1f2,int(allows),'B');m.put(0x73ad34,tick);m.put(status+0x14,race_ticks)
@@ -79,7 +86,7 @@ def main():
         row=(mode+length*2)*0x58
         low=[floats(0x779c78+row+8*j,2) for j in range(11)]
         high=[floats(0x779dd8+row+8*j,2) for j in range(11)]
-        tuning=[low,high,floats(0x779f38,16),floats(0x779f78,16),floats(0x779fd0+8*trank,2),floats(0x779fb0+8*trank,2),
+        tuning=[low,high,floats(0x779f38,16),floats(0x779f78,16),floats(0x779fd0+8*position,2),floats(0x779fb0+8*position,2),
             m.get(0x77a49c,'f'),m.get(0x77a044+difficulty*0x54,'f'),m.get(0x77a4a0,'f'),m.get(0x77a010+difficulty*0x54,'f')]
         weight=m.get(0x78a404+4*m.get(REF+0x10),'f')
         inp=[tick,1,race_ticks,difficulty,srank,trank,1,True,True,False,False,allows,False,compare,wrap,

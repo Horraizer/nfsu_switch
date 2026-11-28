@@ -46,7 +46,10 @@ do not change the host's performance tier or add physical aero bonuses.
 
 Rendering chooses the local actor for camera, HUD and engine audio. The host
 publishes each physics step, and the guest plays both actors on a shared host
-timeline with about three steps of jitter headroom. A large reset snaps the
+timeline with a short adaptive jitter history. Ordered packets received in
+one poll retain their own host steps, input acknowledgements and discrete
+transitions. Steady packet groups do not change playback speed, and wrapped
+wheel rotation uses the same interpolated body clock. A large reset snaps the
 body and resets the camera when that step is presented. Guest physics are
 still host-authoritative. `LAN_TIMELINE` reports received and presented steps,
 underrun frames, and the time from sending a pad sample to receiving and
@@ -55,6 +58,15 @@ renderer call, not the display scanout.
 The most recent guest timing summary is saved at room exit in
 `sdmc:/nfsu-lan-runtime-XXXX.log` when the SD journal is available.
 Audio presentation does not publish into the authoritative world RNG.
+
+`LAN_FRAMES` reports actual completed renderer present-to-present intervals
+for both host and guest: sample count, mean, histogram p95 upper bound,
+`over_25`, and maximum. Loading, waiting, results and the first active
+presentation are excluded. An empty or overflowing p95 is reported as -1.
+The summary is printed with the periodic network metrics and retained at
+room exit in the SD runtime journal when enabled. This measures completed
+renderer calls, not display scanout. The existing fixed histogram is kept on
+the heap; sampling adds no GPU wait or per-frame journal write.
 
 The initial room has no AI opponents, traffic, moving breakable props,
 campaign progress, purchases or rewards. Track decoration may remain visible

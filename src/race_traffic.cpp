@@ -718,7 +718,15 @@ bool RaceTraffic::prepare_contact(unsigned index,std::string& error,bool& activa
     //leaves the shared component interval at zero.
     //426110 constructs the new rigid component from published mover V/W;
     //the kinematic placeholder has no retained physical angular momentum.
-    actor.car.rigid_body_ready=false;
+    VehicleInput controls;
+    controls.world_frame_seconds=frame_seconds_;
+    controls.world_clock_valid=world_clock_>=0;controls.world_clock=world_clock_;
+    controls.throttle=actor.driver.pedals.throttle;controls.brake=actor.driver.pedals.brake;
+    controls.road_steering=true;controls.road_angle_word_valid=true;
+    controls.road_angle_word=actor.driver.steering.word;
+    if(!impact_sessions_[index]->construct_ai_body(actor.car,controls,actor.driver.gear_request)) {
+        error="traffic component construction refused: "+impact_sessions_[index]->error();return false;
+    }
     const auto published=actor.car;
     if(!refresh_contact(index,actor.car,error,&published,0))return false;
     actor.impacted=true;activated=true;return true;

@@ -5,6 +5,7 @@ sys.dont_write_bytecode=True
 root=argparse.ArgumentParser();root.add_argument('--retail-root',type=Path,required=True)
 root.add_argument('--road-offset',type=float,default=0)
 root.add_argument('--display-width',type=int,default=1280)
+root.add_argument('--widen-from-4-3',action='store_true',help='Supply original4:3 vertical focal and square-pixel X before native frustum/culling')
 args=root.parse_args();retail=args.retail_root
 assert math.isfinite(args.road_offset) and 0<=args.road_offset<=200
 # Reuse the authenticated entry/cube basis witness and its native machine.
@@ -81,7 +82,24 @@ for view,width,height in ((1,1280,720),(4,320,240)):
  sc=0x1050000+(view-1)*0x1000;vp=0x1058000+(view-1)*0x100;projection=0x1068000+(view-1)*0x1000
  m.write(sc+4,view);m.write(sc+0x40,0x100b000);m.write(sc+0x58,vp)
  m.write(vp+0x14,width);m.write(vp+0x18,height)
+ if view==1 and args.widen_from_4_3:
+  # First execute the original reference projection. The displayed port
+  # widens that image; its two supplied focal operands are not retail code.
+  m.write(vp+0x14,640);m.write(vp+0x18,480)
+  m.run(0x40dd00,(sc,0,0,0),{UC_X86_REG_ESI:projection})
+  native_y=struct.unpack('<f',m.uc.mem_read(projection+0x54,4))[0]
+  m.write(vp+0x14,width);m.write(vp+0x18,height)
+  def widen_projection(uc,address,size,data):
+   if address==0x40df04 and uc.reg_read(UC_X86_REG_ESI)==projection:
+    uc.mem_write(projection+0x40,struct.pack('<f',-native_y*height/width))
+    uc.mem_write(projection+0x54,struct.pack('<f',native_y))
+  projection_hook=m.uc.hook_add(UC_HOOK_CODE,widen_projection)
+  # Unicorn can retain translated blocks built before the new hook.
+  m.uc.ctl_remove_cache(0x40dd00,0x40e200)
  m.run(0x40dd00,(sc,0,0,0),{UC_X86_REG_ESI:projection});m.write(sc,projection)
+ if view==1 and args.widen_from_4_3:
+  m.uc.hook_del(projection_hook)
+  print('SUPPLIED_WIDESCREEN_PROJECTION',-native_y*height/width,native_y)
 draws=[];calls=[];billboards=[]
 def capture(uc,at,size,_):
  if at==0x544ca3:

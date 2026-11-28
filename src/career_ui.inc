@@ -132,7 +132,7 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
         auto browser=career_objects(front,0xbd388c,language,error);
         auto scroller=career_objects(front,0xbd468c,language,error);
         std::map<std::size_t,Impl::GarageArt> garage_pages;
-        const std::size_t garage_offsets[]={0xb7018c,0xb7e48c,0xb7fc8c,0xc0060c,0xb80a8c,0xb8180c,0xbbe50c,
+        const std::size_t garage_offsets[]={0xb7018c,0xb7e48c,0xb7fc8c,0xc0060c,0xb80a8c,0xb8180c,0xb82d8c,0xbbe50c,
             0xb72f8c,0xb73c0c,0xb74c0c,0xb75b8c,0xbe4c0c,0xb7b18c,0xb7750c,0xb7680c,0xb7a40c,0xb7828c,0xbfb88c,0xbfc50c,0xbfd18c,0xbfde0c,0xbff68c,0xb71e0c,0xbcf70c,0xbd0d0c,0x21cd8c,kTradeConfirmFng,kTradeStatsFng};
         auto textures=impl_->textures;
         const auto add=[&](const std::string& name) {
@@ -178,6 +178,22 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
                 add_hash(art.resources[object.resource],true);
             info_pages[i]=std::move(art);
         }
+        std::array<DialogArt,2> magazine_pages;
+        for(unsigned i=0;i<magazine_pages.size();++i) {
+            const std::size_t offset=i?0xbc000c:0xc3838c;
+            auto art=read_dialog(front,offset,career_info_resources(front,offset,impl_->large_hash,impl_->small_hash,error),
+                [&](unsigned hash,const std::string& fallback){return career_language(language,hash,fallback);},error);
+            for(const auto& o:art.objects)if((o.type==1||o.type==9)&&o.resource<art.resources.size())add_hash(art.resources[o.resource],true);
+            art.resources.push_back(bin_hash("STATUS_MAGAZINES_ICON"));
+            magazine_pages[i]=std::move(art);
+        }
+        add_hash(bin_hash("STATUS_MAGAZINES_ICON"),true);
+        std::array<std::string,27> magazine_names,magazine_blurbs;
+        for(unsigned i=0;i<27;++i) {
+            magazine_names[i]=career_language(language,career_magazine_title_key(i),"");
+            magazine_blurbs[i]=career_language(language,career_magazine_description_key(i),"");
+            if(magazine_names[i].empty()||magazine_blurbs[i].empty())throw std::runtime_error("original magazine menu label absent");
+        }
         add("GENERICPLACEHOLDER");
         for(auto offset:garage_offsets) {
             const auto& source=offset==0x21cd8c?global:front;
@@ -214,9 +230,9 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
         for(unsigned layer=1;layer<=4;++layer)add_hash(bin_hash("VINYL_LAYER_"+std::to_string(layer)),true,64);
         for(const auto& part:catalog.tuning().parts().records)if(part.slot==58)
             add_hash(career_decal_brand_icon(part.hash_0c),true);
-        for(unsigned level=1;level<4;++level) {
+        for(unsigned level=1;level<=5;++level) {
             add_hash(bin_hash("GENERIC_LEVEL"+std::to_string(level)),true);
-            add_hash(bin_hash("UPGRADE_LEVEL_"+std::to_string(level)),true);
+            if(level<=3)add_hash(bin_hash("UPGRADE_LEVEL_"+std::to_string(level)),true);
         }
         add_hash(bin_hash("UPGRADE_LEVEL_STOCK"),true);
         add_hash(bin_hash("UPGRADE_LEVEL_UNIQUE"),true);
@@ -290,6 +306,10 @@ bool FrontendArt::load_career_pages(const std::filesystem::path& root,const Care
         impl_->career_sprint=std::move(sprint);impl_->career_backgrounds=std::move(backgrounds);impl_->career_titles=std::move(titles);impl_->career_descriptions=std::move(descriptions);impl_->career_track_names=std::move(track_names);
         impl_->textures=std::move(packed.textures);impl_->atlas=std::move(packed.atlas);impl_->career_maps=std::move(maps);
         for(unsigned i=0;i<info_pages.size();++i)impl_->dialogs[4+i]=std::move(info_pages[i]);
+        for(unsigned i=0;i<magazine_pages.size();++i)impl_->dialogs[6+i]=std::move(magazine_pages[i]);
+        impl_->magazine_names=std::move(magazine_names);impl_->magazine_blurbs=std::move(magazine_blurbs);
+        impl_->magazine_hot=career_language(language,0x731eeb7bU,"");
+        impl_->magazine_locked=career_language(language,0x4207c198U,"");
         impl_->info_revision=~0U;
         error.clear();return true;
     }catch(const std::exception& e){error=e.what();return false;}
@@ -414,7 +434,8 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
     if(page==3 && !catalog.performance_ratings(display_profile,displayed_ratings))
         throw std::runtime_error("installed performance ratings unavailable");
     auto installed_ratings=displayed_ratings;
-    const bool package_preview=garage&&page==3&&garage->page()==GaragePage::packages;
+    const bool brand_preview=garage&&page==3&&garage->page()==GaragePage::performance_brands;
+    const bool package_preview=garage&&page==3&&(garage->page()==GaragePage::packages||brand_preview);
     const bool trade_preview=garage&&page==3&&garage->page()==GaragePage::trade_in&&display_profile.car!=profile.car;
     const bool performance_preview=package_preview||trade_preview;
     if(performance_preview&&!catalog.performance_ratings(profile,installed_ratings))
@@ -624,8 +645,9 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
                 if(o.name=="CarName")value=display_profile.car;
                 if(o.name=="TradeInCost")value=item?std::string(item->trade_cost<0?"Trade In Credit: ":"Trade In Cost: ")+std::to_string(std::abs(item->trade_cost)):"";
                 if(o.name=="PlayerName")value=profile.name;
-                if(o.name=="UpgradeBlurb")value=package_preview&&item&&item->value<4?
-                    garage_package_contents.at(garage->performance_field()).at(item->value):"";
+                if(o.name=="UpgradeBlurb")value=brand_preview&&item?item->detail:
+                    package_preview&&item&&item->upgrade_level<4?
+                    garage_package_contents.at(garage->performance_field()).at(item->upgrade_level):"";
                 if(o.name=="KIT_CONTENT_HEADER"&&!package_preview)value="";
                 if(o.name=="Vinyl_layer_heading")value="CHOOSE LAYER";
                 // FEng editor/platform tokens need a runtime binding, not
@@ -752,13 +774,15 @@ void FrontendArt::Impl::draw_career(Canvas image,const CareerCatalog& catalog,co
             const auto kind=garage->dialog();
             const bool replace=kind==GarageDialog::vinyl_layer;
             const bool information=kind==GarageDialog::already_installed;
-            const char* message=replace?"Replace This Vinyl or Remove Completely ?":
+            std::string message=replace?"Replace This Vinyl or Remove Completely ?":
                 kind==GarageDialog::remove_vinyls?"Remove all vinyls before ^installing a Unique vinyl.":
                 kind==GarageDialog::remove_unique?"Remove Unique vinyl before ^installing any other vinyls.":
                 kind==GarageDialog::stock_hood?"Hood vinyls can only be installed on^stock hoods. Continue and remove^your custom hood?":
                 information?"That part is already installed.":
                 profile.page==CareerPage::unique_reward?"Would you like to choose this part?":
                 "Install this part now?";
+            if(garage->confirming()&&garage->page()==GaragePage::performance_brands&&!garage->entries().empty())
+                message="Install this package?^Cost: "+std::to_string(garage->entries()[garage->selected()].price);
             const auto selected=garage->dialog_selected();
             const auto first=std::find_if(dialog.objects.begin(),dialog.objects.end(),[](const auto& o){return o.name=="button1";});
             const auto second=std::find_if(dialog.objects.begin(),dialog.objects.end(),[](const auto& o){return o.name=="button2";});

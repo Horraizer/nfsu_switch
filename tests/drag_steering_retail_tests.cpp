@@ -13,6 +13,8 @@
 #include <iostream>
 #include <stdexcept>
 using namespace nfsu;
+struct NativeRaceOverMode {unsigned mode,text,tick,alpha;const char* message;float left,right,top,bottom;};
+#include "race_finish_modes_native.inc"
 namespace nfsu {struct RaceWorldContactProbe {
     static void travelled(RaceSession& session,float value){session.travelled_distance_=value;}
     static void nitrous(RaceSession& session,std::uint32_t capacity,std::uint32_t charge) {
@@ -250,8 +252,37 @@ int main(int argc,char** argv){try{
             need(hud.lap_fonts[1][c].width>0,"drag finish glyph absent: "+std::string(1,char(c)));
             ++glyph_count;
         }
-        frame={};append_race_over(hud,1,1280,720,frame,winner);
-        need(frame.quads==glyph_count+1,"both drag finish lines must draw");
+        // Original4F4790 submits spaces as zero-height quads. Count ink,
+        // retain both lines and verify their separate vertical placement.
+        build_race_over_frame(hud,1,1280,720,frame,winner);
+        unsigned ink=0,first_line=0,second_line=0;
+        float first_bottom=-1e9F,second_top=1e9F;
+        for(unsigned q=1;q<frame.quads;++q) {
+            const auto& a=frame.vertices[q*4];const auto& b=frame.vertices[q*4+2];
+            if(b.px==a.px||b.py==a.py)continue;
+            ++ink;
+            if(q<=7){++first_line;first_bottom=std::max(first_bottom,b.py);}
+            else {++second_line;second_top=std::min(second_top,a.py);}
+        }
+        need(ink==glyph_count&&first_line==7&&second_line==glyph_count-7&&second_top>first_bottom,
+             "both drag finish lines must retain every ink glyph on separate lines");
+        RaceRacerTiming terminal;terminal.status=RacerStatus::normal_completion;terminal.position=1;
+        terminal.finish_valid=true;terminal.finish_ticks=104320;
+        const auto native_message=race_over_message(terminal,true,hud);
+        build_race_over_frame(hud,1,1280,720,frame,native_message);
+        bool native=false;
+        for(const auto& row:kNativeRaceOverModes)if(row.mode==1&&row.text&&row.tick==1200&&native_message==row.message) {
+            float left=1e9F,right=-1e9F,top=1e9F,bottom=-1e9F;
+            for(unsigned q=1;q<frame.quads;++q)for(unsigned v=0;v<4;++v) {
+                const auto& p=frame.vertices[q*4+v];left=std::min(left,p.px);right=std::max(right,p.px);
+                top=std::min(top,p.py);bottom=std::max(bottom,p.py);
+            }
+            need(std::abs(left-(160+row.left*1.5F))<.025F&&std::abs(right-(160+row.right*1.5F))<.025F&&
+                 std::abs(top-row.top*1.5F)<.025F&&std::abs(bottom-row.bottom*1.5F)<.025F,
+                 "real terminal HUD two-line bounds must match original mode-specific FEng output");
+            native=true;
+        }
+        need(native,"original two-line terminal fixture must be exercised");
         auto& race=const_cast<RaceSession&>(run.session());
         RaceWorldContactProbe::nitrous(race,8000,8000);
         const auto bars=[&](std::uint32_t charge) {

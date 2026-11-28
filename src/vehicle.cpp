@@ -92,6 +92,7 @@ bool state_finite(const VehicleState& s) noexcept {
          finite(s.transmission.wheel_engine_speed) && s.transmission.mode>=0 && s.transmission.mode<=3;
     ok=ok&&finite(s.transmission.up_offset)&&finite(s.transmission.down_offset);
     ok=ok&&finite(s.owner_slip_angle)&&finite(s.grip_recovery)&&s.grip_recovery>=.5F&&s.grip_recovery<=1.F;
+    ok=ok&&finite(s.owner_grip_scale)&&s.owner_grip_scale>=0.F;
     ok=ok&&finite(s.owner_traction.timer)&&finite(s.owner_traction.scale)&&finite(s.owner_traction.quiet);
     ok=ok&&finite(s.owner_speeds.forward)&&finite(s.owner_speeds.magnitude)&&s.owner_speeds.magnitude>=0.0F;
     ok=ok&&finite(s.path_powertrain_speed);
@@ -257,12 +258,17 @@ void rigid_public_cache(VehicleState& s) noexcept {
     s.position=public_vector(s.rigid_body.position);
     s.velocity=public_vector(s.rigid_body.velocity);
     s.angular_velocity=public_vector(s.rigid_body.angular_velocity);
+    s.motion_before_first_move.reset();
 }
 void rigid_import_public(const VehicleHandling& h,VehicleState& s) noexcept {
     auto& body=s.rigid_body;
     const bool pose_changed=!s.rigid_body_ready||!same_quaternion(s.orientation,s.rigid_orientation);
-    const bool velocity_changed=pose_changed||!same_vector(s.velocity,body.velocity);
-    const bool omega_changed=pose_changed||!same_vector(s.angular_velocity,body.angular_velocity);
+    // A constructor force refresh may settle the body while the actor still
+    // exposes its placement velocity. Only a subsequent external edit should
+    // replace that body's momentum on the first physical step.
+    const auto& prior=s.motion_before_first_move;
+    const bool velocity_changed=pose_changed||!same_vector(s.velocity,prior?rigid_vector(prior->linear):body.velocity);
+    const bool omega_changed=pose_changed||!same_vector(s.angular_velocity,prior?rigid_vector(prior->angular):body.angular_velocity);
     if(pose_changed) body.axes=rigid_axes(rotation(s.orientation));
     body.position=rigid_vector(s.position);
     // Spawn, teleport and explicit public velocity edits are port adapters.
@@ -282,7 +288,7 @@ void rigid_import_public(const VehicleHandling& h,VehicleState& s) noexcept {
     body.gravity=s.body_gravity;body.yaw_torque_limit=h.yaw_torque_limit;
     if(velocity_changed||omega_changed) {
         player_rigid_body_refresh(h,body);rigid_public_cache(s);
-    }
+    } else if(prior) rigid_public_cache(s);
     s.rigid_body_ready=true;s.rigid_orientation=s.orientation;
 }
 
@@ -1295,9 +1301,46 @@ bool VehicleModel::reset(VehicleState& state, const VehiclePose& pose) const {
     return true;
 }
 
+void VehicleModel::latch_owner_grip(VehicleState& s,const VehicleInput& raw_input,
+                                    float interval) const noexcept {
+    const auto& h=spec_.handling;
+    const bool gear_assisted=spec_.drift_mode&&!raw_input.drag_mode;
+    s.grip_recovery=raw_input.handbrake?
+        std::max(.5F,s.grip_recovery-20.F*interval):std::min(1.F,s.grip_recovery+interval);
+    const auto axes=s.rigid_body_ready?s.rigid_body.axes:PlayerRigidMatrix{};
+    const float tilt=s.rigid_body_ready?axes[0][2]:float(rotation(s.orientation).column(0).z);
+    const float slip=s.owner_speeds.forward<1.F?0.F:s.owner_slip_angle;
+    //477775 owner3C0 is actor400 driving style, not actor38 collision state.
+    //431020/456BA0 source it from Player22; supported races use style0.
+    float grip=player_owner_base_grip(s.owner_grip_scale,0,gear_assisted);
+    const float nitrous_grip=player_drag_nitrous_grip(raw_input.drag_mode,raw_input.nitrous_active,
+        raw_input.world_clock_valid?raw_input.world_clock:raw_input.nitrous_clock,
+        raw_input.nitrous_activation_seconds);
+    const float shift_grip=player_shift_grip_scale(s.transmission.shift_quality,
+        h.rear_drive_fraction,raw_input.drag_category);
+    std::array<float,4> previous_load{},previous_slip{};
+    for(unsigned k=0;k<4;++k) {
+        previous_load[k]=s.wheels[k].prepared_load;
+        previous_slip[k]=s.wheels[k].prepared_slip;
+    }
+    const float policy_interval=raw_input.world_clock_valid&&finite(raw_input.world_frame_seconds)&&
+        raw_input.world_frame_seconds>=0?raw_input.world_frame_seconds:interval;
+    const auto traction=player_owner_traction_update(s.owner_traction,h.rear_drive_fraction,
+        raw_input.drag_category,!raw_input.owner_traction_suppressed,raw_input.race_active,
+        s.owner_speeds.forward,s.owner_slip_angle,policy_interval,previous_load,previous_slip);
+    //477A17 skips the ordinary rear stabilizer in drift. The shared
+    //479640 shift and transient traction policy still runs on all wheels.
+    for(unsigned k=0;k<4;++k) {
+        if(k>=2&&!gear_assisted)grip*=((player_rear_grip(h,tilt,slip,s.owner_speeds.magnitude,
+            raw_input.handbrake?1.5F:0.F)-1.F)*s.grip_recovery+1.F);
+        s.wheels[k].owner_grip=((grip*nitrous_grip)*shift_grip)*traction[k];
+    }
+}
+
 bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
                         const VehicleGround& ground, VehicleTelemetry& telemetry,
-                        double publication_dt, double step_dt, bool select_request, bool allow_rest, bool contact_completion, bool refresh_only,float refresh_interval,double outer_dt) const {
+                        double publication_dt, double step_dt, bool select_request, bool allow_rest, bool contact_completion, bool refresh_only,float refresh_interval,double outer_dt,
+                        VehicleSteeringState steering,bool latch_grip) const {
     if (!finite(outer_dt)||outer_dt< -1 || !finite(refresh_interval)||refresh_interval<0 || (refresh_only && (!contact_completion || step_dt!=0 || select_request || publication_dt!=0)) ||
         !valid_ || !state_finite(state) || state.gear < kVehicleGearReverse ||
         state.gear > kVehicleGearFirst + static_cast<int>(spec_.handling.forward_gears) - 1 ||
@@ -1313,6 +1356,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     const VehicleApproximations& a = spec_.approx;
     const double dt = step_dt;
     VehicleState s = state;
+    //4777BF clears the visual accumulator once per outer Move, including grid frames.
+    if(select_request || latch_grip)s.bottom_out_impulse={};
     if(select_request) {
         //4776FC/477714: ordinary state0 selects alternate yaw unless its
         // previous contact count is zero. The flag is set before the solve
@@ -1336,38 +1381,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     if(raw_input.on_start_grid) rear_brake=0.F;
     else if(static_cast<float>(throttle)>.8F && driver_brake>.5F && speed_mph<10.F)
         rear_brake=speed_mph*.05F;
-    if(!refresh_only && (select_request || !s.aero_ready)) {
-        const float interval=float(outer_dt>=0?outer_dt:step_dt);
-        s.grip_recovery=raw_input.handbrake?
-            std::max(.5F,s.grip_recovery-20.F*interval):std::min(1.F,s.grip_recovery+interval);
-        const auto axes=s.rigid_body_ready?s.rigid_body.axes:PlayerRigidMatrix{};
-        const float tilt=s.rigid_body_ready?axes[0][2]:float(rotation(s.orientation).column(0).z);
-        const float slip=s.owner_speeds.forward<1.F?0.F:s.owner_slip_angle;
-        //477775: the supported initial physics78=1/owner3C0=0 context.
-        float grip=player_owner_base_grip(1.F,0,gear_assisted);
-        const float nitrous_grip=player_drag_nitrous_grip(raw_input.drag_mode,raw_input.nitrous_active,
-            raw_input.world_clock_valid?raw_input.world_clock:raw_input.nitrous_clock,
-            raw_input.nitrous_activation_seconds);
-        const float shift_grip=player_shift_grip_scale(s.transmission.shift_quality,
-            h.rear_drive_fraction,raw_input.drag_category);
-        std::array<float,4> previous_load{},previous_slip{};
-        for(unsigned k=0;k<4;++k) {
-            previous_load[k]=s.wheels[k].prepared_load;
-            previous_slip[k]=s.wheels[k].prepared_slip;
-        }
-        const float policy_interval=raw_input.world_clock_valid&&finite(raw_input.world_frame_seconds)&&
-            raw_input.world_frame_seconds>=0?raw_input.world_frame_seconds:interval;
-        const auto traction=player_owner_traction_update(s.owner_traction,h.rear_drive_fraction,
-            raw_input.drag_category,!raw_input.owner_traction_suppressed,raw_input.race_active,
-            s.owner_speeds.forward,s.owner_slip_angle,policy_interval,previous_load,previous_slip);
-        //477A17 skips the ordinary rear stabilizer in drift. The shared
-        //479640 shift and transient traction policy still runs on all wheels.
-        for(unsigned k=0;k<4;++k) {
-            if(k>=2&&!gear_assisted)grip*=((player_rear_grip(h,tilt,slip,s.owner_speeds.magnitude,
-                raw_input.handbrake?1.5F:0.F)-1.F)*s.grip_recovery+1.F);
-            s.wheels[k].owner_grip=((grip*nitrous_grip)*shift_grip)*traction[k];
-        }
-    }
+    if(!refresh_only && (select_request || latch_grip || !s.aero_ready))
+        latch_owner_grip(s,raw_input,float(outer_dt>=0?outer_dt:step_dt));
     if (select_request || !s.aero_ready) {
         //477BED and477100 precede the inner loop.479160's demonstrated
         // INITIAL1/0 coupling leaves body/engine/wheel scales at1. This
@@ -1398,7 +1413,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             s.published_support,s.rigid_body.axes[0][2]);
     }
     const bool original_steering=raw_input.road_steering&&raw_input.road_angle_word_valid;
-    if(original_steering&&(select_request||!s.steering_word_ready)) {
+    if(steering==VehicleSteeringState::initialized&&original_steering&&(select_request||!s.steering_word_ready)) {
         //4775E4 consumes the processed word before the solver loop.
         // Each subsequent strut callback consumes the retained front matrices.
         s.steering_word=raw_input.road_angle_word;s.steering_word_ready=true;
@@ -1493,12 +1508,13 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
         target = raw_input.road_steering ?
             sanitize(raw_input.road_target,-3.14159265358979323846,3.14159265358979323846) : steer * lock;
         const double max_change = a.steer_rate * suspension_dt;
-        if(original_steering) s.steer_angle=
+        if(steering==VehicleSteeringState::before_first_command)s.steer_angle=0;
+        else if(original_steering) s.steer_angle=
             static_cast<double>(static_cast<std::int16_t>(s.steering_word))*9.58738019107841e-5F;
         else if (raw_input.road_steering) s.steer_angle =
             sanitize(raw_input.road_angle,-3.14159265358979323846,3.14159265358979323846);
         else s.steer_angle = s.steer_angle + clamp(target - s.steer_angle, -max_change, max_change);
-        if(!original_steering) {
+        if(!original_steering&&steering==VehicleSteeringState::initialized) {
             // Qualified compatibility adapter for callers that supply radians
             // or the approximate lock/slew instead of original controls1D0.
             const double scaled=s.steer_angle*10430.378350470453;
@@ -1507,7 +1523,12 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
                 static_cast<std::uint16_t>(static_cast<std::int64_t>(rounded)):0;
             s.steering_word_ready=true;
         }
-        const auto front_axes=player_front_steering_axes(h,s.steering_word);
+        // 476944 creates a zeroed steering object. The constructor force pass
+        // precedes SetSteering at 4775F4. A zero steering word produces unit
+        // axes and is different from the two unpublished matrices.
+        std::array<std::array<VehicleVec3,3>,2> front_axes{};
+        if(steering==VehicleSteeringState::initialized)
+            front_axes=player_front_steering_axes(h,s.steering_word);
 
         force = v3(0.0,0.0,s.body_gravity?-d_.weight:0.0);
         torque = {};
@@ -1686,6 +1707,9 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             const double denominator=std::max(absolute(vlong),a.slip_speed_floor);
             out.slip_lateral=vlat/denominator;
         }
+        // 46CA90 clears Engine+7C on every component refresh, including
+        // rewinds without an integration step. The gearbox rebuilds it below.
+        s.engine.feedback_torque=0.F;
         //46ABD0 updates the gearbox after wheel/strut component refresh. Force
         // inputs/slip160 were cleared; retained164 is the previous completed
         // prepared_slip.58747D replaces both copies in the new producer later.
@@ -1726,7 +1750,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             if(s.published_support>0&&s.body_rest_state==2) w.spin=0.0F;
             else if(s.body_rest_state==1) w.spin*=0.94999998807907104F;
             if(s.body_rest_state!=0)
-                w.spin_direction=w.spin>1.0e-5F?0:(w.spin<-1.0e-5F?2:1);
+                w.spin_direction=player_wheel_spin_direction(w.spin);
             // The repeated wheel refresh (586DA0) observes the stopped or
             // damped spin before the next derivative can reject a reversal.
             wheel.spin=w.spin;
@@ -1737,7 +1761,8 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
             if(float(s.wheels[k].compression)!=h.struts[k/2].bump_limit)continue;
             const PlayerRigidVector hub{{float(d_.attach[k].x),float(d_.attach[k].y),
                 float(d_.attach[k].z)+float(s.wheels[k].compression)}};
-            player_strut_bump_impulse(h,s.rigid_body,hub,rigid_vector(hits[k].normal));
+            //47734F..47735A keeps the already computed impulse for428BE1.
+            s.bottom_out_impulse[k]+=player_strut_bump_impulse(h,s.rigid_body,hub,rigid_vector(hits[k].normal));
             refresh=true;
         }
         if(refresh) {
@@ -1921,6 +1946,7 @@ bool VehicleModel::step(VehicleState& state, const VehicleInput& raw_input,
     t.wheel_rpm = s.wheel_rpm;
     t.engine_torque = engine_torque;
     t.audio_transmitted_torque=audio_transmitted_torque;
+    t.bottom_out_impulse=s.bottom_out_impulse;
     t.engine=s.engine;t.transmission=s.transmission;
     t.owner_speeds=s.owner_speeds;
     t.aero=s.aero;t.aero_preloads=s.aero_preloads;t.aero_ready=s.aero_ready;

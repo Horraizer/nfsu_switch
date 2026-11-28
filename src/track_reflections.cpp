@@ -95,7 +95,7 @@ bool track_reflection_entries(const PreparedTrackScene& scene, const RenderOptio
     bool section_known = false, section_resident = false;
     for (std::size_t n = 0; n < scene.instances.size(); ++n) {
         const auto& instance = scene.instances[n];
-        if (((instance.instance_flags ^ 0x60U) & 0x50U) != 0 || instance.reflection_mesh == kNoReflectionMesh) continue;
+        if (track_instance_masked_out(instance.instance_flags,options.track_reflection_mask) || instance.reflection_mesh == kNoReflectionMesh) continue;
         if (residency) {
             if (!section_known || last_section != instance.section_number) {
                 last_section = instance.section_number;

@@ -232,6 +232,11 @@ bool load_lap_fonts(const std::filesystem::path& root, RaceHudAtlas& atlas,
         }
         if (rgba.empty()) { error="lap HUD font texture absent"; return false; }
         atlas.lap_font_heights[f]=font.line_height;
+        if(f==1) {
+            atlas.finish_kerning={};
+            for(const auto& g:font.glyphs)if(g.code<128)for(const auto& pair:g.kerning)if(pair.previous<128)
+                atlas.finish_kerning[g.code][pair.previous]=static_cast<std::int8_t>(pair.adjustment);
+        }
         auto glyphs=std::string(needed[f])+(f==1 && atlas.drift_ready?"XTO SLOW!Wg.y":"")+
             (f==1 && drag?"Gof!SiTotaledBlownEngK":"")+(f==1 && knockout?"Youwk":"");
         if(f==1&&drag)for(char c:std::string_view("Winner!You Finished Second!You Finished Third!Last PlaceYOUR TIME: 0:00.00"))
@@ -488,7 +493,17 @@ std::string drag_finish_message(const RaceHudAtlas& atlas,unsigned place,std::in
     return atlas.drag_finish_places[place-1]+"\n"+atlas.drag_finish_time+time+"  ";
 }
 
-void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,unsigned height,RaceHudFrame& frame,std::string_view message) noexcept {
+std::string race_over_message(const RaceRacerTiming& result,bool drag,const RaceHudAtlas& atlas) {
+    if(drag) {
+        if(result.status==RacerStatus::blown_engine)return atlas.drag_failure_labels[0];
+        if(result.status==RacerStatus::totalled)return atlas.drag_failure_labels[1];
+        if(result.status==RacerStatus::normal_completion)return drag_finish_message(atlas,result.position,result.finish_ticks);
+        return {};
+    }
+    return result.status==RacerStatus::knocked_out?"You were knocked out!":"Race Over";
+}
+
+void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,unsigned height,RaceHudFrame& frame,std::string_view message,RaceOverLayout layout) noexcept {
     if(!atlas.lap_ready || !width || !height || !std::isfinite(seconds) || seconds<0)return;
     // HUD_SingleRace RaceOverMessage/RaceOverBacking, original4A7E1F
     // Animate state. Keys are base + delta, at the FEng 1200 Hz clock.
@@ -501,37 +516,58 @@ void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,un
         }
         return keys.back()[1];
     };
-    constexpr std::array<std::array<float,2>,7> sizes{{{{240,0}},{{260,-.5F}},{{340,0}},{{420,-.3F}},{{460,.1F}},{{520,.1F}},{{560,0}}}};
-    constexpr std::array<std::array<float,2>,3> alpha{{{{240,-255}},{{260,-255}},{{340,0}}}};
-    constexpr std::array<std::array<float,2>,7> backing{{{{0,-631.707946777F}},{{60,-505.366333008F}},{{100,-546.939941406F}},{{140,-505.369995117F}},{{180,-589.322509766F}},{{220,0}},{{300,0}}}};
-    const float scale=std::min(width/1280.F,height/720.F)*5.F/3.F;
+    if(layout==RaceOverLayout::automatic)layout=atlas.drift_ready?RaceOverLayout::drift:
+        !atlas.drag_objects.empty()?RaceOverLayout::drag:RaceOverLayout::automatic;
+    const bool split=layout==RaceOverLayout::split_top||layout==RaceOverLayout::split_bottom||layout==RaceOverLayout::split_side;
+    const bool stacked=layout==RaceOverLayout::split_top||layout==RaceOverLayout::split_bottom;
+    const bool bottom=layout==RaceOverLayout::split_bottom;
+    //2PHudTop/Bot have their own0.5 text scale, overshoot and reveal track.
+    //Their authenticated PC and Xbox package bytes are identical.
+    const std::array<std::array<float,2>,7> sizes{{{{240,0}},{{260,split?-.35F:-.5F}},{{340,0}},
+        {{420,split?-.25F:-.3F}},{{460,split?.1499999761581421F:.10000002384185791F}},
+        {{520,split?.1499999761581421F:.10000002384185791F}},{{560,0}}}};
+    const std::array<std::array<float,2>,3> alpha{{{{240,-255}},{{260,split?0.F:-255.F}},{{340,0}}}};
+    constexpr std::array<std::array<float,2>,7> backing{{{{0,-631.707946777F}},{{60,-505.366333008F}},{{100,-546.939941406F}},{{140,-505.369995117F}},{{180,-588.510009765625F}},{{220,0}},{{300,0}}}};
+    const float canvas_height=stacked?float(height)*2:float(height);
+    const float scale=std::min(width/640.F,canvas_height/480.F);
+    const float canvas_top=(canvas_height-480*scale)*.5F-(bottom?float(height):0.F);
+    const float text_x=layout==RaceOverLayout::drift||layout==RaceOverLayout::split_top?10.F:0.F;
+    const float text_y=layout==RaceOverLayout::split_top?-109.F:bottom?128.F:layout==RaceOverLayout::drag?5.F:3.F;
+    const float backing_y=layout==RaceOverLayout::split_top?-104.F:bottom?133.F:4.F;
+    const float backing_x=layout==RaceOverLayout::split_top?.00072479248046875F:bottom?0.F:
+        layout==RaceOverLayout::drag?1.2407252788543701F:1.2417144775390625F;
     const float bw=650+sample(backing);
     // Keep the complete finish message when the ordinary HUD fills the frame.
     std::size_t required=1;
     for(const unsigned char c:message)if(c && c<128) {
         const auto& glyph=atlas.lap_fonts[1][c];
-        if(glyph.width&&glyph.height)++required;
+        if(glyph.advance||glyph.width||glyph.height)++required;
     }
     if(required>kRaceHudMaxQuads)return;
     frame.quads=std::min<std::size_t>(frame.quads,kRaceHudMaxQuads-required);
     frame.lap_first_quad=std::min(frame.lap_first_quad,frame.quads);
-    rect(frame,kLapWhite,float(width)*.5F+(1.24171447754F-bw*.5F)*scale,
-        (244-65)*scale,bw*scale,130*scale,{{0,0,0}},250);
-    const float size=(.75F+sample(sizes))*scale;
+    rect(frame,kLapWhite,float(width)*.5F+(backing_x-bw*.5F)*scale,
+        canvas_top+(240+backing_y-65)*scale,bw*scale,130*scale,{{0,0,0}},250);
+    const float size=((split?.5F:.75F)+sample(sizes))*scale;
     const auto opacity=static_cast<unsigned char>(std::clamp(int(255+sample(alpha)+.5F),0,255));
     // Resource0: Conduit38 Bold Italic. Center each line of the authored string.
     const auto font_height=atlas.lap_font_heights[1]>0?atlas.lap_font_heights[1]:38.F;
     const auto lines=std::count(message.begin(),message.end(),'\n')+1;
-    float y=lines==1?243*scale-38*size*.5F:250*scale-float(lines)*font_height*size*.5F;
+    float y=canvas_top+(240+text_y)*scale-float(lines)*font_height*size*.5F;
     while(!message.empty()) {
         const auto end=message.find('\n');
         const auto line=message.substr(0,end);
-        float advance=0;
-        for(const unsigned char c:line)if(c && c<128)advance+=atlas.lap_fonts[1][c].advance;
-        float x=float(width)*.5F-advance*size*.5F;
+        //4F4D00 measures the line by unkerned advances;4F4BED applies
+        //6387F0 pairs while placing glyphs. Preserve that native asymmetry.
+        float advance=0;unsigned previous=0;
+        for(const unsigned char c:line)if(c&&c<128)advance+=atlas.lap_fonts[1][c].advance;
+        float x=float(width)*.5F+text_x*scale-advance*size*.5F;
         for(const unsigned char c:line)if(c && c<128) {
             const auto& g=atlas.lap_fonts[1][c];
-            if(g.width && g.height) {
+            x+=atlas.finish_kerning[c][previous]*size;previous=c;
+            // Native4F4790 also submits spaces as zero-height glyph quads.
+            // Preserve their advances/edges without introducing any pixels.
+            if(g.advance||g.width||g.height) {
                 const auto q=frame.quads;
                 rect(frame,{g.x,g.y,g.width+2,g.height+2},x+g.bearing_x*size,y+g.bearing_y*size,
                     std::max(4,g.width)*size,g.height*size,{{194,146,0}},opacity);
@@ -546,6 +582,14 @@ void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,un
         message.remove_prefix(end+1);
         y+=font_height*size;
     }
+}
+
+void build_race_over_frame(const RaceHudAtlas& atlas,double seconds,unsigned width,unsigned height,
+                          RaceHudFrame& frame,std::string_view message,RaceOverLayout layout) noexcept {
+    // The original finish phase retires the racing panel and map. FPS is
+    // appended by the caller after this complete, independent presentation.
+    frame={};frame.atlas_height=atlas.height;frame.lap_first_quad=0;
+    append_race_over(atlas,seconds,width,height,frame,message,layout);
 }
 
 static void build_race_hud_geometry(const VehicleState&,double,double,std::uint32_t,std::uint32_t,

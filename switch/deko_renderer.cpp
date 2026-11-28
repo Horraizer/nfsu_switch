@@ -1,6 +1,8 @@
 #include "nfsu/deko_overlay_upload.h"
 #include "nfsu/frontend_glow_fast.h"
 #include "nfsu/race_effect_fast.h"
+#include "nfsu/race_particle_shader.h"
+#include "nfsu/race_particle_flat.h"
 #include "deko_renderer.h"
 #include "frontend_startup_trace.h"
 #include "nfsu/frontend.h"
@@ -70,6 +72,10 @@ struct DekoRenderer::Impl {
     dk::MemBlock streamed_memory;
     std::vector<std::pair<std::size_t,std::uint64_t>> streamed_resources;
     std::vector<std::uint64_t> streamed_offsets;
+    std::vector<unsigned char> flat_color_watch,flat_color_valid;
+    struct FlatParticleMaterial {const RecordedDraw* definition=nullptr;bool unit_alpha=false;};
+    std::array<FlatParticleMaterial,128> flat_particle_materials{};
+    std::size_t flat_particle_material_count=0;
     std::uint64_t streamed_stride=0;
     std::size_t streamed_slot=0;
     struct AbGpuRow { DekoSceneFrame frame; double total; std::array<double,7> stages; bool valid; };
@@ -244,7 +250,7 @@ struct DekoRenderer::Impl {
     dk::MemBlock fxaa_descriptors;
     std::array<dk::Image,2> fxaa_colors;
     dk::Shader shadow_vertex, shadow_fragment, headlight_vertex;
-    dk::Shader vertex, textured, textured_opaque, race_world, fallback, frontend_vertex, frontend_fragment;
+    dk::Shader vertex, textured, textured_opaque, race_particle, race_particle_flat_vertex, race_particle_flat_fragment, race_world, fallback, frontend_vertex, frontend_fragment;
     bool race_world_available = false;
     dk::Shader frontend_car_vertex, frontend_car_fragment;
 #if defined(NFSU_FRONTEND_PREFLIGHT)
@@ -300,6 +306,46 @@ struct DekoRenderer::Impl {
     }
 
     std::uint64_t gpu_limit() const { return kGpuBudgetPlaceholder + msaa_budget_extra + mip_budget_extra; }
+    dk::ImageLayout render_layout(DkImageFormat format, unsigned width, unsigned height,
+                                  std::uint32_t flags=DkImageFlags_UsageRender,
+                                  DkMsMode samples=DkMsMode_1x) {
+        dk::ImageLayoutMaker maker{device};
+        maker.setFormat(format).setDimensions(width,height).setFlags(flags)
+            .setType(samples==DkMsMode_1x?DkImageType_2D:DkImageType_2DMS).setMsMode(samples);
+        dk::ImageLayout layout;
+        maker.initialize(layout);
+        return layout;
+    }
+
+    dk::ImageLayout compress_layout(const char* name, const dk::ImageLayout& ordinary,
+                                    DkImageFormat format, unsigned width, unsigned height,
+                                    std::uint32_t flags=DkImageFlags_UsageRender,
+                                    DkMsMode samples=DkMsMode_1x, unsigned slots=1) {
+        const auto ordinary_bytes=align_up(ordinary.getSize(),DK_MEMBLOCK_ALIGNMENT);
+        auto layout=render_layout(format,width,height,flags|DkImageFlags_HwCompression,samples);
+        if (align_up(layout.getSize(),DK_MEMBLOCK_ALIGNMENT)>ordinary_bytes) {
+            // A shorter tile can reclaim edge padding before the SDK's
+            // 64 KiB rounding. Never take space from a later scene/UI load.
+            dk::ImageLayoutMaker maker{device};
+            maker.setFormat(format).setDimensions(width,height)
+                .setFlags(flags|DkImageFlags_HwCompression|DkImageFlags_CustomTileSize)
+                .setType(samples==DkMsMode_1x?DkImageType_2D:DkImageType_2DMS).setMsMode(samples);
+            for (const auto tile : {DkTileSize_EightGobs,DkTileSize_FourGobs,DkTileSize_TwoGobs,DkTileSize_OneGob}) {
+                maker.setTileSize(tile).initialize(layout);
+                if (align_up(layout.getSize(),DK_MEMBLOCK_ALIGNMENT)<=ordinary_bytes) break;
+            }
+        }
+        if (align_up(layout.getSize(),DK_MEMBLOCK_ALIGNMENT)>ordinary_bytes) return ordinary;
+        std::printf("GPU_TARGET_HWCOMPRESSION resource=%s size=%ux%u samples_log2=%u bytes=%llu align=%u slots=%u\n",
+            name,width,height,unsigned(samples),(unsigned long long)layout.getSize(),layout.getAlignment(),slots);
+        return layout;
+    }
+
+    dk::ImageLayout compressed_target(const char* name, DkImageFormat format, unsigned width,
+                                      unsigned height, unsigned slots=1) {
+        return compress_layout(name,render_layout(format,width,height),format,width,height,
+                               DkImageFlags_UsageRender,DkMsMode_1x,slots);
+    }
 
     bool block(std::uint64_t bytes, std::uint32_t flags, const char* name,
                dk::MemBlock& out, std::string& error) {
@@ -704,6 +750,22 @@ struct DekoRenderer::Impl {
             streamed_stride=(streamed_stride+r.bytes+255)&~UINT64_C(255);
         }
         if(streamed_stride&&!block(streamed_stride*2,kDataFlags,"streamed vertices",streamed_memory,error))return false;
+        flat_color_watch.assign(handles.size(),0);flat_color_valid.assign(handles.size(),0);
+        flat_particle_material_count=0;
+        for(const auto* definition:dynamic_definitions) {
+            const auto& draw=*definition;
+            if(!race_particle_zero_alpha_shader(draw) || draw.vertex_resource>=uploaded.resources.size() ||
+               draw.index_resource>=uploaded.resources.size() || draw.first_vertex%4 || draw.first_index%3 ||
+               draw.program->buffers[0].stride!=sizeof(MeshVertex))continue;
+            const auto& vertices=uploaded.resources[draw.vertex_resource];
+            const auto& indices=uploaded.resources[draw.index_resource];
+            if(!vertices.streamed_vertices || vertices.element_bytes!=sizeof(MeshVertex) ||
+               indices.kind!=UploadResourceKind::index_buffer || indices.element_bytes!=2 ||
+               !race_particle_flat_indices(indices.data,static_cast<std::size_t>(indices.bytes)))continue;
+            if(flat_particle_material_count==flat_particle_materials.size())break;
+            flat_particle_materials[flat_particle_material_count++]={definition,false};
+            flat_color_watch[draw.vertex_resource]=1;
+        }
         textures.resize(handles.size()); records.resize(handles.size());
         begin();
         for (std::size_t i = 0; i < handles.size(); ++i) {
@@ -800,11 +862,8 @@ struct DekoRenderer::Impl {
         if (!block(2*(1+2*reflection_limit)*256, kDataFlags, "reflection uniforms", reflection_uniforms, error)) return false;
         reflection_width = (source.frame.options[2]&8U)?320U:std::min(160U,source.width);
         reflection_height = (source.frame.options[2]&8U)?240U:std::max(1U,reflection_width*source.height/source.width);
-        dk::ImageLayout reflected_color_layout, reflected_depth_layout;
-        dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
-            .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(reflection_width, reflection_height).initialize(reflected_color_layout);
-        dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
-            .setFormat(DkImageFormat_ZF32).setDimensions(reflection_width, reflection_height).initialize(reflected_depth_layout);
+        const auto reflected_color_layout=compressed_target("reflection color",DkImageFormat_RGBA8_Unorm,reflection_width,reflection_height);
+        const auto reflected_depth_layout=compressed_target("reflection depth",DkImageFormat_ZF32,reflection_width,reflection_height);
         if (!block(reflected_color_layout.getSize(), kImageFlags, "reflection color", reflected_color_memory, error) ||
             !block(reflected_depth_layout.getSize(), kImageFlags, "reflection depth", reflected_depth_memory, error)) return false;
         reflection_color.initialize(reflected_color_layout, reflected_color_memory, 0);
@@ -820,11 +879,8 @@ struct DekoRenderer::Impl {
             if((source.frame.options[2]&2U)!=0 && !source.race_environment){error="frontend cube and race reflection targets cannot share a frame";return false;}
             frontend_cube_capacity=source.race_environment ? kRaceCubeDrawLimit : source.frontend_cube_draws.size();
             if(!block(2*(6+2*frontend_cube_capacity)*256,kDataFlags,"frontend cube uniforms",frontend_cube_uniforms,error))return false;
-            dk::ImageLayout color_layout,z_layout;
-            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
-                .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(384,256).initialize(color_layout);
-            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
-                .setFormat(DkImageFormat_ZF32).setDimensions(384,256).initialize(z_layout);
+            const auto color_layout=compressed_target("cube color",DkImageFormat_RGBA8_Unorm,384,256);
+            const auto z_layout=compressed_target("cube depth",DkImageFormat_ZF32,384,256);
             if(!block(color_layout.getSize(),kImageFlags,"frontend cube faces",cube_color_memory,error) ||
                !block(z_layout.getSize(),kImageFlags,"frontend cube depth",cube_depth_memory,error))return false;
             frontend_cube_color.initialize(color_layout,cube_color_memory,0);
@@ -855,6 +911,9 @@ struct DekoRenderer::Impl {
             !shader("car_shadow.frag", DkStage_Fragment, shadow_fragment, error) ||
             !shader("textured.frag", DkStage_Fragment, textured, error) ||
             !shader("textured_opaque.frag", DkStage_Fragment, textured_opaque, error) ||
+            !shader("race_particle.frag", DkStage_Fragment, race_particle, error) ||
+            !shader("race_particle_flat.vert", DkStage_Vertex, race_particle_flat_vertex, error) ||
+            !shader("race_particle_flat.frag", DkStage_Fragment, race_particle_flat_fragment, error) ||
             !shader("frontend_ui.vert", DkStage_Vertex, frontend_vertex, error) ||
             !shader("frontend_ui.frag", DkStage_Fragment, frontend_fragment, error) ||
             !shader("fallback.frag", DkStage_Fragment, fallback, error)) return false;
@@ -876,9 +935,8 @@ struct DekoRenderer::Impl {
                !shader("streak_fade.frag",DkStage_Fragment,streak_fade_fragment,error) ||
                !shader("streak_copy.frag",DkStage_Fragment,streak_copy_fragment,error) ||
                !block(2*kDrawDescriptorBytes,kDataFlags,"light streak descriptors",streak_descriptors,error))return false;
-            dk::ImageLayout layout;
-            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
-                .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(scene_target.width,scene_target.height).initialize(layout);
+            const auto layout=compressed_target("light streak history",DkImageFormat_RGBA8_Unorm,
+                                                scene_target.width,scene_target.height);
             if(!block(layout.getSize(),kImageFlags,"light streak history",streak_memory,error))return false;
             streak_color.initialize(layout,streak_memory,0);
             dk::ImageDescriptor image;image.initialize(dk::ImageView{streak_color});
@@ -902,24 +960,37 @@ struct DekoRenderer::Impl {
         }
         if(!reuse_frontend) {
         dk::ImageLayout color_layout, depth_layout, scene_layout;
+        const bool offscreen_scene=scene_target.upscale || fxaa_enabled;
         const auto transfer_flags = (scene_target.upscale || msaa_enabled) ? DkImageFlags_Usage2DEngine : 0;
-        dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | transfer_flags |
-                                            (presentation ? DkImageFlags_UsagePresent : 0))
-            .setFormat(DkImageFormat_RGBA8_Unorm)
-            .setDimensions(scene_target.output_width, scene_target.output_height).initialize(color_layout);
-        dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
-            .setType(msaa_enabled?DkImageType_2DMS:DkImageType_2D)
-            .setMsMode(msaa_enabled?msaa_mode:DkMsMode_1x)
-            .setFormat(DkImageFormat_ZF32).setDimensions(scene_target.width, scene_target.height).initialize(depth_layout);
+        const auto output_flags=DkImageFlags_UsageRender|transfer_flags|
+            (presentation?DkImageFlags_UsagePresent:0);
+        const unsigned color_slots=presentation?2U:1U;
+        const unsigned depth_slots=presentation&&!msaa_enabled?2U:1U;
+        const auto samples=msaa_enabled?msaa_mode:DkMsMode_1x;
+        color_layout=render_layout(DkImageFormat_RGBA8_Unorm,scene_target.output_width,
+                                   scene_target.output_height,output_flags);
+        // Compress a swap image when it receives the primary 3D pass.
+        // Final-only output stays Generic to avoid a present-time
+        // decompress after the scene has already been resolved or filtered.
+        if (presentation && !offscreen_scene && !msaa_enabled)
+            color_layout=compress_layout("present image",color_layout,DkImageFormat_RGBA8_Unorm,
+                scene_target.output_width,scene_target.output_height,output_flags,DkMsMode_1x,color_slots);
+        const auto ordinary_depth=render_layout(DkImageFormat_ZF32,scene_target.width,scene_target.height,
+                                                DkImageFlags_UsageRender,samples);
+        depth_layout=compress_layout("depth image",ordinary_depth,DkImageFormat_ZF32,
+            scene_target.width,scene_target.height,DkImageFlags_UsageRender,samples,depth_slots);
+        constexpr auto scene_flags=DkImageFlags_UsageRender|DkImageFlags_Usage2DEngine;
+#if defined(NFSU_SPEED_BLUR_PROBE)
+        constexpr bool scene_cpu_copy=true;
+#else
+        constexpr bool scene_cpu_copy=false;
+#endif
         if(msaa_enabled) {
             // One queue completes each resolve before the next clear. These
             // GPU-only color/depth targets can be shared across frame slots,
             // as in the SDK multisampling example; resolved images stay per slot.
-            dk::ImageLayout msaa_layout;
-            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender|DkImageFlags_Usage2DEngine)
-                .setType(DkImageType_2DMS).setMsMode(msaa_mode)
-                .setFormat(DkImageFormat_RGBA8_Unorm)
-                .setDimensions(scene_target.width,scene_target.height).initialize(msaa_layout);
+            const auto ordinary_msaa=render_layout(DkImageFormat_RGBA8_Unorm,scene_target.width,
+                                                    scene_target.height,scene_flags,msaa_mode);
             if(msaa_samples==8) {
                 // The opt-in 8x comparison reserves only the measured extra
                 // color/depth allocation over the tested 2x configuration.
@@ -933,8 +1004,8 @@ struct DekoRenderer::Impl {
                     .setType(DkImageType_2DMS).setMsMode(DkMsMode_2x)
                     .setFormat(DkImageFormat_ZF32)
                     .setDimensions(scene_target.width,scene_target.height).initialize(base_depth);
-                const auto actual=align_up(msaa_layout.getSize(),DK_MEMBLOCK_ALIGNMENT)+
-                                  align_up(depth_layout.getSize(),DK_MEMBLOCK_ALIGNMENT);
+                const auto actual=align_up(ordinary_msaa.getSize(),DK_MEMBLOCK_ALIGNMENT)+
+                                  align_up(ordinary_depth.getSize(),DK_MEMBLOCK_ALIGNMENT);
                 const auto baseline=align_up(base_color.getSize(),DK_MEMBLOCK_ALIGNMENT)+
                                     align_up(base_depth.getSize(),DK_MEMBLOCK_ALIGNMENT);
                 if(actual<baseline){error="MSAA allocation size order invalid";return false;}
@@ -943,22 +1014,34 @@ struct DekoRenderer::Impl {
                     (unsigned long long)msaa_budget_extra,
                     (unsigned long long)(kGpuBudgetPlaceholder+msaa_budget_extra));
             }
+            // The SDK resolves a compressed MSAA source into a Generic
+            // framebuffer with the 2D engine.
+            const auto msaa_layout=compress_layout("MSAA scene color",ordinary_msaa,DkImageFormat_RGBA8_Unorm,
+                scene_target.width,scene_target.height,scene_flags,msaa_mode);
             dk::MemBlock memory;
             if(!block(msaa_layout.getSize(),kImageFlags,"MSAA scene color",memory,error))return false;
             msaa_color.initialize(msaa_layout,memory,0);
         }
-        if (scene_target.upscale || fxaa_enabled)
-            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender | DkImageFlags_Usage2DEngine)
-                .setFormat(DkImageFormat_RGBA8_Unorm).setDimensions(scene_target.width, scene_target.height)
-                .initialize(scene_layout);
-        for (std::size_t i = 0; i < (presentation ? 2U : 1U); ++i) {
+        dk::ImageLayout aa_layout;
+        if (offscreen_scene) {
+            const auto ordinary_scene=render_layout(DkImageFormat_RGBA8_Unorm,scene_target.width,
+                                                     scene_target.height,scene_flags);
+            scene_layout=ordinary_scene;
+            if (!msaa_enabled && !scene_cpu_copy)
+                scene_layout=compress_layout("scene image",ordinary_scene,DkImageFormat_RGBA8_Unorm,
+                    scene_target.width,scene_target.height,scene_flags,DkMsMode_1x,color_slots);
+            if (scene_target.upscale && fxaa_enabled)
+                aa_layout=compress_layout("FXAA scene output",ordinary_scene,DkImageFormat_RGBA8_Unorm,
+                    scene_target.width,scene_target.height,scene_flags,DkMsMode_1x,color_slots);
+        }
+        for (std::size_t i = 0; i < color_slots; ++i) {
             auto& color = colors[i];
             dk::MemBlock memory;
             if (!block(color_layout.getSize(), kImageFlags, "present image", memory, error)) return false;
             if(!trace("image.initialize.before",error,"present image",color_layout.getSize()))return false;
             color.initialize(color_layout, memory, 0);
             if(!trace("image.initialize.after",error,"present image",color_layout.getSize()))return false;
-            if (scene_target.upscale || fxaa_enabled) {
+            if (offscreen_scene) {
                 dk::MemBlock scene_memory;
                 if (!block(scene_layout.getSize(), kImageFlags, "scene image", scene_memory, error)) return false;
                 if(!trace("image.initialize.before",error,"scene image",scene_layout.getSize()))return false;
@@ -970,8 +1053,8 @@ struct DekoRenderer::Impl {
                                 &descriptor,sizeof descriptor);
                     if(scene_target.upscale) {
                         dk::MemBlock aa_memory;
-                        if(!block(scene_layout.getSize(),kImageFlags,"FXAA scene output",aa_memory,error))return false;
-                        fxaa_colors[i].initialize(scene_layout,aa_memory,0);
+                        if(!block(aa_layout.getSize(),kImageFlags,"FXAA scene output",aa_memory,error))return false;
+                        fxaa_colors[i].initialize(aa_layout,aa_memory,0);
                     }
                 }
             }
@@ -1001,10 +1084,9 @@ struct DekoRenderer::Impl {
             std::memset(speed_blur_probe.getCpuAddr(),0xCD,blur_probe_total);
 #endif
             auto* data=static_cast<unsigned char*>(speed_blur_descriptors.getCpuAddr());
-            dk::ImageLayout layout;
-            dk::ImageLayoutMaker{device}.setFlags(DkImageFlags_UsageRender)
-                .setFormat(DkImageFormat_RGBA8_Unorm)
-                .setDimensions(scene_target.width/2,scene_target.height/2).initialize(layout);
+            const auto half_width=scene_target.width/2, half_height=scene_target.height/2;
+            const auto layout=scene_cpu_copy?render_layout(DkImageFormat_RGBA8_Unorm,half_width,half_height):
+                compressed_target("speed blur half image",DkImageFormat_RGBA8_Unorm,half_width,half_height,2);
             for(unsigned i=0;i<2;++i) {
                 if(!block(layout.getSize(),kImageFlags,"speed blur half image",speed_blur_memory[i],error))return false;
                 speed_blur_colors[i].initialize(layout,speed_blur_memory[i],0);
@@ -1024,7 +1106,7 @@ struct DekoRenderer::Impl {
         }
         if(fxaa_enabled)std::printf("RACE AA FXAA source=%ux%u search=8 subpixel=0.5 before_upscale_and_HUD=1\n",scene_target.width,scene_target.height);
         if(msaa_enabled)std::printf("RACE AA MSAA%u source=%ux%u samples=%u FXAA=off before_upscale_and_HUD=1\n",msaa_samples,scene_target.width,scene_target.height,msaa_samples);
-        for (std::size_t i = 0; i < (presentation && !msaa_enabled ? 2U : 1U); ++i) {
+        for (std::size_t i = 0; i < depth_slots; ++i) {
             dk::MemBlock depth_memory;
             if (!block(depth_layout.getSize(), kImageFlags, "depth image", depth_memory, error)) return false;
             if(!trace("image.initialize.before",error,"depth image",depth_layout.getSize()))return false;
@@ -1139,6 +1221,8 @@ struct DekoRenderer::Impl {
                 if(count>r.elements){error="live vertex stream exceeds its allocation";return false;}
                 bytes=count*r.element_bytes;
             }
+            if(flat_color_watch[item.first])
+                flat_color_valid[item.first]=race_particle_flat_colors(r.data,static_cast<std::size_t>(bytes),sizeof(MeshVertex),offsetof(MeshVertex,color));
             if(!bytes)continue;
             std::memcpy(static_cast<unsigned char*>(streamed_memory.getCpuAddr())+slot*streamed_stride+item.second,
                 r.data,static_cast<std::size_t>(bytes));
@@ -1189,9 +1273,23 @@ struct DekoRenderer::Impl {
                 material.fallback[3]=3;
             else if(!source.frontend_light_enabled)
                 material=race_effect_gpu_material(view.definition,view.material);
+            if(view.definition.material.fallback[3]==9.F)
+                for(std::size_t k=0;k<flat_particle_material_count;++k)if(flat_particle_materials[k].definition==&view.definition) {
+                    flat_particle_materials[k].unit_alpha=race_particle_flat_material(material.fallback[3],material.alpha[0],material.alpha[3]);
+                    break;
+                }
             std::memcpy(data + (2+2*index)*256, &material, sizeof(DrawMaterialUniform));
         }
         return true;
+    }
+
+    bool particle_flat_enabled(const RecordedDraw& draw,bool particle) const {
+        if(!particle || !race_particle_flat_frame(commands->frame.options[0],commands->frame.options[2]) ||
+           draw.first_vertex%4 || draw.first_index%3 || draw.vertex_resource>=flat_color_valid.size() ||
+           !flat_color_valid[draw.vertex_resource])return false;
+        for(std::size_t k=0;k<flat_particle_material_count;++k)
+            if(flat_particle_materials[k].definition==&draw)return flat_particle_materials[k].unit_alpha;
+        return false;
     }
 
     template<class Recorder>
@@ -1208,13 +1306,21 @@ struct DekoRenderer::Impl {
         const bool shaded = frontend || std::strcmp(draw.program->name, "car_shaded_textured") == 0 ||
                             std::strcmp(draw.program->name, "car_shaded_linear_textured") == 0;
         const bool sky = std::strcmp(draw.program->name, "sky_textured") == 0;
-        dk::Shader* fragment = shadow ? &shadow_fragment : frontend ? &frontend_car_fragment : shaded ? &car_fragment : sky ? &sky_fragment :
+        const bool particle=race_particle_zero_alpha_shader(draw);
+        const bool flat_particle=!fragment_override && particle_flat_enabled(draw,particle);
+        dk::Shader* fragment = flat_particle ? &race_particle_flat_fragment : particle ? &race_particle : shadow ? &shadow_fragment : frontend ? &frontend_car_fragment : shaded ? &car_fragment : sky ? &sky_fragment :
             !has_texture ? &fallback :
             cutout ? &textured : &textured_opaque;
         if(fragment_override)fragment=fragment_override;
-        if (bindings.shaders)
+        bool shader_changed=bindings.shaders;
+        if(!shader_changed) {
+            const bool previous_particle=previous && race_particle_zero_alpha_shader(*previous);
+            const bool previous_flat=previous && !fragment_override && particle_flat_enabled(*previous,previous_particle);
+            shader_changed=race_particle_stage_changed(particle,flat_particle,previous_particle,previous_flat);
+        }
+        if (shader_changed)
             out.bindShaders(DkStageFlag_GraphicsMask,
-                            {shadow ? &shadow_vertex : frontend ? &frontend_car_vertex : shaded ? &car_vertex : sky ? &sky_vertex : has_texture ? &headlight_vertex : &vertex, fragment});
+                            {flat_particle ? &race_particle_flat_vertex : shadow ? &shadow_vertex : frontend ? &frontend_car_vertex : shaded ? &car_vertex : sky ? &sky_vertex : has_texture ? &headlight_vertex : &vertex, fragment});
         if (instance_addr)
             out.bindUniformBuffer(DkStage_Vertex, 1, instance_addr, sizeof(DrawInstanceUniform));
         out.bindUniformBuffer(DkStage_Fragment, 2, material_addr, sizeof(DrawMaterialUniform));
@@ -2032,7 +2138,6 @@ struct DekoRenderer::Impl {
         stage=timing?armGetSystemTick():0;
         queue.signalFence(frame_fences[image]);
         queue.presentImage(swapchain,image);
-        queue.flush();
         frame_in_flight[image]=true;
         if(timing)timing->queue_ms=elapsed_ms(stage);
         ++fence_number;
@@ -2101,9 +2206,6 @@ struct DekoRenderer::Impl {
         if(!trace("present.queue.before",error))return false;
         queue.presentImage(swapchain, slot);
         if(!trace("present.queue.after",error))return false;
-        if(!trace("present.flush.before",error))return false;
-        queue.flush();
-        if(!trace("present.flush.after",error))return false;
         frame_in_flight[slot] = true;
         query_pending[slot] = query_recording;
         frontend_query_pending[slot]=frontend && frontend_profile_passes;
@@ -2342,6 +2444,13 @@ bool DekoRenderer::set_frontend_overlay(const FrontendUiAtlas& atlas,std::string
        !retire(impl_->hud_uniforms,"race HUD uniforms") ||
        !retire(impl_->hud_descriptors,"race HUD descriptors"))return false;
     return impl_->init_overlay(atlas.rgba,atlas.width,atlas.height,kFrontendUiMaxQuads,error);
+}
+bool DekoRenderer::finish_split_presentation(std::string& error) {
+    if(!impl_->queue||!impl_->commands){error="split finish needs an open renderer";return false;}
+    impl_->queue.waitIdle();impl_->cmd.clear();
+    // Split only changed viewports, scissor rectangles and overlay mapping.
+    // Retain its full-sized images and resident assets for the joint ending.
+    impl_->split_screen=false;error.clear();return true;
 }
 bool DekoRenderer::restore_race_overlay(const RaceHudAtlas& atlas,std::string& error) {
     // Replace only the temporary UI allocation. Effect history/world resources

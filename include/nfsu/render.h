@@ -51,6 +51,9 @@ struct OrbitCamera {
     double roll_deg = 0.0;
     double focal_x_override = 0.0;
     double focal_y_override = 0.0;
+    // Original horizontal lens angle used by40DCB0 view-size estimation.
+    // Kept through widescreen focal changes and authored camera replacement.
+    std::uint16_t native_fov = 0;
 };
 
 constexpr double kMinPitch = -89.0;
@@ -313,6 +316,9 @@ struct RenderOptions {
     bool wet_road_reflections = false;
     // Internal producer pass; never combines with wet_road_reflections.
     bool reflection_pass = false;
+    // Retail view4 context low byte. Live races add direction/race-kind bits;
+    // standalone geometry diagnostics retain the common0x50 context.
+    std::uint8_t track_reflection_mask = 0x50U;
     std::uint32_t reflection_width = 160;
     MaterialCoefficients coefficients;
     // Separate track sky, when the prepared scene contains one.

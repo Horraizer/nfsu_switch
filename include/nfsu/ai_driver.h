@@ -151,22 +151,29 @@ struct AiDriverForwardState {
     int gear_request=-1; // original driver+1D4: automatic=-1, reverse=0
     bool nitrous_pedal_latch=false; // 45F909, Driver+229
     float previous_desired_speed=0; // Driver+22C
+    //Persistent native state, not an action17 activation request. Known
+    //positive input is serialized Driver state; ordinary arming is separate.
+    float handbrake_seconds=0; // Driver+210
+    bool forced_brake=false; // Driver+220
+    float handbrake=0; // Driver+1E0, final output after NOS
 };
 
 // Ordinary forward control, selector3/controller3/role2, including loss of
 // front-wheel support (45F2B4). The caller
-// must not use this for reverse, hold, recovery or active override
-// timers. Unsupported input is refused without changing persistent state.
+// must not use this for reverse, hold, recovery or the early mode timer.
+// The late210/220 overrides run after NOS. Unsupported input is refused
+// without changing persistent state.
 // This is a driver, not the action planner or rival physics implementation.
 bool ai_driver_forward_step(const AiDriverForwardInput& input,float dt,
                             AiDriverForwardState& state) noexcept;
 // Same selector3/controller3/role2 domain, including ordinary signed-speed
-// direction changes used by action10. No active special override/hold timers.
+// direction changes used by action10, with the native late210/220 overrides.
+// The separate early mode/hold timer is outside this entry point.
 // The original reverse request is gear0; the physics adapter applies it.
 bool ai_driver_ordinary_step(const AiDriverForwardInput& input,float dt,
                              AiDriverForwardState& state) noexcept;
-// Selector1 drag driver, below the engine overheat gate, without active
-// collision override. Original mode1 pedal tables and7060F0 steering table
+// Selector1 drag driver, below the engine overheat gate. Original mode1
+// pedal tables and7060F0 steering table
 // equal the ordinary tables; tools/ai_driver_vectors.py --drag verifies both
 // grounded and unsupported-wheel sequences. Engine damage is owned separately.
 bool ai_driver_drag_step(const AiDriverForwardInput&,float dt,AiDriverForwardState&) noexcept;
@@ -183,5 +190,8 @@ bool ai_driver_recovery_reset(const AiDriverForwardInput&,AiDriverForwardState&)
 //427D87..427DB3 placement: clear steering word, steering/speed error samples
 //and gear request. Retain time rings, cached averages, slip and pedal state.
 void ai_driver_placement_reset(AiDriverForwardState&) noexcept;
+//453830 action17 cleanup. No brake activation is implied by entering17.
+//Retain output pedals/NOS/history until the following ordinary Driver update.
+void ai_driver_finish_cleanup(AiDriverForwardState&) noexcept;
 
 } // namespace nfsu

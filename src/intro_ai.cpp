@@ -79,7 +79,7 @@ class IntroAiPlanner::State {
     unsigned human_grade_=0,catchup_updates_=0;
     std::array<unsigned,3> rival_grades_{};
     bool human_ready_=false;
-    std::uint32_t observed_tick_=std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t prepared_tick_=std::numeric_limits<std::uint32_t>::max();
     std::array<float,3> catchup_low_{{1,1,1}},catchup_high_{{1,1,1}};
     std::array<DragLaneState,4> lanes{};
     std::array<float,3> drag_launch{};
@@ -333,9 +333,9 @@ public:
         out.lane=lanes[3];out.road=contexts[3];out.horizons=human_drag_horizons_;
         out.action=human_drag_path_;return true;
     }
-    bool observe_human(const RaceSession& race) {
+    bool prepare_frame(const RaceSession& race) {
         const auto tick=static_cast<std::uint32_t>(race.timing().now_ticks);
-        if(observed_tick_==tick)return true;
+        if(prepared_tick_==tick)return true;
         if(!human_ready_) {
             float rating=0,unused=0;
             if(!ai_setup_performance(race.spec().handling,rating,unused))return false;
@@ -349,9 +349,6 @@ public:
             }
             human_ready_=true;
         }
-        //430758 also samples during the countdown. It is independent of
-        //whether the rivals' driving/physics is held, and never consumes RNG.
-        bool found=false;float authored_speed=0;bool enabled=false;
         const float dt=race.next_world_frame_seconds();
         for(unsigned i=0;i<rival_count_;++i) {
             const float progress=race.competitive_progress(i+1);
@@ -374,31 +371,34 @@ public:
             }
         }
         recovery_progress_ready_=true;recovery_previous_dt_=dt;
+        prepared_tick_=tick;
+        return true;
+    }
+    bool sample_human_history(const RaceSession& race,float dt) {
+        bool found=false;float authored_speed=0;bool enabled=false;
         const int decrement=static_cast<int>(dt*4000.F+.5F);
         if(human_history_.timer<decrement) {
-            AiRoadSelectionInput input;const auto& state=race.car();
-            input.position={float(state.position.x),float(state.position.y),float(state.position.z)};
-            input.progress=race.progress().coordinate.distance;
-            if(direction_)input.progress=race.course().route.spline.path_length-input.progress;
-            input.maximum_distance=999999.F;input.allow_outside_width=true;input.role=1;
             AiRoadCursor point;
-            if(!ai_road_select(lines,input,found,point))return false;
+            // PC 4307BA/4307EA read RealController+48/+4C. At a junction
+            // another nearby road can have a different speed for the same car.
+            found=human_road_cursor(point);
             if(found) {
                 const auto* road=lines.find(point.route);
                 if(!road||point.point>=road->points.size())return false;
-                authored_speed=float(road->points[point.point].speed[human_grade_]);
-                enabled=road->category_enabled[human_grade_];
+                // PC 43080A/43081E and Xbox 3F245/3F25B read the raw
+                // header and speed byte, even when driving the course in reverse.
+                authored_speed=route_raw_speed(road->points[point.point],int(human_grade_),road->category_columns_reversed);
+                enabled=road->category_enabled[human_grade_+(road->category_columns_reversed?5U:0U)];
             }
         }
         const auto speed=race.car().owner_speeds.magnitude;
-        if(!ai_catchup_history_step(dt,speed,authored_speed,enabled,found,human_history_))return false;
-        observed_tick_=tick;return true;
+        return ai_catchup_history_step(dt,speed,authored_speed,enabled,found,human_history_);
     }
     bool plan(const RaceSession& race,RaceRivalPlans& batch,int held_lane,const RaceSession* obstacle_world,
               IntroAiWorldObserver observer,RaceSession* physical_world=nullptr) {
         const bool solo_finish=race.has_finish_driver()&&race.timing().outcome==RaceOutcome::finished;
         const auto opponents=race.human_rival()&&drag_?0U:race.rival_count();
-        if((!rival_count_&&!drag_&&!solo_finish)||opponents!=rival_count_||!observe_human(race))return false;
+        if((!rival_count_&&!drag_&&!solo_finish)||opponents!=rival_count_||!prepare_frame(race))return false;
         AiPathCollisionWorld world;world.count=4;world.tick=std::uint32_t(race.timing().now_ticks);
         world.retain_parameters={16,0,0};world.prediction_horizon=.75F;
         world.normal_scale=world.human_scale=world.slow_scale=1;world.slow_speed=2;
@@ -409,6 +409,12 @@ public:
         std::array<bool,4> road_ready{};
         const auto& timing=race.timing();
         route_length_=race.course().route.spline.path_length;
+        //A cold463F20 mover may republish Driver+10 after the controllers.
+        //Read that live buffer before building this frame's neighbor cache.
+        for(unsigned i=0;i<rival_count_;++i)if(race.rival_driver_path(i).count) {
+            published[i].path=race.rival_driver_path(i);
+            retained_plan_[i].path=published[i].path;
+        }
         for(unsigned i=0;i<rival_count_;++i)batch.cars[i].road_reset={this,i,resolve_reset,publish_reset};
         const float seconds=timing.race_start_valid?float(timing.now_ticks-timing.race_start_ticks)*.00025F:-1.F;
         for(unsigned i=0;i<4;++i) {
@@ -645,6 +651,8 @@ public:
             //45C370/57A8E0 consume the owner's neighborhood sample. The
             //first-ahead cell from5A6700 would skip an extra path point.
             in.path.selected=self.cell;
+            // 45C640 reads the selected neighbor entry's lateral half-extent.
+            in.path.extension.clearance=self.half_extent[0];
             in.path.initial_offset=contexts[i].category<0?0.F:contexts[i].category<5?self.lateral:
                 self.lane_lateral[unsigned(contexts[i].category-11)];
             for(unsigned j=0;j<neighbors.count;++j) {
@@ -721,6 +729,9 @@ public:
                 const auto finish_controller=[&](RaceRivalPlan& p) {
                     p.road_reset={this,i,resolve_reset,publish_reset};
                     if(physical_world)physical_world->end_rival_controller(i,p);
+                    //463B30 has updated the same live Driver road. Keep it
+                    //for retained frames and the next neighbor-path epoch.
+                    published[i].path=p.path;retained_plan_[i]=p;
                     world.actors[i].selector=race.rival(i).physical_selector();
                 };
                 bool full=false;
@@ -739,6 +750,7 @@ public:
                 if(retain) {
                     auto& p=batch.cars[i];p=retained_plan_[i];p.path=published[i].path;
                     p.recovery_cleanup=false;
+                    p.finish_driver_cleanup=false;
                     p.physics_full_update=false;
                     p.nitrous.evaluate=false;
                     p.nitrous.published_action=0;
@@ -977,6 +989,7 @@ public:
                     // and the common tail. Road-side descriptor resets survive.
                     auto& p=batch.cars[i];p=retained_plan_[i];p.path=published[i].path;
                     p.physics_full_update=false;p.nitrous.evaluate=false;p.recovery_cleanup=false;
+                    p.finish_driver_cleanup=false;
                     p.nitrous.published_action=0;
                     p.nitrous.tuning=speed_config[i].nitrous;p.nitrous.stop_check=AiStopCheck::physical;
                     p.reset_car=stalled_reset_[i];p.route_distance=race.rival(i).travelled_distance();
@@ -995,6 +1008,7 @@ public:
                 auto& p=batch.cars[i];p=retained_plan_[i];p.path=publication.path;
                 p.driver_category=int(rival_grades_[i]);p.route_distance=race.rival(i).travelled_distance();
                 p.recovery_cleanup=action.reset_driver;
+                p.finish_driver_cleanup=action.clear_driver_brakes;
                 p.reset_car=action.rollover_reset||stalled_reset_[i];
                 p.physics_full_update=full;
                 const auto kind=action.action.kind;
@@ -1097,8 +1111,11 @@ bool IntroAiPlanner::human_road_cursor(AiRoadCursor& out)const noexcept {
 }
 bool IntroAiPlanner::drag_human_snapshot(IntroDragSnapshot& out)const {return state_&&state_->drag_human_snapshot(out);}
 bool IntroAiPlanner::rail_snapshot(unsigned i,IntroRailSnapshot& out)const {return state_&&state_->rail_snapshot(i,out);}
-bool IntroAiPlanner::observe_human(const RaceSession& race) {
-    return state_&&state_->observe_human(race);
+bool IntroAiPlanner::prepare_frame(const RaceSession& race) {
+    return state_&&state_->prepare_frame(race);
+}
+bool IntroAiPlanner::sample_human_history(const RaceSession& race,float dt) {
+    return state_&&state_->sample_human_history(race,dt);
 }
 std::string IntroAiPlanner::difficulty_line() const {
     return state_?state_->difficulty_line():"AI_DIFFICULTY inactive";

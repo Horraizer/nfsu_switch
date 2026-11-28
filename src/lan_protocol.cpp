@@ -1,4 +1,5 @@
 #include "nfsu/lan_protocol.h"
+#include "nfsu/race_timing.h"
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -11,6 +12,7 @@ struct Writer {
     void u32(std::uint32_t v){for(unsigned i=0;i<4;++i)u8(v>>(8*i));}
     void i32(std::int32_t v){u32(static_cast<std::uint32_t>(v));}
     void real(float v){std::uint32_t bits;std::memcpy(&bits,&v,4);u32(bits);}
+    void real64(double v){std::uint64_t bits;std::memcpy(&bits,&v,8);u32(std::uint32_t(bits));u32(std::uint32_t(bits>>32));}
 };
 struct Reader {
     const std::uint8_t* p;std::size_t size,at=0;bool good=true;
@@ -20,6 +22,7 @@ struct Reader {
         return v;}
     std::int32_t i32(){auto v=u32();std::int32_t s;std::memcpy(&s,&v,4);return s;}
     float real(){auto bits=u32();float f;std::memcpy(&f,&bits,4);return f;}
+    double real64(){const std::uint64_t low=u32(),high=u32();const auto bits=low|(high<<32);double v;std::memcpy(&v,&bits,8);return v;}
 };
 bool valid_input(const GamepadState& p){
     if(p.buttons&~kGamepadButtonMask)return false;
@@ -31,7 +34,11 @@ bool valid_lan_frame(const LanRaceFrame& f) noexcept {
     if(f.stage>4||f.outcome>3||f.countdown>4||f.step>8000000||
        f.world_ticks<0||f.world_ticks>536870912||f.race_ticks<0||f.race_ticks>536870912||
        f.start_ticks<0||f.start_ticks>536870912||f.countdown_start<0||f.countdown_start>536870912)return false;
+    if(f.finish_ready&&f.outcome!=unsigned(RaceOutcome::finished))return false;
     for(const auto& c:f.cars){
+        if(f.finish_ready&&!(c.status==unsigned(RacerStatus::normal_completion)&&c.finished)&&
+           c.status!=unsigned(RacerStatus::knocked_out)&&c.status!=unsigned(RacerStatus::blown_engine)&&
+           c.status!=unsigned(RacerStatus::totalled)&&c.status!=unsigned(RacerStatus::out_of_time))return false;
         float q=0;
         for(float x:c.position)if(!std::isfinite(x)||std::abs(x)>1000000.F)return false;
         for(float x:c.velocity)if(!std::isfinite(x)||std::abs(x)>10000.F)return false;
@@ -43,11 +50,21 @@ bool valid_lan_frame(const LanRaceFrame& f) noexcept {
         if(!std::isfinite(c.steering)||std::abs(c.steering)>4.F||!std::isfinite(c.rpm)||c.rpm<0||c.rpm>100000||
            !std::isfinite(c.turbo)||std::abs(c.turbo)>1000.F||
            !std::isfinite(c.progress)||std::abs(c.progress)>100||!std::isfinite(c.parameter)||std::abs(c.parameter)>100000||!std::isfinite(c.throttle)||c.throttle<0||c.throttle>1||!std::isfinite(c.drive_load)||std::abs(c.drive_load)>100000||c.gear<0||c.gear>10||
-           c.lap< -1||c.lap>20||c.highest_lap<0||c.highest_lap>20||c.checkpoint< -1||c.checkpoint>1000||
-           c.highest_checkpoint< -1||c.highest_checkpoint>1000||c.place>2||c.status>8||
+           c.lap< -128||c.lap>127||c.highest_lap<0||c.highest_lap>127||c.checkpoint< -32768||c.checkpoint>32767||
+           c.highest_checkpoint< -1||c.highest_checkpoint>32767||c.place>2||c.status>8||
            c.lap_start<0||c.lap_start>536870912||c.best_lap<0||c.best_lap>536870912||
            c.finish_ticks<0||c.finish_ticks>536870912||c.nitrous_capacity>536870912||
            c.nitrous_remaining>c.nitrous_capacity)return false;
+        for(auto ticks:c.lap_ticks)if(ticks<0||ticks>536870912)return false;
+        for(auto ticks:c.lap_total_ticks)if(ticks<0||ticks>536870912)return false;
+    }
+    for(const auto& sample:f.statistics) {
+        if(!std::isfinite(sample.top)||sample.top<0||sample.top>100000||
+           !std::isfinite(sample.distance)||sample.distance<0||sample.distance>1e12||
+           !std::isfinite(sample.seconds)||sample.seconds<0||sample.seconds>1e8||
+           !std::isfinite(sample.last_score)||sample.last_score<0||sample.last_score>1e12F)return false;
+        for(auto position:sample.positions)if(position>2)return false;
+        for(float score:sample.scores)if(!std::isfinite(score)||score<0||score>1e12F)return false;
     }
     return true;
 }
@@ -63,6 +80,8 @@ void write_car(Writer& w,const LanCarFrame& c){
     for(auto x:{c.gear,c.lap,c.highest_lap,c.checkpoint,c.highest_checkpoint,c.lap_start,c.best_lap,c.finish_ticks})w.i32(x);
     w.u32(c.nitrous_capacity);w.u32(c.nitrous_remaining);
     w.u8(c.place);w.u8(c.status);w.u8(c.braking);w.u8(c.finished);w.u8(c.nitrous_active);
+    for(auto ticks:c.lap_ticks)w.i32(ticks);
+    for(auto ticks:c.lap_total_ticks)w.i32(ticks);
 }
 void read_car(Reader& r,LanCarFrame& c){
     for(auto& x:c.position)x=r.real();
@@ -78,19 +97,38 @@ void read_car(Reader& r,LanCarFrame& c){
     c.place=static_cast<std::uint8_t>(r.u8());c.status=static_cast<std::uint8_t>(r.u8());
     const auto b=r.u8(),f=r.u8(),nitrous=r.u8();if(b>1||f>1||nitrous>1)r.good=false;
     c.braking=b!=0;c.finished=f!=0;c.nitrous_active=nitrous!=0;
+    for(auto& ticks:c.lap_ticks)ticks=r.i32();
+    for(auto& ticks:c.lap_total_ticks)ticks=r.i32();
+}
+void write_statistics(Writer& w,const RaceStatisticsSample& sample) {
+    w.u8(sample.done);w.real64(sample.top);w.real64(sample.distance);w.real64(sample.seconds);
+    for(auto position:sample.positions)w.u8(position);
+    for(float score:sample.scores)w.real(score);
+    w.real(sample.last_score);
+}
+void read_statistics(Reader& r,RaceStatisticsSample& sample) {
+    const auto done=r.u8();if(done>1)r.good=false;sample.done=done!=0;
+    sample.top=r.real64();sample.distance=r.real64();sample.seconds=r.real64();
+    for(auto& position:sample.positions)position=r.u8();
+    for(auto& score:sample.scores)score=r.real();
+    sample.last_score=r.real();
 }
 void write_ride(Writer& w,const LanRide& ride){
     w.u32(ride.car);
     for(auto part:ride.installed)w.u32(part);
+    w.u8(unsigned(ride.turbo_brand+1));
 }
 void read_ride(Reader& r,LanRide& ride){
     ride.car=r.u32();
     for(auto& part:ride.installed)part=r.u32();
+    ride.turbo_brand=int(r.u8())-1;
+    if(ride.turbo_brand>4)r.good=false;
 }
 }
 bool lan_newer(std::uint32_t a,std::uint32_t b) noexcept {return a!=b&&(a-b)<0x80000000U;}
 bool lan_encode(const LanMessage& m,std::vector<std::uint8_t>& out,std::string& error){
     if(unsigned(m.kind)<1||unsigned(m.kind)>6||m.config!=kLanConfig||
+       (m.kind==LanMessageKind::hello&&m.guest_ready&&(m.guest_ride.turbo_brand< -1||m.guest_ride.turbo_brand>4))||
        (m.kind==LanMessageKind::welcome&&!valid_lan_options(m.race))||
        (m.kind==LanMessageKind::input&&!valid_input(m.input))||
        (m.kind==LanMessageKind::snapshot&&!valid_lan_frame(m.frame))){error="invalid LAN message";return false;}
@@ -107,8 +145,9 @@ bool lan_encode(const LanMessage& m,std::vector<std::uint8_t>& out,std::string& 
     for(auto x:m.input.axes)w.i32(x);}
     if(m.kind==LanMessageKind::snapshot){
         const auto& f=m.frame;w.u32(f.step);w.i32(f.world_ticks);w.i32(f.race_ticks);w.i32(f.start_ticks);w.i32(f.countdown_start);
-        w.u8(f.stage);w.u8(f.outcome);w.u8(f.countdown);w.u8(f.go);
-    for(const auto& c:f.cars)write_car(w,c);
+        w.u8(f.stage);w.u8(f.outcome);w.u8(f.countdown);w.u8(f.go);w.u8(f.finish_ready);
+        for(const auto& c:f.cars)write_car(w,c);
+        w.u8(f.statistics_valid);for(const auto& sample:f.statistics)write_statistics(w,sample);
     }
     if(w.b.size()>kLanDatagramLimit){error="LAN datagram too large";return false;}
     out=std::move(w.b);error.clear();return true;
@@ -135,8 +174,10 @@ bool lan_decode(const std::uint8_t* bytes,std::size_t size,LanMessage& out,std::
     for(auto& a:m.input.axes)a=r.i32();}
     if(m.kind==LanMessageKind::snapshot){auto& f=m.frame;f.step=r.u32();f.world_ticks=r.i32();f.race_ticks=r.i32();f.start_ticks=r.i32();f.countdown_start=r.i32();
         f.stage=static_cast<std::uint8_t>(r.u8());f.outcome=static_cast<std::uint8_t>(r.u8());f.countdown=static_cast<std::uint8_t>(r.u8());
-        auto go=r.u8();if(go>1)r.good=false;f.go=go!=0;
+        const auto go=r.u8(),finish=r.u8();if(go>1||finish>1)r.good=false;f.go=go!=0;f.finish_ready=finish!=0;
     for(auto& c:f.cars)read_car(r,c);
+        const auto statistics=r.u8();if(statistics>1)r.good=false;f.statistics_valid=statistics!=0;
+        for(auto& sample:f.statistics)read_statistics(r,sample);
     }
     if(!r.good||r.at!=size||(m.kind==LanMessageKind::input&&!valid_input(m.input))||
        (m.kind==LanMessageKind::snapshot&&!valid_lan_frame(m.frame))){error="invalid LAN payload";return false;}

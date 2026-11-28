@@ -1,4 +1,5 @@
 #include "nfsu/start_crowd.h"
+#include "nfsu/nis_camera_ground.h"
 #include "nfsu/eagl_animation.h"
 #include "nfsu/texture_decode.h"
 #include "nfsu/geometry.h"
@@ -153,7 +154,9 @@ void sample_release_cars(const CarMotionChannels& cars,RaceStartClock& timing) {
         };
         // 47C580 plays car channels at half speed and holds the last key.
         auto& keys=tracks->slots[i];
-        const auto count=std::min(frames,(timing.release+1)/2+1);
+        // The second native controller starts one second ahead, including
+        // keys beyond release. Retain them for its steering look-ahead.
+        const auto count=frames;
         keys.reserve(count);
         for(unsigned frame=0;frame<count;++frame)keys.push_back(decode_pose(frame));
         const auto m=pose_matrix(sample_car_keys(keys,timing.release*.5F));
@@ -336,6 +339,9 @@ struct StartCrowd::Data {
     std::vector<Clip> clips;std::vector<Actor> actors;RenderTextureSet textures;RecordedCommands commands;
     std::size_t active=0,upload_base=0;std::uint64_t resident=0;
     Matrix anchor{};bool anchored=false,visible=false;
+    const TrackContactWorld* camera_world=nullptr;
+    TrackGroundCache camera_ground;
+    NisCameraGround camera_height;
     std::uint32_t post_go_frames=0, release_frame=0, go_frame=0;
     unsigned animated_slots=0;
     std::array<RoadStartCarTransform,4> release_cars{};
@@ -408,9 +414,12 @@ bool draw_road_start_scene(FileSystemService& fs,const std::filesystem::path& ro
 
 bool select_race_finish_scene(FileSystemService& fs,const std::filesystem::path& root,
                               unsigned racers,unsigned place,unsigned track,
-                              unsigned variant,unsigned& scene,std::string& error) {
+                              unsigned variant,unsigned& scene,std::string& error,unsigned local_humans) {
     // 47BED0 and 68A7A0..68A7FA. Place means the race result, not
     // the campaign objective or accumulated tournament position.
+    //47BEEE checks the local-player count first. Network participants
+    //each have one local view; the shared local split uses scene2322.
+    if(local_humans==2) {scene=2322;error.clear();return true;}
     if(racers==1 || track==1104) {
         scene=place==1?2322:racers==1?2326:2323;
         error.clear();return true;
@@ -431,6 +440,7 @@ bool StartCrowd::load_finish_camera(FileSystemService& fs,const std::filesystem:
         if(!load_camera_clip(fs,root,scene,region,unused,true,error))return false;
         data_->anchor=anchor;
         data_->anchored=true;
+        data_->camera_world=&course.world;
         return true;
     }catch(const std::exception& e) {error=e.what();return false;}
 }
@@ -821,6 +831,7 @@ void StartCrowd::frame(const RaceSession& session) {
         // 47CAC0 selects ForwardStartLine(0), not the player's grid slot.
         // 47CB50 aligns its plane with the road and adds the scene rotation.
         data_->anchor=start_anchor(session.course());
+        data_->camera_world=&session.course().world;
         for(const auto& actor:data_->actors) {
             auto world=multiply(actor.local,data_->anchor);
             if(!actor.starter) {
@@ -856,12 +867,49 @@ public:
     AuthoredStartCarMotion(const VehicleTrackCourse& course,std::shared_ptr<const RoadStartCarKeys> keys)
         : course_(course),keys_(std::move(keys)),anchor_(start_anchor(course)) {}
     bool sample(unsigned slot,float seconds,const VehicleSpec& spec,VehicleVec3& position,
-                PlayerRigidMatrix& axes,std::string& error) override {
+                PlayerRigidMatrix& axes,std::string& error,
+                CarAnimationState* animation,double* steering) override {
         try {
-            need(slot<keys_->slots.size()&&!keys_->slots[slot].empty()&&std::isfinite(seconds),
+            need(slot<keys_->slots.size()&&!keys_->slots[slot].empty()&&std::isfinite(seconds)&&seconds>=0,
                  "unbound start NIS car or invalid time");
-            const auto pose=sample_car_keys(keys_->slots[slot],seconds*15.F);
-            ground_scene_car(multiply(pose_matrix(pose),anchor_),course_,spec,ground_[slot],position,axes);
+            const auto& keys=keys_->slots[slot];
+            if(seconds<previous_seconds_[slot]) {
+                clocks_[slot]={};sampled_[slot]=false;previous_seconds_[slot]=0;
+            }
+            const float dt=seconds-previous_seconds_[slot];
+            auto& clock=clocks_[slot];
+            // GetLength (GC802113BC) returns the key count, not last index.
+            // UpdateAnimatedCars checks cursor/30*speed + dt before advancing
+            // a controller. On its finishing update it snaps to the end and
+            // suppresses wheel distance (GC800875A8..80087650).
+            const auto advance=[&](float& cursor) {
+                return advance_road_start_car(cursor,dt,unsigned(keys.size()));
+            };
+            const bool finished=advance(clock.current);
+            advance(clock.future);
+            const float frame=clock.current;
+            const auto world=multiply(pose_matrix(sample_car_keys(keys,frame)),anchor_);
+            ground_scene_car(world,course_,spec,ground_[slot],position,axes);
+            if(steering) {
+                // PC47C47A / GC800873DC advances the second controller by1s.
+                const auto future=multiply(pose_matrix(sample_car_keys(keys,clock.future)),anchor_);
+                const auto word=std::uint16_t(track_angle(future[0],future[1])-track_angle(world[0],world[1]));
+                const int signed_word=word>=0x8000U?int(word)-65536:int(word);
+                *steering=double(signed_word)*(6.28318530717958647692/65536.0);
+            }
+            // PC47C854..47C8E5 / GC8008795C..80087A64: first placement,
+            // zero time and held final keys add no wheel travel. The distance
+            // is planar and unsigned, independent of the published0.1m/s.
+            float distance=0;
+            if(sampled_[slot]&&dt>0&&!finished) {
+                const float x=world[12]-previous_xy_[slot][0],y=world[13]-previous_xy_[slot][1];
+                distance=std::sqrt(x*x+y*y);
+            }
+            if(animation&&distance>0)for(unsigned w=0;w<kVehicleWheelCount;++w)
+                animation->wheel_phase[w]=road_start_wheel_phase(float(animation->wheel_phase[w]),distance,
+                    float(spec.handling.wheels[w].radius));
+            previous_xy_[slot]={{world[12],world[13]}};
+            previous_seconds_[slot]=seconds;sampled_[slot]=true;
             return true;
         }catch(const std::exception& e){error=e.what();return false;}
     }
@@ -869,8 +917,31 @@ private:
     const VehicleTrackCourse& course_;
     std::shared_ptr<const RoadStartCarKeys> keys_;
     Matrix anchor_;
+    struct Clock {float current=0,future=15;};
+    std::array<Clock,4> clocks_{};
     std::array<std::array<TrackGroundCache,kVehicleWheelCount>,4> ground_{};
+    std::array<std::array<float,2>,4> previous_xy_{};
+    std::array<float,4> previous_seconds_{};
+    std::array<bool,4> sampled_{};
 };
+}
+float road_start_wheel_phase(float previous,float distance,float radius) noexcept {
+    if(!(radius>0)||distance==0)return previous;
+    // GC80087A40..80087A64; preserve its single-precision order and final FMA.
+    // This equals distance/radius mathematically, without dropping the old
+    // per-wheel phase or replacing genuine rolling/spinning live animation.
+    constexpr float pi=3.141590118408203125F;
+    const float circumference=(radius+radius)*pi;
+    const float turns=distance/circumference;
+    // Use the double overload before the binary32 store, as in car_shadow:
+    // the host MinGW fmaf routine does not preserve the fused result.
+    return float(std::fma(double(turns+turns),double(pi),double(previous)));
+}
+bool advance_road_start_car(float& frame,float seconds,unsigned key_count) noexcept {
+    const float end=float(key_count);
+    const bool finished=float(std::fma(double(frame/30.F),.5,double(seconds)))>(end/30.F)*.5F;
+    frame=finished?end:frame+(.5F*seconds)*30.F;
+    return finished;
 }
 std::unique_ptr<RaceStartCarMotion> make_road_start_motion(const VehicleTrackCourse& course,
         std::shared_ptr<const RoadStartCarKeys> keys,std::string& error) {
@@ -926,7 +997,8 @@ bool StartCrowd::car(const RaceSession& session,VehicleState& out,CarAnimationSt
 }
 bool StartCrowd::camera(const RaceSession& session,OrbitCamera& out,unsigned width,unsigned height) const {
     if(!data_->anchored || data_->camera_poses.empty() || !session.start_cinematic())return false;
-    return sample_camera(double(session.start_scene_ticks())*30/kRaceTicksPerSecond,out,width,height);
+    const double frame=double(session.start_scene_ticks())*30/kRaceTicksPerSecond;
+    return sample_camera(frame,frame,out,width,height);
 }
 bool StartCrowd::finish_camera(double seconds,OrbitCamera& out,unsigned width,unsigned height) const {
     if(!data_->anchored||!data_->finish_loop_end||!std::isfinite(seconds))return false;
@@ -935,7 +1007,7 @@ bool StartCrowd::finish_camera(double seconds,OrbitCamera& out,unsigned width,un
         const auto span=data_->finish_loop_end-data_->finish_loop_start;
         frame=data_->finish_loop_start+(span?std::fmod(frame-data_->finish_loop_start,span):0);
     }
-    return sample_camera(frame,out,width,height);
+    return sample_camera(frame,std::max(0.0,seconds*30),out,width,height);
 }
 bool StartCrowd::finish_car(unsigned slot,double seconds,const VehicleTrackCourse& course,
                              const VehicleSpec& spec,VehicleState& out,CarAnimationState& animation) const {
@@ -964,7 +1036,7 @@ bool StartCrowd::finish_car(unsigned slot,double seconds,const VehicleTrackCours
     }
     return true;
 }
-bool StartCrowd::sample_camera(double frame,OrbitCamera& out,unsigned width,unsigned height) const {
+bool StartCrowd::sample_camera(double frame,double clock,OrbitCamera& out,unsigned width,unsigned height) const {
     frame=std::clamp(frame,0.,double(data_->camera_poses.size()-1));
     const auto a=std::min(std::size_t(frame),data_->camera_poses.size()-1);
     auto b=std::min(a+1,data_->camera_poses.size()-1);
@@ -972,7 +1044,17 @@ bool StartCrowd::sample_camera(double frame,OrbitCamera& out,unsigned width,unsi
     const float fraction=float(frame-std::floor(frame));Pose pose{};
     for(unsigned k=0;k<12;++k)pose[k]=data_->camera_poses[a][k]+fraction*(data_->camera_poses[b][k]-data_->camera_poses[a][k]);
     const auto focal=pose[0];pose[0]=pose[1]=pose[2]=pose[3]=1;
-    const auto m=multiply(pose_matrix(pose),data_->anchor);
+    const auto local=pose_matrix(pose);
+    auto m=multiply(local,data_->anchor);
+    // 48E534 queries beneath the animated eye.48E58B adds the authored
+    // local height to that mover's filtered terrain, replacing anchor Z.
+    // A fixed start-line height sinks low ending shots into a rising road.
+    if(data_->camera_world) {
+        TrackContact contact;
+        const bool found=query_track_ground(*data_->camera_world,{m[12],m[13],m[14]},data_->camera_ground,contact);
+        const float ground=found?contact.point[2]:m[14]; //440C36 retains input Z on a miss.
+        m[14]=local[14]+data_->camera_height.sample(ground,clock);
+    }
     // Native 48E490 uses ROOT0 matrix: eye=row3, target=eye-row2,
     // up=row1. World (x,y,z) becomes renderer (x,z,-y).
     const Vec3 eye{m[12],m[14],-m[13]},back{m[8],m[10],-m[9]};
@@ -991,6 +1073,7 @@ bool StartCrowd::sample_camera(double frame,OrbitCamera& out,unsigned width,unsi
     if(!drive_render_camera(lens,ChaseFovMode::retail,width,height,projection,error))return false;
     out.fov_y_deg=projection.fov_y_deg;
     out.focal_x_override=projection.focal_x_override;out.focal_y_override=projection.focal_y_override;
+    out.native_fov=projection.native_fov;
     const double yaw=out.yaw_deg/degrees,pitch=out.pitch_deg/degrees;
     const Vec3 right{std::sin(yaw),0,-std::cos(yaw)};
     const Vec3 up{-std::sin(pitch)*std::cos(yaw),std::cos(pitch),-std::sin(pitch)*std::sin(yaw)};

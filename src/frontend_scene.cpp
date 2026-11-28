@@ -262,13 +262,13 @@ bool load_scene_car(const std::filesystem::path& root,unsigned width,unsigned he
     options.camera.roll_deg=-6.62474634639572;
     // Original 0x48753D publishes fixed FOV12463. Primary-view projection
     // 0x40DD00 scales the vertical half-angle by viewport height/width *
-    // 6B7C74/6B7C6C. Use its vertical framing in the displayed view.
+    // 6B7C74/6B7C6C. Preserve its original4:3 vertical framing when widening.
     const auto cotangent=[](double phase) {
         const auto half=static_cast<std::uint16_t>(static_cast<unsigned>(phase));
         return double(frontend_fixed_sine(static_cast<std::uint16_t>(half+0x4000U))) /
             double(frontend_fixed_sine(half));
     };
-    options.camera.focal_y_override=cotangent(12463.0*double(height)/double(width)*
+    options.camera.focal_y_override=cotangent(12463.0*.75*
         double(1.100000023841858F)/double(0.9090908765792847F)*.5);
     options.camera.focal_x_override=options.camera.focal_y_override*double(height)/double(width);
     options.camera.far_plane=300;options.material_state=MaterialStateMode::retail;
@@ -880,7 +880,12 @@ bool FrontendGpuScene::load_choices(const std::filesystem::path& root,unsigned w
     for(const auto& list:p.car_templates)p.capacity=std::max(p.capacity,
         p.road_templates.size()+p.road_sprite_templates.size()+list.size());
     if(variants&&impl_->ready) {
-        p.road=impl_->road;p.wheel_phase=impl_->wheel_phase;p.browser_camera=impl_->browser_camera;p.focus_slot=impl_->focus_slot;
+        p.road=impl_->road;p.wheel_phase=impl_->wheel_phase;
+        // A cover photo owns a separate camera; ordinary ride loads start with
+        // their own browser camera instead of inheriting that frozen pose.
+        if(!impl_->commands.frontend_car_only) {
+            p.browser_camera=impl_->browser_camera;p.focus_slot=impl_->focus_slot;
+        }
     }
     impl_.swap(prepared.impl_);
     if(previous)previous->impl_.swap(prepared.impl_);
@@ -893,7 +898,9 @@ bool FrontendGpuScene::adopt_garage(FrontendGpuScene& prepared,std::string& erro
     auto& incoming=*prepared.impl_;
     if(impl_->ready) {
         incoming.road=impl_->road;incoming.wheel_phase=impl_->wheel_phase;
-        incoming.browser_camera=impl_->browser_camera;incoming.focus_slot=impl_->focus_slot;
+        if(!impl_->commands.frontend_car_only) {
+            incoming.browser_camera=impl_->browser_camera;incoming.focus_slot=impl_->focus_slot;
+        }
         incoming.effect_ticks=impl_->effect_ticks;
         incoming.car_preparing=impl_->car_preparing;
     }
@@ -934,8 +941,16 @@ void FrontendGpuScene::road_target(float kmh) {
     if(std::isfinite(kmh)&&kmh>=0)impl_->road.target_kmh=kmh;
 }
 void FrontendGpuScene::focus_part(unsigned slot) {
-    auto& p=*impl_;if(!p.ready||p.focus_slot==slot)return;
-    if(p.browser_camera.focus(slot))p.focus_slot=slot;
+    auto& p=*impl_;if(!p.ready)return;
+    if(p.commands.frontend_car_only) {
+        // Magazine mode also uses slot0. Leaving it must restore the browser
+        // even when the requested slot has the same number.
+        FrontendBrowserCamera ordinary;
+        if(!ordinary.focus(slot))return;
+        p.browser_camera=ordinary;p.focus_slot=slot;
+        p.commands.frontend_car_only=false;return;
+    }
+    if(p.focus_slot!=slot&&p.browser_camera.focus(slot))p.focus_slot=slot;
 }
 void FrontendGpuScene::magazine_camera(const std::array<float,11>& values) {
     auto& p=*impl_;p.focus_slot=0;p.transition=0;p.car_preparing=false;p.travel=0;
@@ -985,9 +1000,9 @@ bool FrontendGpuScene::frame(float seconds,std::uint32_t ticks,std::string& erro
     }
     if(!p.car_templates.empty()||p.focus_slot!=~0U||p.car_preparing) {
         if(p.browser_camera.tracking||p.browser_camera.manual)p.browser_camera.update(seconds);
-        p.browser_frame=p.browser_camera.frame(p.travel,p.options.width,p.options.height);
+        p.browser_frame=p.browser_camera.frame(p.travel,640,480);
         // 40DD00 uses independent focal operands. The displayed FE view
-        // keeps the authored height and derives X for square pixels. The
+        // keeps the original4:3 height and derives X for square pixels. The
         // offscreen floor view below still uses its own projection.
         p.browser_frame.focal_x=p.browser_frame.focal_y*double(p.options.height)/double(p.options.width);
         p.options.explicit_camera=&p.browser_frame;

@@ -48,6 +48,7 @@ struct AiRoadChain;
 //45D800/45D970/4605E0, held lane controls (retail7003D8=1). The caller
 //supplies route and context availability plus actual track/direction/progress.
 //Owner2 uses header availability even when future chain flags are false.
+//Neutral selection can publish category-1 when all enabled lanes are excluded.
 bool drag_lane_step(const RacingLineTrack&,const AiRoadCursor&,const AiDriverPoint&,
                     const AiRoadChain&,const std::array<bool,7>& available,
                       int held_direction,float travelled_distance,DragLaneState&,const AiLaneTransitionInput& = {}) noexcept;

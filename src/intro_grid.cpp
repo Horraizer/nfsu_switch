@@ -337,7 +337,7 @@ bool load_race_grid(const std::filesystem::path& root,unsigned event,const std::
     if(use_campaign_seed)random=authored_race_roster_seed(*campaign_seed_before_settings);
     if(!load_traffic(root,globals,next.setup->race.track,next.setup->traffic.requested_configs,
         next.traffic,error,random))return false;
-    if(use_campaign_seed)next.startup_random=race_startup_random(random);
+    if(use_campaign_seed)next.startup_random=race_startup_random(random,next.setup->race.track);
     out=std::move(next);error.clear();return true;
 }
 bool load_intro_grid(const std::filesystem::path& root,IntroGrid& out,std::string& error) {

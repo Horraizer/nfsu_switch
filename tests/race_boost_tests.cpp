@@ -1,4 +1,5 @@
 #include "nfsu/race_hud.h"
+#include "race_particle_batch_checks.h"
 #include "nfsu/race_setup.h"
 #include "nfsu/player_powertrain.h"
 #include "nfsu/freeride_skyline.h"
@@ -83,19 +84,12 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
             const auto track=c.static_track_draw_count();
             check(c.draw_count()<=gpu.draw_capacity()&&c.draw_count()-track==dynamic.size(),
                   "NOS activation changed prepared dynamic capacity");
-            unsigned flames=0,visible=0,purge_slots=0,purge_visible=0,atlas_puffs=0;
+            unsigned flames=0,visible=0,purge_slots=0,purge_visible=0;
             for(std::size_t i=0;i<dynamic.size();++i) {
                 const auto view=c.draw_view(track+i);
                 check(!view.track_instance && &view.definition==dynamic[i],"NOS changed prepared definition address/order");
                 if(view.definition.name=="race-nitrous/purge") {
                     ++purge_slots;if(view.material.alpha[0]>0)++purge_visible;continue;
-                }
-                if(authored_purge && view.definition.name.find("race-car/particle/smoke/")==0 &&
-                   view.material.alpha[0]>0 &&
-                   c.resource_table().resources.at(view.definition.texture_resource).texture_hash==0x454D2975U) {
-                    check(view.definition.first_index>=6*24 && view.definition.first_index<6*40,
-                          "nitrous purge samples a single SMOKEB_CS cell");
-                    ++atlas_puffs;
                 }
                 if(view.definition.name!="race-nitrous/flame")continue;
                 ++flames;
@@ -106,8 +100,16 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
             check(flames==1&&visible==(lit?1U:0U),"one reserved authored pipe follows actual NOS state");
             check(purge_slots==2&&purge_visible==(!authored_purge&&purge_visible_now?2U:0U),
                   "legacy purge smoke slots stay fixed");
-            if(authored_purge)check(purge_visible_now ? atlas_puffs>=8&&atlas_puffs<=kRaceSmokeLimit : atlas_puffs==0,
-                                   "both authored smoke bursts feed the prepared alpha pass");
+            if(authored_purge) {
+                const auto batch=nfsu::test::check_particle_batches(c,gpu.particles());
+                std::size_t purge=0;
+                for(std::size_t i=0;i<gpu.particles().smoke_count();++i) {
+                    const auto effect=gpu.particles().smoke(i).effect;
+                    purge+=effect==RaceParticleEffect::purge_first || effect==RaceParticleEffect::purge_right;
+                }
+                check(purge_visible_now ? purge>=12 && batch.alpha>=12 : purge==0,
+                      "both authored purge descriptors feed the complete packed alpha pass");
+            }
             ++checks;
         };
         validate(false);std::cout<<"initial inactive package PASS\n";
@@ -133,7 +135,7 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
         check(grid_view_distance()>.011&&grid_view_distance()<.014,"purge moves the stationary chase view");
         if(authored_purge) {
             const auto& particles=gpu.particles();
-            check(particles.smoke_count()>=2,"both grid purge emitters are active");
+            check(particles.smoke_count()==12,"two frames emit three puffs from both purge descriptors");
             const auto& subject=run.session();
             const auto pose=chase_subject(subject.car(),subject.spec());
             const auto& wheels=subject.spec().handling.wheels;
@@ -146,6 +148,11 @@ void check_nitrous_gpu_package(const std::filesystem::path& root) {
             }
         }
         validate(true,nullptr,true);
+        if(authored_purge) {
+            for(unsigned i=0;i<6;++i)step(purge_button);
+            check(gpu.particles().smoke_count()>16,"authored purge retained the old shared16-slot cap");
+            validate(true,nullptr,true);
+        }
         step(0);validate(false,nullptr,authored_purge);
         check(grid_view_distance()<.001,"released purge restores the chase view");
         while(race_car_held(run.session().timing())&&tick<300)step(0);

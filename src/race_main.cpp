@@ -136,6 +136,8 @@ public:
     CarGlowAnchors glow_anchors{};
     bool glows = false;
     bool dirty = true;
+    std::uint8_t prepared_mask = 0;
+    bool prepared_reverse = false;
     bool tuned = false; // Render selection only.
     TextureFilterMode texture_filter = TextureFilterMode::legacy;
     bool car_shading = false;
@@ -170,7 +172,7 @@ public:
             require(particles.load_presets(texture_bytes[2],error),error);
             require(particles.load_environment(track_image,error),error);
             require(decode_race_particle_textures(texture_bytes[1],texture_packs[1],particle_textures,error,
-                    particles.environment_emitter_count()!=0),error);
+                    particles.environment_emitter_count()!=0,&texture_bytes[2],&texture_packs[2]),error);
         }
     }
     void apply(const TrackResidencyStep& step) {
@@ -188,8 +190,11 @@ public:
         }
         dirty = true; io_cost.add(begin);
     }
-    void prepare() {
-        if (!dirty) return;
+    void prepare(const RaceSession& session) {
+        const auto kind=session.is_drift()?3U:session.is_time_trial()?4U:0U;
+        const auto direction=session.course().route.reverse?1U:0U;
+        const auto mask=static_cast<std::uint8_t>(track_view_context_mask(0x2000U,1,kind,direction));
+        if (!dirty&&prepared_mask==mask&&prepared_reverse==(direction==1)) return;
         const auto begin = Clock::now(); std::string error;
         TrackRegionReport geometry; TrackObjectReport objects;
         geometry.mesh_table_valid = true;
@@ -270,6 +275,7 @@ public:
         if (track_number == 1005) require(bind_track_default_alpha(textures,0x828DCF0BU,error),error);
         if(track_number==1301)require(bind_drift_track_default_alpha(textures,error),error);
         options.region.max_texture_bytes = limits.max_total_bytes;
+        if(direction==1)apply_reverse_track_scenery(objects);
         require(build_track_scene(geometry,objects,textures,options,track,error),error);
         texture_frames.resize(track.region.textures.size());
         for(std::size_t i=0;i<texture_frames.size();++i)texture_frames[i]=i;
@@ -281,30 +287,35 @@ public:
         }
         std::vector<TrackVisibleInstance> visible;
         for (const auto& section : track.sections) for (std::size_t k=0;k<section.source_instances;++k) {
+            const auto handle=track.instance_handles[section.first_handle+k];
+            if(handle!=kNoHandle&&track_instance_masked_out(track.instances[handle].instance_flags,mask))continue;
             TrackVisibleInstance item; item.section_index=section.section_index; item.instance_index=k;
             visible.push_back(item);
         }
         TrackDrawListOptions order; order.order=TrackDrawOrder::retail_bucket;
         require(build_track_draw_list(track,visible,order,list,error),error);
-        dirty=false; prepare_cost.add(begin);
+        dirty=false;prepared_mask=mask;prepared_reverse=direction==1;prepare_cost.add(begin);
     }
     WetRoadLamps lamps;
     bool wet_road_reflections = false;
     std::vector<unsigned char> render(const RaceSession& session) {
-        prepare(); const auto begin=Clock::now(); std::string error;
+        prepare(session); const auto begin=Clock::now(); std::string error;
         RenderOptions options; options.width=640; options.height=360;
         options.material_state = MaterialStateMode::retail;
         options.texture_filter=texture_filter;
         options.car_shading=car_shading;
         require(drive_render_camera(session.camera(),camera_projection,640,360,options.camera,error),error);
         crowd.frame(session);
-        if(crowd.camera(session,options.camera,options.width,options.height) &&
+        const bool widened=camera_projection==ChaseFovMode::retail_widescreen;
+        if(crowd.camera(session,options.camera,widened?640:options.width,widened?480:options.height) &&
            camera_projection==ChaseFovMode::retail_widescreen)
             options.camera.focal_x_override =
                 options.camera.focal_y_override * double(options.height) / double(options.width);
         Frame background; RenderStats stats; TrackRenderStats track_stats;
         RenderOptions track_options = options;
         track_options.world_ticks=session.timing().step_ticks;
+        track_options.track_reflection_mask=static_cast<std::uint8_t>(track_view_context_mask(0x800U,4,
+            session.is_drift()?3U:session.is_time_trial()?4U:0U,session.course().route.reverse?1U:0U));
         for(const auto& a:animations) {
             const auto phase=texture_animation_phase(a.timing,std::uint32_t(session.world_visual_frame()));
             for(std::size_t i=0;i<a.frames.size();++i)texture_frames[a.frames[i]]=a.frames[(i+phase)%a.frames.size()];
@@ -349,7 +360,7 @@ int run(int argc, char** argv) {
     bool live=false, smoke=false, tuned=false;
     std::uint32_t event_number=1; bool event_seen=false;
     std::string car_name="240SX"; bool car_seen=false;
-    bool particles_enabled=true, particle_events=false;
+    bool particles_enabled=true, particle_events=false, frame_witness=false;
     bool glows=false, glows_seen=false, wet_road_seen=false, car_shading_seen=false;
     TextureFilterMode texture_filter=TextureFilterMode::legacy;
     bool car_shading=false;
@@ -369,6 +380,7 @@ int run(int argc, char** argv) {
             std::cout << "nfsu_race --root RETAIL (--input RECORDING | --generate RECORDING | --live)\n"
                          "  [--out NEW_DIRECTORY --frames 180,600,6000,22000,40000]\n"
                          "  [--particles=on|--particles=off] [--particle-events] [--tuned] [--glows|--glows=off]\n"
+                         "  [--frame-witness] stop input replay exactly after the last requested export frame\n"
                          "  [--car NAME] a playable car type from the retail table; 240SX by default\n"
                          "  [--car-shading on|off] [--texture-filter legacy|linear]\n"
                          "  [--wet-road-reflections on|off] [--event <circuit event>]\n"
@@ -385,6 +397,7 @@ int run(int argc, char** argv) {
         if (a=="--particles=on") { particles_enabled=true; continue; }
         if (a=="--particles=off") { particles_enabled=false; continue; }
         if (a=="--particle-events") { particle_events=true; continue; }
+        if (a=="--frame-witness") { frame_witness=true; continue; }
         if (a=="--glows" || a=="--glows=on" || a=="--glows=off") {
             glows=a!="--glows=off";glows_seen=true;continue;
         }
@@ -445,6 +458,9 @@ int run(int argc, char** argv) {
         if (!car_shading_seen) car_shading=true;
     }
     require(frames.empty() || !output.empty(),"--frames requires --out");
+    require(!frame_witness || (!live && !input.empty() && generate.empty() && !frames.empty() && !output.empty()),
+            "--frame-witness requires input replay, output and requested frames");
+    const auto witness_step=frame_witness?*frames.rbegin():0;
     require(!hud_trace || !output.empty(),"--hud-trace requires --out");
     require(!live || (output.empty() && frames.empty()),"live mode does not export files");
     require(fs::is_directory(root),"retail root is not a directory");
@@ -654,10 +670,16 @@ int run(int argc, char** argv) {
                 std::ifstream in(path,std::ios::binary); const std::string bytes((std::istreambuf_iterator<char>(in)),{});
                 std::cout << "frame " << session.timing().step << " tga-sha256 " << sha256_hex(sha256(bytes.data(),bytes.size())) << '\n';
             }
+            if(frame_witness && frames.empty())break;
         }
-        require(session.timing().outcome==RaceOutcome::finished,"driver did not finish within tick limit");
-        require(frames.empty(),"requested frame is after the finish");
-        require(input.empty() || (run_index==runs.size() && run_tick==0),"recording has trailing input after finish");
+        if(frame_witness) {
+            require(frames.empty() && session.timing().step==witness_step,"frame witness did not reach its exact final export");
+            std::cout<<"frame-witness-complete "<<witness_step<<'\n';
+        } else {
+            require(session.timing().outcome==RaceOutcome::finished,"driver did not finish within tick limit");
+            require(frames.empty(),"requested frame is after the finish");
+            require(input.empty() || (run_index==runs.size() && run_tick==0),"recording has trailing input after finish");
+        }
         if (!generate.empty()) write_text(generate,format_race_input(recording));
     }
     if (states.is_open()) { states.flush(); require(bool(states),"state hash write failed"); }

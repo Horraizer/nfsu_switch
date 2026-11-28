@@ -1,7 +1,7 @@
-# Getting started with v0.2-r99-r72
+# Getting started with v0.2-playthrough-20261128
 
 This is an experimental prerelease. Download it from the
-[v0.2-r99-r72 release page](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r99-r72).
+[v0.2-playthrough-20261128 release page](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-playthrough-20261128).
 
 ## Required game edition
 
@@ -29,7 +29,7 @@ list is insufficient for the current menu, tuned Skyline, movies and audio.
 
 1. Open Homebrew Menu in **full-memory application mode** (title takeover).
    Album/applet mode does not provide the memory this build needs.
-2. Download `nfsu-switch-v0.2-r99-r72-sd.zip` and extract its contents at the
+2. Download `nfsu-switch-v0.2-playthrough-20261128-sd.zip` and extract its contents at the
    top level of the SD card. Alternatively, put the standalone NRO under
    `sdmc:/switch/nfsu-switch/`. The NRO filename is not the game-data folder.
 3. From your own PC1.4 USA installation, copy these complete directories to
@@ -129,7 +129,7 @@ hardware comparison. Do not mix old and new protocol versions.
 
 ## Known limits
 
-- The R99-R72 artifact has desktop and packaging validation. Its console visual,
+- The November 28 build has desktop and packaging validation. Its console visual,
   input and paired LAN validation is pending.
 - Full campaign records and automated start/finish checks do not establish
   a flawless 8-10-hour playthrough, original AI/physics/audio parity or locked 60 FPS.
@@ -137,14 +137,14 @@ hardware comparison. Do not mix old and new protocol versions.
   continue to be matched against original data/code.
 - Missing `English.bin`, an incomplete data tree, a wrong regional asset set
   or applet-mode memory can prevent startup/loading. Check the displayed error.
-- For a crash, preserve any SD/Netloader log and report `artwork-r97`.
+- For a crash, preserve any SD/Netloader log and report `playthrough-a18b7248abc7`.
 
 ## Build from source
 
 ```sh
 git clone https://github.com/Horraizer/nfsu_switch.git
 cd nfsu_switch
-git checkout v0.2-r99-r72
+git checkout v0.2-playthrough-20261128
 ```
 
 Install devkitPro switch-dev: devkitA64, libnx, deko3d, uam, switch-tools,
@@ -155,8 +155,8 @@ standalone Python3.12 (the exercised version) in a configured devkitPro/MSYS2 or
 export DEVKITPRO=/opt/devkitpro
 cmake -S . -B build-switch -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE=cmake/switch-toolchain.cmake \
-  -DCMAKE_BUILD_TYPE=Release -DNFSU_RACE_BUILD_TAG=artwork-r97 \
-  -DNFSU_RACE_FXAA=ON -DNFSU_RACE_MSAA2=OFF -DNFSU_RACE_MSAA8=OFF \
+  -DCMAKE_BUILD_TYPE=Release -DNFSU_RACE_BUILD_TAG=playthrough-a18b7248abc7 \
+  -DNFSU_RACE_FXAA=OFF -DNFSU_RACE_MSAA2=OFF -DNFSU_RACE_MSAA8=OFF \
   -DNFSU_RACE_FPS_OVERLAY=OFF -DNFSU_SWITCH_DEKO_DEBUG=OFF
 cmake --build build-switch --target nfsu_switch_race_nro
 ctest --test-dir build-switch --output-on-failure \

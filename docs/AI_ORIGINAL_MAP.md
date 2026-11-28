@@ -720,6 +720,31 @@ branch at the exact dt cutoff as well as below it. A stationary zero-vector
 and zero requested speed is explicitly kept finite in the port; original
 masked x87 produces NaN for this degenerate input.
 
+### Checking yaw, traffic projection and steering recovery
+
+The path-body publisher takes a positive time step. Its race caller,
+`VehicleTrackSession::step_rival_path`, rejects zero, negative and nonfinite
+steps before passing control to the publisher. The small-step branch above
+changes how displacement becomes velocity. Yaw still uses the elapsed time.
+A direct call outside the positive-step contract can return a nonfinite yaw.
+
+For traffic probes, run `tools/traffic_physical_native.py <retail-root>`
+and `nfsu_ai_path_tests`. The former executes PC 1.4 routine 44F1B0 with
+supplied positions, velocities and box bounds. The latter passes the same
+inputs to the port and compares both distance and time by their float bits.
+Keep the scalar column projection when working with the temporary matrix in
+`ai_physical_obstacle`. Changing it to row products reverses the answer for
+some headings. This adapter supplies the physical probe for civilian traffic.
+
+For steering recovery, `tools/ai_reverse_vectors.py` executes the original
+45E650 reset and 45E970 drive step. The port checks the subsequent steering
+words and pedals in `nfsu_ai_driver_tests`. Resetting an error history seeds
+its samples and sum, clears its count and retains its cursor and cached
+average. The first subsequent derivative average can consequently be large.
+The steering calculation clamps the blended histories and limits the rate
+of change of the steering word. To investigate a maneuver, compare the
+published steering word together with the history and the reset trigger.
+
 427C50 reconstructs selector4 from the placed actor's heading, magnitude
 and yaw only after placement succeeds. A failed resolver retains the old
 spline and channel history even though the frame reports a reset reason.

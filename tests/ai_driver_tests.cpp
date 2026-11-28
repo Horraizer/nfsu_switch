@@ -19,6 +19,13 @@ struct Output {
     std::uint32_t speed_error=0,integral=0,derivative=0;
 };
 struct Sequence {unsigned index;Output frames[16];};
+struct LateDriverCase {
+    unsigned selector;bool drag;std::uint32_t speed,magnitude,lateral,timer;bool forced,nos,enabled;
+    struct {std::uint32_t throttle,brake,handbrake,timer;unsigned steering;int gear;} expected;
+};
+const LateDriverCase late_driver_cases[]={
+#include "ai_driver_late_native.inc"
+};
 const Sequence original[] = {
 #include "ai_driver_native.inc"
 };
@@ -56,7 +63,9 @@ struct ShortPathCase {
 #include "ai_short_path_native.inc"
 bool same(const nfsu::AiDriverForwardState& a,const nfsu::AiDriverForwardState& b) {
     return a.steering.word==b.steering.word && bits(a.pedals.throttle)==bits(b.pedals.throttle) &&
-        bits(a.pedals.brake)==bits(b.pedals.brake) && a.target.point==b.target.point;
+        bits(a.pedals.brake)==bits(b.pedals.brake) && a.target.point==b.target.point&&
+        bits(a.handbrake_seconds)==bits(b.handbrake_seconds)&&bits(a.handbrake)==bits(b.handbrake)&&
+        a.forced_brake==b.forced_brake;
 }
 }
 int main() {
@@ -287,6 +296,49 @@ int main() {
         check(!ai_driver_ordinary_step(invalid,1.F/60,state),"oversized ordinary path refused");
         check(ai_driver_ordinary_step(in,1.F/60,state)&&ai_driver_ordinary_step(in,1.F/60,expected)&&same(state,expected),
             "short path refusal preserves continuation");
+    }
+    for(const auto& c:late_driver_cases) {
+        const auto scalar=[](std::uint32_t word){float value;std::memcpy(&value,&word,4);return value;};
+        AiDriverForwardInput in;in.path.count=4;
+        in.path.points[0]={10,-1,0};in.path.points[1]={35,5,0};
+        in.path.points[2]={55,-6,0};in.path.points[3]={100,30,0};
+        in.forward_speed=scalar(c.speed);in.absolute_speed=scalar(c.magnitude);
+        in.velocity={in.forward_speed,scalar(c.lateral),0};in.heading=1500;in.category=1;in.race_seconds=25;
+        in.desired_speed=40;in.throttle_cap=.75F;in.contact={true,true,true,true};
+        in.physical_selector=c.selector;in.nitrous_active=c.nos;in.enabled=c.enabled;
+        AiDriverForwardState state;state.previous_desired_speed=40;
+        state.handbrake_seconds=scalar(c.timer);state.forced_brake=c.forced;
+        const auto before=failures;
+        check(c.drag?ai_driver_drag_step(in,1.F/60,state):ai_driver_ordinary_step(in,1.F/60,state),
+              "restored late Driver state accepted");
+        check(bits(state.pedals.throttle)==c.expected.throttle&&bits(state.pedals.brake)==c.expected.brake&&
+              bits(state.handbrake)==c.expected.handbrake,"native final pedals after NOS and both late overrides");
+        check(bits(state.handbrake_seconds)==c.expected.timer,"native late timer ages before strict-positive gate");
+        check(state.steering.word==c.expected.steering&&state.gear_request==c.expected.gear,
+              "late override retains native steering and gear command");
+        if(failures!=before)std::cerr<<"late native selector="<<c.selector<<" drag="<<c.drag
+            <<" forward="<<in.forward_speed<<" magnitude="<<in.absolute_speed<<" lateral="<<in.velocity[1]
+            <<" timer="<<scalar(c.timer)<<" forced="<<c.forced<<" nos="<<c.nos<<" enabled="<<c.enabled
+            <<" actual_hb="<<state.handbrake<<" native_hb="<<scalar(c.expected.handbrake)<<'\n';
+    }
+    {
+        AiDriverForwardState state;state.handbrake_seconds=.1F;state.forced_brake=true;
+        state.handbrake=1;state.pedals={0,1};state.nitrous_pedal_latch=true;state.previous_desired_speed=40;
+        state.steering.word=1234;
+        ai_driver_finish_cleanup(state);
+        check(state.handbrake_seconds==-1.F&&!state.forced_brake&&state.handbrake==1.F&&
+              state.pedals.brake==1.F&&state.nitrous_pedal_latch&&state.steering.word==1234,
+              "native finish cleanup clears late inputs and retains prior outputs/NOS/history");
+        AiDriverForwardInput input;input.path.count=2;input.path.points[0]={10,0,0};input.path.points[1]={100,0,0};
+        input.desired_speed=40;input.forward_speed=input.absolute_speed=70;input.velocity={70,0,0};
+        input.contact={true,true,true,true};input.throttle_cap=.75F;
+        check(ai_driver_ordinary_step(input,1.F/60,state)&&state.handbrake==0&&state.pedals.throttle==.75F,
+              "next Driver call releases cleared late brakes after the retained NOS override");
+        for(float bad:{std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()}) {
+            state.handbrake_seconds=bad;const auto prior=state;
+            check(!ai_driver_ordinary_step(input,1.F/60,state)&&same(state,prior),
+                  "nonfinite restored timer refuses without partial publication");
+        }
     }
     std::cout<<checks<<" checks, "<<failures<<" failures\n";
     return failures?1:0;

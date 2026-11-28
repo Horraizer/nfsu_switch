@@ -73,6 +73,7 @@ bool resolve_career_ride(const std::vector<unsigned char>& globals,
     next.skin=stock_car_skin(profile.car);
     if(!resolve_frontend_preset_skin(globals,profile.car,db,next.request.installed_parts,next.skin.selection,error))return false;
     next.performance=career_performance_levels(catalog,profile);
+    next.turbo_brand=profile.ride.turbo_brand;
     out=std::move(next);error.clear();return true;
 }
 }

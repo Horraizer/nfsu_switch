@@ -1045,6 +1045,7 @@ bool VehicleTrackSession::resolve_body(VehicleState& s, VehicleTrackTelemetry& t
         if (t.audio_contact_count < t.audio_contacts.size()) {
             audio_contact = &t.audio_contacts[t.audio_contact_count++];
             audio_contact->polygon = static_cast<std::uint32_t>(hit.polygon);
+            audio_contact->event_step=static_cast<std::uint32_t>(steps_+1); // Published after this solve.
             audio_contact->forward = forward; audio_contact->up = up;
             audio_contact->normal = hit.normal;
             const auto audio_tangent = sub(point_velocity, scale(hit.normal, approach));
@@ -1317,7 +1318,8 @@ void VehicleTrackSession::run_tick(VehicleState& s, const VehicleInput& input,
         s.gear=kVehicleGearNeutral;s.published_gear=kVehicleGearNeutral;
         s.engine_rpm=1000.F;
         if(selector==1) {
-            reconstruct_full_physics(s,world_tick);
+            if(!reconstruct_full_physics(s,world_tick))
+                throw std::runtime_error("full mover construction refused after placement");
             if(input.gearbox_world_random) {
                 player_gear_seed(s.transmission,*input.gearbox_world_random);
                 *input.gearbox_world_random=s.transmission.rng_state;
@@ -1483,8 +1485,12 @@ void VehicleTrackSession::publish_start_car_speeds(bool animated) noexcept {
 }
 
 void VehicleTrackSession::place_start_car(const VehicleVec3& position,const PlayerRigidMatrix& axes,bool animated) {
+    place_start_car(position,axes,animated,state_.steer_angle);
+}
+void VehicleTrackSession::place_start_car(const VehicleVec3& position,const PlayerRigidMatrix& axes,bool animated,double steering) {
     state_.position=position;
     state_.orientation=vehicle_orientation_from_axes(axes);
+    state_.steer_angle=steering;
     // 427C50 stores its zero speed argument separately from the world vector.
     PlayerRigidVector velocity{};
     if(animated)for(unsigned k=0;k<3;++k)velocity[k]=axes[0][k]*.1F;
@@ -1505,13 +1511,14 @@ void VehicleTrackSession::place_start_car(const VehicleVec3& position,const Play
 
 bool VehicleTrackSession::step_grid_engine(const VehicleInput& input, VehicleTrackTelemetry& telemetry,
                                            double publication_dt, double solver_dt,bool drag,std::int32_t clock,
-                                           bool advance_chassis) {
+                                           bool advance_chassis,bool first_slice) {
     const double throttle=input.throttle;
     if (!valid_ || !started_ || ai_active_ || steps_ != 0 ||
         !finite(throttle) || throttle < 0 || throttle > 1 ||
         !finite(publication_dt) || publication_dt < 0 ||
         !finite(solver_dt) || solver_dt <= 0) return false;
     auto next=state_;
+    if(first_slice&&!advance_chassis)next.bottom_out_impulse={};
     const auto& h=model_->spec().handling;
     // Original stage setter434B50 calls human vfunc1C/20;4616BE requests
     // neutral with the service brake while held. Keep that settled neutral state
@@ -1525,10 +1532,16 @@ bool VehicleTrackSession::step_grid_engine(const VehicleInput& input, VehicleTra
     VehicleTrackTelemetry t;
     VehicleInput grid_input=input;
     grid_input.on_start_grid=true;
+    grid_input.drag_mode=drag;
+    const float outer=input.world_clock_valid&&finite(input.world_frame_seconds)&&input.world_frame_seconds>=0?
+        input.world_frame_seconds:float(publication_dt>0?publication_dt:solver_dt);
     if(advance_chassis) {
-        // 4774A0 keeps integrating the resting body's basis and contact forces.
-        if(!model_->step(next,grid_input,ground_,t.model,publication_dt,solver_dt,false,true))return false;
+        // Keep the held gearbox request neutral. Only the first slice samples
+        // the original outer grip source; inner slices retain those coefficients.
+        if(!model_->step(next,grid_input,ground_,t.model,publication_dt,solver_dt,false,true,
+            false,false,0,outer,VehicleSteeringState::initialized,first_slice))return false;
     } else {
+        if(first_slice)model_->latch_owner_grip(next,grid_input,outer);
         const float crank=player_engine_torque(h,next.engine,next.gear,float(throttle),&input,
                                                model_->spec().nitrous.rate);
         player_engine_integrate(h,next.engine,crank,float(solver_dt));
@@ -1596,7 +1609,18 @@ bool VehicleTrackSession::refresh_contact(VehicleState& sampled,const VehicleSta
         sampled.owner_motion=published_actor->owner_motion;
         sampled.owner_traction=published_actor->owner_traction;
     }
-    if(!model_->step(sampled,last_input_,ground_,telemetry,0,0,false,true,true,true,interval))return false;
+    // 469460 refreshes the existing components. A newly created full mover
+    // receives steering and throttle at 4775F4/477607 and the two brake
+    // commands at 4778B0..4779A0, all inside its first Move.
+    const auto steering=sampled.steering_word_ready?VehicleSteeringState::initialized:
+        VehicleSteeringState::before_first_command;
+    auto input=last_input_;
+    if(steering==VehicleSteeringState::before_first_command) {
+        input.throttle=0;
+        input.brake=0;
+        input.handbrake=false;
+    }
+    if(!model_->step(sampled,input,ground_,telemetry,0,0,false,true,true,true,interval,-1,steering))return false;
     interval=telemetry.component_interval;
     return true;
 }
@@ -1614,7 +1638,10 @@ bool VehicleTrackSession::continue_contact(double seconds,const VehicleState* pu
     //469460 refreshes component forces before the outer4774A0 policy latch.
     //The first resumed derivative consumes those forces even when state1
     //then disables aero. Do not replace them with a new-policy force sample.
-    if(!refreshed&&!model_->step(next,last_input_,recording,t.model,0,0,false,true,true,true))return false;
+    if(!refreshed) {
+        float interval=0;
+        if(!refresh_contact(next,published_actor,interval))return false;
+    }
     update_car_collision_state(next.collision_state,next.collision_support_since,
         next.published_support,next.collision_body_flag,
         double(last_input_.world_clock_valid?last_input_.world_clock:static_cast<std::int32_t>((ticks_*4000)/60))*double(.00025F));
@@ -1627,6 +1654,7 @@ bool VehicleTrackSession::continue_contact(double seconds,const VehicleState* pu
     next.alternate_yaw_active=next.collision_state!=1&&next.published_support!=0;
     //46B5E0 invokes the outer physics even at zero remaining time.
     next.aero_ready=false;
+    next.bottom_out_impulse={}; //Resumed4774A0 reaches the same4777BF outer clear.
     //477D56 uses the original human interval, truncation and an added slice.
     //A caller's last ordinary solver step does not select this schedule.
     const float ratio=float(seconds)/.004399999976158142F;
@@ -1699,6 +1727,7 @@ bool VehicleTrackSession::step(const VehicleInput& input, VehicleTrackTelemetry&
     t.orientation = s.orientation;
     t.velocity = s.velocity;
     t.angular_velocity = s.angular_velocity;
+    t.model.bottom_out_impulse=s.bottom_out_impulse;
     t.model.rigid_body=s.rigid_body;t.model.rigid_body_ready=s.rigid_body_ready;
     t.model.rigid_orientation=s.rigid_orientation;
     t.model.steering_word=s.steering_word;t.model.steering_word_ready=s.steering_word_ready;

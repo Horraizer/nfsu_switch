@@ -872,17 +872,24 @@ void test_remote_turbo_playback(const std::filesystem::path* root) {
 void test_turbo_playback(const std::filesystem::path* root) {
     if(!root)return;
     using namespace nfsu::audio;
+    const auto bank_random=process_bank_audio_random().state();
     for(const auto& selected:std::array<std::pair<const char*,int>,2>{{{"INTEGRA",1},{"SKYLINE",3}}}) {
+        std::vector<std::string> sounds;
+        for(int variant=-1;variant<=4;++variant) {
+        // Bank callbacks share a process RNG; compare banks from equal state.
+        process_bank_audio_random().restore(bank_random);
         RaceTurboSound turbo;RaceEngineSound engine;Mixer mixer,engine_mixer;TrafficAudioRandom random;std::string error;
-        check(turbo.load(*root,selected.first,selected.second,error),error.c_str());
+        check(turbo.load(*root,selected.first,selected.second,error,variant),error.c_str());
         check(engine.load(*root,selected.first,0,error),error.c_str());
         RaceAudioSnapshot s;s.turbo_installed=true;s.rpm=7000;s.maximum_rpm=8000;s.engine_drive_load=100;s.throttle=1;s.gear=3;
         s.listener_eye={{6,0,0}};s.human_forward={{1,0,0}};
         std::array<std::int16_t,1600> pcm{};bool spool=false,release=false;
+        std::vector<unsigned char> recorded;
         for(unsigned frame=0;frame<240;++frame) {
             s.tick=frame+1;s.turbo_normalized=frame<100?1.3F:0.F;
             (void)engine.update(s,engine_mixer);const auto human=engine.turbo_feedback();
             turbo.update(s,human,mixer,10000,random);mixer.render(pcm.data(),800);
+            const auto* bytes=reinterpret_cast<const unsigned char*>(pcm.data());recorded.insert(recorded.end(),bytes,bytes+sizeof(pcm));
             const bool heard=std::any_of(pcm.begin(),pcm.end(),[](auto v){return v!=0;});
             if(frame<100)spool|=heard;else release|=heard;
         }
@@ -892,7 +899,13 @@ void test_turbo_playback(const std::filesystem::path* root) {
         s.finished=false;s.turbo_installed=false;++s.tick;turbo.update(s,{},mixer,10000,random);
         check(!mixer.active(85)&&!mixer.active(86),"absent induction cannot start turbo output");
         check(mixer.clipped_samples()==0,"turbo PCM does not clip at the native race category");
+        const auto digest=nfsu::sha256_hex(nfsu::sha256(recorded.data(),recorded.size()));
+        if(variant==0)check(digest==sounds.front(),"absent legacy turbo identity preserves default sound");
+        if(std::find(sounds.begin(),sounds.end(),digest)==sounds.end())sounds.push_back(digest);
+        }
+        check(sounds.size()>1,"selected turbo firm reaches distinct real bank PCM");
     }
+    process_bank_audio_random().restore(bank_random);
 }
 
 void test_human_camera_balance() {

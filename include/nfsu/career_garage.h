@@ -7,20 +7,23 @@ std::uint32_t career_decal_brand_icon(std::uint32_t brand) noexcept;
 std::uint32_t career_vinyl_icon(unsigned type) noexcept;
 std::vector<std::uint32_t> career_decal_menu_icons();
 enum class GaragePage {root,visual,body,accessories,performance,packages,parts,rims,rim_styles,rim_sizes,
-    paint,colors,vinyl_layers,vinyl_groups,vinyl_types,decals_zones,decals_sizes,decals_slots,decals_brands,unique_performance,unique_parts,trade_in};
+    paint,colors,vinyl_layers,vinyl_groups,vinyl_types,decals_zones,decals_sizes,decals_slots,decals_brands,unique_performance,unique_parts,trade_in,performance_brands};
 enum class GarageDialog {none,vinyl_layer,remove_vinyls,remove_unique,stock_hood,already_installed};
 struct GarageEntry {
     std::string name;
+    std::string detail;
     std::uint32_t icon=0,part=0,price=0;
     unsigned value=0,upgrade_level=~0U,rim_diameter=0;
     int trade_cost=0;
+    int turbo_brand=-1;
     bool available=true,owned=false,installed=false,newly_unlocked=false;
 };
 // Ephemeral menu/preview state. Only a confirmed transaction mutates the
 // durable profile. Returning through categories restores the installed ride.
 class CareerGarage {
 public:
-    void reset(const CareerCatalog&,const CareerProfile&,bool appearance_only=false);
+    // A fixed lobby tier still permits its package brands, never a tier change.
+    void reset(const CareerCatalog&,const CareerProfile&,bool fixed_performance=false);
     void reset_unique(const CareerCatalog&,const CareerProfile&);
     void move(int direction);
     void move_color(int x,int y);
@@ -64,6 +67,7 @@ private:
         std::vector<std::uint32_t> black_decals;
     };
     State state_;
+    bool rim_reward_preview_=false;
     std::vector<CareerProfile> trade_previews_;
     std::array<std::uint32_t,4> draft_colors_{};
     // Original4DAFA0 keeps a cursor for every finish/channel pair.
@@ -72,7 +76,7 @@ private:
     std::vector<State> parents_;
     std::vector<GarageEntry> entries_;
     std::string title_;
-    bool confirm_=false,unique_intro_=false,appearance_only_=false;
+    bool confirm_=false,unique_intro_=false,fixed_performance_=false;
     GarageDialog dialog_=GarageDialog::none;
     unsigned dialog_selection_=0,trade_review_=0;
     void open_page(State,const CareerCatalog&,const CareerProfile&);

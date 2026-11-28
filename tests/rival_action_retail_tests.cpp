@@ -63,6 +63,7 @@ int main(int argc,char** argv){try {
     need(run.set_intro_traffic(traffic,error),error);
     need(run.set_steering(RaceSteering::recovered_predicate1,error),error);
     need(run.start(root,track,error),error);
+    if(event==19)need(run.track_number()==1001,"event19 must use Market Street1001, not Stadium1002");
     if(event==8) {
         const std::array<std::int16_t,3> retail_roads{{1,25,24}};
         unsigned rival=0;
@@ -78,6 +79,32 @@ int main(int argc,char** argv){try {
     IntroAiPlanner publication;
     std::array<const VehicleHull*,4> hulls{{&rivals[0].hull,&rivals[1].hull,&rivals[2].hull,&player->hull}};
     need(publication.load(root,contexts,hulls,true,run.track_number()),"publication planner load");
+    if(event==19) {
+        // The history consumer reads the last controller road, including when
+        // the car has moved since publication. No new controller update here.
+        IntroAiPlanner history;
+        need(history.load(root,contexts,hulls,true,run.track_number()),"history probe load");
+        RaceRivalPlans plans;
+        need(history.prepare_frame(run.session()),"prepare held-grid probe");
+        need(history.sample_human_history(run.session(),1.F/60),"advance timer before first road");
+        need(history.difficulty_line().find("history_samples=0 ")!=std::string::npos,
+             "an empty controller road must not add a history entry");
+        need(history.inspect_plan(run.session(),plans),"publish history probe road");
+        AiRoadCursor road;
+        need(history.human_road_cursor(road),"expected human road publication");
+        auto& car=const_cast<VehicleState&>(run.session().car());
+        auto& timing=const_cast<RaceTimingState&>(run.session().timing());
+        const auto saved_position=car.position;
+        const auto saved_tick=timing.now_ticks;
+        car.position={10000000,10000000,0};
+        for(unsigned i=0;i<65;++i) {
+            timing.now_ticks+=67;
+            need(history.sample_human_history(run.session(),1.F/60),"sample the retained human road");
+        }
+        car.position=saved_position;timing.now_ticks=saved_tick;
+        need(history.difficulty_line().find("history_samples=1 ")!=std::string::npos,
+             "human road history unexpectedly performed another spatial search");
+    }
     if(event==19) {
         {
             IntroAiPlanner reset_adapter;
@@ -141,7 +168,6 @@ int main(int argc,char** argv){try {
     RaceRouteDriver driver(event?race_event_driving_line(event):RaceDrivingLine::event1_forward);
     for(unsigned frame=0;frame<36000;++frame) {
         if(frame<1800) {
-            need(publication.observe_human(run.session()),"publication human observation");
             RaceRivalPlans planned;
             need(publication.inspect_plan(run.session(),planned,0,nullptr,{&epoch,EpochPaths::observe}),"publication plan refused");
             epoch.commit(planned);
@@ -157,6 +183,9 @@ int main(int argc,char** argv){try {
         if(!run.simulate(driver.sample(run.session()),error)||!run.commit(error)) {
             std::cerr<<"FAIL frame="<<frame<<" "<<error<<'\n';return 1;
         }
+        if(frame<1800)
+            need(publication.sample_human_history(run.session(),float(run.session().world_frame_seconds())),
+                 "publication human observation");
         for(unsigned i=0;i<3;++i) {
             const auto& world=run.session();
             const auto selector=world.rival(i).physical_selector();
@@ -176,9 +205,9 @@ int main(int argc,char** argv){try {
         if(event==19&&frame==6000) {
             need(epoch.witnesses>0,"path epoch needs an earlier changed path and a later reader");
             need((observed_selectors&0x1aU)==0x1aU&&path_exits>0,
-                 "Stadium selector mask="+std::to_string(observed_selectors)+
+                 "Market Street1001 selector mask="+std::to_string(observed_selectors)+
                  " path exits="+std::to_string(path_exits));
-            std::cout<<"PASS Stadium opening, selector mask="<<observed_selectors
+            std::cout<<"PASS Market Street1001 event19 opening, selector mask="<<observed_selectors
                      <<" path_exits="<<path_exits<<'\n';
             return 0;
         }

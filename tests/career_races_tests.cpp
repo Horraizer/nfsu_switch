@@ -31,6 +31,8 @@
 using namespace nfsu;
 #include "race_stream_backing_retail.inc"
 #include "career_road_native_cases.inc"
+#include "car_shadow_view_retail.inc"
+#include "start_car_wheels_scene_retail.inc"
 int main(int argc,char** argv) {
     try {
         if(argc<2||argc>4)throw std::runtime_error("retail-root [event] [steps]");
@@ -487,7 +489,8 @@ int main(int argc,char** argv) {
         }
         VehicleUpgradeLevels owned_levels;
         if(const char* levels=std::getenv("NFSU_CAREER_TEST_LEVELS"))check(parse_performance_levels(levels,owned_levels,error));
-        const bool defer_player_visuals=silhouettes && !std::getenv("NFSU_CAREER_SHADOW_PROBE") &&
+        const bool wheel_check=std::getenv("NFSU_CAREER_START_WHEELS_CHECK")!=nullptr;
+        const bool defer_player_visuals=silhouettes && !wheel_check && !std::getenv("NFSU_CAREER_SHADOW_PROBE") &&
             !std::getenv("NFSU_CAREER_SHADOW_FRAME");
         IntroGrid grid;check(load_race_grid(root,event,selected_car,difficulty,grid,error,&owned_levels,nullptr,round,
             defer_player_visuals?GridPlayerVisuals::load_with_scene:GridPlayerVisuals::prepare));
@@ -518,6 +521,8 @@ int main(int argc,char** argv) {
             }
         }
         const auto human=std::find_if(grid.actors.begin(),grid.actors.end(),[](const auto& a){return a.config.role==Event0Role::human;});
+        StartWheelSceneAudit wheel_audit;
+        if(wheel_check)wheel_audit.retain(grid);
         if(human==grid.actors.end()||human->config.visual.car!=selected_car||!human->config.performance ||
            (event!=0&&!performance_levels_equal(*human->config.performance,owned_levels)))throw std::runtime_error("owned stock human not preserved");
         if(defer_player_visuals && (human->frame || human->hull.points.empty()))
@@ -706,6 +711,7 @@ int main(int argc,char** argv) {
             scene.set_race_visuals(true);scene.set_wet_road_reflections(!std::getenv("NFSU_CAREER_DRY_SCENE"));
             scene.set_silhouette_shadows(silhouettes);
             check(scene.set_complete_zone_backing(complete_backing));
+            if(std::getenv("NFSU_CAREER_SHADOW_WITNESS"))scene.set_start_scenes_enabled(false);
             check(scene.set_original_draw_distance(true));
             if(start_scene_check && (!event||selection.type==RaceType::drift))check(scene.set_start_scene(start_scene,selection.region));
             // Switch career races supply a dress even when the selected parts
@@ -738,7 +744,7 @@ int main(int argc,char** argv) {
                     kNoHandle,std::move(actor.shadow),error,true,actor.glow_anchors,&actor.hull));
                 actor.frame.reset();
             }
-            if(start_scene_check) {
+            if(start_scene_check && !std::getenv("NFSU_CAREER_START_GAME_CAMERA")) {
                 RaceStartClock gpu_clock;
                 if(event && selection.type!=RaceType::drift)
                     check(scene.load_road_start_scene(posix_file_system(),root,start_scene,selection.region,gpu_clock,error));
@@ -801,7 +807,25 @@ int main(int argc,char** argv) {
                         throw std::runtime_error("traffic body slots changed across activation");
                     body_definitions=std::move(current_definitions);
                 }
-                std::cout << "PASS SHADOWRAMP and shared SHADOWIG for active and inactive traffic\n";
+                verify_shadow_view_fade(scene,run.session(),&traffic,name);
+                // The uncached recorder supports a single car only. Keep
+                // its scene/session roster separate from the traffic test.
+                auto reference_scene=std::make_unique<RaceGpuScene>();
+                reference_scene->set_start_scenes_enabled(false);
+                reference_scene->set_silhouette_shadows(true);
+                reference_scene->set_race_visuals(true);
+                reference_scene->set_particles_enabled(false);
+                reference_scene->set_wet_road_reflections(false);
+                check(reference_scene->set_complete_zone_backing(complete_backing));
+                check(reference_scene->set_original_draw_distance(true));
+                check(reference_scene->load(posix_file_system(),root,error,nullptr,nullptr,
+                    false,false,true,&human->assets,&dress,event,true,round));
+                auto reference_session=std::make_unique<RaceSession>(run.session().course(),
+                    run.session().spec(),RaceSteering::baseline,human->hull,RacePresentation::none);
+                check(reference_session->start(error,&human->pose));
+                check(!reference_session->rival_count()&&!reference_session->traffic());
+                verify_shadow_view_fade(*reference_scene,*reference_session,nullptr,{},true);
+                std::cout << "PASS SHADOWRAMP and shared SHADOWIG for active and inactive traffic; native view fade\n";
                 return 0;
             }
             RaceGpuFrame frame;check(scene.frame(run.session(),frame,error));
@@ -870,6 +894,12 @@ int main(int argc,char** argv) {
                     rival_idle_rpm.push_back(run.session().rival(i).car().engine_rpm);
                 while(run.session().timing().now_ticks<end) {
                     if(skip_check && camera_frames==12 && run.session().start_cinematic()) {
+                        // Observe the final continuous placement before A
+                        // changes the stage without advancing a world frame.
+                        if(wheel_check) {
+                            check(scene.frame(run.session(),frame,error));
+                            wheel_audit.frame(run.session(),frame);
+                        }
                         const auto now=run.session().timing().now_ticks;
                         check(run.skip_start_cinematic() && !run.skip_start_cinematic());
                         check(run.session().timing().now_ticks==now &&
@@ -880,6 +910,7 @@ int main(int argc,char** argv) {
                             std::ceil(double(start_clock.release)*kRaceTicksPerSecond/30)));
                     }
                     check(scene.frame(run.session(),frame,error));check(validate_recorded_commands(frame.commands,error));
+                    if(wheel_check)wheel_audit.frame(run.session(),frame);
                     for(std::size_t i=0;i<rival_origins.size();++i) {
                         const auto& rival=run.session().rival(i);
                         check(rival.timing().now_ticks==run.session().timing().now_ticks);
@@ -948,6 +979,7 @@ int main(int argc,char** argv) {
                     }
                 }
                 check(released && run.session().timing().go_valid && !run.session().start_cinematic());
+                if(wheel_check)wheel_audit.finish();
                 if(event==19 && start_scene==2303)check(held_chassis_mask==(1U<<(1+rival_origins.size()))-1);
                 if(skip_check)check(camera_frames==12);
                 std::cout<<"PASS career event "<<event<<" selected grid and bounded runtime; authored start round="<<round<<" camera_frames="<<camera_frames<<" synchronized GO\n";

@@ -207,7 +207,7 @@ bool CareerCatalog::load(const std::filesystem::path& root,std::string& error) {
                 next.media_[event].unlock_messages.push_back(std::move(message));
             }
         }
-        if(!next.tuning_.load(image,global,next.events_,error))return false;
+        if(!next.tuning_.load(image,global,next.events_,language,error))return false;
         RaceChunkPayload presets;
         if(!find_race_chunk(image.data(),image.size(),0x30220,presets,issues)||
            (presets.end-presets.begin)%0x408)return refuse(error,"bonus car preset table invalid");
@@ -423,11 +423,12 @@ std::vector<std::string> CareerCatalog::style_messages(std::uint32_t before,std:
     return result;
 }
 bool CareerCatalog::valid(const CareerProfile& p,std::string& error)const {
+    if(p.ride.turbo_brand< -1||p.ride.turbo_brand>4)return refuse(error,"invalid saved turbo brand");
     if(!p.bonus_preset.empty()) {
         const auto* bonus=bonus_car(p.bonus_preset);
         if(!free_drive_||!bonus||bonus->car!=p.car)return refuse(error,"bonus car outside Quick Race");
     }
-    if(!events_.ok()||p.difficulty>2||unsigned(p.page)>10||!find_race_event(events_,p.selected_event))return refuse(error,"invalid career selection");
+    if(!events_.ok()||p.difficulty>2||unsigned(p.page)>11||!find_race_event(events_,p.selected_event))return refuse(error,"invalid career selection");
     if(p.new_parts_event&&(p.new_parts_event>kCareerLastEvent||p.status[p.new_parts_event]!=kEventStatusWon))
         return refuse(error,"invalid career unlock context");
     const auto& statistics=p.statistics;
@@ -437,7 +438,7 @@ bool CareerCatalog::valid(const CareerProfile& p,std::string& error)const {
     for(const auto& mode:statistics.modes)if(mode.wins>mode.starts||mode.starts>statistics.starts||
         mode.style<-INT64_C(1000000000000000)||mode.style>INT64_C(1000000000000000))return refuse(error,"invalid career mode statistics");
     if(p.magazine_pending&~0xffffU || p.magazine_covers.size()>27)return refuse(error,"invalid magazine state");
-    if(p.page==CareerPage::magazines&&p.magazine_covers.empty())return refuse(error,"empty magazine viewer");
+    if((p.page==CareerPage::magazines||p.page==CareerPage::magazine_album)&&p.magazine_covers.empty())return refuse(error,"empty magazine viewer");
     std::array<bool,27> magazine_indices{};
     for(const auto& cover:p.magazine_covers){
         if(cover.index>=27||magazine_indices[cover.index]||cover.car.empty())return refuse(error,"invalid magazine snapshot");
@@ -683,10 +684,10 @@ bool CareerCatalog::buy_part(CareerProfile& p,unsigned target_slot,std::uint32_t
         }
         const auto category=unsigned(CareerTuningCatalog::slot_category(part->slot));
         const auto key=tuning_.ownership_key(*part);
-        if(part->slot==58&&!tuning_.part_available(*part,p.status,p.style_high_water))return refuse(error,"selected sponsor is locked");
+        if(part->slot==58&&!tuning_.part_available(*part,p.status,p.style_high_water,&p.performance_sponsors))return refuse(error,"selected sponsor is locked");
         const bool owned=part->upgrade_level==0 || owns(p,category,key);
         if(!owned) {
-            if(!tuning_.part_available(*part,p.status,p.style_high_water))return refuse(error,"selected part is locked");
+            if(!tuning_.part_available(*part,p.status,p.style_high_water,&p.performance_sponsors))return refuse(error,"selected part is locked");
             if(!key)return refuse(error,"selected part ownership identity unavailable");
             const auto price=part_price(p,*part);
             if(price>p.bank)return refuse(error,"insufficient career funds");
@@ -712,21 +713,30 @@ bool CareerCatalog::buy_part(CareerProfile& p,unsigned target_slot,std::uint32_t
     p=std::move(next);error.clear();return true;
 }
 bool CareerCatalog::buy_performance(CareerProfile& p,unsigned field,unsigned level,std::string& error)const {
+    return buy_performance_package(p,field,level,level>=1&&level<=3?1U:0U,error);
+}
+bool CareerCatalog::buy_performance_package(CareerProfile& p,unsigned field,unsigned level,unsigned number,std::string& error)const {
     if(!valid(p,error))return false;
     if(p.page!=CareerPage::garage || field>=p.ride.performance.size() || level>(free_drive_?4U:3U))
         return refuse(error,"performance purchase requires garage and valid level");
     auto next=p;
     if(free_drive_&&level==4) {next.ride.unique[field]=!next.ride.unique[field];p=std::move(next);error.clear();return true;}
+    const auto* package=level?tuning_.performance_package(field,level,number):nullptr;
+    if((level&&!package)||(!level&&number))return refuse(error,"performance package variant unavailable");
     const auto category=unsigned(CareerTuningCatalog::performance_category(field));
     if(level && !owns(p,category,level)) {
         if(!tuning_.category_available(category,level,p.status))return refuse(error,"selected performance package is locked");
         const auto price=tuning_.price(category,level);
         if(price>p.bank)return refuse(error,"insufficient career funds");
+        if(p.ride.performance[field]+1!=level)return refuse(error,"install the previous performance level first");
         auto& inventory=next.ride.owned[category];const auto free=std::find(inventory.begin(),inventory.end(),0U);
         if(free==inventory.end())return refuse(error,"career performance inventory is full");
         *free=level;next.bank-=price;
+        //50BC94/50BCA2: only a new paid tier grants its selected sponsors.
+        for(auto brand:package->brands)next.performance_sponsors[brand]=true;
     }
     next.ride.performance[field]=level;
+    if(field==3&&package)next.ride.turbo_brand=CareerTuningCatalog::turbo_brand(*package);
     if(!free_drive_&&!refresh_magazines(next,false,error))return false;
     if(!valid(next,error))return false;
     p=std::move(next);error.clear();return true;
@@ -738,6 +748,14 @@ bool CareerCatalog::dismiss_magazines(CareerProfile& p,std::string& error)const 
     //currently highlighted cover. Otherwise the next win reopens old rewards.
     for(auto& cover:p.magazine_covers)cover.seen=true;
     p.page=CareerPage::menu;error.clear();return true;
+}
+bool CareerCatalog::enter_magazine_album(CareerProfile& p,std::string& error)const {
+    if(!valid(p,error))return false;
+    if(free_drive_||p.page!=CareerPage::menu||!pending_movie(p).empty()||p.magazine_covers.empty())
+        return refuse(error,"magazine collection unavailable");
+    if(std::any_of(p.magazine_covers.begin(),p.magazine_covers.end(),[](const auto& cover){return !cover.seen;}))
+        return refuse(error,"magazine rewards must be presented first");
+    p.page=CareerPage::magazine_album;error.clear();return true;
 }
 CareerFinishRewards CareerCatalog::finish_rewards(const CareerProfile& p,bool event_won)const {
     CareerFinishRewards result;

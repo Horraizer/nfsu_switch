@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -85,6 +86,9 @@ struct RaceHudAtlas {
     // Small time font, large lap label/total font, LCD lap number.
     std::array<std::array<RaceHudTextGlyph,128>,3> lap_fonts{};
     std::array<float,3> lap_font_heights{};
+    // Native6387F0 pairs of the resident Conduit38 terminal-message font.
+    // Indexed by current/previous ASCII code; adjustment is a signed byte.
+    std::array<std::array<std::int8_t,128>,128> finish_kerning{};
     bool lap_ready = false;
     bool boost_ready = false;
     bool drift_ready = false;
@@ -181,7 +185,37 @@ void build_race_hud_frame(const RaceSession& session, const RaceHudAtlas& atlas,
                           RaceHudFrame& frame, bool metric_speed=false,unsigned player=0) noexcept;
 // Original HUD_SingleRace animate state, sampled at 1200 Hz after finish.
 std::string drag_finish_message(const RaceHudAtlas&,unsigned place,std::int32_t finish_ticks);
-void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,unsigned height,RaceHudFrame& frame,std::string_view message="Race Over") noexcept;
+// Original4A7D60 selection shared by ordinary and two-human FEng packages.
+std::string race_over_message(const RaceRacerTiming&,bool drag,const RaceHudAtlas&);
+// A terminal edge starts animate once. Time belongs to presentation, not to
+// frame recording, packet arrivals or the other human's finish.
+class RaceOverPhase {
+public:
+    double observe(bool terminal) noexcept {
+        if(!terminal){active_=false;ticks_=0;}
+        else if(!active_){active_=true;ticks_=0;}
+        return double(ticks_)/1200;
+    }
+    void advance(double seconds) noexcept {
+        //4F5CF0 converts each binary32 frame delta to whole1200Hz ticks.
+        //4FFEE0 adds that integer to the script age, without carrying a
+        //fractional remainder into the next frame. The product itself rounds
+        //to binary32, as measured in GC and inferred for PC's D3D context.
+        //4F6B97 restarts at zero.
+        if(active_&&std::isfinite(seconds)&&seconds>0&&seconds<=1) {
+            const float budget=float(seconds)*1200.F;
+            ticks_+=static_cast<unsigned>(budget);
+        }
+    }
+    unsigned ticks()const noexcept {return ticks_;}
+private:
+    unsigned ticks_=0;bool active_=false;
+};
+enum class RaceOverLayout {automatic,drag,drift,split_top,split_bottom,split_side};
+void append_race_over(const RaceHudAtlas& atlas,double seconds,unsigned width,unsigned height,RaceHudFrame& frame,
+                      std::string_view message="Race Over",RaceOverLayout layout=RaceOverLayout::automatic) noexcept;
+void build_race_over_frame(const RaceHudAtlas&,double seconds,unsigned width,unsigned height,
+                          RaceHudFrame&,std::string_view message="Race Over",RaceOverLayout layout=RaceOverLayout::automatic) noexcept;
 // Pure geometry entry point for synthetic gear, speed and RPM checks.
 void build_race_hud_frame_for_car(const VehicleState& car,
                                   double max_rpm, double redline_rpm,

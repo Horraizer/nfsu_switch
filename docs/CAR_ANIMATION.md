@@ -1,7 +1,7 @@
 # Race car animation and lamps (issue #201)
 
-This is visual state only. The 240SX vehicle, controls, collision, race timing,
-residency and replay encoding are unchanged. The reference executable is the
+Wheel phase is visual state. Authored road starts also publish their original
+NIS steering and car placement. The reference executable is the
 retail `speed.exe` identified by SHA-256 in `PART_PLACEMENT.md`.
 
 ## Retail observations
@@ -56,6 +56,62 @@ shared retail road-distance angle. During a burnout or a locked rear wheel,
 the displayed rear phase therefore differs from retail. The matrix order
 above follows the traced draw path; the phase source does not.
 
+## Authored road-start cars
+
+Normal race starts bind the original `ZPM_Car1` through `ZPM_Car4` root
+channels. Before the event48 correction, these moved the chassis through
+`RaceSession` while leaving wheel phase at zero. The physical wheel speeds
+are not the source during NIS movement mode0. Its published speed magnitude
+is a synthetic value and cannot recover the authored travel.
+
+PC `47C310/47C580` and GameCube `80087260/800874E8` create two half-speed
+controllers per car. The second starts one second ahead. Their forward-axis
+angle difference, wrapped as a signed 16-bit turn, steers the front wheels.
+The full original channels are retained for this look-ahead, including keys
+beyond the stage's release frame. GameCube `802113BC` supplies the key count
+as the controller end; `800875A8` tests the scaled old cursor plus the current
+interval before advancing `800856AC`. The finishing update holds the last
+pose and does not add wheel travel.
+
+PC `47C854..47C955` and GameCube `8008795C..80087A64` preserve each wheel's
+previous float phase, calculate unsigned XY distance between successive root
+placements and use each wheel's active radius. The initial placement, a zero
+interval and a finished controller add no distance. The GameCube accumulator
+divides distance by `(radius + radius) * pi`, doubles that quotient and uses
+one fused multiply-add with the old phase. The phase stays in radians and
+is not wrapped by the NIS update. First placement and stage-release teleports
+are excluded. Normal physics subsequently continues from these individual
+phases, so the countdown and live handover do not replace them with zero.
+
+`RaceStartCarMotion::sample` owns the controllers and publishes animation and
+steering together with the grounded chassis. `RaceGpuScene` consumes that
+same session animation for both the cinematic camera and the game camera.
+The existing wheel and brake matrix composition remains the presentation
+path for stock and preset rims, independent spin, steering and suspension.
+
+`nfsu_start_car_wheels_tests` pins original arithmetic witnesses, including
+controller end/zero-time cases. `nfsu_start_car_wheels_retail` reads the
+original start playlists, samples their bound slots, checks real car/rim
+variants and held poses, and verifies independent live spin and steering.
+The `nfsu_event48_start_wheels_*_retail` tests compare all four wheel and
+brake placements with actual Switch scene commands through the intro,
+countdown, skip and GO. A terminal authored snap is allowed once, only after
+rolling, and every later cinematic chassis pose must remain fixed.
+
+Reproduce the read-only native witnesses with Python3.9 or newer, Unicorn,
+the PC1.4 installation and the original GNDE69 disc:
+
+```powershell
+python -B tools/start_car_wheels_native.py --root $retail --disc $disc --out build/start-wheels-native
+```
+
+The script authenticates the inputs, runs bounded original instructions with
+explicit controller/phase storage, and compares the tracked fixture. It does
+not claim a running original game or a Switch display check. The independent
+event48 GameCube trace supplied to this worker contains advancing per-wheel
+phase during mode0 and confirms that wheel rotation exists in the real intro.
+Hardware confirmation of the corrected Switch presentation remains required.
+
 The headlight slot is always bright. The rear slot has a dim red tail
 treatment and becomes brighter when the mapped brake or handbrake control
 is held, including during countdown and reverse assist. The lamp colours
@@ -77,5 +133,5 @@ a desktop-only render cannot settle a console depth tie.
 
 `DESKTOP_RACE.md` lists each changed race frame pin and its reason. The
 static stock 240SX frame pins change because the lateral matrix now includes
-the traced stock scale and offset. Event 1 still ends at 13:26.90 with the
-same state and steps SHA-256 values.
+the traced stock scale and offset. The Event1 replay result and state hashes
+are pinned by the race-run retail tests.

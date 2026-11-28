@@ -2,6 +2,7 @@
 #include "nfsu/frontend.h"
 #include "nfsu/race_session.h"
 #include "nfsu/race_lap_hud.h"
+#include "nfsu/race_statistics_sample.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -43,6 +44,15 @@ inline bool post_race_has_time(const RaceResultRow& row) noexcept {
 // PostRaceStats49CEE0 circuit binding. Speed/distance are measured from this
 // port's completed fixed physics steps, not from render or wall-clock cadence.
 // This is a statistics adapter, not a claim of retail telemetry bit parity.
+inline unsigned post_race_drift_position(const RaceSession& session,unsigned actor) {
+    const auto& driver=actor?session.rival(actor-1):session;
+    if(session.human_rival()&&session.rival_count()==1&&actor<2) {
+        const float own=driver.style().item(0).total;
+        const float other=(actor?session:session.rival(0)).style().item(0).total;
+        return 1U+unsigned(other>own||(other==own&&actor==1));
+    }
+    return driver.player_position();
+}
 class RaceResultStatistics {
 public:
     void observe(const RaceSession& session) {
@@ -62,8 +72,8 @@ public:
             for(unsigned lap=1;lap<sample.positions.size();++lap) {
                 if(sample.positions[lap]||racer.lap_ticks[lap]<=0)continue;
                 if(session.is_drift()) {
-                    sample.positions[lap]=session.player_position();
-                    const float total=session.style().item(0).total;
+                    sample.positions[lap]=post_race_drift_position(session,actor);
+                    const float total=driver.style().item(0).total;
                     sample.scores[lap]=total-sample.last_score;sample.last_score=total;continue;
                 }
                 unsigned position=1;
@@ -77,6 +87,10 @@ public:
         }
     }
     double player_metres()const noexcept{return samples_[0].distance;}
+    const RaceStatisticsSample& sample(unsigned actor)const {return samples_.at(actor);}
+    void replace_samples(const std::array<RaceStatisticsSample,4>& samples,std::size_t step) noexcept {
+        samples_=samples;last_step_=step;
+    }
     PostRaceValues values(const RaceSession& session,const std::string& car,unsigned actor=0)const {
         const auto& t=session.timing();const auto& r=t.racers.at(actor);
         const auto& sample=samples_.at(actor);
@@ -87,9 +101,9 @@ public:
         PostRaceValues out;
         if(session.is_drift()) {
             //49CD90/49D940/49DF30: two statistics and per-lap scores.
-            const auto& score=session.style().item(0);
+            const auto& score=driver.style().item(0);
             out["RacerName"]=name+" - "+car;
-            out["RaceFinishedPosition"]="0"+std::to_string(session.player_position());
+            out["RaceFinishedPosition"]="0"+std::to_string(post_race_drift_position(session,actor));
             out["DataName_1"]="BEST DRIFT SCORE:";
             out["Data_1"]=std::to_string(int(score.best));
             out["DataName_2"]="LONGEST DRIFT:";
@@ -168,15 +182,8 @@ public:
         return out;
     }
 private:
-    struct Sample {
-        bool done=false;
-        double top=0,distance=0,seconds=0;
-        std::array<unsigned,kRaceLapSlots> positions{};
-        std::array<float,kRaceLapSlots> scores{};
-        float last_score=0;
-    };
     std::size_t last_step_=0;
-    std::array<Sample,4> samples_{};
+    std::array<RaceStatisticsSample,4> samples_{};
 };
 //4ACE64 clamps visual reputation to1;49F920 converts it to an integer
 // before49F566 multiplies the category subtotal. Race points are not changed.
@@ -238,6 +245,42 @@ inline PostRaceValues post_race_report(const RaceSession& session,PostRaceValues
     values["CareerStyleBase"]=std::to_string(previous_style);
     values["RewardBlurbString"]="Congratulations!  You have "+std::to_string(prize)+" added to your Bank.";
     values["Victory_Title"]="Race Victory Reward";
+    return values;
+}
+
+// Shared Quick Race table for two real humans. No virtual drift opponents,
+// campaign style/reward queue, bank mutation or event completion is involved.
+inline std::array<unsigned,2> post_race_two_human_order(const RaceSession& session) {
+    if(session.is_drift())return session.rival(0).style().item(0).total>session.style().item(0).total?
+        std::array<unsigned,2>{{1,0}}:std::array<unsigned,2>{{0,1}};
+    const auto rows=session.result_rows();
+    return {{unsigned(rows.at(0).racer),unsigned(rows.at(1).racer)}};
+}
+inline PostRaceValues post_race_two_human_report(const RaceSession& session,PostRaceValues values,
+                                                const std::array<std::string,2>& labels) {
+    values["RaceMode"]=session.is_drag()?"drag":session.is_drift()?"drift":session.course().route.point_to_point?"sprint":"circuit";
+    const auto rows=session.result_rows();
+    const std::array<float,2> scores{{session.style().item(0).total,session.rival(0).style().item(0).total}};
+    const auto order=post_race_two_human_order(session);
+    for(unsigned n=0;n<4;++n) {
+        const auto key=std::to_string(n+1);
+        for(const auto* field:{"Pos","Name","CarModel_","BestLap_","Time","Lead"})values[std::string(field)+key]="";
+        if(n>=2||n>=rows.size())continue;
+        const unsigned actor=session.is_drift()?order[n]:unsigned(rows[n].racer);
+        values["Pos"+key]=key;values["Name"+key]=actor?session.rival_name(0):session.player_name();
+        values["CarModel_"+key]=labels[actor];
+        if(!actor)values["PlayerRow"]=key;
+        if(session.is_drift()) {
+            values["Time"+key]=values["Lead"+key]=std::to_string(int(scores[actor]));
+        } else {
+            const auto& row=rows[n];const bool timed=post_race_has_time(row);
+            values["Time"+key]=timed?post_race_time(row.total_ticks):post_race_status_text(row.status);
+            values["Lead"+key]=n&&timed&&post_race_has_time(rows[0])?
+                post_race_time(std::max(0,row.total_ticks-rows[0].total_ticks),true):values["Time"+key];
+            if(row.best_lap_ticks!=kRaceNoTime&&!session.is_drag())values["BestLap_"+key]=format_race_ticks(row.best_lap_ticks);
+        }
+    }
+    values["UserName"]=session.player_name();
     return values;
 }
 

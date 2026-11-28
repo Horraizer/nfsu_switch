@@ -152,6 +152,35 @@ foreach(stage IN LISTS NFSU_FRONTEND_PROBE_STAGES)
 endforeach()
 add_custom_target(nfsu_switch_frontend_probe_shaders ALL DEPENDS ${NFSU_FRONTEND_PROBE_BLOBS})
 
+# This stage may discard only read-only, alpha-blended particle fragments.
+set(race_particle ${NFSU_SHADER_OUTPUT}/race_particle.frag)
+add_custom_command(OUTPUT ${race_particle}.dksh ${race_particle}.tgsi
+    COMMAND ${NX_UAM_EXE} -s frag -o ${race_particle}.raw -t ${race_particle}.tgsi
+        ${PROJECT_SOURCE_DIR}/shaders/race_particle.frag.glsl
+    COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} ${race_particle}.raw ${race_particle}.tgsi ${race_particle}.dksh
+    COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} --check ${race_particle}.dksh ${race_particle}.tgsi
+    BYPRODUCTS ${race_particle}.raw
+    DEPENDS ${PROJECT_SOURCE_DIR}/shaders/race_particle.frag.glsl ${NX_UAM_EXE} ${NFSU_SHADER_DERIVATIVES}
+    VERBATIM)
+add_custom_target(nfsu_switch_particle_shader ALL DEPENDS ${race_particle}.dksh)
+
+# Verified constant-color particle streams keep their original geometry/UVs.
+set(NFSU_PARTICLE_FLAT_BLOBS "")
+foreach(stage IN ITEMS race_particle_flat.vert race_particle_flat.frag)
+    get_filename_component(kind ${stage} LAST_EXT)
+    string(SUBSTRING ${kind} 1 -1 kind)
+    set(flat_stage ${NFSU_SHADER_OUTPUT}/${stage})
+    add_custom_command(OUTPUT ${flat_stage}.dksh ${flat_stage}.tgsi
+        COMMAND ${NX_UAM_EXE} -s ${kind} -o ${flat_stage}.raw -t ${flat_stage}.tgsi ${PROJECT_SOURCE_DIR}/shaders/${stage}.glsl
+        COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} ${flat_stage}.raw ${flat_stage}.tgsi ${flat_stage}.dksh
+        COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} --check ${flat_stage}.dksh ${flat_stage}.tgsi
+        BYPRODUCTS ${flat_stage}.raw
+        DEPENDS ${PROJECT_SOURCE_DIR}/shaders/${stage}.glsl ${NX_UAM_EXE} ${NFSU_SHADER_DERIVATIVES} VERBATIM)
+    list(APPEND NFSU_PARTICLE_FLAT_BLOBS ${flat_stage}.dksh)
+endforeach()
+add_custom_target(nfsu_switch_particle_flat_shaders ALL DEPENDS ${NFSU_PARTICLE_FLAT_BLOBS})
+
+
 
 # Production fullscreen postprocess stages, distinct from diagnostic probes.
 set(NFSU_POSTPROCESS_STAGES fxaa.vert fxaa.frag speed_blur.vert speed_blur.frag speed_blur_reduce.frag speed_blur_copy.frag streak_fade.frag streak_copy.frag)
@@ -181,7 +210,7 @@ if(NFSU_BUILD_TESTS)
     endforeach()
     add_test(NAME nfsu_uam_derivatives_tests
         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/uam_derivatives_tests.py)
-    foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
+    foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag race_particle.frag race_particle_flat.vert race_particle_flat.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
         add_test(NAME nfsu_switch_derivatives_${stage}
             COMMAND ${Python3_EXECUTABLE} ${NFSU_SHADER_DERIVATIVES} --check
                 ${NFSU_SHADER_OUTPUT}/${stage}.dksh ${NFSU_SHADER_OUTPUT}/${stage}.tgsi)
@@ -270,7 +299,7 @@ nfsu_enable_warnings(nfsu_switch_deko3d)
 
 set(NFSU_DEKO_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/deko_romfs)
 set(NFSU_DEKO_BLOBS "")
-foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
+foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag race_particle.frag race_particle_flat.vert race_particle_flat.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
     set(blob ${NFSU_DEKO_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_DEKO_ROMFS}/shaders
@@ -582,7 +611,7 @@ add_custom_command(OUTPUT ${race_world}.dksh ${race_world}.tgsi
     BYPRODUCTS ${race_world}.raw
     DEPENDS ${race_world}.glsl ${NFSU_SHADER_OUTPUT}/placed_headlight.vert.dksh ${NFSU_SHADER_STAMPS}
         ${NFSU_SHADER_CHECKER} ${NFSU_SHADER_DERIVATIVES} ${NX_UAM_EXE} VERBATIM)
-foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag race_world.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag ${NFSU_FRONTEND_PROBE_STAGES} ${NFSU_POSTPROCESS_STAGES})
+foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag race_particle.frag race_particle_flat.vert race_particle_flat.frag race_world.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag ${NFSU_FRONTEND_PROBE_STAGES} ${NFSU_POSTPROCESS_STAGES})
     set(blob ${NFSU_RACE_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_RACE_ROMFS}/shaders
@@ -610,7 +639,7 @@ nx_create_nro(nfsu_switch_race NACP nfsu_switch_race.nacp ROMFS nfsu_switch_race
 
 # Standalone engineering room. No career menu or save changes are involved.
 add_executable(nfsu_switch_lan lan_main.cpp deko_renderer.cpp)
-target_link_libraries(nfsu_switch_lan PRIVATE nfsu_lan_scene nfsu_stock_view nfsu_race_audio nfsu_screen_text ${NFSU_SWITCH_RACE_DEKO_LIBRARY})
+target_link_libraries(nfsu_switch_lan PRIVATE nfsu_lan_scene nfsu_stock_view nfsu_race_audio nfsu_frontend_music nfsu_screen_text ${NFSU_SWITCH_RACE_DEKO_LIBRARY})
 target_compile_definitions(nfsu_switch_lan PRIVATE NFSU_RACE_BUILD_TAG="lan-room-r5" NFSU_LAN_STANDALONE=1)
 if(NFSU_RACE_FXAA)
     target_compile_definitions(nfsu_switch_lan PRIVATE NFSU_RACE_FXAA=1)
@@ -635,7 +664,7 @@ nx_generate_nacp(OUTPUT nfsu_switch_texture_compare.nacp NAME "nfsu_texture_comp
     AUTHOR "nfsu_switch contributors" VERSION "0.1.0")
 set(NFSU_TEXTURE_ROMFS ${CMAKE_CURRENT_BINARY_DIR}/texture_romfs)
 set(NFSU_TEXTURE_ASSETS "")
-foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
+foreach(stage IN ITEMS placed.vert placed_headlight.vert car_shadow.vert car_shadow.frag textured.frag textured_opaque.frag race_particle.frag race_particle_flat.vert race_particle_flat.frag frontend_ui.vert frontend_ui.frag fallback.frag car_shaded.vert car_shaded.frag frontend_car.vert frontend_car.frag sky.vert sky.frag)
     set(blob ${NFSU_TEXTURE_ROMFS}/shaders/${stage}.dksh)
     add_custom_command(OUTPUT ${blob}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${NFSU_TEXTURE_ROMFS}/shaders

@@ -117,6 +117,22 @@ void FrontendArt::Impl::draw_dialog(Canvas canvas,unsigned page,const PostRaceVa
         if(button) {post_state(o,script.data(),script.size(),"UnHighlight");post_state(o,script.data(),script.size(),"Unhighlight");
             if(high){post_state(o,script.data(),script.size(),"Highlight");post_state(o,script.data(),script.size(),"HighLight");}}
     }
+    const unsigned magazine_count=page>=6?unsigned(std::stoul(values.at("MagazineCount"))):0;
+    const unsigned magazine_owned=page>=6?unsigned(std::stoul(values.at("MagazineOwned"))):0;
+    const unsigned magazine_first=page>=6?unsigned(std::stoul(values.at("MagazineFirst"))):0;
+    const auto trailing_number=[](const std::string& name) {
+        unsigned n=0;for(char c:name)if(c>='0'&&c<='9')n=n*10+unsigned(c-'0');return n;
+    };
+    if(page==7)for(auto& o:objects) {
+        const auto slot=trailing_number(o.name);
+        if(o.name.rfind("MagThumb",0)==0&&slot>=1&&slot<=8) {
+            const auto index=magazine_first+slot-1;
+            if(index<27&&(magazine_owned&(1U<<index))) {
+                o.resource=unsigned(art.resources.size()-1);o.color={{255,255,255,255}};
+            }
+        }
+        if(o.name.rfind("Cursor",0)==0)o.color[3]=slot==selected-magazine_first+1?255:0;
+    }
     if(extra_options) {
         constexpr float scale=3.F/5.F;
         for(const std::string prefix:{"OptionName_","Button_"}) {
@@ -136,7 +152,7 @@ void FrontendArt::Impl::draw_dialog(Canvas canvas,unsigned page,const PostRaceVa
         if(depth>32)throw std::runtime_error("dialog parent cycle");
         Transform parent;
         if(o.parent){const auto it=std::find_if(objects.begin(),objects.end(),[&](const auto& v){return v.id==o.parent;});if(it==objects.end())throw std::runtime_error("dialog parent missing");parent=self(self,*it,depth+1);}
-        if(page<4)return combine(parent,o,o.type==2||o.type==5);
+        if(page!=4&&page!=5)return combine(parent,o,o.type==2||o.type==5);
         const auto r=frontend_info_rotation(o.qx,o.qy,o.qz,o.qw);
         const float sx=o.type==2||o.type==5?o.w:1,sy=o.type==2||o.type==5?o.h:1;
         Transform t;
@@ -163,6 +179,21 @@ void FrontendArt::Impl::draw_dialog(Canvas canvas,unsigned page,const PostRaceVa
                 if(value.name=="UNRANKED_GROUP"&&values.at("Unranked")=="0")return true;
                 if(value.name=="mouse_over_L"&&values.at("LeftEnabled")=="0")return true;
                 if(value.name=="mouse_over_R"&&values.at("RightEnabled")=="0")return true;
+                if(page==6) {
+                    if(value.name=="SelectUniqueBlurb"||value.name=="car_thumb")return true;
+                    if(values.at("NoticeVisible")=="0"&&(value.name=="BorderFade"||value.name=="blue_menu_backing"||value.name=="button"))return true;
+                }
+                if(page==7) {
+                    const auto slot=trailing_number(value.name);
+                    const auto index=magazine_first+(slot?slot-1:0);
+                    if(value.name.rfind("Mag_Icons_Header_",0)==0)return true;
+                    if(value.name.rfind("MagThumb",0)==0&&(slot>8||index>=27))return true;
+                    if(value.name.rfind("locked_icon_",0)==0&&(index>=27||(magazine_owned&(1U<<index))))return true;
+                    if(value.name.rfind("mag_corner_",0)==0&&index>=27)return true;
+                    // These planes receive native cached cover photos, not the
+                    // small status icon used by the earned thumbnail grid.
+                    if(value.name=="MagCover01"||value.name=="MagCover02")return true;
+                }
                 if(value.parent)for(const auto& parent:objects)if(parent.id==value.parent)return self(self,parent,depth+1);
                 return false;
             };
@@ -176,7 +207,20 @@ void FrontendArt::Impl::draw_dialog(Canvas canvas,unsigned page,const PostRaceVa
             }return color;
         };
         auto color=inherited(inherited,o,0);const auto m=transform(transform,o,0);
-        if(page>=4&&!frontend_info_depth_visible(m.z))continue;
+        if((page==4||page==5)&&!frontend_info_depth_visible(m.z))continue;
+        if(page==6&&o.name=="master_thumb") {
+            const auto& icon=textures.at(bin_hash("STATUS_MAGAZINES_ICON"));
+            for(unsigned row=0;row<magazine_count;++row) {
+                const float x=float(int(row)-int(selected))*o.w;
+                if(x< -200.F||x>200.F)continue;
+                auto pose=m;pose.x+=x;
+                const float scale=1.F-std::abs(x)*.0031250000465661287F;
+                auto tint=color;tint[3]=unsigned(float(tint[3])*scale*scale*scale);
+                const float width=o.w*scale,height=o.h*scale;
+                quad(canvas,icon,pose,-width/2,-height/2,width,height,o.uv,tint);
+            }
+            continue;
+        }
         if(o.type==2) {
             const auto it=values.find(o.name);auto value=it==values.end()?o.text:it->second;
             auto label=o;

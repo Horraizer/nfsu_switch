@@ -6,6 +6,8 @@
 #include "nfsu/texture.h"
 #include "nfsu/career.h"
 #include "../switch/race_input.h"
+#include "../tests/race_particle_batch_checks.h"
+#include "../tests/race_particle_owner_checks.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -15,6 +17,38 @@
 #include <thread>
 #include <stdexcept>
 
+namespace nfsu {
+// FX-only witnesses after a real world step; no vehicle state is modified.
+struct RaceWorldContactProbe {
+    static void quiet_fx(RaceSession& driver) {
+        for(auto& t:driver.track_telemetry_) {
+            t.reset=VehicleTrackReset::none;t.model.owner_speeds.magnitude=0;t.audio_contact_count=0;
+            for(auto& w:t.model.wheels){w.contact=false;w.effect_slip_velocity={};}
+        }
+    }
+    static void wall_fx(RaceSession& driver,std::uint32_t polygon,unsigned owner) {
+        quiet_fx(driver);const auto origin=driver.telemetry().position;
+        for(auto& t:driver.track_telemetry_)for(unsigned i=0;i<2;++i) {
+            auto& c=t.audio_contacts[t.audio_contact_count++];c={};c.polygon=polygon;
+            c.point={origin.x+1+i,origin.y+i,origin.z};c.normal={0,0,1};c.impulse={15,0,0};
+            c.audio_order=100*owner+i+1;c.event_step=static_cast<std::uint32_t>(driver.timing().step);
+        }
+    }
+    static void reset_fx(RaceSession& driver,unsigned slice) {
+        driver.track_telemetry_.at(slice).reset=VehicleTrackReset::manual;
+    }
+    static void slipping(RaceSession& session) {
+        auto& t=session.track_telemetry_.back();
+        t.reset=VehicleTrackReset::none;t.model.owner_speeds.magnitude=50;
+        for(unsigned i=0;i<4;++i) {
+            auto& w=t.model.wheels[i];w.contact=true;w.surface=1;
+            w.ground_normal={0,0,1};
+            w.ground_point={t.position.x+.2*i,t.position.y,t.position.z};
+            w.effect_slip_velocity={80,0};
+        }
+    }
+};
+}
 using namespace nfsu;
 namespace {
 std::uint64_t now_us(){return std::uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());}
@@ -177,13 +211,8 @@ void check_split(const std::filesystem::path& root, std::string& error) {
                 require(scene->split_frame(world.session(),i,grid_frame,grid_hud,error),error);
                 if(step==31)require(signal_frame(grid_frame.commands)!=0&&signal_frame(grid_frame.commands)!=first_signal,
                     "split-screen traffic light animation did not advance");
-                for(std::size_t draw=0;draw<grid_frame.commands.draw_count();++draw) {
-                    const auto view=grid_frame.commands.draw_view(draw);
-                    if(!view.submit)continue;
-                    const auto& name=view.definition.name;
-                    if(name.find("race-car/particle/smoke/")==0)purge_drawn[0]=true;
-                    if(name.find("race-car/second/particle/smoke/")==0)purge_drawn[1]=true;
-                }
+                const auto batch=nfsu::test::check_particle_batches(grid_frame.commands,scene->particles());
+                for(unsigned owner=0;owner<2;++owner)purge_drawn[owner]|=batch.owners[owner];
             }
         }
         require(purge_drawn[0]&&purge_drawn[1],"each car must produce visible purge particles");
@@ -219,7 +248,7 @@ void check_split(const std::filesystem::path& root, std::string& error) {
         for(unsigned i=0;i<2;++i) {
             auto& frame=frames[i];
             require(scene->split_frame(world.session(),i,frame,hud,error),error);
-            require(frame.track_draws&&frame.car_draws&&frame.particle_draws>=2*kRaceParticleLimit&&
+            require(frame.track_draws&&frame.car_draws&&frame.particle_draws>=kRaceVehicleParticleDraws&&
                 validate_recorded_commands(frame.commands,error),error);
             unsigned flames=0;
             for(std::size_t draw=0;draw<frame.commands.draw_count();++draw) {
@@ -255,6 +284,98 @@ void check_split(const std::filesystem::path& root, std::string& error) {
         const auto& second=frames[1].commands.frame;
         require(!std::equal(std::begin(first.eye),std::end(first.eye),std::begin(second.eye)),
             "split-screen cameras record identical views");
+        // Exercise the real split owner, not two isolated particle objects.
+        std::size_t peak_particles=0;std::array<bool,2> tyre_owners{};
+        RaceParticle oldest;bool have_oldest=false;
+        const auto first_fx_step=world.session().telemetry().step;
+        for(unsigned step=0;step<120;++step) {
+            require(world.advance(input,error),error);
+            auto& primary=const_cast<RaceSession&>(world.session());
+            RaceWorldContactProbe::slipping(primary);
+            RaceWorldContactProbe::slipping(const_cast<RaceSession&>(primary.rival(0)));
+            scene->advance_local_effects(primary);
+            const auto& p=scene->particles();
+            const auto live=p.smoke_count()+p.spark_count()+p.water_count()+
+                p.environment_alpha_count()+p.environment_additive_count();
+            require(live<=kRaceWaterPool,"split players and environment exceeded the global native1000 pool");
+            peak_particles=std::max(peak_particles,live);
+            for(std::size_t j=0;j<p.smoke_count();++j) {
+                const auto& puff=p.smoke(j);
+                if(puff.effect!=RaceParticleEffect::road)continue;
+                if(puff.water_owner<2)tyre_owners[puff.water_owner]=true;
+                if(!have_oldest && puff.born_step>first_fx_step){oldest=puff;have_oldest=true;}
+            }
+            // Both views and repeated callbacks consume the same world state.
+            if(step%20==0 || step==119)for(unsigned player=0;player<2;++player) {
+                require(scene->split_frame(primary,player,grid_frame,hud,error),error);
+                nfsu::test::check_particle_batches(grid_frame.commands,p);
+                require(validate_recorded_commands(grid_frame.commands,error),error);
+                scene->advance_local_effects(primary);
+                require(live==p.smoke_count()+p.spark_count()+p.water_count()+
+                    p.environment_alpha_count()+p.environment_additive_count(),"second split view emitted particles again");
+            }
+        }
+        const auto& saturated=scene->particles();bool retained=false;
+        for(std::size_t j=0;j<saturated.smoke_count();++j) {
+            const auto& p=saturated.smoke(j);
+            retained|=have_oldest && p.born_step==oldest.born_step && p.water_owner==oldest.water_owner &&
+                p.origin.x==oldest.origin.x && p.effect==oldest.effect;
+        }
+        std::cout<<"split saturation witnesses: peak="<<peak_particles<<" owners="<<tyre_owners[0]<<tyre_owners[1]
+                 <<" oldest="<<have_oldest<<" retained="<<retained<<std::endl;
+        require(peak_particles==kRaceWaterPool && tyre_owners[0] && tyre_owners[1] && retained,
+            "split saturation must retain both players and live smoke at the shared ceiling");
+        require(scene->check_local_budget(world.session(),0,error),error);
+        std::cout<<"PASS split shared-pool saturation mode="<<int(mode)<<" peak="<<peak_particles<<std::endl;
+        for(unsigned owner=0;owner<2;++owner) {
+            if(owner)for(unsigned i=0;i<12;++i) {
+                require(world.advance(input,error),error);
+                auto& driver=const_cast<RaceSession&>(world.session());
+                RaceWorldContactProbe::quiet_fx(driver);
+                RaceWorldContactProbe::quiet_fx(const_cast<RaceSession&>(driver.rival(0)));
+                RaceWorldContactProbe::slipping(driver);
+                RaceWorldContactProbe::slipping(const_cast<RaceSession&>(driver.rival(0)));
+                scene->advance_local_effects(driver);
+            }
+            const auto before=nfsu::test::before_owner_reset(scene->particles(),owner,world.session().world_frame_seconds());
+            require(before.owned_vehicle && !before.others.empty(),"split reset needs live particles from both players");
+            require(world.advance(input,error),error);
+            auto& driver=const_cast<RaceSession&>(world.session());
+            auto& other=const_cast<RaceSession&>(driver.rival(0));
+            RaceWorldContactProbe::quiet_fx(driver);RaceWorldContactProbe::quiet_fx(other);
+            RaceWorldContactProbe::reset_fx(owner?other:driver,owner?1:3);
+            scene->advance_local_effects(driver);
+            nfsu::test::check_owner_reset(scene->particles(),owner,before);
+            for(unsigned player=0;player<2;++player) {
+                require(scene->split_frame(driver,player,grid_frame,hud,error),error);
+                nfsu::test::check_particle_batches(grid_frame.commands,scene->particles());
+            }
+            std::cout<<"PASS split addressable reset owner="<<owner<<" prior="<<before.owned_vehicle<<std::endl;
+        }
+        {
+            require(world.advance(input,error),error);
+            auto& driver=const_cast<RaceSession&>(world.session());
+            const auto& polygons=driver.course().world.collision.polygons;
+            const auto wall=std::find_if(polygons.begin(),polygons.end(),[](const auto& p){return p.unknown0[2]==20;});
+            require(wall!=polygons.end(),"split wall event witness needs a solid-wall material");
+            RaceWorldContactProbe::wall_fx(driver,std::uint32_t(wall-polygons.begin()),0);
+            RaceWorldContactProbe::wall_fx(const_cast<RaceSession&>(driver.rival(0)),std::uint32_t(wall-polygons.begin()),1);
+            scene->advance_local_effects(driver);
+            std::array<unsigned,2> sparks{};
+            for(std::size_t j=0;j<scene->particles().spark_count();++j) {
+                const auto& p=scene->particles().spark(j);
+                if(p.born_step==driver.telemetry().step && p.water_owner<2)++sparks[p.water_owner];
+            }
+            require(sparks[0]==20 && sparks[1]==20,"split lost distinct wall events or duplicated held event aliases");
+            const auto count=scene->particles().spark_count();
+            for(unsigned player=0;player<2;++player) {
+                require(scene->split_frame(driver,player,grid_frame,hud,error),error);
+                nfsu::test::check_particle_batches(grid_frame.commands,scene->particles());
+                scene->advance_local_effects(driver);
+                require(scene->particles().spark_count()==count,"second view emitted a collision again");
+            }
+            std::cout<<"PASS split wall events two contacts per owner, repeated aliases counted once"<<std::endl;
+        }
         if(mode==QuickRaceMode::circuit) {
             // Run an independent A/B scene on the same world. World package
             // and references stay stable across the two narrower camera views.

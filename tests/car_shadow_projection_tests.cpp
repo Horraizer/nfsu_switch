@@ -1,4 +1,7 @@
 #include "nfsu/car_shadow.h"
+#include "nfsu/car_parts.h"
+#include "nfsu/drive_session.h"
+#include "nfsu/split_layout.h"
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -24,6 +27,68 @@ bool road(const VehicleVec3& p,TrackContact& c,const void* user) {
 }
 #include "car_shadow_ground_native.inc"
 #include "car_shadow_grid_native.inc"
+#include "car_shadow_view_native.inc"
+#include "car_shadow_gc_native.inc"
+void original_gc_shadow_view() {
+    CarShadowView boundary;
+    boundary.camera.eye={0,0,0};boundary.camera.forward={1,0,0};
+    boundary.pixel_scale=car_shadow_view_pixel_scale(shadow_gc_boundary_fov);
+    const int pixels=car_shadow_pixel_size(boundary,{shadow_gc_boundary_position,0,0});
+    need(pixels==shadow_gc_boundary_pixels && car_shadow_silhouette_alpha(pixels,0)==55,
+         "original GameCube CalculateH/GetPixelSize keeps the45-pixel LOD-B boundary");
+    for(const auto& native:shadow_gc_scale_native) {
+        const float scale=car_shadow_view_pixel_scale(static_cast<std::uint16_t>(native.fov));
+        std::uint32_t bits=0;std::memcpy(&bits,&scale,sizeof bits);
+        if(bits!=native.scale)
+            throw std::runtime_error("original GameCube CalculateH bits differ at FOV "+std::to_string(native.fov));
+    }
+}
+void original_shadow_view() {
+    for(const auto& native:shadow_view_native) {
+        CarShadowView view;
+        view.camera.eye={0,0,0};view.camera.forward={1,0,0};
+        view.pixel_scale=drive_view_pixel_scale(static_cast<std::uint16_t>(native.fov),native.width);
+        view.two_player_views=native.two_players;
+        need(std::abs(view.pixel_scale-native.scale)<=native.scale*1.e-6F,"original40DCB0 view scale");
+        const VehicleVec3 position{native.position[0],native.position[1],native.position[2]};
+        const int pixels=car_shadow_pixel_size(view,position);
+        need(pixels==native.pixels,"original545180 radius-three size and split conversion");
+        need(car_lod_for_pixel_size(float(pixels),native.two_players?1U:0U)==native.lod,"original56E0AD LOD");
+        need(car_shadow_silhouette_alpha(pixels,native.height,native.two_players)==native.alpha,"original56E74C LOD alpha");
+    }
+    need(car_shadow_view_pixel_scale(0)==10.F,"GameCube zero-angle CalculateH fallback");
+    for(bool split:{false,true}) {
+        need(car_shadow_silhouette_alpha(120,0,split)==55,"LOD A/B retain full shadow alpha");
+        need(car_shadow_silhouette_alpha(45,0,split)==55,"LOD B shadow endpoint");
+        need(car_shadow_silhouette_alpha(44,0,split)==52,"LOD C starts below45 pixels");
+        need(car_shadow_silhouette_alpha(32,0,split)==26,"LOD C middle fade uses pixels");
+        need(car_shadow_silhouette_alpha(20,0,split)==0,"LOD C lower shadow endpoint");
+        need(car_shadow_silhouette_alpha(19,0,split)==0,"LOD D omits silhouette");
+        need(car_shadow_silhouette_alpha(45,1,split)==0,"height fade still removes airborne silhouette");
+    }
+    // Each player must use the current eye/direction and supplied view scale.
+    CarShadowView first,second;
+    first.camera.eye={0,0,0};first.camera.forward={1,0,0};first.pixel_scale=444.3363037109375F;
+    first.two_player_views=true;second=first;second.camera.eye={80,0,0};second.camera.forward={-1,0,0};
+    for(unsigned player:{1U,0U,1U}) {
+        const auto& view=player?second:first;
+        need(car_shadow_pixel_size(view,{50,0,0})==(player?34:19),"player-specific eye cannot reuse the previous view");
+    }
+    for(const auto layout:{SplitLayout::stacked,SplitLayout::side_by_side})for(unsigned player:{1U,0U,1U}) {
+        ChaseCameraView chase;chase.eye={player?60.:0.,0,0};chase.heading=player?32768:0;
+        chase.fov=player?16384:13020;
+        const auto viewport=split_viewport(1280,720,layout,player);
+        const auto lens=split_viewport(640,480,layout,player);
+        OrbitCamera camera;std::string error;
+        need(drive_render_camera(chase,ChaseFovMode::retail_widescreen,viewport.width,viewport.height,
+            camera,error,double(lens.width)/lens.height),"actual split camera adapter");
+        need(camera.native_fov==chase.fov,"widened split projection preserves the selected player's original FOV");
+        CarShadowView view;view.two_player_views=true;
+        need(make_camera_frame(camera,viewport.width,viewport.height,view.camera,error),"actual split camera basis");
+        view.pixel_scale=car_shadow_view_pixel_scale(camera.native_fov);
+        need(car_shadow_pixel_size(view,{40,0,0})==(player?31:19),"both split layouts keep the logical512 console scale and current player lens");
+    }
+}
 void original_ground_cache() {
     for(unsigned n=0;n<sizeof(shadow_ground_native)/sizeof(*shadow_ground_native);++n) {
         const auto& expected=shadow_ground_native[n];TrackContactWorld world;world.valid=true;
@@ -71,6 +136,8 @@ void original_shadow_light() {
     }
 }
 int main(){try {
+    original_gc_shadow_view();
+    original_shadow_view();
     original_shadow_light();
     original_ground_cache();
     CarShadowAsset asset;asset.selected_bounds=true;asset.low={-2.F,-1.F,0.F};asset.high={3.F,1.F,1.F};

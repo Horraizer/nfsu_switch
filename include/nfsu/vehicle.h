@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -162,8 +163,10 @@ struct VehicleHandling {
     float alternate_yaw_scale = 1.0F;           // +0x270; rigid properties+50
     std::array<VehicleAxleStrut, 2> struts{};   // [0] front, [1] rear
     float shift_fraction = 0.0F;                // +0x2C0
-    float final_drive_rear = 0.0F;              // +0x2C8, sub +0x1B8: wheels 2 and 3
-    float final_drive_front = 0.0F;             // +0x2CC, sub +0x1BC: wheels 0 and 1
+    // Names follow the AI wheel torque loop at 47563D. The player gearbox
+    // (46D680, 46E020) applies the same stored ratios to the opposite axles.
+    float final_drive_rear = 0.0F;              // +0x2C8, sub +0x1B8
+    float final_drive_front = 0.0F;             // +0x2CC, sub +0x1BC
     float rear_drive_fraction = 0.0F;           // +0x2D0, sub +0x1C0
     float clutch_stiffness = 0.0F;              // +0x2D4, kN m per rad/s
     std::uint32_t forward_gears = 0;            // +0x2D8, sub +0x1C8
@@ -632,6 +635,10 @@ struct PlayerOwnerMotion {
     std::uint16_t heading = 0;
 };
 
+struct VehiclePublishedMotion {
+    VehicleVec3 linear,angular;
+};
+
 //479640 owner3C8/CC/D0/D4. Owner policy is not part of rigid integration history.
 struct PlayerOwnerTraction {
     int mode = 0;
@@ -663,8 +670,10 @@ struct VehicleState {
     float owner_slip_angle = 0; //464ED0 from the last outer publication
     PlayerOwnerMotion owner_motion;
     float grip_recovery = 1; // physics7C, handbrake recovery
+    float owner_grip_scale = 1; // Actor478/physics1+78, separate from7C
     PlayerOwnerTraction owner_traction;
     PlayerOwnerSpeeds owner_speeds; // retained until unsplit frame publication
+    std::array<float,4> bottom_out_impulse{}; // actor330, visual-only outer accumulator
     PlayerAeroCache aero;
     std::array<float, kVehicleWheelCount> aero_preloads{}; // kN, held per outer call
     bool aero_ready = false;
@@ -681,6 +690,7 @@ struct VehicleState {
     PlayerRigidBodyState rigid_body;
     bool rigid_body_ready = false;
     VehicleQuat rigid_orientation; // detects external edits to the public pose
+    std::optional<VehiclePublishedMotion> motion_before_first_move;
     std::uint16_t steering_word = 0;
     bool steering_word_ready = false; // original outer producer epoch
 };
@@ -743,6 +753,7 @@ struct VehicleTelemetry {
     //478FA9 publishes gearbox+70 before the audio normalizer; original kN m.
     // Output-only diagnostic, excluded from legacy replay bytes and hashes.
     float audio_transmitted_torque = 0;
+    std::array<float,4> bottom_out_impulse{}; // output only; excluded from legacy bytes
     PlayerEngineState engine;
     PlayerGearState transmission;
     PlayerOwnerSpeeds owner_speeds;
@@ -826,6 +837,8 @@ private:
 // The model
 // ---------------------------------------------------------------------------
 
+enum class VehicleSteeringState { initialized, before_first_command };
+
 class VehicleModel {
 public:
     // Checks the handling (check_vehicle_handling) and the approximations,
@@ -871,6 +884,8 @@ public:
     // for the original queued collision continuation's completion callback.
     // refresh_only performs its preceding component refresh without integration,
     // publication or an outer policy change; it requires contact_completion.
+    // latch_grip runs only the wheel-grip outer source independently of gearbox
+    // requests, for the first held-grid slice of a world frame.
     bool step(VehicleState& state,
               const VehicleInput& input,
               const VehicleGround& ground,
@@ -882,7 +897,14 @@ public:
               bool contact_completion = false,
               bool refresh_only = false,
               float refresh_interval = 0,
-              double outer_dt = -1) const;
+              double outer_dt = -1,
+              VehicleSteeringState steering = VehicleSteeringState::initialized,
+              bool latch_grip = false) const;
+
+    // The original outer Move wheel-grip source, without component integration
+    // or a gearbox request. Call once per held world frame, not per solver slice.
+    // Requires a valid model/state and finite nonnegative outer interval.
+    void latch_owner_grip(VehicleState&,const VehicleInput&,float interval) const noexcept;
 
 private:
     struct Derived {

@@ -1,4 +1,6 @@
 #include "nfsu/race_result.h"
+#include "nfsu/race_finish_flow.h"
+#include "race_presentation_clock.h"
 #include "nfsu/frame_spike_trace.h"
 #include "nfsu/race_debug_input.h"
 #include "nfsu/career.h"
@@ -6,6 +8,7 @@
 #include "nfsu/campaign_sweep.h"
 #include "nfsu/campaign_finish_save.h"
 #include "nfsu/career_garage.h"
+#include "nfsu/career_magazine_menu.h"
 // Event 1 on the pad, with the desktop fixed-step simulation and GPU scene.
 #include "deko_renderer.h"
 #include "lan_menu.h"
@@ -872,7 +875,8 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             performance?performance->nitrous:0,performance?performance->tyres:0,rival_audio,performance?performance->induction:0,
             unsigned(traffic_actors.size()),
             race.session().props()?race.session().props()->sound_materials():0U,scene.track().track_number,
-            intro_grid&&intro_grid->startup_random?std::optional{intro_grid->startup_random->sound_seed}:std::nullopt);
+            intro_grid&&intro_grid->startup_random?std::optional{intro_grid->startup_random->sound_seed}:std::nullopt,
+            dress?dress->turbo_brand:-1);
         if (!audio_started && audio_note.empty())
             audio_note = "audio disabled: startup failed without diagnostic";
     } else audio_note = "audio disabled: render core pin failed";
@@ -977,6 +981,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     };
     std::vector<unsigned char> rgba;
     RaceTickDebt clock;
+    RaceLiveClock live_clock;
+    const bool measured_race=!replay_mode&&!ab_enabled&&!sweep&&!panel_mode&&!nos_self_check;
+    const auto reset_clocks=[&]{clock.reset();live_clock.reset();};
     auto previous = armGetSystemTick();
     RacePauseMenu pause_menu(free_drive,tournament&&tournament->event);RaceReturn pause_return=RaceReturn::menu;bool pause_exit=false;
     bool paused = false, printed_result = false, printed_final_perf = false;
@@ -987,8 +994,11 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
     std::uint64_t previous_driving_present = 0;
     std::uint64_t last_heap_sample = 0, timed_heap_samples = 0;
     RaceHudFrame hud_frame;
-    double finish_seconds=0;bool finish_seen=false;
-    std::int32_t finish_world_start=0,finish_delay_ticks=3*kRaceTicksPerSecond;
+    bool finish_seen=false,finish_hold_over=false;
+    RaceFinishHold finish_hold;
+    auto& ui_clock=race_presentation_clock();ui_clock.resume();
+    RaceOverPhase finish_presentation;
+    std::future<std::unique_ptr<RaceLoadingArt>> preparing_finish_loading;
     RaceFpsHistory fps_history;
     RaceDebugInput debug_input;
     RaceMinimapState minimap_state;
@@ -1039,11 +1049,22 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 if (profile_stats) profile_stats->reset();
                 reset_cpu_probes();
             }
-            clock.reset(); previous = armGetSystemTick();
+            reset_clocks(); previous = armGetSystemTick();
             continue;
         }
-        const auto begin = armGetSystemTick();
+        auto begin = armGetSystemTick();
+        if(measured_race && !paused) {
+            // 585B82..585C4F waits out a short frame before sampling the pad.
+            // A queued swapchain image can return before the next display period.
+            const auto wait=RaceLiveClock::wait_ns(armTicksToNs(begin-previous));
+            if(wait) {
+                svcSleepThread(static_cast<s64>(wait));
+                begin=armGetSystemTick();
+            }
+        }
         const auto elapsed = armTicksToNs(begin-previous)/1000; previous = begin;
+        // Advance the published UI delta before any terminal edge is known.
+        const auto ui_interval=ui_clock.sample(armTicksToNs(begin)/1000);
         padUpdate(&pad); const auto down = padGetButtonsDown(&pad);
         if(sweep) {
             if(down&HidNpadButton_Plus)throw Cancel{};
@@ -1070,7 +1091,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         const bool suspend=elapsed>1000000;
         const bool pause_requested=!sweep&&((down&(HidNpadButton_Plus|HidNpadButton_Y))||suspend);
         if(ordinary_ui&&pause_requested&&race.session().timing().outcome==RaceOutcome::running) {
-            paused=true;pause_menu.open();clock.reset();sound.set_suspended(true);
+            paused=true;pause_menu.open();reset_clocks();sound.set_suspended(true);
             sound.frontend_sound(audio::FrontendSound::select);
             require(renderer.set_frontend_overlay(pause_art.atlas(),error,false),error);
             FrontendUiFrame pause_ui;FrontendClock pause_clock;
@@ -1113,15 +1134,15 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             if(pause_exit||!appletMainLoop())break;
             suppress_nitrous=(padGetButtons(&pad)&HidNpadButton_A)!=0;
             require(renderer.restore_race_overlay(hud_atlas,error),error);
-            paused=false;just_unpaused=true;previous=armGetSystemTick();clock.reset();
+            paused=false;just_unpaused=true;previous=armGetSystemTick();reset_clocks();ui_clock.resume();
             stats.reset();presentation_stats.reset();previous_driving_present=0;fps_previous_present=0;last_perf.clear();++unpause_resets;
             if(profile_stats){profile_stats->reset();renderer.reset_gpu_profile();}reset_cpu_probes();
         }else if(ordinary_ui&&suspend) {
-            clock.reset();previous=armGetSystemTick();continue;
+            reset_clocks();previous=armGetSystemTick();continue;
         }else if(!ordinary_ui) {
             if(down&HidNpadButton_Plus){ab_cancelled=ab_replay;break;}
-            if((down&HidNpadButton_Y)&&!ab_replay){require(!ab_enabled,"AB invalid: pause requested");just_unpaused=paused;paused=!paused;clock.reset();}
-            if(suspend){require(!ab_enabled,"AB invalid: OS suspend");paused=true;clock.reset();}
+            if((down&HidNpadButton_Y)&&!ab_replay){require(!ab_enabled,"AB invalid: pause requested");just_unpaused=paused;paused=!paused;reset_clocks();}
+            if(suspend){require(!ab_enabled,"AB invalid: OS suspend");paused=true;reset_clocks();}
         }
         const bool connected = padIsConnected(&pad);
         const bool running = race.session().timing().outcome == RaceOutcome::running;
@@ -1132,7 +1153,11 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             race.session().timing().stage == RaceStage::racing;
         const bool can_finish_drive=!replay_mode&&!ab_enabled&&race.session().has_finish_driver();
         const bool finish_driving=can_finish_drive&&race.session().timing().outcome==RaceOutcome::finished;
-        if (!paused && !just_unpaused && (running||finish_driving)) clock.add(elapsed); else clock.reset();
+        double live_interval=0;
+        if (!paused && !just_unpaused && (running||finish_driving)) {
+            if(measured_race)live_interval=live_clock.advance(elapsed);
+            else clock.add(elapsed);
+        } else reset_clocks();
         double simulation = 0, residency = 0, record = 0, upload = 0;
         std::array<double,8> simulation_ticks{};
         RaceFrameProfile record_profile;
@@ -1140,7 +1165,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         const bool cpu_probe=!ab_minimal && (spike_probe || presented%60==0);
         DekoUpdateTiming update_timing;
         unsigned ticks = 0;
-        while (!paused && (race.session().timing().outcome == RaceOutcome::running||finish_driving) && ticks < 8 && (ab_replay ? ticks<ab_expected->count : clock.take())) {
+        while (!paused && (race.session().timing().outcome == RaceOutcome::running||finish_driving) && ticks < 8 && (measured_race ? (ticks==0 && live_interval>0) : ab_replay ? ticks<ab_expected->count : clock.take())) {
             GamepadFrame input;
             if(sweep) {
                 const auto& timing=race.session().timing();
@@ -1183,15 +1208,13 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             sim_probe.detailed_contacts=spike_probe;
             const bool probe_tick=cpu_probe && !race_car_held(race.session().timing());
             if(drag_shift_trace)drag_shift_trace->before(race.session());
-            const bool crashing=race.session().crash_camera_event()!=0;
-            require(race.simulate(input,error,probe_tick?&sim_probe:nullptr,probe_tick?&profile_clock:nullptr),error);
+            require(race.simulate_frame(input,measured_race?live_interval:kDriveFrameSeconds,error,
+                probe_tick?&sim_probe:nullptr,probe_tick?&profile_clock:nullptr),error);
             if(!replay_mode&&!ab_replay&&!ab_record&&!sweep&&!nos_self_check&&!race.session().is_drift())
                 presentation.camera_pov=race.session().camera().pov;
-            if(!finish_seen&&race.session().timing().outcome==RaceOutcome::finished) {
-                // 42C2FB starts the finish hold on the world clock.
-                finish_world_start=race.session().timing().step_ticks;
-                finish_delay_ticks=(crashing&&can_finish_drive?6:3)*kRaceTicksPerSecond;
-            }
+            finish_hold_over=finish_hold.observe(race.session().timing(),1,
+                {{race.session().crash_camera_event(),0,0,0}});
+            finish_hold.advance(race.session().world_frame_seconds());
             if(drag_shift_trace)drag_shift_trace->after(race.session(),input.pads[0].buttons);
             result_stats.observe(race.session());
             if(probe_tick) {
@@ -1268,9 +1291,28 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         }
         const bool finished = race.session().timing().outcome == RaceOutcome::finished;
         if(finished) {
-            if(!finish_seen){finish_seen=true;finish_seconds=0;std::puts("HUD RACE_OVER begin");std::fflush(stdout);}
-            else if(!paused && elapsed<=1000000)finish_seconds+=double(elapsed)/1000000;
+            if(!finish_seen) {
+                finish_seen=true;std::puts("HUD RACE_OVER begin");std::fflush(stdout);
+                if(ordinary_ui&&!free_drive&&!profile_stats&&!(event_number==0&&race.session().player_won())) {
+                    // Decode/hash only after the terminal edge, while the
+                    // finish driver and Race Over presentation keep running.
+                    preparing_finish_loading=std::async(std::launch::async,[&] {
+                        auto art=std::make_unique<RaceLoadingArt>();std::string load_error;
+                        require(art->load(root,load_error)&&art->prepare_overlay(load_error),load_error);
+                        return art;
+                    });
+                }
+            }
+            if(!paused&&!just_unpaused)finish_presentation.advance(ui_interval);
+            // Retired modes with no moving world still run the ending state.
+            // Bridge that clock with the same prepared delta, once per display.
+            if(!ticks&&!paused&&!just_unpaused) {
+                finish_hold_over=finish_hold.observe(race.session().timing(),1,
+                    {{race.session().crash_camera_event(),0,0,0}});
+                finish_hold.advance(ui_interval);
+            }
         }
+        const double race_over_seconds=finish_presentation.observe(finished);
         RaceFrameSample measured;
         measured.simulation_ms = simulation;
         measured.residency_ms = residency;
@@ -1383,27 +1425,15 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             static_cast<std::uint32_t>(frame.track_draws),
             static_cast<std::uint32_t>(frame.car_draws),driving_before && !finished,ab_enabled?display_frame:0,profile_frame || cpu_probe,spike_probe?display_frame:0};
         const auto present_start = armGetSystemTick();
-        if(hud_mode&&!pause_menu.hud())hud_frame={};
-        if (hud_mode && pause_menu.hud()) build_race_hud_frame(race.session(),hud_atlas,frame.commands.width,
+        if(hud_mode&&(!pause_menu.hud()||finished))hud_frame={};
+        if (hud_mode && pause_menu.hud() && !finished) build_race_hud_frame(race.session(),hud_atlas,frame.commands.width,
                                            frame.commands.height,hud_frame,presentation.metric_speed);
-        if (hud_mode && pause_menu.hud() && hud_atlas.map.valid)
+        if (hud_mode && pause_menu.hud() && !finished && hud_atlas.map.valid)
             require(append_race_minimap(race.session(),hud_atlas,frame.commands.width,
                     frame.commands.height,minimap_state,hud_frame),"minimap geometry invalid or HUD capacity exceeded");
         if(hud_mode && finished) {
-            std::string finish_message;
-            std::string_view message="Race Over";
-            const auto& finish=race.session().timing().racers[0];
-            const auto status=finish.status;
-            if(status==RacerStatus::knocked_out)message="You were knocked out!"; // English C246A543, 4A7EF9.
-            else if(race.session().is_drag()) {
-                if(status==RacerStatus::blown_engine)message=hud_atlas.drag_failure_labels[0];
-                else if(status==RacerStatus::totalled)message=hud_atlas.drag_failure_labels[1];
-                else if(status==RacerStatus::normal_completion&&finish.finish_valid) {
-                    finish_message=drag_finish_message(hud_atlas,race.session().player_position(),finish.finish_ticks);
-                    message=finish_message;
-                }
-            }
-            append_race_over(hud_atlas,finish_seconds,frame.commands.width,frame.commands.height,hud_frame,message);
+            const auto message=race_over_message(race.session().timing().racers[0],race.session().is_drag(),hud_atlas);
+            build_race_over_frame(hud_atlas,race_over_seconds,frame.commands.width,frame.commands.height,hud_frame,message);
         }
         // Diagnostics use the space left after the race presentation.
         if (fps_overlay && hud_mode)
@@ -1462,7 +1492,7 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         if(nos_self_check && !nos_probe_was_complete && renderer.speed_blur_probe_complete()) {
             // CPU reference and pixel export are intentional diagnostic stalls,
             // not an OS suspend. Resume the automatic run without timing debt.
-            clock.reset();previous=armGetSystemTick();
+            reset_clocks();previous=armGetSystemTick();
         }
         const bool nos_self_check_done=nos_self_check && renderer.speed_blur_probe_complete() &&
             nos_self_check_boost_tick>=0 && race.session().timing().race_ticks>=nos_self_check_boost_tick+8000;
@@ -1651,12 +1681,9 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
             }
         }
         if(spike_probe&&diagnostic_present_end)previous_tail_ms=ms(armGetSystemTick()-diagnostic_present_end);
-        // Terminal modes without a post-finish simulation still have a
-        // running presentation clock for the banner.
-        const bool finish_hold_over=finish_driving?
-            race.session().timing().step_ticks-finish_world_start>finish_delay_ticks:
-            finish_seconds>double(finish_delay_ticks)/kRaceTicksPerSecond;
-        if(finished&&(!hud_mode||panel_mode||replay_mode||ab_enabled||profile_stats||finish_hold_over))break;
+        const bool loading_ready=!preparing_finish_loading.valid()||
+            preparing_finish_loading.wait_for(std::chrono::seconds(0))==std::future_status::ready;
+        if(finished&&loading_ready&&(!hud_mode||panel_mode||replay_mode||ab_enabled||profile_stats||finish_hold_over))break;
     }
     } catch (const std::exception& e) {
         if(sweep)throw;
@@ -1756,15 +1783,27 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
         sound.set_suspended(false);
         try {
             FrontendArt results_art;
-            require(post_art->prepare_post_race(results_art,error,frontend_music!=nullptr),error);
-            std::snprintf(flow_detail,sizeof flow_detail,"atlas=%ux%u bytes=%lu",
-                results_art.atlas().width,results_art.atlas().height,(unsigned long)results_art.atlas().rgba.size());
-            flow_mark("post.atlas",flow_detail);
-            require(renderer.set_frontend_overlay(results_art.atlas(),error),error);
+            auto finish_loading=preparing_finish_loading.valid()?preparing_finish_loading.get():std::make_unique<RaceLoadingArt>();
+            if(finish_loading->atlas().rgba.empty())
+                require(finish_loading->load(root,error)&&finish_loading->prepare_overlay(error),error);
+            require(renderer.set_frontend_overlay(finish_loading->atlas(),error),error);
+            RaceFinishLoadingClock finish_clock(ui_clock,armTicksToNs(armGetSystemTick()));
+            FrontendUiFrame loading_ui;
+            finish_loading->record(frame.commands.width,frame.commands.height,0,loading_ui);
+            require(renderer.present_frontend(loading_ui,error),error);
+            flow_mark("post.loading","PC_Loading.fng entry before ending resources");
             std::string finish_scene_error;
-            bool staged_finish=scene.load_finish_scene(posix_file_system(),root,race.session(),
-                selected_race.region,finish_variant(),finish_scene_error);
-            flow_mark(staged_finish?"post.scene":"post.scene_unavailable",finish_scene_error.c_str());
+            bool staged_finish=false,preparation_complete=false;
+            const auto ending_variant=finish_variant();
+            // Asset preparation owns only the new result atlas and ending-NIS
+            // state. The renderer keeps the last immutable race commands under
+            // the opaque loading package until the future has been joined.
+            auto preparing_finish=std::async(std::launch::async,[&,ending_variant] {
+                std::string prepare_error;
+                require(post_art->prepare_post_race(results_art,prepare_error,frontend_music!=nullptr),prepare_error);
+                return scene.load_finish_scene(posix_file_system(),root,race.session(),
+                    selected_race.region,ending_variant,finish_scene_error);
+            });
             bool frontend_audio=false;
             bool tried_frontend_audio=false;
             std::future<bool> starting_frontend_audio;
@@ -1816,30 +1855,36 @@ RaceReturn run(const std::string& root, bool replay_mode, bool panel_mode, bool 
                 require(renderer.update(frame.commands,error),error);
                 return false;
             };
-            // 422ED1 selects the ending NIS, then 422FE9 waits at least
-            // two seconds before it can request the results package.
-            // Audio state 8 fades the race song and selects the frontend mask
-            // during the ending NIS, before the results package is requested.
+            //422F84 opens PC_Loading.fng during the ending-NIS readiness
+            // phase.422FE9 gates handoff on both the original8000-tick minimum
+            // and445100 being idle.422FB2 closes loading before results.
+            // Audio state8 changes the music while loading covers the scene.
             if(frontend_music)sound.fade_music_for_finish();
-            if(staged_finish) {
-                FrontendClock finish_clock;
+            for(;;) {
+                if(!appletMainLoop())throw Cancel{};
+                if(appletGetFocusState()!=AppletFocusState_InFocus){finish_clock.resume();continue;}
+                padUpdate(&pad);
+                if(finish_sweep&&(padGetButtonsDown(&pad)&HidNpadButton_Plus))throw Cancel{};
                 finish_clock.sample(armTicksToNs(armGetSystemTick()));
-                constexpr double minimum_scene_seconds=2.0;
-                FrontendUiFrame intro_ui;
-                while(finish_scene_seconds<=minimum_scene_seconds && appletMainLoop()) {
-                    padUpdate(&pad);
-                    if(finish_sweep&&(padGetButtonsDown(&pad)&HidNpadButton_Plus))throw Cancel{};
-                    if(!record_finish_scene())break;
-                    intro_ui.vertices.clear();intro_ui.additive.clear();
-                    append_finished_song(intro_ui);
-                    if(intro_ui.vertices.empty())require(renderer.present(error),error);
-                    else require(renderer.present_frontend(intro_ui,error),error);
-                    const double seconds=double(finish_clock.sample(armTicksToNs(armGetSystemTick())))/1000000000.0;
-                    finish_scene_seconds+=seconds;
-                    results_art.advance(float(seconds));
-                    update_results_music();
+                finish_scene_seconds=double(finish_clock.original_ticks())/kRaceTicksPerSecond;
+                if(!preparation_complete&&preparing_finish.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+                    staged_finish=preparing_finish.get();preparation_complete=true;
+                    std::snprintf(flow_detail,sizeof flow_detail,"atlas=%ux%u bytes=%lu",
+                        results_art.atlas().width,results_art.atlas().height,(unsigned long)results_art.atlas().rgba.size());
+                    flow_mark("post.atlas",flow_detail);
+                    flow_mark(staged_finish?"post.scene":"post.scene_unavailable",finish_scene_error.c_str());
                 }
+                // Upload/record the new scene before calling it ready. It is
+                // still covered; no unadorned finish-scene preview can escape.
+                if(preparation_complete&&staged_finish)record_finish_scene();
+                if(race_finish_loading_ready(finish_clock.original_ticks(),preparation_complete))break;
+                finish_loading->record(frame.commands.width,frame.commands.height,finish_scene_seconds,loading_ui);
+                require(renderer.present_frontend(loading_ui,error),error);
+                update_results_music();
             }
+            require(renderer.set_frontend_overlay(results_art.atlas(),error),error);
+            finish_loading.reset();
+            flow_mark("post.loading_closed","resources ready; next presentation includes results");
             update_results_music();
             std::array<std::string,4> models{{race.car(),race.car(),race.car(),race.car()}},labels;
             if(intro_grid) {
@@ -2730,6 +2775,7 @@ int main(int argc, char** argv) {
                                     bool choose_quick_mode=sandbox;
                                     std::vector<unsigned> quick_courses;
                                     CareerInfoMenu career_info;
+                                    CareerMagazineMenu magazine_menu;
                                     CareerGarage garage;garage.reset(career,profile,garage_car!=nullptr);
                                     std::vector<unsigned char> garage_globals;std::vector<RaceTableIssue> garage_issues;
                                     require(load_race_image(std::filesystem::path(root)/"Global/GLOBALB.BUN",garage_globals,garage_issues),"garage GLOBALB unavailable");
@@ -2834,12 +2880,13 @@ int main(int argc, char** argv) {
                                                 auto next=profile;require(career.movie_finished(next,frontend_error),frontend_error);store(next);
                                                 selection=0;continue;
                                             }
-                                            if(profile.page==CareerPage::magazines){
+                                            if(career_magazine_page(profile.page)){
+                                                if(!magazine_menu.active())magazine_menu.reset(profile);
+                                                if(!magazine_menu.viewing()){frontend_scene.focus_part(0);frontend_scene.road_target(20.F);}
+                                            }
+                                            if(career_magazine_page(profile.page)&&magazine_menu.viewing()){
                                                 require(!profile.magazine_covers.empty(),"magazine collection is empty");
-                                                selection%=unsigned(profile.magazine_covers.size());const auto& cover=profile.magazine_covers[selection];
-                                                auto seed=cover.seed;require(career.magazines().make(CareerMagazineCatalog::key(cover.index),seed,magazine_recipe,frontend_error),frontend_error);
-                                                auto photo=profile;photo.car=cover.car;photo.ride.installed=cover.installed;photo.ride.performance=cover.performance;photo.ride.unique=cover.unique;
-                                                CareerRideSetup setup;require(resolve_career_ride(garage_globals,career,photo,setup,frontend_error),frontend_error);
+                                                CareerRideSetup setup;require(magazine_menu.prepare_photo(garage_globals,career,profile,magazine_recipe,setup,frontend_error),frontend_error);
                                                 close_career();
                                                 require(frontend_scene.load_garage(root,width,height,{setup},frontend_error,nullptr,frontend_scene.environment()),frontend_error);
                                                 frontend_scene.magazine_camera(magazine_recipe.camera);
@@ -2961,13 +3008,17 @@ int main(int argc, char** argv) {
                                                             selection=0;change=true;leave=garage_car!=nullptr;
                                                         }
                                                         else prepare_garage();
-                                                    }else if(profile.page==CareerPage::magazines){auto next=profile;require(career.dismiss_magazines(next,frontend_error),frontend_error);store(next);resident_car.clear();selection=0;change=true;}
+                                                    }else if(career_magazine_page(profile.page)){auto next=profile;require(magazine_menu.back(career,next,frontend_error),frontend_error);store(next);resident_car.clear();selection=0;change=true;}
                                                     else if(confirm){confirm=false;notice.clear();}
                                                     else if(sandbox&&profile.page==CareerPage::menu&&!choose_quick_mode) {
                                                         selection=unsigned(quick_options.mode);choose_quick_mode=true;notice.clear();
                                                     }else if(profile.page==CareerPage::choose_car || profile.page==CareerPage::menu)leave=true;
                                                     else {if(profile.page==CareerPage::briefing)music.stop_speech();auto next=profile;next.movie_event=next.movie_phase=0;next.page=profile.page==CareerPage::briefing?CareerPage::map:CareerPage::menu;store(next);selection=0;change=true;}
                                                     music.sound(audio::FrontendSound::back);
+                                                }else if(career_magazine_page(profile.page)&&(prev!=next_key||(pressed&(HidNpadButton_Up|HidNpadButton_Down)))) {
+                                                    const bool vertical_move=pressed&(HidNpadButton_Up|HidNpadButton_Down);
+                                                    const bool moved=vertical_move?magazine_menu.move_vertical(pressed&HidNpadButton_Up?-1:1):magazine_menu.move(prev?-1:1);
+                                                    if(moved)music.sound(prev||(pressed&HidNpadButton_Up)?audio::FrontendSound::left:audio::FrontendSound::right);
                                                 }else if(sandbox&&profile.page==CareerPage::menu) {
                                                     const bool left=(pressed&HidNpadButton_Left)||(stick.x<-16000&&!previous_color_up);
                                                     const bool right=(pressed&HidNpadButton_Right)||(stick.x>16000&&!previous_color_down);
@@ -3045,7 +3096,7 @@ int main(int argc, char** argv) {
                                                             LoadingScreen free_loading(screen,root,!profile_frame,tip);
                                                             CarAssets chosen;require(load_car_assets(std::filesystem::path(root)/"Global/GLOBALB.BUN",profile.car,chosen,frontend_error),frontend_error);
                                                             CareerRideSetup setup;require(resolve_career_ride(garage_globals,career,profile,setup,frontend_error),frontend_error);
-                                                            RaceCarDress dress;dress.request=&setup.request;dress.skin=&setup.skin;
+                                                            RaceCarDress dress;dress.request=&setup.request;dress.skin=&setup.skin;dress.turbo_brand=setup.turbo_brand;
                                                             dress.bind=[](StockFrame& frame,const StockFrameInputs& inputs,const StockSceneRequest& request,std::string& error,void*) {
                                                                 return bind_frontend_runtime_skin(frame,request,error)&&bind_frontend_sponsors(inputs,request.installed_parts,frame,error);
                                                             };
@@ -3083,7 +3134,6 @@ int main(int argc, char** argv) {
                                                     }else if(profile.page==CareerPage::briefing) {
                                                         auto next=profile;next.difficulty=(profile.difficulty+(prev?2:1))%3;store(next);
                                                     }else if(profile.page==CareerPage::menu)selection=(selection+(prev?5:1))%6;
-                                                    else if(profile.page==CareerPage::magazines){selection=(selection+(prev?unsigned(profile.magazine_covers.size())-1:1))%unsigned(profile.magazine_covers.size());change=true;}
                                                     else if(profile.page==CareerPage::map) {
                                                         const auto events=career.available(profile);
                                                         const auto found=std::find(events.begin(),events.end(),profile.selected_event);
@@ -3114,12 +3164,11 @@ int main(int argc, char** argv) {
                                                         else {
                                                             if(purchased)store(next);notice.clear();
                                                             if(next.page!=previous_page){
-                                                                if(next.page==CareerPage::magazines){const auto first=std::find_if(next.magazine_covers.begin(),next.magazine_covers.end(),[](const auto& cover){return !cover.seen;});selection=first==next.magazine_covers.end()?0:unsigned(first-next.magazine_covers.begin());}
                                                                 change=true;
                                                             }else prepare_garage();
                                                         }
-                                                    }else if(profile.page==CareerPage::magazines){
-                                                        auto next=profile;next.magazine_covers[selection].seen=true;next.page=CareerPage::menu;store(next);resident_car.clear();selection=0;change=true;
+                                                    }else if(career_magazine_page(profile.page)){
+                                                        auto next=profile;require(magazine_menu.accept(career,next,frontend_error),frontend_error);store(next);resident_car.clear();selection=0;change=true;
                                                     }else if(profile.page==CareerPage::choose_car) {
                                                         if(frontend_scene.car_transitioning())continue;
                                                         if(!confirm){confirm=true;notice="Buy "+career.starters().at(selection).name+"? A: confirm / B: cancel";}
@@ -3150,7 +3199,7 @@ int main(int argc, char** argv) {
                                                         CarAssets owned;require(load_car_assets(std::filesystem::path(root)/"Global/GLOBALB.BUN",profile.car,owned,frontend_error),frontend_error);
                                                         load_post_race();
                                                         CareerRideSetup owned_setup;require(resolve_career_ride(garage_globals,career,profile,owned_setup,frontend_error),frontend_error);
-                                                        RaceCarDress owned_dress;owned_dress.request=&owned_setup.request;owned_dress.skin=&owned_setup.skin;
+                                                        RaceCarDress owned_dress;owned_dress.request=&owned_setup.request;owned_dress.skin=&owned_setup.skin;owned_dress.turbo_brand=owned_setup.turbo_brand;
                                                         owned_dress.bind=[](StockFrame& frame,const StockFrameInputs& inputs,const StockSceneRequest& request,std::string& error,void*) {
                                                             return bind_frontend_runtime_skin(frame,request,error)&&bind_frontend_sponsors(inputs,request.installed_parts,frame,error);
                                                         };
@@ -3189,7 +3238,6 @@ int main(int argc, char** argv) {
                                                             }
                                                             require(apply_career_race_result(career,next,completed,places,style_earned,frontend_error),frontend_error);
                                                             next_round=completed&&next.tournament.event&&next.page==CareerPage::briefing;
-                                                            if(next.page==CareerPage::magazines){const auto first=std::find_if(next.magazine_covers.begin(),next.magazine_covers.end(),[](const auto& cover){return !cover.seen;});selection=unsigned(first-next.magazine_covers.begin());}
                                                             store(next);
                                                             if(terminal_failure)std::rethrow_exception(terminal_failure);
                                                         }while(next_round&&appletMainLoop());
@@ -3204,14 +3252,15 @@ int main(int argc, char** argv) {
                                                             }
                                                         }
                                                         else if(selection==1){require(career.enter_customization(next,frontend_error),frontend_error);store(next);garage.reset(career,profile);garage_signature.clear();change=true;}
-                                                        else if(selection==3){if(next.magazine_covers.empty())notice="No magazine covers earned yet.";else {next.page=CareerPage::magazines;store(next);selection=0;change=true;}}
+                                                        else if(selection==3){if(next.magazine_covers.empty())notice="No magazine covers earned yet.";else if(career.enter_magazine_album(next,frontend_error)){store(next);selection=0;change=true;}else notice=frontend_error;}
                                                         else if(selection==5){store(next);notice="Career saved";}
                                                         else if(selection==2||selection==4){career_info.open(selection==2?CareerInfoScreen::rankings:CareerInfoScreen::statistics);notice.clear();}
                                                     }
                                                 }
                                                 if(change||leave)continue;
                                                 if(sandbox||in_garage)prepare_garage();
-                                                else if(profile.page!=CareerPage::magazines)frontend_scene.road_target(50.F);
+                                                else if(career_magazine_page(profile.page))frontend_scene.road_target(magazine_menu.viewing()?0.F:20.F);
+                                                else frontend_scene.road_target(50.F);
                                                 const auto elapsed=frontend_clock.sample(armTicksToNs(armGetSystemTick()));
                                                 if(in_garage) {
                                                     const auto orbit=local_garage&&padGetStyleSet(&career_pad)==HidNpadStyleTag_NpadJoyRight?
@@ -3227,7 +3276,7 @@ int main(int argc, char** argv) {
                                                     if(career_info.active())
                                                         hint=career_info.screen()==CareerInfoScreen::rankings?76:78;
                                                     else if(profile.page==CareerPage::map)hint=72;
-                                                    else if(profile.page==CareerPage::magazines)hint=71;
+                                                    else if(career_magazine_page(profile.page))hint=71;
                                                     else if(profile.page==CareerPage::garage)hint=career_garage_speech(garage);
                                                     // 4CD490/4CD535: a package-open request. The
                                                     // one-shot mask is shared across the running frontend.
@@ -3237,7 +3286,8 @@ int main(int argc, char** argv) {
                                                     }
                                                 }
                                                 if(career_info.active())art.record_career_info(width,height,career,profile,career_info,frontend_ui);
-                                                else if(profile.page==CareerPage::magazines)art.record_magazine(width,height,magazine_recipe,profile.magazine_covers[selection].car,frontend_ui);
+                                                else if(career_magazine_page(profile.page)&&magazine_menu.viewing())art.record_magazine(width,height,magazine_recipe,profile.magazine_covers[magazine_menu.cover_index()].car,frontend_ui);
+                                                else if(career_magazine_page(profile.page))art.record_magazine_menu(width,height,profile,magazine_menu,frontend_ui);
                                                 else if(sandbox&&profile.page==CareerPage::menu)art.record_free_drive(width,height,career,profile,selection,free_course,notice,frontend_ui,&quick_options,choose_quick_mode);
                                                 else art.record_career(width,height,career,profile,selection,notice,frontend_ui,in_garage?&garage:nullptr);
                                                 append_frontend_song(frontend_ui);
@@ -3377,11 +3427,12 @@ int main(int argc, char** argv) {
                         choose_profile();frontend_clock.resume();menu.notice(active_profile?"PROFILE: "+active_profile->name:"");continue;
                     }
                     if(action==FrontendAction::multiplayer) {
+                        load_post_race();
                         music.stop();
                         require(frontend_renderer->close(frontend_error),frontend_error);
                         frontend_renderer.reset();frontend_gpu_profile.reset();
                         try {
-                            run_switch_multiplayer(root,pad,presentation.diagnostic_logs,presentation.metric_speed,presentation.race_height,free_rides,
+                            run_switch_multiplayer(root,pad,presentation.diagnostic_logs,presentation.metric_speed,presentation.race_height,art,free_rides,
                                 [&](const std::string& car,unsigned tier,
                                                                  const std::function<void()>& poll,LocalGarageSlot* local) {
                                 run_career_action(FrontendAction::free_drive,&car,tier,poll,local);

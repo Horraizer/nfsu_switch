@@ -10,6 +10,12 @@
 #include <map>
 
 namespace nfsu {
+unsigned race_particle_burst_size(float budget,float interval) noexcept {
+    if(!(budget>0) || !(interval>0))return 0;
+    unsigned count=0;
+    do { ++count;budget-=interval; } while(budget>=0 && count<kRaceWaterPool);
+    return count;
+}
 namespace {
 constexpr std::uint64_t kSmokeLife = 60;
 constexpr std::uint64_t kSparkLife = 18;
@@ -33,7 +39,7 @@ bool road_spray_surface(unsigned surface) noexcept {
 // 402E6D accepts a negative intensity as a fresh burst budget. It admits
 // the initial particle even below one interval and resets the delay on exit.
 unsigned burst_size(double strength, const RaceParticlePreset& preset) noexcept {
-    return strength>0 ? 1U+static_cast<unsigned>(strength/preset.interval) : 0;
+    return race_particle_burst_size(static_cast<float>(strength),preset.interval);
 }
 
 // 428722..4288CE. An airborne wheel skips the timer update; a grounded
@@ -150,10 +156,11 @@ VehicleVec3 sample_spawn_box(VehicleVec3 origin,const VehicleVec3& offset,const 
     return origin;
 }
 
-double environment_phase(float duration,float spread,std::uint32_t& random) noexcept {
+float environment_phase(float duration,float spread,std::uint32_t& random) noexcept {
     if (!duration) return 0;
     const float range=duration*spread;
-    return duration-range+next_particle_random(random)*range;
+    const float unit=float(next_particle_random(random));
+    return (duration-range)+unit*range;
 }
 
 void spawn_particle(RaceParticle& p, const RaceParticlePreset& preset,
@@ -194,6 +201,30 @@ void spawn_particle(RaceParticle& p, const RaceParticlePreset& preset,
                   axis.z*along+v.z*v_scale+carrier.z*inherited};
 }
 
+void update_packed_particle(RaceParticle& p,const RaceParticlePreset& preset,double frame_dt) noexcept {
+    //403E36..404037 decodes the packed velocity each visual frame, applies
+    //component drag and world gravity, moves, then packs the NEW velocity.
+    const float dt=static_cast<float>(frame_dt),drag=preset.drag;
+    const auto damp=[&](float v){return v-v*std::abs(v)*drag*dt;};
+    const float x=damp(static_cast<float>(p.velocity.x));
+    const float y=damp(static_cast<float>(p.velocity.y));
+    const float old_z=static_cast<float>(p.velocity.z);
+    const float z=old_z+(-old_z*std::abs(old_z)*drag-preset.gravity)*dt;
+    const auto move=[&](double origin,double displacement,float v) {
+        return double(float(float(origin+displacement)+v*dt))-origin;
+    };
+    p.displacement={move(p.origin.x,p.displacement.x,x),move(p.origin.y,p.displacement.y,y),
+                    move(p.origin.z,p.displacement.z,z)};
+    const float length=std::sqrt((z*z+y*y)+x*x);
+    const float inverse=length>0?1.F/length:0;
+    const float speed=float(std::min(65535U,unsigned(length*128.F)))/128.F;
+    const auto component=[&](float v) {
+        const int direction=static_cast<int>((v*inverse)*127.F);
+        return float(float(direction)*(1.F/127.F))*speed;
+    };
+    p.velocity={component(x),component(y),component(z)};
+}
+
 template<typename Slots,typename Presets>
 void update_particles(Slots& slots, std::size_t& count,
                       const Presets& presets, std::uint64_t step, double dt) noexcept {
@@ -203,6 +234,13 @@ void update_particles(Slots& slots, std::size_t& count,
         if (step < p.born_step || particle_age(p,step) >= particle_life(p)) continue;
         if (p.life_ticks) {
             const auto& preset = presets(p);
+            // Driving water uses the same original403A60 packed primitive.
+            // Keeping an unpacked double velocity here accumulates metres of
+            // drift even when the first position update appears correct.
+            if(!p.environment_preset && (is_driving_water_effect(p.effect) ||
+                (p.effect>=RaceParticleEffect::bottom_flash && p.effect<=RaceParticleEffect::bottom_sparks))) {
+                update_packed_particle(p,preset,dt);slots[keep++]=p;continue;
+            }
             const auto damp = [&](double value) {
                 return value * std::max(0.0,1.0-preset.drag*std::abs(value)*dt);
             };
@@ -253,6 +291,10 @@ bool read_preset(RaceParticlePreset& preset, const unsigned char* record,
     }
     preset.atlas = static_cast<RaceParticleAtlas>(atlas-kRaceParticleAtlases.begin());
     preset.random_start_cell=record[0x1c]!=0;
+    preset.planar=record[0x18]!=0;
+    //4041F0..40425E skips this key in the main and secondary view pass.
+    //Keep its allocation, RNG, age and shared-pool occupancy intact.
+    preset.generic_draw=word(record+8)!=bin_hash("XETT_RoadSDr_SprayA");
     preset.frame_period = record[0x1b] ? kParticleTicksPerSecond/record[0x1b] : 0;
     for (unsigned row=0; row<4; ++row) {
         preset.size[row] = number(record+0x140+row*16);
@@ -327,6 +369,7 @@ bool RaceParticles::load_presets(const std::vector<unsigned char>& global, std::
     const auto car_sparks=bin_hash("XECI_Car_SprksA");
     const auto road_spray=bin_hash("XETT_ROAD_DR");
     const auto car_group=bin_hash("XECI_CAR");
+    CarEmitter road;std::uint32_t road_key=0;
     for (unsigned i=0;i<rows;++i) {
         const auto* row=row_at(i);
         const auto group=word(row+0x10);
@@ -338,7 +381,8 @@ bool RaceParticles::load_presets(const std::vector<unsigned char>& global, std::
         } else if (group==road_spray) {
             auto& preset=loaded[static_cast<unsigned>(RaceParticleEffect::road_spray)];
             if (!read_preset(preset,row,"XETT_ROAD_DR",error)) return false;
-            preset.offset={number(row+0x68),number(row+0x60),number(row+0x64)};
+            if(road_key || word(row+0x58)!=0){error="invalid road marker0 preset";return false;}
+            road_key=word(row+8);road.offset=vector_at(row+0x60);road.extent=vector_at(row+0x70);
         }
     }
     for (auto effect : {RaceParticleEffect::car_impact,RaceParticleEffect::car_impact_smoke,
@@ -359,6 +403,49 @@ bool RaceParticles::load_presets(const std::vector<unsigned char>& global, std::
     if (ph+16>placements.end || word(global.data()+ph+8)!=5 ||
         word(global.data()+ph+12)>(placements.end-ph-16)/0xc0) {
         error="invalid car effect placement table"; return false;
+    }
+    //569A00 keeps the stock placement orientation. Marker0 replaces only
+    // its editor translation with the body origin;402D30 samples the box.
+    bool have_road=false;
+    for(unsigned j=0;j<word(global.data()+ph+12);++j) {
+        const auto* entry=global.data()+ph+16+0xc0*j;
+        if(word(entry+12)!=road_key)continue;
+        if(have_road){error="ambiguous road placement";return false;}
+        have_road=true;
+        for(unsigned k=0;k<3;++k)road.basis[k]=vector_at(entry+0x30+16*k);
+    }
+    if(!have_road || !finite_vector(road.offset) || !finite_vector(road.extent) ||
+       !std::all_of(road.basis.begin(),road.basis.end(),finite_vector)) {
+        error="missing or invalid road placement vectors";return false;
+    }
+    //428C4D dispatches the surface's bottom-out group.569A00 uses each
+    //descriptor's marker, placement basis and spawn box, not the hull contact.
+    constexpr const char* bottom_names[]{"XEBO_ROAD_FlashA","XEBO_ROAD_SmokeA","XEBO_ROAD_SprksA"};
+    constexpr auto bottom_first=static_cast<unsigned>(RaceParticleEffect::bottom_flash);
+    std::array<CarEmitter,3> bottom{};
+    for(unsigned part=0;part<bottom.size();++part) {
+        const auto key=bin_hash(bottom_names[part]);const unsigned char* record=nullptr;
+        for(unsigned j=0;j<rows;++j)if(word(row_at(j)+8)==key) {
+            if(record){error="ambiguous bottom-out preset";return false;}record=row_at(j);
+        }
+        if(!record || word(record+0x10)!=bin_hash("XEBO_ROAD") || word(record+0x58)>4) {
+            error="missing or invalid bottom-out preset";return false;
+        }
+        if(!read_preset(loaded[bottom_first+part],record,bottom_names[part],error))return false;
+        auto& emitter=bottom[part];emitter.marker=word(record+0x58);
+        emitter.offset=vector_at(record+0x60);emitter.extent=vector_at(record+0x70);
+        const unsigned char* placement=nullptr;
+        for(unsigned j=0;j<word(global.data()+ph+12);++j) {
+            const auto* entry=global.data()+ph+16+0xc0*j;
+            if(word(entry+12)!=key)continue;
+            if(placement){error="ambiguous bottom-out placement";return false;}placement=entry;
+        }
+        if(!placement){error="missing bottom-out placement";return false;}
+        for(unsigned k=0;k<3;++k)emitter.basis[k]=vector_at(placement+0x30+16*k);
+        if(!finite_vector(emitter.offset)||!finite_vector(emitter.extent)||
+           !std::all_of(emitter.basis.begin(),emitter.basis.end(),finite_vector)) {
+            error="invalid bottom-out placement vectors";return false;
+        }
     }
     auto water=water_emitters_;
     std::array<unsigned,kRaceWaterPresetCount> order{},placement_indices{};
@@ -435,7 +522,8 @@ bool RaceParticles::load_presets(const std::vector<unsigned char>& global, std::
         return false;
     }
     water_.resize(kRaceWaterPool);
-    water_emitters_=water;
+    vehicle_.resize(kRaceWaterPool);
+    water_emitters_=water;road_emitter_=road;bottom_emitters_=bottom;
     water_placement_order_=order;
     purge_offsets_ = offsets;
     presets_ = loaded;
@@ -670,6 +758,7 @@ void RaceParticles::advance_environment(std::uint64_t frame,const VehicleVec3& e
     // Continuous placements are pushed at the head (PC 402CB0, Xbox
     // 1233B). Each source spends its budget before the next placement.
     // A full pool drops a birth; it does not postpone it to another frame.
+    const float visual_dt=float(dt);
     for(auto cursor=emitters_.rbegin();cursor!=emitters_.rend();++cursor) {
         auto& emitter=*cursor;
         const auto& params=environment_presets_[emitter.preset];
@@ -678,11 +767,15 @@ void RaceParticles::advance_environment(std::uint64_t frame,const VehicleVec3& e
             return x*x+y*y+z*z<double(params.radius)*params.radius;
         };
         if(emitter.active && emitter.phase_time>=0 && (in_range(eye)||(other_eye&&in_range(*other_eye)))) {
-            const double active_dt=emitter.phase_time>0?std::min(dt,emitter.phase_time):dt;
-            emitter.remaining-=active_dt;
-            if(emitter.remaining<0)do {
+            // PC402E3B/4030EF store the interval and budget as binary32.
+            const float phase=emitter.phase_time;
+            float budget=phase>0?std::min(visual_dt,phase):visual_dt;
+            float interval=emitter.remaining;
+            // The first comparison at402E85 excludes equality.
+            if(interval<budget)do {
+                budget=float(budget-interval);
                 const auto particle=spawn_environment(emitter,params);
-                if(environment_alpha_count_+environment_additive_count_+water_count_<kRaceWaterPool) {
+                if(vehicle_count_+environment_alpha_count_+environment_additive_count_+water_count_<kRaceWaterPool) {
                     if(!emitter.listed) {
                         active_environment_sources_[active_environment_count_++]=particle.environment_source;
                         emitter.listed=true;
@@ -691,12 +784,15 @@ void RaceParticles::advance_environment(std::uint64_t frame,const VehicleVec3& e
                     else environment_alpha_[environment_alpha_count_++]=particle;
                 }
                 const float range=params.rate*params.rate_spread;
-                const double rate=(params.rate-range)+next_particle_random(emitter.random)*range;
-                emitter.remaining+=rate>0?std::min(240.0,1.0/rate):.1;
-            } while(emitter.remaining<=0);
+                const float base_rate=params.rate-range;
+                const float unit=float(next_particle_random(emitter.random));
+                const float rate=base_rate+unit*range;
+                interval=rate>0?std::min(240.0F,1.0F/rate):.1F;
+            } while(interval<=budget); //40396A includes equality on repeats.
+            emitter.remaining=float(interval-budget);
         }
         if(emitter.phase_time==0)continue;
-        emitter.phase_time-=dt;
+        emitter.phase_time-=visual_dt;
         if(emitter.phase_time>0)continue;
         emitter.active=!emitter.active;
         const float duration=emitter.active?params.on_time:params.off_time;
@@ -712,9 +808,10 @@ void RaceParticles::advance_environment(std::uint64_t frame,const VehicleVec3& e
 }
 
 void RaceParticles::reset() noexcept {
-    purge_count_ = 0;
-    purge_frame_ = 0;
-    smoke_count_ = spark_count_ = spray_count_ = water_count_ = 0;
+    vehicle_count_=vehicle_alpha_count_=vehicle_spark_count_=0;
+    vehicle_frame_=0;vehicle_frame_valid_=false;vehicle_sample_seconds_=0;tyre_timers_={};
+    purge_frame_ = {};owner_resets_={};contact_steps_={};
+    smoke_count_ = spark_count_ = water_count_ = 0;
     step_ = 0;seconds_=last_solver_dt_=0;variable_time_=false;
     cached_water_node_={};water_frame_=0;water_sample_seconds_=0;
     smoke_timers_ = {};
@@ -733,20 +830,63 @@ void RaceParticles::reset() noexcept {
     }
 }
 
-void RaceParticles::advance_purge(const RaceSession& session) noexcept {
-    // Countdown frames advance the world clock while physics steps remain zero.
-    const auto frame = session.timing().step;
-    if (!authored_ || frame<=purge_frame_) return;
-    const double dt = session.world_frame_seconds();
-    purge_frame_ = frame;
-    for (std::size_t i=0; i<purge_count_; ++i) purge_[i].elapsed_seconds += dt;
-    if (purge_count_) {
-        const auto preset = [this](const RaceParticle& particle) -> const RaceParticlePreset& {
-            return preset_for(particle);
-        };
-        update_particles(purge_,purge_count_,preset,step_,dt);
+bool RaceParticles::emit_vehicle(const RaceParticle& particle) noexcept {
+    //40272B: one global native ceiling, not independent16/8 rendering quotas.
+    if(vehicle_count_+water_count_+environment_alpha_count_+environment_additive_count_>=kRaceWaterPool ||
+       vehicle_count_>=vehicle_.size())return false;
+    const auto index=vehicle_count_++;
+    vehicle_[index]=particle;
+    const auto kind=particle.kind==RaceParticleKind::spark;
+    auto& count=kind?vehicle_spark_count_:vehicle_alpha_count_;
+    vehicle_order_[kind][count++]=static_cast<std::uint16_t>(index);
+    return true;
+}
+void RaceParticles::index_vehicle() noexcept {
+    vehicle_alpha_count_=vehicle_spark_count_=0;
+    for(std::size_t i=0;i<vehicle_count_;++i) {
+        const auto kind=vehicle_[i].kind==RaceParticleKind::spark;
+        auto& count=kind?vehicle_spark_count_:vehicle_alpha_count_;
+        vehicle_order_[kind][count++]=static_cast<std::uint16_t>(i);
     }
-    if (!session.nitrous_purging() || purge_count_==purge_.size()) return;
+}
+void RaceParticles::reset_driver(unsigned actor) noexcept {
+    // A driver reset must not discard the other cars or world placements.
+    const auto remove_owner_particles=[actor](auto& pool,std::size_t& count) {
+        std::size_t keep=0;
+        for(std::size_t i=0;i<count;++i)if(pool[i].water_owner!=actor)pool[keep++]=pool[i];
+        count=keep;
+    };
+    remove_owner_particles(vehicle_,vehicle_count_);remove_owner_particles(water_,water_count_);index_vehicle();
+    if(actor==0){tyre_timers_={};player_spray_={};}
+    else if(actor<=rival_smoke_.size())rival_smoke_[actor-1]={};
+    if(actor<purge_frame_.size()){purge_frame_[actor]=vehicle_frame_;contact_steps_[actor]=0;}
+    // Water node IDs are shared monotonic counters, not per-car caches.
+    // Keep them and the surviving nodes when another car is reset.
+}
+void RaceParticles::finish_vehicle_frame(double dt) noexcept {
+    const auto elapsed=particle_clock_delta(dt);
+    for(std::size_t i=0;i<vehicle_count_;++i)vehicle_[i].elapsed_seconds+=elapsed;
+    const auto preset=[this](const RaceParticle& p)->const RaceParticlePreset&{return preset_for(p);};
+    update_particles(vehicle_,vehicle_count_,preset,step_,dt);
+    index_vehicle();
+}
+void RaceParticles::advance_authored_driver(const VehicleTrackTelemetry& t,const VehicleSpec& spec,
+    double dt,float distance,unsigned surface,const TrackContactWorld* world,const VehicleVec3* eye,
+    const VehicleVec3* second_eye,std::array<float,4>& timers,unsigned actor,const VehicleState* current) noexcept {
+    if(t.reset!=VehicleTrackReset::none){timers={};return;}
+    emit_wheel_smoke(t,spec,distance,timers,vehicle_frame_,true,actor,dt);
+    auto& source=actor?rival_smoke_[actor-1].spray:player_spray_;
+    emit_driving_spray(t,spec,distance,surface,world,source,actor);
+    const auto bottom_distance=current&&eye?distance_to_views(current->position,*eye,second_eye):distance;
+    emit_bottom_out(t,spec,bottom_distance,surface,world,source,actor,current);
+}
+
+void RaceParticles::advance_purge(const RaceSession& session,unsigned actor) noexcept {
+    // Countdown frames advance the world clock while physics steps remain zero.
+    const auto frame = vehicle_frame_;
+    if (!authored_ || actor>=purge_frame_.size() || frame<=purge_frame_[actor]) return;
+    purge_frame_[actor] = frame;
+    if (!session.nitrous_purging()) return;
 
     constexpr auto first = static_cast<unsigned>(RaceParticleEffect::purge_first);
     const auto& car = session.car();
@@ -755,8 +895,8 @@ void RaceParticles::advance_purge(const RaceSession& session) noexcept {
     const auto up = rotate(car.orientation,{0,0,1});
     // 428FAF supplies strength 1 to 569A00. 402E6D and 40396A consume
     // that as a burst budget, including the first emission at interval 0.
-    // Keep the oldest live puffs so they can rise clear of the hood.
-    const auto rounds=1U+unsigned(1.F/presets_[first].interval);
+    // The native pool keeps live puffs; new bursts cannot evict them.
+    const auto rounds=burst_size(1.F,presets_[first]);
     // The two descriptors select marker bucket 1. 56BA1B..56BA66 fills
     // that bucket with the midpoint of the front wheel attachment points.
     const auto& wheels = session.spec().handling.wheels;
@@ -767,21 +907,68 @@ void RaceParticles::advance_purge(const RaceSession& session) noexcept {
     std::array<VehicleVec3,2> origins;
     for (unsigned i=0; i<origins.size(); ++i)
         origins[i]=add(body_origin,rotate(car.orientation,add(anchor,purge_offsets_[i])));
-    for (unsigned j=0; j<rounds&&purge_count_<purge_.size(); ++j) {
-        for (unsigned i=0; i<origins.size()&&purge_count_<purge_.size(); ++i) {
+    for (unsigned j=0; j<rounds; ++j) {
+        for (unsigned i=0; i<origins.size(); ++i) {
             RaceParticle particle;
             particle.kind = RaceParticleKind::smoke;
+            particle.water_owner=static_cast<std::uint8_t>(actor);
             particle.born_step = step_;
             particle.elapsed_seconds = 0;
             particle.origin = origins[i];
             spawn_particle(particle,presets_[first+i],static_cast<RaceParticleEffect>(first+i),
-                           car.velocity,up,seed(frame,i,first+j));
-            purge_[purge_count_++]=particle;
+                           car.velocity,up,seed(frame,i+actor*2,first+j));
+            if(!emit_vehicle(particle))return;
         }
     }
 }
 
 void RaceParticles::advance(const RaceSession& session,const RaceSession* second_driver,bool vehicle_only) noexcept {
+    if(authored_) {
+        const auto frame=session.timing().step;
+        if(vehicle_frame_valid_ && frame<=vehicle_frame_)return;
+        vehicle_frame_valid_=true;vehicle_frame_=frame;
+        const auto dt=session.world_frame_seconds();
+        const auto& eye=session.camera().eye;
+        const auto* other=second_driver?&second_driver->camera().eye:nullptr;
+        const auto did_reset=[](const RaceSession& driver) {
+            const auto& samples=driver.physics_telemetry();
+            return std::any_of(samples.begin(),samples.end(),[](const auto& t){return t.reset!=VehicleTrackReset::none;});
+        };
+        const auto& t=session.telemetry();
+        step_=t.step;last_solver_dt_=t.model.solver_dt;
+        // Native421012/403A60 runs before car terrain and402D30 births.
+        // Expire old water first; newborns remain at their birth state for draw.
+        advance_water(dt);
+        const bool player_reset=did_reset(session) || t.resets!=owner_resets_[0];
+        owner_resets_[0]=t.resets;
+        if(player_reset)reset_driver(0);
+        else {
+            advance_track_events(session,distance_to_views(t.position,eye,other),&session.course().world,&eye,other,0);
+            advance_purge(session);
+            if(t.step)advance_authored_driver(t,session.spec(),dt,distance_to_views(t.position,eye,other),0,
+                &session.course().world,&eye,other,tyre_timers_,0,&session.car());
+        }
+        if(!vehicle_only) {
+            for(std::size_t i=0;i<std::min(session.rival_count(),rival_smoke_.size());++i) {
+                const auto& rival=session.rival(i);
+                const auto& r=rival.telemetry();
+                const auto actor=unsigned(i+1);
+                const bool reset=did_reset(rival) || r.resets!=owner_resets_[actor];
+                owner_resets_[actor]=r.resets;
+                if(reset)reset_driver(actor);
+                else {
+                    advance_track_events(rival,distance_to_views(r.position,eye,other),&session.course().world,&eye,other,actor);
+                    if(&rival==second_driver)advance_purge(rival,actor);
+                    if(r.step)advance_authored_driver(r,rival.spec(),dt,distance_to_views(r.position,eye,other),0,
+                        &session.course().world,&eye,other,rival_smoke_[i].timers,actor,&rival.car());
+                }
+            }
+            emit_car_impact_sparks(session.pair_contacts(),eye,other);
+            advance_environment(session.world_visual_frame(),eye,other);
+        }
+        finish_vehicle_frame(dt);
+        return;
+    }
     advance_purge(session);
     const auto& spec = session.spec();
     const auto& eye = session.camera().eye;
@@ -858,28 +1045,28 @@ void RaceParticles::emit_car_impact_sparks(const RacePairFrame& frame,const Vehi
             puff.origin=point;
             puff.born_step=step_;
             puff.solver_dt=last_solver_dt_;
-            puff.elapsed_seconds=variable_time_?0:-1;
+            puff.elapsed_seconds=0;
             spawn_particle(puff,smoke,smoke_effect,{}, {},seed(step_,unsigned(i),lane+16));
-            emit(smoke_,smoke_count_,puff);
+            emit_vehicle(puff);
         }
-        const auto count=std::min<unsigned>(kRaceSparkLimit,burst_size(strength,preset));
+        const auto count=burst_size(strength,preset);
         for(unsigned lane=0;lane<count;++lane) {
             RaceParticle spark;
             spark.kind=RaceParticleKind::spark;
             spark.origin=point;
             spark.born_step=step_;
             spark.solver_dt=last_solver_dt_;
-            spark.elapsed_seconds=variable_time_?0:-1;
+            spark.elapsed_seconds=0;
             spawn_particle(spark,preset,effect,{}, {},seed(step_,unsigned(i),lane));
-            emit(sparks_,spark_count_,spark);
+            emit_vehicle(spark);
         }
     }
 }
 
 void RaceParticles::emit_wheel_smoke(const VehicleTrackTelemetry& t,const VehicleSpec& spec,
                                     float camera_distance,std::array<float,kVehicleWheelCount>& timers,
-                                    std::uint64_t emission_step,bool new_emission_step,unsigned actor) noexcept {
-    const double solver_dt=t.model.solver_dt;
+                                    std::uint64_t emission_step,bool new_emission_step,unsigned actor,double emission_dt) noexcept {
+    const double solver_dt=emission_dt>0?emission_dt:t.model.solver_dt;
     if (!(solver_dt>0) || !std::isfinite(solver_dt)) return;
     const auto& q=t.orientation;
     const auto& com=spec.handling.centre_of_mass;
@@ -891,8 +1078,8 @@ void RaceParticles::emit_wheel_smoke(const VehicleTrackTelemetry& t,const Vehicl
         const auto previous_tick=static_cast<std::uint64_t>(
             std::max(0.0,t.model.simulation_seconds-solver_dt)/kVehicleStepSeconds+1e-9);
         const auto lag=(emission_step+4-wheel)%4;
-        if (strength<=0 || !new_emission_step ||
-            (actor ? (lag>emission_step || emission_step-lag<=previous_tick) : lag!=0)) continue;
+        if (strength<=0 || !new_emission_step || (!authored_ &&
+            (actor ? (lag>emission_step || emission_step-lag<=previous_tick) : lag!=0))) continue;
         const auto& geometry = spec.handling.wheels[wheel];
         const VehicleVec3 local{geometry.longitudinal,geometry.lateral,
                                 geometry.vertical-geometry.radius};
@@ -901,8 +1088,9 @@ void RaceParticles::emit_wheel_smoke(const VehicleTrackTelemetry& t,const Vehicl
         const auto origin=have_ground?w.ground_point:add(body_origin,rotate(q,local));
         RaceParticle p;
         p.kind = RaceParticleKind::smoke;
+        p.water_owner=static_cast<std::uint8_t>(actor);
         p.born_step = step_;
-        p.solver_dt = last_solver_dt_;p.elapsed_seconds=variable_time_?0:-1;
+        p.solver_dt = last_solver_dt_;p.elapsed_seconds=authored_?0:(variable_time_?0:-1);
         p.origin = origin;
         p.velocity = {t.velocity.x*0.20+jitter(emission_step,wheel,0)*0.28,
                       t.velocity.y*0.20+jitter(emission_step,wheel,1)*0.28,
@@ -913,11 +1101,11 @@ void RaceParticles::emit_wheel_smoke(const VehicleTrackTelemetry& t,const Vehicl
         if (authored_) {
             const auto& preset = presets_[static_cast<unsigned>(effect)];
             const auto axis = have_ground?normal:rotate(q,{0,0,1});
-            // Keep the staggered port schedule and two-particle bound.
-            const unsigned burst = strength >= preset.interval ? 2U : 1U;
+            //569B5C negates the per-wheel budget once per visual frame.
+            const unsigned burst = burst_size(strength,preset);
             for (unsigned lane=0; lane<burst; ++lane) {
                 spawn_particle(p,preset,effect,t.velocity,axis,seed(emission_step,wheel+actor*kVehicleWheelCount,7+lane));
-                emit(smoke_,smoke_count_,p);
+                if(!emit_vehicle(p))return;
             }
         } else {
             p.initial_cell = seed(emission_step,wheel,7) % 16;
@@ -941,6 +1129,25 @@ void RaceParticles::advance_water(double dt) noexcept {
 void RaceParticles::advance(const VehicleTrackTelemetry& t,const VehicleSpec& spec,float distance,
                             unsigned surface,const TrackContactWorld* world,const VehicleVec3* eye,
                             const VehicleVec3* second_eye) noexcept {
+    if(authored_) {
+        if(!t.step || t.step<=step_ || !(t.model.solver_dt>0) || !std::isfinite(t.model.solver_dt))return;
+        step_=t.step;last_solver_dt_=t.model.solver_dt;
+        if(t.reset!=VehicleTrackReset::none) {
+            reset_driver(0);owner_resets_[0]=t.resets;
+            vehicle_sample_seconds_=0;return;
+        }
+        emit_track_sparks(t,distance,world,eye,second_eye,t.step,0);
+        vehicle_sample_seconds_+=t.model.solver_dt;
+        if(vehicle_sample_seconds_+1e-9>=kDriveFrameSeconds) {
+            ++vehicle_frame_;
+            advance_water(vehicle_sample_seconds_);
+            advance_authored_driver(t,spec,vehicle_sample_seconds_,distance,surface,world,eye,
+                second_eye,tyre_timers_,0);
+            finish_vehicle_frame(vehicle_sample_seconds_);
+            vehicle_sample_seconds_=0;
+        }
+        return;
+    }
     if(t.step<=step_ || !(t.model.solver_dt>0) || !std::isfinite(t.model.solver_dt))return;
     if(step_ && t.step!=step_+1)water_sample_seconds_=0;
     water_sample_seconds_+=t.model.solver_dt;
@@ -957,7 +1164,7 @@ void RaceParticles::advance_vehicle(const VehicleTrackTelemetry& t,
                             const VehicleVec3* second_eye) noexcept {
         if (!t.step || t.step <= step_) return;
         if (step_ && t.step != step_+1) {
-            smoke_count_ = spark_count_ = spray_count_ = water_count_ = 0;
+            smoke_count_ = spark_count_ = water_count_ = 0;
             smoke_timers_ = {};
             player_spray_ = {};
         }
@@ -973,14 +1180,13 @@ void RaceParticles::advance_vehicle(const VehicleTrackTelemetry& t,
             const auto age=[&](auto& particles,std::size_t count){for(std::size_t i=0;i<count;++i){auto& p=particles[i];
                 if(p.elapsed_seconds<0)p.elapsed_seconds=double(previous_step-p.born_step)*p.solver_dt;
                 p.elapsed_seconds+=solver_dt;}};
-            age(smoke_,smoke_count_);age(sparks_,spark_count_);age(spray_,spray_count_);
+            age(smoke_,smoke_count_);age(sparks_,spark_count_);
         }
         const auto preset=[this](const RaceParticle& p) -> const RaceParticlePreset& { return preset_for(p); };
         update_particles(smoke_,smoke_count_,preset,step_,solver_dt);
         update_particles(sparks_,spark_count_,preset,step_,solver_dt);
-        update_particles(spray_,spray_count_,preset,step_,solver_dt);
         if (t.reset != VehicleTrackReset::none) {
-            smoke_count_ = spark_count_ = spray_count_ = water_count_ = 0;
+            smoke_count_ = spark_count_ = water_count_ = 0;
             smoke_timers_ = {};
             player_spray_ = {};
             return;
@@ -991,8 +1197,10 @@ void RaceParticles::advance_vehicle(const VehicleTrackTelemetry& t,
             (variable_time_?previous_seconds:static_cast<double>(step_-1)*solver_dt)/kVehicleStepSeconds+1e-9);
         emit_wheel_smoke(t,spec,camera_distance,smoke_timers_,emission_step,
                          emission_step!=previous_emission_step,0);
-        if(authored_ && emission_step/2!=previous_emission_step/2)
+        if(authored_ && emission_step/2!=previous_emission_step/2) {
             emit_driving_spray(t,spec,camera_distance,driving_surface,contact_world,player_spray_,0);
+            emit_bottom_out(t,spec,camera_distance,driving_surface,contact_world,player_spray_,0);
+        }
         emit_track_sparks(t,camera_distance,contact_world,camera_eye,second_eye,emission_step,0);
 }
 
@@ -1016,15 +1224,13 @@ void RaceParticles::emit_driving_spray(const VehicleTrackTelemetry& t,const Vehi
     }
     const unsigned group_surface=road_spray_surface(driving_surface)?1:
         water_surface(driving_surface)?driving_surface:0;
-    if (group_surface!=source.surface) {
-        source.next_road=0;
-        source.surface=group_surface;
-    }
+    source.surface=group_surface;
     const auto make_particle=[&](unsigned effect,VehicleVec3 origin,VehicleVec3 axis,std::uint32_t random) {
         RaceParticle particle;
+        particle.water_owner=static_cast<std::uint8_t>(actor);
         particle.born_step=step_;
         particle.solver_dt=last_solver_dt_;
-        particle.elapsed_seconds=variable_time_?0:-1;
+        particle.elapsed_seconds=0;
         particle.origin=add(body_origin,rotate(q,origin));
         spawn_particle(particle,presets_[effect],static_cast<RaceParticleEffect>(effect),
                        t.velocity,rotate(q,axis),random);
@@ -1032,11 +1238,14 @@ void RaceParticles::emit_driving_spray(const VehicleTrackTelemetry& t,const Vehi
     };
     if (group_surface==1) {
         const auto effect=static_cast<unsigned>(RaceParticleEffect::road_spray);
-        auto& next=source.next_road;
-        if (mph<=20) { next=0; return; }
-        if (seconds_<next) return;
-        next=seconds_+presets_[effect].interval;
-        emit(spray_,spray_count_,make_particle(effect,presets_[effect].offset,{0,0,1},seed(step_,effect,actor)));
+        //428A79..428ABE, surface rows1/2/3/7:20..100mph, then569B5C burst.
+        const float strength=std::clamp((mph-20.F)/(100.F-20.F),0.F,1.F);
+        for(unsigned lane=0;lane<burst_size(strength,presets_[effect]);++lane) {
+            auto random=seed(vehicle_frame_,effect,actor+4*lane);
+            const auto& emitter=road_emitter_;
+            const auto origin=sample_spawn_box({},emitter.offset,emitter.extent,emitter.basis,random);
+            if(!emit_vehicle(make_particle(effect,origin,emitter.basis[2],random)))break;
+        }
         return;
     }
     if (!group_surface) return;
@@ -1056,7 +1265,7 @@ void RaceParticles::emit_driving_spray(const VehicleTrackTelemetry& t,const Vehi
     for(unsigned slot=first;slot<end;++slot) {
         const unsigned i=water_placement_order_[slot];
         const auto effect=kWaterFirst+i;
-        const std::size_t live=water_count_+environment_alpha_count_+environment_additive_count_;
+        const std::size_t live=vehicle_count_+water_count_+environment_alpha_count_+environment_additive_count_;
         if(live>=water_.size())return;
         const auto count=std::min<std::size_t>(water_.size()-live,
             burst_size(strengths[slot>=split],presets_[effect]));
@@ -1076,8 +1285,8 @@ void RaceParticles::emit_driving_spray(const VehicleTrackTelemetry& t,const Vehi
                                    (a.vertical+b.vertical)*.5};
         for(unsigned j=0;j<count;++j) {
             auto random=seed(step_,effect,actor+4*j);
-            const auto origin=sample_spawn_box(midpoint,emitter.offset,emitter.extent,emitter.basis,random);
-            insert[j]=make_particle(effect,origin,emitter.basis[2],random);
+            insert[j]=spawn_bottom_particle(3+i,body_origin,q,midpoint,t.velocity,random);
+            insert[j].born_step=step_;insert[j].solver_dt=last_solver_dt_;
             insert[j].water_owner=static_cast<std::uint8_t>(actor);
             insert[j].water_node=node;
             insert[j].elapsed_seconds=0;
@@ -1086,59 +1295,191 @@ void RaceParticles::emit_driving_spray(const VehicleTrackTelemetry& t,const Vehi
     }
 }
 
+void RaceParticles::emit_bottom_out(const VehicleTrackTelemetry& t,const VehicleSpec& spec,
+    float camera_distance,unsigned surface,const TrackContactWorld* world,SpraySource& source,unsigned actor,
+    const VehicleState* current) noexcept {
+    //4210B0/428A31:150m and more than two contacts. Unlike driving spray,
+    //bottom-out has no minimum road speed and no tyre-slip requirement.
+    const auto contacts=[](const auto& wheels){return std::count_if(wheels.begin(),wheels.end(),
+        [](const auto& w){return w.contact;});};
+    if(camera_distance>=150 || (current?contacts(current->wheels):contacts(t.model.wheels))<=2)return;
+    //The shared contact queue may complete components after the last sampled
+    //solver slice. Read the final actor, as428BE1/569A00 do in the real world.
+    const auto& v=current?current->bottom_out_impulse:t.model.bottom_out_impulse;
+    const auto& position=current?current->position:t.position;
+    const auto& orientation=current?current->orientation:t.orientation;
+    const auto& velocity=current?current->velocity:t.velocity;
+    const float impulse=((v[0]+v[1])+v[2])+v[3];
+    if(!std::isfinite(impulse) || impulse<=1.F)return;
+    if(!surface && world) {
+        TrackContact hit;if(query_track_ground(*world,position,source.ground,hit))
+            surface=world->collision.polygons[hit.polygon].unknown0[2];
+    }
+    //Original6EF2D0+94*surface+70. Dirt8/9/15 names a different group
+    //without sparks; water and wall surfaces do not name XEBO_ROAD.
+    if(!((surface>=1 && surface<=7)||(surface>=10 && surface<=12)||surface==16))return;
+    const float strength=std::clamp(impulse-1.F,0.F,1.F); //428BE1, material+74/+78
+    const auto& com=spec.handling.centre_of_mass;
+    const auto body=add(position,rotate(orientation,{-com[0],-com[1],-com[2]}));
+    constexpr unsigned pairs[][2]={{0,1},{2,3},{0,3},{1,2}};
+    constexpr auto first=static_cast<unsigned>(RaceParticleEffect::bottom_flash);
+    for(unsigned part=0;part<bottom_emitters_.size();++part) {
+        const auto& emitter=bottom_emitters_[part];VehicleVec3 anchor{};
+        if(emitter.marker) {
+            const auto& a=spec.handling.wheels[pairs[emitter.marker-1][0]];
+            const auto& b=spec.handling.wheels[pairs[emitter.marker-1][1]];
+            anchor={(a.longitudinal+b.longitudinal)*.5,(a.lateral+b.lateral)*.5,(a.vertical+b.vertical)*.5};
+        }
+        const auto& preset=presets_[first+part];
+        for(unsigned lane=0;lane<burst_size(strength,preset);++lane) {
+            auto p=spawn_bottom_particle(part,body,orientation,anchor,velocity,
+                seed(vehicle_frame_,first+part,actor+4*lane));
+            p.water_owner=static_cast<std::uint8_t>(actor);p.born_step=step_;
+            p.solver_dt=last_solver_dt_;p.elapsed_seconds=0;
+            if(!emit_vehicle(p))return;
+        }
+    }
+}
+
+RaceParticle RaceParticles::spawn_bottom_particle(unsigned part,const VehicleVec3& body,
+    const VehicleQuat& orientation,const VehicleVec3& anchor,const VehicleVec3& carrier,
+    std::uint32_t random) const noexcept {
+    // Bottom-out and driving water dispatch the same original402D30 birth.
+    const auto effect=static_cast<RaceParticleEffect>(part<3?
+        unsigned(RaceParticleEffect::bottom_flash)+part:kWaterFirst+part-3);
+    const auto& preset=presets_[unsigned(effect)];
+    const auto& emitter=part<3?bottom_emitters_[part]:water_emitters_[part-3];
+    std::array<VehicleVec3,3> basis;
+    for(unsigned k=0;k<3;++k)basis[k]=rotate(orientation,emitter.basis[k]);
+    //4030E0 selects the direction BEFORE the box, cell, life and speed draws.
+    //Planar sources start in their local XY plane; the other branch rotates
+    //the placement's Z axis about each world axis. Arc is not a cone angle.
+    const auto angle=[&](float span) {
+        const auto degrees=(next_particle_random(random)-.5)*span;
+        return static_cast<std::uint16_t>(static_cast<int>(degrees*65536.0)/360);
+    };
+    const auto sn=[](std::uint16_t a){return player_angle_sin(a);};
+    const auto cs=[&](std::uint16_t a){return sn(static_cast<std::uint16_t>(a+0x4000));};
+    const auto x=angle(preset.tilt);VehicleVec3 direction;
+    if(preset.planar) {
+        const auto turn=angle(360);const double horizontal=cs(turn);
+        const double local[]{horizontal*cs(x),sn(turn),-horizontal*sn(x)};
+        for(unsigned k=0;k<3;++k)direction=add(direction,
+            {local[k]*basis[k].x,local[k]*basis[k].y,local[k]*basis[k].z});
+    } else {
+        const auto y=angle(preset.tilt),z=angle(preset.tilt);const auto& up=basis[2];
+        const double rx=cs(x)*up.y-sn(x)*up.z,rz=sn(x)*up.y+cs(x)*up.z;
+        const double horizontal=cs(y)*up.x+sn(y)*rz;
+        direction={cs(z)*horizontal-sn(z)*rx,sn(z)*horizontal+cs(z)*rx,-sn(y)*up.x+cs(y)*rz};
+    }
+    RaceParticle p;p.kind=part==1 || part>=3?RaceParticleKind::smoke:RaceParticleKind::spark;
+    p.effect=effect;p.atlas=preset.atlas;p.frame_period=preset.frame_period;p.elapsed_seconds=0;
+    p.origin=sample_spawn_box(add(body,rotate(orientation,anchor)),emitter.offset,emitter.extent,basis,random);
+    const auto& atlas=kRaceParticleAtlases[unsigned(p.atlas)];
+    const auto cell=next_particle_random(random);
+    p.initial_cell=preset.random_start_cell?unsigned(cell*atlas.columns*atlas.rows):0;
+    const auto sample=[&](float base,float spread) {
+        const float range=base*spread,unit=float(next_particle_random(random));
+        return float((base-range)+unit*range);
+    };
+    p.life_ticks=std::max(1U,unsigned(sample(preset.life,preset.life_spread)*kParticleTicksPerSecond));
+    next_particle_random(random); //4035EE, billboard rotation precedes speed.
+    float speed=sample(preset.speed,preset.speed_spread);
+    const float inherit_range=preset.inherit*preset.inherit_spread;
+    if(preset.inherit-inherit_range!=0) {
+        const float inherit=sample(preset.inherit,preset.inherit_spread);
+        if(inherit>0) {
+            const float vx=float(direction.x)*speed+float(carrier.x)*inherit;
+            const float vy=float(direction.y)*speed+float(carrier.y)*inherit;
+            const float vz=float(direction.z)*speed+float(carrier.z)*inherit;
+            speed=std::sqrt((vz*vz+vy*vy)+vx*vx);
+            const float length=std::sqrt((vx*vx+vy*vy)+vz*vz);
+            if(length>0){const float inverse=1.F/length;direction={vx*inverse,vy*inverse,vz*inverse};}
+            else direction={1,0,0};
+        }
+    }
+    //403839..4038C4 stores speed at1/128 and signed direction bytes at1/127.
+    const double packed=std::min(65535,int(speed*128.F))/128.0;
+    const auto component=[&](double d){return std::trunc(std::clamp(d,-1.0,1.0)*127)*packed/127;};
+    p.velocity={component(direction.x),component(direction.y),component(direction.z)};
+    return p;
+}
+
+void RaceParticles::advance_track_events(const RaceSession& driver,float distance,const TrackContactWorld* world,
+    const VehicleVec3* eye,const VehicleVec3* second_eye,unsigned actor) noexcept {
+    const auto& samples=driver.physics_telemetry();
+    const auto previous=contact_steps_[actor];
+    // The queue stamps each report at its producer. Aliased solver samples
+    // and repeated views do not create another collision event.
+    constexpr auto contacts=std::tuple_size<decltype(VehicleTrackTelemetry::audio_contacts)>::value;
+    std::array<std::uint32_t,kDriveStepsPerFrame*contacts> seen{};std::size_t count=0;
+    for(std::size_t j=0;j<samples.size();++j) {
+        const auto& t=samples[j];
+        if(j+1<samples.size() && t.step==samples[j+1].step)continue;
+        if(t.step && t.step<=previous)continue;
+        for(std::size_t i=0;i<std::min(t.audio_contact_count,t.audio_contacts.size());++i) {
+            const auto& event=t.audio_contacts[i];
+            if(event.audio_order) {
+                if(event.event_step && event.event_step!=std::uint32_t(driver.timing().step))continue;
+                if(std::find(seen.begin(),seen.begin()+count,event.audio_order)!=seen.begin()+count)continue;
+                seen[count++]=event.audio_order;
+            } else if(event.event_step && event.event_step!=std::uint32_t(t.step))continue;
+            emit_track_sparks(t,distance,world,eye,second_eye,t.step,actor,&event,unsigned(i));
+        }
+    }
+    contact_steps_[actor]=driver.telemetry().step;
+}
+
 void RaceParticles::emit_track_sparks(const VehicleTrackTelemetry& t,float camera_distance,
     const TrackContactWorld* contact_world,const VehicleVec3* camera_eye,const VehicleVec3* second_eye,
-    std::uint64_t emission_step,unsigned actor) noexcept {
+    std::uint64_t emission_step,unsigned actor,const VehicleContactObservation* event,unsigned event_index) noexcept {
     const double speed=std::hypot(t.velocity.x,t.velocity.y);
-    if (t.audio_contact_count && (authored_ || speed > 1.0)) {
-        const VehicleContactObservation* hit=nullptr;
-        double strongest=0;
-        for (std::size_t i=0; i<std::min(t.audio_contact_count,t.audio_contacts.size()); ++i) {
-            const auto& c=t.audio_contacts[i];
-            if (!std::isfinite(c.point.x)||!std::isfinite(c.point.y)||!std::isfinite(c.point.z)) continue;
-            const double impulse=std::hypot(c.impulse.x,c.impulse.y,c.impulse.z);
-            const bool solid_wall=authored_ && contact_world &&
-                c.polygon < contact_world->collision.polygons.size() &&
-                contact_world->collision.polygons[c.polygon].unknown0[2] == 20;
-            // 465830 uses the contact point's view distance and separate
-            // solid-wall scrape and impact strength bands.
-            const bool in_range=solid_wall &&
-                (camera_eye?distance_to_views(c.point,*camera_eye,second_eye):camera_distance)<50;
-            const double strength=authored_ ?
-                (in_range ?
-                    std::max(std::clamp((c.slide_mps-15.0)/35.0,0.0,1.0),
-                             std::clamp((impulse-10.0)/5.0,0.0,1.0)) : 0) :
-                (t.impulses ? impulse : 0);
-            if (std::isfinite(strength)&&strength>strongest) {
-                hit=&c;strongest=strength;
-            }
-        }
-        if(!hit)return;
-        const VehicleVec3 point=hit->point;
+    if(!t.audio_contact_count || (!authored_ && speed<=1.0))return;
+    const auto strength=[&](const VehicleContactObservation& c) {
+        if(!finite_vector(c.point))return 0.0;
+        const double impulse=std::hypot(c.impulse.x,c.impulse.y,c.impulse.z);
+        if(!authored_)return t.impulses?impulse:0.0;
+        const bool wall=contact_world && c.polygon<contact_world->collision.polygons.size() &&
+            contact_world->collision.polygons[c.polygon].unknown0[2]==20;
+        if(!wall || (camera_eye?distance_to_views(c.point,*camera_eye,second_eye):camera_distance)>=50)return 0.0;
+        return std::max(std::clamp((c.slide_mps-15.0)/35.0,0.0,1.0),std::clamp((impulse-10.0)/5.0,0.0,1.0));
+    };
+    const auto emit_event=[&](const VehicleContactObservation& hit,double value,unsigned ordinal) {
         constexpr auto effect=RaceParticleEffect::wall;
         const auto& wall=presets_[static_cast<unsigned>(effect)];
-        const auto count=authored_?std::min<unsigned>(kRaceSparkLimit,burst_size(strongest,wall)):2;
-        for (unsigned lane=0; lane<count; ++lane) {
-            RaceParticle p;
-            p.kind = RaceParticleKind::spark;
-            p.born_step = step_;
-            p.solver_dt = last_solver_dt_;p.elapsed_seconds=variable_time_?0:-1;
-            p.origin = point;
-            p.velocity = {t.velocity.x*0.10+jitter(step_,lane,4)*2.0,
-                          t.velocity.y*0.10+jitter(step_,lane,5)*2.0,
-                          0.8+jitter(step_,lane,6)*0.6};
-            p.size = 0.055;
-            p.atlas = RaceParticleAtlas::sparks;
-            p.initial_cell = seed(emission_step,lane,7+actor*kRaceSparkLimit) % 8;
-            if (authored_) {
-                const double impulse=std::hypot(hit->impulse.x,hit->impulse.y,hit->impulse.z);
+        const auto count=authored_?burst_size(value,wall):2;
+        for(unsigned lane=0;lane<count;++lane) {
+            RaceParticle p;p.kind=RaceParticleKind::spark;p.water_owner=static_cast<std::uint8_t>(actor);
+            p.born_step=step_;p.solver_dt=last_solver_dt_;p.elapsed_seconds=authored_?0:(variable_time_?0:-1);
+            p.origin=hit.point;
+            p.velocity={t.velocity.x*.10+jitter(step_,lane,4)*2.0,
+                        t.velocity.y*.10+jitter(step_,lane,5)*2.0,.8+jitter(step_,lane,6)*.6};
+            p.size=.055;p.atlas=RaceParticleAtlas::sparks;
+            p.initial_cell=seed(emission_step,lane,7+actor*kRaceSparkLimit)%8;
+            if(authored_) {
+                const double impulse=std::hypot(hit.impulse.x,hit.impulse.y,hit.impulse.z);
                 const double impact=std::clamp((impulse-10.0)/5.0,0.0,1.0);
-                const double scrape=std::clamp((hit->slide_mps-15.0)/35.0,0.0,1.0);
+                const double scrape=std::clamp((hit.slide_mps-15.0)/35.0,0.0,1.0);
                 spawn_particle(p,wall,effect,impact>=scrape?VehicleVec3{}:t.velocity,
-                               hit->normal,seed(emission_step,lane,7+actor*kRaceSparkLimit));
+                    hit.normal,seed(emission_step,lane,7+actor*kRaceSparkLimit+32*ordinal));
             }
-            emit(sparks_,spark_count_,p);
+            if(authored_)emit_vehicle(p);else emit(sparks_,spark_count_,p);
         }
+    };
+    if(authored_) {
+        //465830/569A00 triggers once per actual collision, not the strongest
+        // report of the whole display frame. Each keeps its original point.
+        for(std::size_t i=0;i<(event?1:std::min(t.audio_contact_count,t.audio_contacts.size()));++i) {
+            const auto& hit=event?*event:t.audio_contacts[i];const auto value=strength(hit);
+            if(std::isfinite(value)&&value>0)emit_event(hit,value,event?event_index:unsigned(i));
+        }
+    } else {
+        const VehicleContactObservation* hit=nullptr;double strongest=0;
+        for(std::size_t i=0;i<std::min(t.audio_contact_count,t.audio_contacts.size());++i) {
+            const auto value=strength(t.audio_contacts[i]);
+            if(std::isfinite(value)&&value>strongest){hit=&t.audio_contacts[i];strongest=value;}
+        }
+        if(hit)emit_event(*hit,strongest,0);
     }
 }
 
@@ -1175,6 +1516,7 @@ bool RaceParticles::visual(const RaceParticle& p, VehicleVec3& position, double&
     }
     if (step_ < p.born_step || particle_age(p,step_) >= particle_life(p)) return false;
     const auto& preset = preset_for(p);
+    if (!preset.generic_draw) return false;
     const auto remaining = p.life_ticks-static_cast<unsigned>(
         particle_age(p,step_)*kParticleTicksPerSecond);
     const double phase = 1.0-double(remaining)/(kParticleTicksPerSecond*preset.life);
@@ -1210,7 +1552,8 @@ WaterParticleView RaceParticles::visible_water(const CameraFrame& camera) const 
 
 bool decode_race_particle_textures(const std::vector<unsigned char>& bytes,
                                    const TexturePackSet& packs, RaceParticleTextures& textures,
-                                   std::string& error, bool environment) {
+                                   std::string& error, bool environment,
+                                   const std::vector<unsigned char>* global,const TexturePackSet* global_packs) {
     std::vector<std::uint32_t> wanted;
     const auto count=environment?kRaceParticleAtlases.size():kRaceVehicleAtlasCount;
     for (std::size_t i=0;i<count;++i) wanted.push_back(kRaceParticleAtlases[i].hash);
@@ -1227,7 +1570,13 @@ bool decode_race_particle_textures(const std::vector<unsigned char>& bytes,
         const auto& atlas=kRaceParticleAtlases[i];
         limits.max_total_bytes += atlas.width*atlas.height*4;
     }
-    if (!decode_render_texture_sources({source}, limits, decoded, error)) return false;
+    std::vector<RenderTextureSource> sources{source};
+    if(global && global_packs) {
+        RenderTextureSource extra;extra.bytes=global;extra.wanted=&wanted;extra.complete=global_packs->complete;
+        for(const auto& pack:global_packs->packs)extra.packs.push_back(&pack);
+        sources.push_back(std::move(extra));
+    }
+    if (!decode_render_texture_sources(sources, limits, decoded, error)) return false;
     RaceParticleTextures result;
     for (std::size_t i=0;i<count;++i) {
         const auto& expected = kRaceParticleAtlases[i];
@@ -1235,7 +1584,7 @@ bool decode_race_particle_textures(const std::vector<unsigned char>& bytes,
             [&](const auto& t) { return t.hash == expected.hash; });
         if (texture == decoded.textures.end() || !texture->usable() ||
             texture->width != expected.width || texture->height != expected.height) {
-            error = std::string("INGAMEB.BUN is missing particle atlas ") + expected.name;
+            error = std::string("missing particle atlas ") + expected.name;
             return false;
         }
         result[i] = std::move(*texture);
@@ -1322,7 +1671,7 @@ bool draw_race_particles(std::vector<unsigned char>& rgba,
         const double cx=(clip.x/clip.w+1.0)*options.width*0.5;
         const double cy=(1.0-clip.y/clip.w)*options.height*0.5;
         double pixels=diameter*camera.focal_y*options.height/(2.0*clip.w);
-        if (!particle.environment_preset && !is_driving_water_effect(particle.effect))
+        if (!particle.life_ticks)
             pixels=std::min(pixels,48.0*options.height/720.0);
         if (pixels < 0.5) return;
         const double half=pixels*0.5;

@@ -514,7 +514,7 @@ bool render_track_draw_list(
     for (const TrackDrawListEntry& entry : entries) {
         const TrackDraw& draw = scene.region.draws[entry.draw];
         const PreparedTrackInstance& instance = scene.instances[entry.instance];
-        if (options.reflection_pass && ((instance.instance_flags ^ 0x60U) & 0x50U) != 0) continue;
+        if (options.reflection_pass && track_instance_masked_out(instance.instance_flags,options.track_reflection_mask)) continue;
         TrackTransform placement = instance.transform;
         // speed.exe 0x446103..0x446108: reflect about this instance's local origin.
         if (options.reflection_pass) placement = track_reflection_transform(instance);

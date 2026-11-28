@@ -55,6 +55,7 @@ struct AiRivalActionOutput {
     AiContactManeuver maneuver;
     std::uint32_t target=0;
     bool clear_road=false,reset_driver=false,rollover_reset=false;
+    bool clear_driver_brakes=false; //453830, cleanup of action17 only
     bool path_published=false; // do not resample an unchanged driver path
     bool check_nitrous=false; // this action update reached its request producer
     int lane_category=-1; // an accepted4528B0/453600 lane publication

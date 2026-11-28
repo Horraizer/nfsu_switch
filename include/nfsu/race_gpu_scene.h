@@ -29,13 +29,13 @@ struct RaceGpuFrame {
     std::uint64_t triangles = 0, unplaced = 0;
     double far_plane = 0;
 };
-// Environment alpha, environment additive, then vehicle water. Draws share
+// Environment alpha, environment additive, water, then packed vehicle effects. Draws share
 // immutable texture and index storage; each view rewrites only its live quads.
 struct RaceParticleStream {
     std::vector<MeshVertex> vertices;
     std::size_t used = 0;
 };
-using RaceParticleStreams = std::array<RaceParticleStream,3>;
+using RaceParticleStreams = std::array<RaceParticleStream,4>;
 struct RaceFrameProfile {
     double cull_ms = 0, list_ms = 0, car_ms = 0, track_ms = 0, combine_ms = 0;
     // Children of combine_ms, not additional parent costs.
@@ -57,6 +57,7 @@ struct RaceCarDress {
                  const StockSceneRequest& request, std::string& error,
                  void* user) = nullptr;
     void* user = nullptr;
+    int turbo_brand = -1;
 };
 class RaceGpuScene : private PreparedCommandSource {
 public:
@@ -88,6 +89,8 @@ public:
     }
     std::size_t draw_capacity() const { return original_draw_distance_ ? kDekoPreparedDrawCapacity : kTrackSliceDrawLimit; }
     void set_race_visuals(bool enabled) { if(!ready_)race_visuals_=enabled; }
+    // Live network views use the same lens independently of their FX policy.
+    void set_widescreen_camera(bool enabled) { if(!ready_)widescreen_camera_=enabled; }
     void set_crash_windows(bool enabled) { if(!ready_)crash_windows_enabled_=enabled; }
     void set_silhouette_shadows(bool enabled) { if (!ready_) silhouette_shadows_ = enabled; }
     void set_low_car_reflections(bool enabled) noexcept {
@@ -120,7 +123,9 @@ public:
     }
     bool load_finish_scene(FileSystemService&,const std::filesystem::path&,const RaceSession&,
                            const std::string& region,unsigned variant,std::string&);
-    void clear_finish_scene() {finish_scene_.reset();}
+    void clear_finish_scene() {finish_scene_.reset();finish_scene_id_=0;}
+    unsigned finish_scene_id()const noexcept {return finish_scene_id_;}
+    unsigned finish_car_slot(unsigned actor)const {return actor?finish_slots_.at(actor-1):finish_player_slot_;}
     void set_finish_scene_seconds(double seconds) {finish_scene_seconds_=seconds;}
     bool frame(const RaceSession& session, RaceGpuFrame& out, std::string& error,
                RaceFrameProfile* profile = nullptr, bool reference = false,
@@ -150,10 +155,12 @@ private:
     StartCrowd crowd_;
     std::unique_ptr<StartCrowd> finish_scene_;
     std::array<unsigned,3> finish_slots_{};
+    unsigned finish_scene_id_=0,finish_player_slot_=0;
     double finish_scene_seconds_=0;
     unsigned start_scene_=0;
     bool start_scenes_enabled_=true;std::string start_region_;
     bool race_visuals_=false;
+    bool widescreen_camera_=false;
     bool original_draw_distance_ = false;
     TrackZoneReport visibility_zones_;
     std::vector<TrackResidency> zone_residency_;
@@ -194,7 +201,8 @@ private:
     bool prepare_frame_cache(std::string& error);
     bool prepare_glows(std::string& error);
     bool select_track(const TrackCullReport& visible, RaceGpuFrame& out,
-                      std::size_t& entries, std::string& error, bool capture = false);
+                      std::size_t& entries, std::string& error,
+                      std::uint8_t instance_mask, bool capture = false);
     const UploadTable& resource_table() const override { return wet_road_reflections_ ? wet_uploads_ : combined_uploads_; }
     std::size_t selected_draw_count() const override {
         return sky_draws_ + selection_.size() + shadow_templates_.owning_draws().size() +
@@ -218,7 +226,8 @@ private:
     std::vector<std::array<float, 6>> reflection_bounds_;
     std::vector<TrackReflectionCorners> reflection_corners_;
     bool prepare_reflections(std::string& error);
-    bool select_reflections(const CameraFrame& camera, const TrackResidency* residency, std::string& error);
+    bool select_reflections(const CameraFrame& camera, const TrackResidency* residency,
+                            std::string& error,std::uint8_t instance_mask);
     void update_reflection_instance(std::size_t handle);
     PreparedTrackCull culler_;
     UploadTable combined_uploads_, wet_uploads_;
@@ -268,10 +277,9 @@ private:
     std::size_t skin_source_ = kNoHandle;
     std::uint64_t car_bytes_ = 0;
     std::size_t water_draws_ = 0;
-    RaceParticleStreams particle_streams_, second_particle_streams_;
+    RaceParticleStreams particle_streams_;
     std::vector<unsigned char> particle_sheet_;
     RaceParticles particles_;
-    std::unique_ptr<RaceParticles> second_particles_;
     std::unique_ptr<RaceSkidMarks> second_skids_;
     CarExhaustAnchors second_exhaust_{};
     bool local_second_player_=false;

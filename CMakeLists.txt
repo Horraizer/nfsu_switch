@@ -111,6 +111,18 @@ nfsu_enable_warnings(nfsu_traffic_check)
 add_executable(nfsu_traffic_reaction_retail_tests tests/traffic_reaction_retail_tests.cpp)
 target_link_libraries(nfsu_traffic_reaction_retail_tests PRIVATE nfsu_race_session nfsu_car_assets nfsu_frontend nfsu_arg_path)
 nfsu_enable_warnings(nfsu_traffic_reaction_retail_tests)
+add_executable(nfsu_traffic_height_retail_tests tests/traffic_height_retail_tests.cpp)
+target_link_libraries(nfsu_traffic_height_retail_tests PRIVATE nfsu_race_run nfsu_frontend nfsu_arg_path nfsu_posix_file_system)
+nfsu_enable_warnings(nfsu_traffic_height_retail_tests)
+add_executable(nfsu_traffic_pedal_check tools/traffic_pedal_check.cpp)
+target_link_libraries(nfsu_traffic_pedal_check PRIVATE nfsu_race_run nfsu_frontend nfsu_arg_path nfsu_posix_file_system)
+nfsu_enable_warnings(nfsu_traffic_pedal_check)
+add_executable(nfsu_traffic_lights_tests tests/traffic_lights_tests.cpp)
+target_link_libraries(nfsu_traffic_lights_tests PRIVATE nfsu_light_glows)
+nfsu_enable_warnings(nfsu_traffic_lights_tests)
+add_executable(nfsu_traffic_lights_retail_tests tests/traffic_lights_retail_tests.cpp)
+target_link_libraries(nfsu_traffic_lights_retail_tests PRIVATE nfsu_race_run nfsu_frontend nfsu_arg_path nfsu_posix_file_system)
+nfsu_enable_warnings(nfsu_traffic_lights_retail_tests)
 add_executable(nfsu_quick_rival_probe tools/quick_rival_probe.cpp)
 target_link_libraries(nfsu_quick_rival_probe PRIVATE nfsu_frontend nfsu_arg_path)
 nfsu_enable_warnings(nfsu_quick_rival_probe)
@@ -1578,6 +1590,7 @@ add_executable(nfsu_ai_traffic_action_tests tests/ai_traffic_action_tests.cpp)
 target_link_libraries(nfsu_ai_traffic_action_tests PRIVATE nfsu_ai_driver)
 nfsu_enable_warnings(nfsu_ai_traffic_action_tests)
 add_test(NAME nfsu_ai_traffic_action_tests COMMAND nfsu_ai_traffic_action_tests)
+add_test(NAME nfsu_traffic_lights_tests COMMAND nfsu_traffic_lights_tests)
 add_executable(nfsu_ai_traffic_avoidance_tests tests/ai_traffic_avoidance_tests.cpp)
 target_link_libraries(nfsu_ai_traffic_avoidance_tests PRIVATE nfsu_ai_driver)
 nfsu_enable_warnings(nfsu_ai_traffic_avoidance_tests)
@@ -1687,6 +1700,7 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_drive_tests PRIVATE nfsu_drive_session nfsu_arg_path)
     nfsu_enable_warnings(nfsu_drive_tests)
     add_test(NAME nfsu_drive_tests COMMAND nfsu_drive_tests)
+    add_test(NAME nfsu_race_camera_tests COMMAND nfsu_drive_tests --camera-check)
 
     add_executable(nfsu_drag_input_tests tests/drag_input_tests.cpp)
     target_include_directories(nfsu_drag_input_tests PRIVATE tests/drag_input_switch_stubs switch)
@@ -1879,6 +1893,9 @@ if(NFSU_BUILD_TESTS)
     nfsu_enable_warnings(nfsu_race_hud_tests)
     add_test(NAME nfsu_race_hud_tests COMMAND nfsu_race_hud_tests)
     add_test(NAME nfsu_race_standings_tests COMMAND nfsu_race_hud_tests --standings)
+    add_executable(nfsu_race_finish_hud_tests tests/race_finish_hud_tests.cpp)
+    target_link_libraries(nfsu_race_finish_hud_tests PRIVATE nfsu_race_hud nfsu_image nfsu_arg_path nfsu_frontend)
+    nfsu_enable_warnings(nfsu_race_finish_hud_tests)
     add_executable(nfsu_race_boost_tests tests/race_boost_tests.cpp)
     target_link_libraries(nfsu_race_boost_tests PRIVATE nfsu_race_hud nfsu_frontend nfsu_posix_file_system)
     nfsu_enable_warnings(nfsu_race_boost_tests)
@@ -1908,6 +1925,25 @@ if(NFSU_BUILD_TESTS)
     target_link_libraries(nfsu_race_particles_tests PRIVATE nfsu_race_session)
     nfsu_enable_warnings(nfsu_race_particles_tests)
     add_test(NAME nfsu_race_particles_tests COMMAND nfsu_race_particles_tests)
+    add_executable(nfsu_race_water_motion_tests tests/race_water_motion_tests.cpp)
+    target_link_libraries(nfsu_race_water_motion_tests PRIVATE nfsu_race_session)
+    nfsu_enable_warnings(nfsu_race_water_motion_tests)
+    add_test(NAME nfsu_race_water_motion_tests COMMAND nfsu_race_water_motion_tests)
+    add_executable(nfsu_race_particle_flat_tests tests/race_particle_flat_tests.cpp)
+    target_include_directories(nfsu_race_particle_flat_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    nfsu_enable_warnings(nfsu_race_particle_flat_tests)
+    add_test(NAME nfsu_race_particle_flat_tests COMMAND nfsu_race_particle_flat_tests)
+    add_test(NAME nfsu_race_particle_flat_source_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_particle_flat_source_tests.py)
+    add_executable(nfsu_race_water_birth_tests tests/race_water_birth_tests.cpp)
+    target_link_libraries(nfsu_race_water_birth_tests PRIVATE nfsu_race_session)
+    nfsu_enable_warnings(nfsu_race_water_birth_tests)
+    add_executable(nfsu_race_water_phase_tests tests/race_water_phase_tests.cpp)
+    target_link_libraries(nfsu_race_water_phase_tests PRIVATE nfsu_race_session)
+    nfsu_enable_warnings(nfsu_race_water_phase_tests)
+    add_executable(nfsu_race_vehicle_particles_tests tests/race_vehicle_particles_tests.cpp)
+    target_link_libraries(nfsu_race_vehicle_particles_tests PRIVATE nfsu_race_session nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_race_vehicle_particles_tests)
     add_test(NAME nfsu_race_guards
         COMMAND ${CMAKE_COMMAND} -DRACE=$<TARGET_FILE:nfsu_race>
                 -DWORK=${CMAKE_CURRENT_BINARY_DIR}/race-guards
@@ -1976,6 +2012,23 @@ if(NFSU_BUILD_TESTS)
     add_test(NAME nfsu_frontend_glow_fast_tests COMMAND nfsu_frontend_glow_fast_tests)
     add_test(NAME nfsu_frontend_glow_source_tests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/frontend_glow_source_tests.py
+            --root ${CMAKE_CURRENT_SOURCE_DIR})
+
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/race_particle.frag.glsl")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/race_particle.frag.glsl" particle_source)
+    string(REGEX MATCH "bool particle_sample_is_zero[^}]+}" particle_equation "${particle_source}")
+    if(NOT particle_equation)
+        message(FATAL_ERROR "Missing actual particle zero-sample equation")
+    endif()
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/particle_zero_equation.h" "${particle_equation}\n")
+    add_executable(nfsu_race_particle_shader_tests tests/race_particle_shader_tests.cpp)
+    target_include_directories(nfsu_race_particle_shader_tests PRIVATE include ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    add_dependencies(nfsu_race_particle_shader_tests nfsu_shader_manifest)
+    nfsu_enable_warnings(nfsu_race_particle_shader_tests)
+    add_test(NAME nfsu_race_particle_shader_tests COMMAND nfsu_race_particle_shader_tests)
+    add_test(NAME nfsu_race_particle_shader_source_tests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/race_particle_shader_source_tests.py
             --root ${CMAKE_CURRENT_SOURCE_DIR})
 
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/shaders/textured_opaque.frag.glsl" race_effect_source)
@@ -2071,7 +2124,16 @@ add_test(NAME nfsu_race_effect_source_tests
     add_executable(nfsu_career_races_tests tests/career_races_tests.cpp)
     target_link_libraries(nfsu_career_races_tests PRIVATE nfsu_frontend nfsu_race_run nfsu_posix_file_system nfsu_track_render nfsu_race_audio nfsu_intro_movie)
     nfsu_enable_warnings(nfsu_career_races_tests)
+    add_executable(nfsu_start_car_wheels_tests tests/start_car_wheels_tests.cpp)
+    target_link_libraries(nfsu_start_car_wheels_tests PRIVATE nfsu_frontend nfsu_race_run nfsu_posix_file_system)
+    nfsu_enable_warnings(nfsu_start_car_wheels_tests)
+    add_test(NAME nfsu_start_car_wheels_tests COMMAND nfsu_start_car_wheels_tests)
     add_executable(nfsu_career_tests tests/career_tests.cpp)
+    add_executable(nfsu_career_magazine_menu_tests tests/career_magazine_menu_tests.cpp)
+    target_link_libraries(nfsu_career_magazine_menu_tests PRIVATE nfsu_frontend nfsu_posix_file_system nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_career_magazine_menu_tests)
+    add_test(NAME nfsu_career_magazine_app_guards
+        COMMAND ${CMAKE_COMMAND} "-DROOT=${PROJECT_SOURCE_DIR}" -P "${PROJECT_SOURCE_DIR}/tests/career_magazine_app_guards.cmake")
     target_link_libraries(nfsu_career_tests PRIVATE nfsu_frontend nfsu_posix_file_system nfsu_arg_path)
     nfsu_enable_warnings(nfsu_career_tests)
     add_executable(nfsu_frontend_tests tests/frontend_tests.cpp)
@@ -2103,6 +2165,13 @@ add_test(NAME nfsu_race_effect_source_tests
     add_executable(nfsu_circuit1005_tests tests/circuit1005_tests.cpp)
     add_executable(nfsu_circuit_tracks_tests tests/circuit_tracks_tests.cpp)
     add_executable(nfsu_ordinary_world_retail_tests tests/ordinary_world_retail_tests.cpp)
+    add_executable(nfsu_route_scenery_retail_tests tests/route_scenery_retail_tests.cpp)
+    target_link_libraries(nfsu_route_scenery_retail_tests PRIVATE nfsu_race_run nfsu_lan_scene nfsu_posix_file_system nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_route_scenery_retail_tests)
+    add_executable(nfsu_texture_filter_selection_tests src/texture_filter_compare_main.cpp)
+    target_compile_definitions(nfsu_texture_filter_selection_tests PRIVATE NFSU_TEXTURE_FILTER_SELECTION_ONLY)
+    target_link_libraries(nfsu_texture_filter_selection_tests PRIVATE nfsu_race_run nfsu_posix_file_system nfsu_frame_compare nfsu_track_render nfsu_arg_path)
+    nfsu_enable_warnings(nfsu_texture_filter_selection_tests)
     add_executable(nfsu_rival_action_retail_tests tests/rival_action_retail_tests.cpp)
     target_link_libraries(nfsu_rival_action_retail_tests PRIVATE nfsu_race_run nfsu_frontend nfsu_posix_file_system nfsu_arg_path)
     nfsu_enable_warnings(nfsu_rival_action_retail_tests)
@@ -2265,6 +2334,18 @@ if(NFSU_BUILD_TESTS)
         set(nfsu_retail_work ${CMAKE_CURRENT_BINARY_DIR}/nfsu_retail)
         add_test(NAME nfsu_circuit1005_retail COMMAND nfsu_circuit1005_tests "${NFSU_RETAIL_ROOT}")
         add_test(NAME nfsu_ordinary_world_retail COMMAND nfsu_ordinary_world_retail_tests "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_route_scenery_retail COMMAND nfsu_route_scenery_retail_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_route_scenery_retail PROPERTIES
+            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 1800)
+        foreach(selection_step 180 600 6000)
+            add_test(NAME nfsu_texture_filter_selection_${selection_step}_retail
+                COMMAND nfsu_texture_filter_selection_tests --root "${NFSU_RETAIL_ROOT}"
+                    --input "${CMAKE_CURRENT_SOURCE_DIR}/tests/recordings/texture_filter_v2.txt" --step ${selection_step})
+            set_tests_properties(nfsu_texture_filter_selection_${selection_step}_retail PROPERTIES
+                LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 120
+                PASS_REGULAR_EXPRESSION "PASS: native-context CPU/GPU instance order"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+        endforeach()
         add_test(NAME nfsu_rival_action_ug0_retail COMMAND nfsu_rival_action_retail_tests "${NFSU_RETAIL_ROOT}" 0)
         add_test(NAME nfsu_rival_action_event8_retail COMMAND nfsu_rival_action_retail_tests "${NFSU_RETAIL_ROOT}" 8)
         add_test(NAME nfsu_rival_action_event19_retail COMMAND nfsu_rival_action_retail_tests "${NFSU_RETAIL_ROOT}" 19)
@@ -2383,6 +2464,12 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(nfsu_retail_manifest_after PROPERTIES
             FIXTURES_CLEANUP nfsu_retail_read_only LABELS retail
             TIMEOUT 600)
+        add_test(NAME nfsu_race_water_phase_retail COMMAND nfsu_race_water_phase_tests "${NFSU_RETAIL_ROOT}/Global/GLOBALB.BUN")
+        set_tests_properties(nfsu_race_water_phase_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
+        add_test(NAME nfsu_race_water_birth_retail COMMAND nfsu_race_water_birth_tests "${NFSU_RETAIL_ROOT}/Global/GLOBALB.BUN")
+        set_tests_properties(nfsu_race_water_birth_retail PROPERTIES
+            FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
         add_test(NAME nfsu_minimap_retail COMMAND nfsu_minimap_tests --retail "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_minimap_retail PROPERTIES
             FIXTURES_REQUIRED nfsu_retail_read_only LABELS retail TIMEOUT 180)
@@ -2408,6 +2495,25 @@ if(NFSU_BUILD_TESTS)
         add_test(NAME nfsu_career_info_retail COMMAND nfsu_career_tests "${NFSU_RETAIL_ROOT}" --info verify)
         set_tests_properties(nfsu_career_info_retail PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
         add_test(NAME nfsu_career_retail COMMAND nfsu_career_tests "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_career_magazine_menu_retail COMMAND nfsu_career_magazine_menu_tests "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_career_magazine_camera_return_retail
+            COMMAND nfsu_career_magazine_menu_tests "${NFSU_RETAIL_ROOT}" --camera-return)
+        add_test(NAME nfsu_career_magazine_menu_native_retail
+            COMMAND ${Python3_EXECUTABLE} -B "${PROJECT_SOURCE_DIR}/tools/career_magazine_menu_native.py" --root "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_career_magazine_menu_retail nfsu_career_magazine_camera_return_retail nfsu_career_magazine_menu_native_retail PROPERTIES
+            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 300 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        add_test(NAME nfsu_reward_rims_motion_retail COMMAND nfsu_career_tests "${NFSU_RETAIL_ROOT}" --reward-rims-motion)
+        add_test(NAME nfsu_reward_rims_motion_native_retail
+            COMMAND ${Python3_EXECUTABLE} -B "${PROJECT_SOURCE_DIR}/tools/reward_rims_motion_native.py" --root "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_reward_rims_motion_retail nfsu_reward_rims_motion_native_retail PROPERTIES
+            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        add_test(NAME nfsu_performance_packages_retail COMMAND nfsu_career_tests "${NFSU_RETAIL_ROOT}" --performance-packages)
+        set_tests_properties(nfsu_performance_packages_retail PROPERTIES LABELS retail
+            FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
+        add_test(NAME nfsu_performance_packages_native_retail
+            COMMAND ${Python3_EXECUTABLE} -B "${PROJECT_SOURCE_DIR}/tools/performance_packages_native.py" --root "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_performance_packages_native_retail PROPERTIES LABELS retail
+            FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
         add_test(NAME nfsu_garage_paint_retail COMMAND nfsu_career_tests "${NFSU_RETAIL_ROOT}" unused paint-isolation)
         set_tests_properties(nfsu_garage_paint_retail PROPERTIES LABELS retail
             FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
@@ -2452,6 +2558,22 @@ if(NFSU_BUILD_TESTS)
                 $<TARGET_FILE:nfsu_career_races_tests> "${NFSU_RETAIL_ROOT}" 19 0)
         set_tests_properties(nfsu_event19_start_motion_retail PROPERTIES LABELS retail
             FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
+        foreach(nfsu_start_view cinematic game skip steering)
+            set(nfsu_start_view_env)
+            if(nfsu_start_view STREQUAL "game")
+                list(APPEND nfsu_start_view_env NFSU_CAREER_START_GAME_CAMERA=1)
+            elseif(nfsu_start_view STREQUAL "skip")
+                list(APPEND nfsu_start_view_env NFSU_CAREER_START_SKIP=1)
+            elseif(nfsu_start_view STREQUAL "steering")
+                list(APPEND nfsu_start_view_env NFSU_CAREER_TEST_START_SCENE=2303)
+            endif()
+            add_test(NAME nfsu_event48_start_wheels_${nfsu_start_view}_retail
+                COMMAND ${CMAKE_COMMAND} -E env NFSU_CAREER_SCENE_CHECK=1 NFSU_CAREER_START_SCENE_CHECK=1
+                    NFSU_CAREER_START_WHEELS_CHECK=1 NFSU_CAREER_TEST_CAR=RSX ${nfsu_start_view_env}
+                    $<TARGET_FILE:nfsu_career_races_tests> "${NFSU_RETAIL_ROOT}" 48 0)
+            set_tests_properties(nfsu_event48_start_wheels_${nfsu_start_view}_retail PROPERTIES LABELS retail
+                FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
+        endforeach()
         add_test(NAME nfsu_tournament_start_skip_retail
             COMMAND ${CMAKE_COMMAND} -E env NFSU_CAREER_SCENE_CHECK=1 NFSU_CAREER_START_SCENE_CHECK=1
                 NFSU_CAREER_TEST_ROUND=1 NFSU_CAREER_START_SKIP=1
@@ -2459,6 +2581,9 @@ if(NFSU_BUILD_TESTS)
         set_tests_properties(nfsu_tournament_start_skip_retail PROPERTIES LABELS retail
             FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
         add_test(NAME nfsu_race_start_camera_retail COMMAND nfsu_start_crowd_check "${NFSU_RETAIL_ROOT}")
+        add_test(NAME nfsu_race_finish_hud_retail COMMAND nfsu_race_finish_hud_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_race_finish_hud_retail PROPERTIES LABELS retail
+            FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
         set_tests_properties(nfsu_race_start_camera_retail PROPERTIES LABELS retail
             FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
         add_test(NAME nfsu_frontend_retail COMMAND nfsu_frontend_tests "${NFSU_RETAIL_ROOT}")
@@ -2639,6 +2764,8 @@ if(NFSU_BUILD_TESTS)
         # The shipped racing line of track 1003: docs/RACING_LINE.md.
         add_test(NAME nfsu_ai_selection_retail COMMAND nfsu_ai_selection_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_ai_selection_retail PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 60)
+        add_test(NAME nfsu_ai_catchup_rank_retail COMMAND nfsu_ai_catchup_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_ai_catchup_rank_retail PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 60)
         add_test(NAME nfsu_racing_line_retail
             COMMAND nfsu_racing_line_tests "${NFSU_RETAIL_ROOT}")
         # The bounded index of the race music: docs/RACE_AUDIO.md.
@@ -2676,6 +2803,10 @@ if(NFSU_BUILD_TESTS)
             COMMAND $<TARGET_FILE:nfsu_lan_probe> --root "${NFSU_RETAIL_ROOT}" --split-screen)
         set_tests_properties(nfsu_split_screen_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 90)
+        add_test(NAME nfsu_lan_camera_retail
+            COMMAND nfsu_lan_camera_retail_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_lan_camera_retail PROPERTIES
+            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 90)
         # The software rasterizer makes the complete garage flow expensive
         # in Default. Run it in Release, alongside the full draw checks.
         if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -2692,7 +2823,7 @@ if(NFSU_BUILD_TESTS)
                 --probe $<TARGET_FILE:nfsu_career_races_tests>)
         set_tests_properties(nfsu_career_fixed_native_retail PROPERTIES
             LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 900)
-        foreach(nfsu_owner_native race_actor_retirement camera_presentation
+        foreach(nfsu_owner_native ai_driver_wiring race_actor_retirement camera_presentation
                 camera_surge career_unique_reward career_tournament career_magazine career_magazine_tasks frontend_magazine_camera)
             add_test(NAME nfsu_${nfsu_owner_native}_native_retail
                 COMMAND ${Python3_EXECUTABLE} -B
@@ -2733,6 +2864,11 @@ if(NFSU_BUILD_TESTS)
             COMMAND nfsu_drift_track_check "${NFSU_RETAIL_ROOT}" --finish)
         add_test(NAME nfsu_car_shadow_roster_retail
             COMMAND nfsu_career_tests "${NFSU_RETAIL_ROOT}" "${nfsu_retail_work}" shadow-roster)
+        add_test(NAME nfsu_start_car_wheels_retail
+            COMMAND nfsu_start_car_wheels_tests "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_start_car_wheels_retail PROPERTIES
+            LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR} TIMEOUT 180)
         add_test(NAME nfsu_car_shadow_silhouette_retail
             COMMAND ${CMAKE_COMMAND} -E env NFSU_CAREER_SCENE_CHECK=1 NFSU_CAREER_SHADOW_SILHOUETTE=1
                 NFSU_CAREER_SHADOW_WITNESS=1 NFSU_CAREER_TEST_CAR=INTEGRA
@@ -2796,6 +2932,10 @@ if(NFSU_BUILD_TESTS)
             COMMAND ${Python3_EXECUTABLE} -B "${PROJECT_SOURCE_DIR}/tools/drag_lane_step_native.py" "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_drag_lane_step_native_retail PROPERTIES LABELS retail
             FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        add_test(NAME nfsu_drag_lane_exhaustion_native_retail
+            COMMAND ${Python3_EXECUTABLE} -B "${PROJECT_SOURCE_DIR}/tools/drag_lane_exhaustion_native.py" "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_drag_lane_exhaustion_native_retail PROPERTIES LABELS retail
+            FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 60 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
         add_test(NAME nfsu_drag_human_publication_native_retail
             COMMAND ${Python3_EXECUTABLE} -B "${PROJECT_SOURCE_DIR}/tools/drag_human_publication_native.py" "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_drag_human_publication_native_retail PROPERTIES LABELS retail
@@ -2851,9 +2991,25 @@ if(NFSU_BUILD_TESTS)
             COMMAND ${Python3_EXECUTABLE} -B "${PROJECT_SOURCE_DIR}/tools/traffic_lane_permission_native.py" "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_traffic_lane_permission_native_retail PROPERTIES LABELS retail
             FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        foreach(event 5 6)
+            add_test(NAME nfsu_traffic_lights_retail_${event}
+                COMMAND nfsu_traffic_lights_retail_tests "${NFSU_RETAIL_ROOT}" ${event})
+            set_tests_properties(nfsu_traffic_lights_retail_${event} PROPERTIES LABELS retail
+                FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
+        endforeach()
+        add_test(NAME nfsu_traffic_lights_native_retail
+            COMMAND ${Python3_EXECUTABLE} -B "${PROJECT_SOURCE_DIR}/tools/traffic_lights_native.py" --root "${NFSU_RETAIL_ROOT}")
+        set_tests_properties(nfsu_traffic_lights_native_retail PROPERTIES LABELS retail
+            FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
         add_test(NAME nfsu_traffic_reaction_retail COMMAND nfsu_traffic_reaction_retail_tests "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_traffic_reaction_retail PROPERTIES LABELS retail
             FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180 WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+        foreach(event 0 12 14)
+            add_test(NAME nfsu_traffic_height_approach_event${event}_retail
+                COMMAND nfsu_traffic_height_retail_tests "${NFSU_RETAIL_ROOT}" ${event} 9000)
+            set_tests_properties(nfsu_traffic_height_approach_event${event}_retail PROPERTIES LABELS retail
+                FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 180)
+        endforeach()
         add_test(NAME nfsu_traffic_avoidance_native_retail
             COMMAND ${Python3_EXECUTABLE} -B "${PROJECT_SOURCE_DIR}/tools/traffic_avoidance_native.py" "${NFSU_RETAIL_ROOT}")
         set_tests_properties(nfsu_traffic_avoidance_native_retail PROPERTIES LABELS retail
@@ -2970,6 +3126,13 @@ if(NFSU_BUILD_TESTS)
             nfsu_probe_asset_check_retail_event-1
             PROPERTIES LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only
             TIMEOUT 1800)
+
+        foreach(vehicle_particle_case bursts wheels lifetime pool cpu_size road road_spawn impact owners walls road_visibility landings bottom_birth bottom_motion)
+            add_test(NAME nfsu_vehicle_particles_${vehicle_particle_case}_retail
+                COMMAND nfsu_race_vehicle_particles_tests "${NFSU_RETAIL_ROOT}" ${vehicle_particle_case})
+            set_tests_properties(nfsu_vehicle_particles_${vehicle_particle_case}_retail PROPERTIES
+                LABELS retail FIXTURES_REQUIRED nfsu_retail_read_only TIMEOUT 60)
+        endforeach()
 
         foreach(filter legacy linear)
             foreach(shading generic shaded)

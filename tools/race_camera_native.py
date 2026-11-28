@@ -6,6 +6,8 @@ from the PC fix with Scaling=0, then executes the same native projection.
 Both passes stop before scene submission. A separate scalar test executes
 the type-17 eye channel during a stationary view change. A second test
 runs the race mover under a bounded acceleration step on flat ground.
+The fixed-view witness executes the actual POV and look-back setters, then
+compares both eye and direction through hold and release.
 """
 import argparse,hashlib,json,struct,sys
 from pathlib import Path
@@ -44,8 +46,8 @@ for special in (0,1):
   assert not m.events
   starts.append([special,preference,m.get(0x78a388,'B')])
 rows=[]; widescreen=[]
-for fov in (13020,16384):
- for width,height in ((1280,720),(640,480),(1920,1080)):
+for fov in (13020,16384,13018,8192,3640,2229):
+ for width,height in ((1280,720),(640,480),(1920,1080),(640,240),(320,480)):
   m=Machine(im)
   # Dispatch thunk and helpers execute original code, no host math hooks.
   m.allowed=[(0x40dd00,0x40df04),(0x401cd0,0x401d55),(0x564b10,0x564c00),
@@ -140,7 +142,7 @@ def acceleration_step(im):
     m.put(mover + 0x50, ring)
     m.put(ring + 5, 4, 'B')
     m.put(ring + 8, 0x1111000)
-    samples = []
+    samples = []; basis = []
     for frame in range(180):
         time = frame / 60
         m.put(0x73ad34, int(time * 4000))
@@ -152,12 +154,25 @@ def acceleration_step(im):
         m.run(0x48bcb0, ecx=mover)
         if frame in (0, 20, 21, 24, 40, 60, 120, 179):
             samples.append([frame, m.get(view + 0x40)])
+            matrix=struct.unpack('<16I',m.uc.mem_read(view,64))
+            up=[struct.unpack('<I',struct.pack('<f',-struct.unpack('<f',struct.pack('<I',matrix[k]))[0]))[0] for k in (1,5,9)]
+            basis.append([frame]+[matrix[k] for k in (2,6,10)]+up)
     hooks = sorted({row['hook'] for row in m.events})
     assert set(hooks) == {
         'flat-ground material', 'zero road height noise', 'continuous shake excluded',
         'geometry clearance excluded', 'impacts excluded', 'human actor', 'running race',
     }
-    return samples, hooks
+    # Actual type17 virtual setters: fixed POV, then held/released look-back.
+    # This catches mirroring the ray while leaving its eye at the front anchor.
+    m.run(0x48b410,(2,),ecx=mover)
+    rear=[]
+    for held in (0,1,0):
+        m.run(0x483370,(held,),ecx=mover)
+        m.run(0x48bcb0,ecx=mover)
+        matrix=struct.unpack('<16I',m.uc.mem_read(view,64))
+        rear.append([held]+[m.get(ACTOR+0x60+4*k) for k in range(3)]+
+                    [m.get(view+0x40+4*k) for k in range(3)]+[matrix[k] for k in (2,6,10)])
+    return samples, hooks, basis, rear
 
 
 def wall_clearance(im):
@@ -216,9 +231,10 @@ def wall_clearance(im):
     return samples, corrected[2:11:4]
 
 
-acceleration, acceleration_hooks = acceleration_step(im)
+acceleration, acceleration_hooks, acceleration_basis, bumper_rear = acceleration_step(im)
 wall_points, wall_forward = wall_clearance(im)
-report={'eye_response':eye,'acceleration_step':acceleration,'acceleration_hooks':acceleration_hooks,
+report={'eye_response':eye,'acceleration_step':acceleration,'acceleration_hooks':acceleration_hooks,'acceleration_basis':acceleration_basis,
+        'bumper_rear':bumper_rear,
         'wall_clearance':wall_points, 'wall_forward':wall_forward, 'ordinary_continuous_shake_gain':0,'cycles':cycles,'starts':starts,'projection':rows,'widescreen':widescreen,'hooks':[],
         'boundary':'42E020 normal/special list; 40DD00 primary viewport projection with and without widescreen operands; no running game parity claim.'}
 (out/'oracle.json').write_text(json.dumps(report,indent=2)+'\n',encoding='ascii')
@@ -238,8 +254,14 @@ lines+=['    {%d,0x%08xU},'%tuple(r) for r in eye]
 lines+=['};','// Native 48BCB0 world eye, straight motion with acceleration step.',
         'static constexpr unsigned kNativeRaceAcceleration[][2]={']
 lines+=['    {%d,0x%08xU},'%tuple(r) for r in acceleration]
+lines+=['};','// 48BCB0 view basis: frame, forward xyz, world-up xyz. Native view Y is down.',
+        'static constexpr unsigned kNativeRaceAccelerationBasis[][7]={']
+lines+=['    {%d,'%r[0]+','.join('0x%08xU'%v for v in r[1:])+'},' for r in acceleration_basis]
+lines+=['};','// Original48B410/483370/48BCB0: held, actorCOM xyz, eye xyz, forward xyz.',
+        'static constexpr unsigned kNativeRaceBumperRear[][10]={']
+lines+=['    {%d,'%r[0]+','.join('0x%08xU'%v for v in r[1:])+'},' for r in bumper_rear]
 lines+=['};'];text='\n'.join(lines)+'\n';target=Path('tests/race_camera_native.inc')
 if a.write_fixture:target.write_text(text,encoding='ascii')
 else:assert target.read_text(encoding='ascii')==text,'camera fixture stale'
-print('PASS original camera cycle, projection, type-17 POV transition, acceleration step and wall clearance')
+print('PASS original camera cycle, projection, type-17 POV transition, fixed-view look-back, acceleration step and wall clearance')
 

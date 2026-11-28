@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 #include <cmath>
+#include <cstring>
 
 namespace {
 int failures=0;
@@ -13,7 +14,304 @@ void check(bool okay,const char* label) {
 }
 }
 namespace nfsu {
+struct DriverPathWiringCase {
+    unsigned count;std::uint32_t first[25][3],second[25][3],cold[25][3],length,cold_length;
+};
+const DriverPathWiringCase driver_path_wiring_cases[]={
+#include "ai_driver_wiring_path_native.inc"
+};
 struct RaceWorldContactProbe {
+    static bool cold_path_rebuild_after_driver(const VehicleTrackCourse& course,std::string& error) {
+        const auto scalar=[](std::uint32_t word){float value;std::memcpy(&value,&word,4);return value;};
+        const auto& original=driver_path_wiring_cases[1];
+        const auto fail=[&](int line){std::cerr<<"cold driver path line="<<line<<" error="<<error<<'\n';return false;};
+        auto local=course;local.start.ground={256,48,16};
+        auto storage=std::make_unique<RaceSession>(local);auto& world=*storage;
+        auto pose=course.start;pose.ground={32,32,10};pose.speed=30;
+        if(!world.set_planned_rivals({{stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"}},
+             {{1,1,1}},error))return fail(__LINE__);
+        world.enable_rival_physics_switching();if(!world.start(error))return fail(__LINE__);
+        auto& rival=*world.rivals_[0];rival.rival_full_ticks_=rival.rival_path_block_ticks_=0;
+        for(auto* car:{&world,&rival}){car->timing_.stage=RaceStage::racing;car->timing_.go_valid=true;
+            car->timing_.now_ticks=car->timing_.race_ticks=140000;}
+        rival.select_rival_physics(3);
+        RaceRivalPlans batch;batch.count=1;batch.step=world.timing_.step;
+        auto& plan=batch.cars[0];plan.path.count=6;plan.desired_speed=40;
+        plan.driver_category=1;plan.route_distance=10;plan.physics_full_update=plan.path_physics_allowed=true;
+        for(unsigned j=0;j<6;++j)for(unsigned k=0;k<3;++k)plan.path.points[j][k]=scalar(original.first[j][k]);
+        const auto first=plan.path;
+        if(!world.advance_planned({},batch,error)||rival.physical_selector()!=4||
+           plan.path.points!=first.points||plan.path_physics_prepared)return fail(__LINE__);
+        //The real event59 RESET_TO_POINT clears only the spline, retaining
+        //selector4 and Driver+10. Reproduce that observed state at this seam.
+        rival.vehicle_.rival_path_={};
+        for(unsigned j=0;j<6;++j)for(unsigned k=0;k<3;++k)plan.path.points[j][k]=scalar(original.second[j][k]);
+        plan.path_physics_prepared=true;plan.path_physics_length=scalar(original.length);
+        const auto caller=plan.path;
+        AiDriverPath expected_path;expected_path.count=6;
+        for(unsigned frame=0;frame<3;++frame) {
+            for(unsigned j=0;j<6;++j)for(unsigned k=0;k<3;++k)
+                expected_path.points[j][k]=scalar(frame?original.cold[j][k]:original.second[j][k]);
+            AiDriverForwardInput input;input.path=expected_path;
+            const auto& s=rival.car();input.position={float(s.position.x),float(s.position.y),float(s.position.z)};
+            input.velocity=s.owner_motion.velocity;input.heading=s.owner_motion.heading;
+            input.forward_speed=s.owner_speeds.forward;input.absolute_speed=s.owner_speeds.magnitude;
+            input.category=1;input.race_seconds=-1;input.physical_selector=4;input.route_distance=10;input.desired_speed=40;
+            input.rear_drive_fraction=rival.spec().handling.rear_drive_fraction;
+            for(unsigned k=0;k<4;++k){input.contact[k]=s.wheels[k].contact;input.wheel_slip[k]=s.published_wheel_slip[k][0];}
+            auto expected=world.rival_driver(0);if(!ai_driver_ordinary_step(input,1.F/60,expected))return fail(__LINE__);
+            batch.step=world.timing_.step;plan.physics_full_update=false;
+            if(!world.advance_planned({},batch,error)||rival.physical_selector()!=4)return fail(__LINE__);
+            const auto& actual=world.rival_driver(0);const auto& body=rival.vehicle_.rival_path_;
+            if(actual.target.point!=expected.target.point||actual.steering.word!=expected.steering.word||
+               body.points_per_metre!=5.F/scalar(original.cold_length)||
+               plan.path.points!=caller.points||!plan.path_physics_prepared)return fail(__LINE__);
+            for(unsigned j=0;j<6;++j)for(unsigned k=0;k<3;++k)
+                if(body.path.points[j][k]!=scalar(original.cold[j][k]))return fail(__LINE__);
+        }
+        return true;
+    }
+
+    static bool lateral_speed_late_brakes(const VehicleTrackCourse& course,std::string& error) {
+        const float boundary=8.940545082092285F;
+        struct Case {float forward,magnitude,timer;bool handbrake;};
+        const Case cases[]={{8,38,.1F,true},{-8,38,.1F,true},{0,38,.1F,true},
+            {8,boundary,.1F,false},{8,std::nextafter(boundary,0.F),.1F,false},
+            {8,std::nextafter(boundary,100.F),.1F,true},{8,38,1.F/60,false}};
+        for(const auto& c:cases) {
+            const auto fail=[&](int line){std::cerr<<"lateral late wiring forward="<<c.forward
+                <<" magnitude="<<c.magnitude<<" timer="<<c.timer<<" line="<<line<<" error="<<error<<'\n';return false;};
+            auto local=course;local.start.ground={256,48,16};
+            auto storage=std::make_unique<RaceSession>(local);auto& world=*storage;
+            auto pose=course.start;pose.ground={32,32,10};pose.speed=c.forward;
+            if(!world.set_planned_rivals({{stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"}},
+                 {{1,1,1}},error)||!world.start(error))return fail(__LINE__);
+            auto& rival=*world.rivals_[0];auto state=rival.car();
+            const float lateral=std::sqrt(c.magnitude*c.magnitude-c.forward*c.forward);
+            state.velocity={c.forward,lateral,0};state.owner_motion.velocity={c.forward,lateral,0};
+            state.owner_speeds={c.forward,c.magnitude};
+            if(!rival.vehicle_.start(state))return fail(__LINE__);
+            for(auto* car:{&world,&rival}){car->timing_.stage=RaceStage::racing;car->timing_.go_valid=true;
+                car->timing_.now_ticks=car->timing_.race_ticks=140000;}
+            world.original_drivers_[0].handbrake_seconds=c.timer;
+            RaceRivalPlans batch;batch.count=1;batch.step=world.timing_.step;
+            auto& plan=batch.cars[0];plan.path.count=3;plan.desired_speed=40;
+            plan.route_distance=10;plan.driver_category=1;
+            plan.path.points[0]={42,32,10};plan.path.points[1]={62,32,10};plan.path.points[2]={82,32,10};
+            if(!world.advance_planned({},batch,error))return fail(__LINE__);
+            const auto& driver=world.rival_driver(0);
+            std::cerr<<"late physical forward="<<c.forward<<" magnitude="<<c.magnitude
+                <<" hb="<<driver.handbrake<<" input_hb="<<rival.inputs_[0].handbrake
+                <<" engine_brake="<<rival.ai_physics().engine.brake<<'\n';
+            if((driver.handbrake!=0)!=c.handbrake||rival.inputs_[0].handbrake!=c.handbrake||
+               (c.handbrake&&(driver.pedals.throttle!=0.F||driver.pedals.brake!=0.F||
+                              rival.ai_physics().engine.brake!=.5F)))return fail(__LINE__);
+        }
+        return true;
+    }
+
+    static bool immutable_retained_driver_path(const VehicleTrackCourse& course,std::string& error) {
+        const auto scalar=[](std::uint32_t word){float value;std::memcpy(&value,&word,4);return value;};
+        const auto& original=driver_path_wiring_cases[1];
+        auto local=course;local.start.ground={256,48,16};
+        auto storage=std::make_unique<RaceSession>(local);auto& world=*storage;
+        auto pose=course.start;pose.ground={32,32,10};pose.speed=30;
+        if(!world.set_planned_rivals({{stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"}},
+             {{1,1,1}},error))return false;
+        world.enable_rival_physics_switching();if(!world.start(error))return false;
+        auto& rival=*world.rivals_[0];rival.rival_full_ticks_=rival.rival_path_block_ticks_=0;
+        for(auto* car:{&world,&rival}){car->timing_.stage=RaceStage::racing;car->timing_.go_valid=true;
+            car->timing_.now_ticks=car->timing_.race_ticks=140000;}
+        rival.select_rival_physics(3);
+        RaceRivalPlans batch;batch.count=1;batch.step=world.timing_.step;
+        auto& plan=batch.cars[0];plan.path.count=6;plan.desired_speed=40;
+        plan.driver_category=1;plan.route_distance=10;plan.physics_full_update=plan.path_physics_allowed=true;
+        for(unsigned j=0;j<6;++j)for(unsigned k=0;k<3;++k)plan.path.points[j][k]=scalar(original.first[j][k]);
+        if(!world.advance_planned({},batch,error)||rival.physical_selector()!=4)return false;
+        AiDriverForwardInput input;input.path=rival.vehicle_.rival_path_.path;
+        const auto& s=rival.car();input.position={float(s.position.x),float(s.position.y),float(s.position.z)};
+        input.velocity=s.owner_motion.velocity;input.heading=s.owner_motion.heading;
+        input.forward_speed=s.owner_speeds.forward;input.absolute_speed=s.owner_speeds.magnitude;
+        input.category=1;input.race_seconds=-1;input.physical_selector=4;input.route_distance=10;input.desired_speed=40;
+        input.rear_drive_fraction=rival.spec().handling.rear_drive_fraction;
+        for(unsigned k=0;k<4;++k){input.contact[k]=s.wheels[k].contact;input.wheel_slip[k]=s.published_wheel_slip[k][0];}
+        auto expected=world.rival_driver(0);if(!ai_driver_ordinary_step(input,1.F/60,expected))return false;
+        batch.step=world.timing_.step;plan.physics_full_update=false;
+        if(!world.advance_planned({},batch,error)||rival.physical_selector()!=4)return false;
+        const auto& actual=world.rival_driver(0);
+        std::cerr<<"immutable retained target actual="<<actual.target.point[0]<<','<<actual.target.point[1]
+                 <<" expected="<<expected.target.point[0]<<','<<expected.target.point[1]<<'\n';
+        return actual.target.point==expected.target.point&&actual.steering.word==expected.steering.word;
+    }
+
+    static bool restored_late_brakes(const VehicleTrackCourse& course,std::string& error) {
+        for(unsigned scenario=0;scenario<3;++scenario) {
+            const auto fail=[&](int line){std::cerr<<"late wiring scenario="<<scenario<<" line="<<line<<" error="<<error<<"\n";return false;};
+            auto storage=std::make_unique<RaceSession>(course);auto& world=*storage;
+            auto pose=course.start;pose.ground={32,32,10};pose.speed=30;
+            if(!world.set_planned_rivals({{stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"}},
+                 {{1,1,1}},error)||!world.start(error))return fail(__LINE__);
+            auto& rival=*world.rivals_[0];
+            for(auto* current:{&world,&rival}) {
+                current->timing_.stage=RaceStage::racing;current->timing_.go_valid=true;
+                current->timing_.now_ticks=current->timing_.race_ticks=140000;
+            }
+            //Controlled state from the original field reader, not an
+            //ordinary activation or an implication of finish action17.
+            world.original_drivers_[0].handbrake_seconds=.1F;
+            world.original_drivers_[0].forced_brake=scenario!=0;
+            RaceRivalPlans batch;batch.count=1;batch.step=world.timing_.step;
+            auto& plan=batch.cars[0];plan.path.count=3;plan.desired_speed=40;
+            plan.route_distance=10;plan.driver_category=1;plan.finish_driver_cleanup=scenario==2;
+            plan.path.points[0]={42,32,10};plan.path.points[1]={62,32,10};plan.path.points[2]={82,32,10};
+            if(!world.advance_planned({},batch,error))return fail(__LINE__);
+            const auto& driver=world.rival_driver(0);
+            const float expected=scenario==0?.5F:scenario==1?1.F:0.F;
+            if((driver.handbrake!=0)!=(scenario!=2)||
+               (scenario!=2&&rival.ai_physics().engine.brake!=expected)||
+               rival.inputs_[0].handbrake!=(scenario!=2)||
+               rival.car().owner_grip_scale!=(scenario==1?1.3999999761581421F:1.F))return fail(__LINE__);
+            if(scenario==1) {
+                batch.step=world.timing_.step;plan.finish_driver_cleanup=true;
+                if(!world.advance_planned({},batch,error)||world.rival_driver(0).forced_brake||
+                   world.rival_driver(0).handbrake!=0.F||world.rival_driver(0).handbrake_seconds>=-1.F||
+                   rival.car().owner_grip_scale!=1.3999999761581421F)return fail(__LINE__);
+                auto body=rival.car();body.transmission.shift_quality=0;
+                VehicleInput controls;controls.owner_traction_suppressed=true;
+                rival.model_.latch_owner_grip(body,controls,1.F/60);
+                if(body.wheels[0].owner_grip!=.85F*1.3999999761581421F||
+                   body.wheels[1].owner_grip!=body.wheels[0].owner_grip)return fail(__LINE__);
+            }
+        }
+        return true;
+    }
+    static bool live_driver_path_publication(const VehicleTrackCourse& course,std::string& error) {
+        const auto scalar=[](std::uint32_t word){float value;std::memcpy(&value,&word,4);return value;};
+        for(const auto& original:driver_path_wiring_cases) {
+            const auto fail=[&](int line){std::cerr<<"driver publication count="<<original.count<<" line="<<line<<" error="<<error<<"\n";return false;};
+            auto local_course=course;local_course.start.ground={256,48,16};
+            auto storage=std::make_unique<RaceSession>(local_course);auto& world=*storage;
+            auto pose=course.start;pose.speed=30;
+            pose.ground={scalar(original.first[0][0]),scalar(original.first[0][1]),scalar(original.first[0][2])};
+            if(!world.set_planned_rivals({{stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"}},
+                {{1,1,1}},error))return fail(__LINE__);
+            world.enable_rival_physics_switching();if(!world.start(error))return fail(__LINE__);
+            world.timing_.stage=RaceStage::racing;world.timing_.go_valid=true;
+            world.timing_.now_ticks=world.timing_.race_ticks=140000;
+            auto& rival=*world.rivals_[0];rival.rival_full_ticks_=rival.rival_path_block_ticks_=0;
+            rival.timing_.stage=RaceStage::racing;rival.timing_.go_valid=true;
+            rival.timing_.now_ticks=rival.timing_.race_ticks=140000;
+            rival.select_rival_physics(3);
+            auto state=rival.car();state.owner_speeds.forward=state.owner_speeds.magnitude=30;
+            state.published_support=4;if(!rival.vehicle_.start(state))return fail(__LINE__);
+            RaceRivalPlan plan;plan.physics_full_update=plan.path_physics_allowed=true;
+            plan.path.count=static_cast<std::uint8_t>(original.count);plan.desired_speed=40;
+            plan.driver_category=1;plan.route_distance=10;
+            for(unsigned j=0;j<original.count;++j)for(unsigned k=0;k<3;++k)
+                plan.path.points[j][k]=scalar(original.first[j][k]);
+            const auto first=plan.path;
+            world.end_rival_controller(0,plan);
+            if(rival.physical_selector()!=4||!plan.path_physics_prepared||
+               plan.path_physics_length!=scalar(original.length))return fail(__LINE__);
+            for(unsigned j=0;j<original.count;++j)for(unsigned k=0;k<3;++k)
+                if(plan.path.points[j][k]!=scalar(original.second[j][k]))return fail(__LINE__);
+            const auto prepared=plan.path;
+            world.end_rival_controller(0,plan);
+            if(plan.path.points!=prepared.points)return fail(__LINE__); // same epoch is not a third pass
+
+            AiDriverForwardInput input;input.path=prepared;input.desired_speed=plan.desired_speed;
+            input.route_distance=plan.route_distance;input.category=plan.driver_category;
+            const auto& s=rival.car();input.position={float(s.position.x),float(s.position.y),float(s.position.z)};
+            input.velocity=s.owner_motion.velocity;input.heading=s.owner_motion.heading;
+            input.forward_speed=s.owner_speeds.forward;input.absolute_speed=s.owner_speeds.magnitude;
+            input.rear_drive_fraction=rival.spec().handling.rear_drive_fraction;
+            input.race_seconds=-1;input.physical_selector=4;
+            for(unsigned k=0;k<4;++k){input.contact[k]=s.wheels[k].contact;input.wheel_slip[k]=s.published_wheel_slip[k][0];}
+            auto expected=world.rival_driver(0);
+            if(!ai_driver_ordinary_step(input,1.F/60,expected))return fail(__LINE__);
+            RaceRivalPlans batch;batch.step=world.timing_.step;batch.count=1;batch.cars[0]=plan;
+            if(!world.advance_planned({},batch,error))return fail(__LINE__);
+            const auto& actual=world.rival_driver(0);
+            if(actual.target.point!=expected.target.point||actual.steering.word!=expected.steering.word||
+               rival.vehicle_.rival_path_.path.points!=prepared.points||
+               rival.vehicle_.rival_path_.points_per_metre!=float(original.count-1)/scalar(original.length)) {
+                std::cerr<<"driver publication goal="<<(actual.target.point==expected.target.point)
+                    <<" steer="<<actual.steering.word<<'/'<<expected.steering.word
+                    <<" body="<<(rival.vehicle_.rival_path_.path.points==prepared.points)
+                    <<" density="<<rival.vehicle_.rival_path_.points_per_metre<<'/'
+                    <<float(original.count-1)/scalar(original.length)<<'\n';
+                return fail(__LINE__);
+            }
+            // The old API remains a separate caller-owned publication. Both
+            // paths must reach the same native second buffer, not a third one.
+            auto reference=rival.vehicle_;auto explicit_body=rival.vehicle_;
+            VehicleInput controls;controls.road_steering=controls.road_angle_word_valid=true;
+            controls.world_frame_seconds=1.F/60;
+            VehicleTrackTelemetry a,b;bool da=false,db=false;
+            if(!reference.step_rival_path(first,40,0,true,controls,a,da)||
+               !explicit_body.step_rival_path_prepared(prepared,scalar(original.length),40,0,true,controls,b,db)||
+               reference.state().position.x!=explicit_body.state().position.x||
+               reference.state().position.y!=explicit_body.state().position.y||
+               reference.state().owner_speeds.forward!=explicit_body.state().owner_speeds.forward||da!=db)return fail(__LINE__);
+            const auto retained=rival.vehicle_.rival_path_.path;
+            batch.step=world.timing_.step;batch.cars[0].physics_full_update=false;
+            if(!world.advance_planned({},batch,error)||rival.vehicle_.rival_path_.path.points!=retained.points)return fail(__LINE__);
+        }
+        return true;
+    }
+    static bool human_grid_steering(const VehicleTrackCourse& course,std::string& error) {
+        auto world=std::make_unique<RaceSession>(course,stock_240sx_vehicle_spec(),RaceSteering::recovered_predicate1);
+        if(!world->start(error))return false;
+        VehicleInput input;
+        input.steer=1;
+        for(float distance:{0.F,1.999F,2.F}) {
+            world->travelled_distance_=distance;
+            if(!world->steer_input(input,1,error)||!input.road_angle_word_valid||input.road_angle_word!=0||
+               world->steering_state().input.count||world->steering_state().rate.count)return false;
+        }
+        world->travelled_distance_=2.001F;
+        if(!world->steer_input(input,1,error)||world->steering_state().input.count!=1||
+           world->steering_state().rate.count!=1||input.road_angle_word==0)return false;
+        const auto previous=input.road_angle_word;
+        world->travelled_distance_=2.F;
+        input.steer=-1;
+        return world->steer_input(input,1,error)&&input.road_angle_word==previous&&
+               world->steering_state().input.count==1&&world->steering_state().rate.count==1;
+    }
+    static bool held_grip_source(const VehicleTrackCourse& course,std::string& error) {
+        for(double dt:{1./60,.04})for(bool gas:{false,true}) {
+            auto world=std::make_unique<RaceSession>(course);
+            if(!world->start(error))return false;
+            auto& state=world->vehicle_.state_;
+            state.grip_recovery=.5F;
+            for(auto& wheel:state.wheels)wheel.owner_grip=1.F;
+            const auto rng=state.transmission.rng_state;
+            world->real_frame_seconds_=dt;
+            GamepadFrame pad;pad.pads[0].connected=true;
+            if(gas)pad.pads[0].buttons=gamepad_button_bit(GamepadButton::trigger_right);
+            if(!world->advance(pad,error)||!race_car_held(world->timing())||
+               world->car().grip_recovery!=.5F+float(dt)||
+               world->car().gear!=kVehicleGearNeutral||world->car().transmission.rng_state!=rng)return false;
+            for(unsigned k=0;k<2;++k)if(world->car().wheels[k].owner_grip!=.85F)return false;
+        }
+        return true;
+    }
+    static bool shared_world_interval(const VehicleTrackCourse& course,std::string& error) {
+        auto world=std::make_unique<RaceSession>(course);
+        auto pose=course.start;pose.ground.x+=16;
+        if(!world->set_rivals({{stock_240sx_vehicle_spec(),pose,stock_240sx_hull(),"rival"}},error)||
+           !world->start(error,nullptr,.025F))return false;
+        for(unsigned i=0;i<240;++i) {
+            const double dt=i%2?1./30:1./60;
+            world->real_frame_seconds_=dt;
+            const auto before=world->timing().now_ticks;
+            if(world->next_world_frame_seconds()!=float(dt)||!world->advance({},error))return false;
+            if(world->world_frame_seconds()!=dt || world->rival(0).world_frame_seconds()!=dt ||
+               world->timing().now_ticks-before!=std::lround(dt*4000) ||
+               world->rival(0).timing().now_ticks!=world->timing().now_ticks)return false;
+        }
+        return world->timing().go_valid&&world->rival(0).timing().go_valid;
+    }
     static bool short_frame_wall_sparks(const VehicleTrackCourse& course) {
         RaceSession race(course);
         auto& samples=race.track_telemetry_;
@@ -538,6 +836,18 @@ int main() {
     }
     VehicleTrackCourse course;
     check(build_vehicle_proving_ground(course,error),"synthetic course builds");
+    check(RaceWorldContactProbe::cold_path_rebuild_after_driver(course,error),
+          "cold spline refresh follows Driver then persists across retained frames");
+    check(RaceWorldContactProbe::lateral_speed_late_brakes(course,error),
+          "late brake uses published total speed and reaches rival physics");
+    check(RaceWorldContactProbe::immutable_retained_driver_path(course,error),
+          "immutable direct plans retain the shared driver and mover path");
+    check(RaceWorldContactProbe::human_grid_steering(course,error),
+        "RealDriver waits for two travelled metres before sampling the stick");
+    check(RaceWorldContactProbe::held_grip_source(course,error),
+          "start path samples held grip once per world frame for both pedal states and intervals");
+    check(RaceWorldContactProbe::shared_world_interval(course,error),
+        "alternating world intervals reach both grid slots before and after GO");
     check(RaceWorldContactProbe::short_frame_wall_sparks(course),"shared wall contact survives repeated short-frame samples exactly once");
     check(RaceWorldContactProbe::contact_slip_publication(course),"contact completion publishes wheel slip including zero duration");
     check(RaceWorldContactProbe::component_replacement(course,error),
@@ -548,6 +858,10 @@ int main() {
           "rival NOS full/partial stop, preserved remainder, cooldown and inactive attempt");
     check(RaceWorldContactProbe::controller_path_epoch(course,error),
           "path timer expires before tail admission, infinity stays inactive, NOS sees old solver");
+    check(RaceWorldContactProbe::live_driver_path_publication(course,error),
+          "real controller republishes Driver before update and body reuses native second path/length exactly once");
+    check(RaceWorldContactProbe::restored_late_brakes(course,error),
+          "restored late brakes reach real rival physics, finish cleanup does not arm, native grip store persists");
     check(RaceWorldContactProbe::retained_selector(course,false,false,error),
           "supported no-road stop with an already-zero timer retains selector1");
     check(RaceWorldContactProbe::retained_selector(course,false,true,error),
@@ -984,9 +1298,10 @@ int main() {
                 const auto subject=chase_subject(rear_session.car(),rear_session.spec());
                 const auto& r=rear_session.camera();const auto& n=normal.camera();
                 check(r.pov==n.pov,"R3 preserves selected POV");
-                check((r.eye.x-subject.origin.x)*subject.forward.x+
-                      (r.eye.y-subject.origin.y)*subject.forward.y>0,
-                      "held rear view is ahead of the car");
+                const double arm=(r.eye.x-subject.origin.x)*subject.forward.x+
+                      (r.eye.y-subject.origin.y)*subject.forward.y;
+                check(r.pov==2?arm<0:arm>0,
+                      "held rear view mirrors the authored chase or bumper anchor");
                 check(r.forward.x*subject.forward.x+r.forward.y*subject.forward.y<0,
                       "held rear view looks backward toward the front of the car");
             }

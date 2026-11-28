@@ -216,6 +216,8 @@ void verify_quick_race(const std::filesystem::path& root) {
         check(run.start(root,scene.track(),error),name+" start");
         check(run.session().rival_count()==test.opponents&&unsigned(run.session().course().route.laps)==test.laps,name+" world options");
         check(run.session().is_drag()==(type==RaceType::drag)&&run.session().is_drift()==(type==RaceType::drift),name+" race type");
+        if(!practice&&test.opponents==0)
+            check(run.session().has_finish_driver(),name+" solo Quick Race retains a finish driver");
         const auto* traffic=run.session().traffic();
         check((traffic?traffic->actors().size():0)==expected,name+" live traffic pool");
         float peak_rival_throttle=0;
@@ -270,6 +272,20 @@ void verify_quick_race(const std::filesystem::path& root) {
         const auto& commands=frame.commands;
         check(deko_static_package_fits(commands.static_track_instance_count(),commands.static_track_definition_count(),
               commands.draw_count()-commands.static_track_draw_count(),scene.draw_capacity()),name+" Switch command budget");
+        if(!practice&&test.opponents==0&&type!=RaceType::drift&&type!=RaceType::drag) {
+            // Authored finish crossings through the actual zero-opponent
+            // Quick Race. This seeds completion, it is not an earned win.
+            check(run.arm_finish_probe(error),name+" solo finish probe arm");
+            auto pad=race_input_frame({1,gamepad_button_bit(GamepadButton::trigger_right),0},run.session().timing().step);
+            check(run.simulate(pad,error)&&run.commit(error),name+" solo finish probe commits");
+            check(run.session().timing().outcome==RaceOutcome::finished,name+" solo finish reaches terminal state");
+            const auto result=run.session().timing().racers[0];const auto before=run.session().car().position;
+            for(unsigned i=0;i<24;++i)check(run.simulate(pad,error)&&run.commit(error),name+" solo finish driver continuation");
+            const auto& after=run.session().car().position;
+            check(std::hypot(after.x-before.x,after.y-before.y)>.1,name+" solo finish car keeps moving");
+            check(run.session().timing().racers[0].finish_ticks==result.finish_ticks&&
+                  run.session().timing().racers[0].position==result.position,name+" solo finish result stays immutable");
+        }
     }
     check(checked_neons>0,"production quick cases exercise at least one original neon selection");
     std::cout<<"PASS quick race modes, rival setup, traffic levels, grid start and scene admission\n";

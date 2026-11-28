@@ -3,6 +3,7 @@
 #include "nfsu/lz4_block.h"
 #include "nfsu/frontend_scene.h"
 #include "nfsu/career_garage.h"
+#include "nfsu/career_magazine_menu.h"
 #include "nfsu/frontend_motion.h"
 #include "nfsu/race_events.h"
 #include "nfsu/race_lap_hud_presentation.h"
@@ -507,6 +508,7 @@ unsigned RaceLoadingTips::quick(QuickRaceMode mode,unsigned nitrous_level) {
 }
 struct RaceLoadingArt::Impl {
     std::array<Image,3> textures;
+    Image black;FrontendUiAtlas atlas;
     std::array<Object,3> sprites;
     Object group,tip_group,tip_image;
     std::array<Object,2> tip_lines;
@@ -667,6 +669,64 @@ void RaceLoadingArt::draw(ScreenImage image,double seconds,bool cached)const {
     quad(Canvas{image},p.textures[2],m,-o.w/2,-o.h/2,o.w,o.h,o.uv,o.color);
 }
 
+bool RaceLoadingArt::prepare_overlay(std::string& error) {
+    auto& p=*impl_;
+    if(!p.ready||p.tip_ready){error="generic loading overlay requires a loaded no-tip package";return false;}
+    try {
+        p.black.width=p.black.height=1;p.black.rgba={0,0,0,255};
+        std::array<Image*,4> images{{&p.black,&p.textures[0],&p.textures[1],&p.textures[2]}};
+        unsigned largest=0;for(auto* image:images)largest=std::max(largest,image->width+2);
+        if(largest>4096)throw std::runtime_error("loading overlay texture exceeds atlas width");
+        auto& atlas=p.atlas;std::uint64_t best_bytes=~std::uint64_t{0};
+        std::array<unsigned,4> order{{0,1,2,3}};
+        std::array<std::array<unsigned,2>,4> placement{};
+        // Only four immutable images. Try every shelf order and64-pixel
+        // width so the HD background does not force a mostly empty power-of-
+        // two atlas. Keep every source texel and its one-pixel border intact.
+        do {for(unsigned width=(largest+63U)&~63U;width<=4096;width+=64) {
+            unsigned x=0,y=0,row_height=0;std::array<std::array<unsigned,2>,4> candidate{};
+            for(unsigned index:order) {
+                const auto* image=images[index];
+                if(x+image->width+2>width){x=0;y+=row_height;row_height=0;}
+                candidate[index]={{x+1,y+1}};x+=image->width+2;
+                row_height=std::max(row_height,image->height+2);
+            }
+            const unsigned height=(y+row_height+63U)&~63U;
+            const std::uint64_t bytes=std::uint64_t(width)*height*4;
+            if(height<=4096&&bytes<best_bytes){best_bytes=bytes;atlas.width=width;atlas.height=height;placement=candidate;}
+        }}while(std::next_permutation(order.begin(),order.end()));
+        if(!atlas.width||!atlas.height)throw std::runtime_error("loading overlay exceeds atlas height");
+        for(unsigned i=0;i<images.size();++i){images[i]->atlas_x=placement[i][0];images[i]->atlas_y=placement[i][1];}
+        atlas.rgba.assign(std::size_t(atlas.width)*atlas.height*4,0);
+        for(const auto* image:images)for(int row=-1;row<=int(image->height);++row)
+            for(int col=-1;col<=int(image->width);++col) {
+                const auto sy=std::clamp(row,0,int(image->height)-1),sx=std::clamp(col,0,int(image->width)-1);
+                const auto target=(std::size_t(int(image->atlas_y)+row)*atlas.width+int(image->atlas_x)+col)*4;
+                std::copy_n(image->rgba.data()+(std::size_t(sy)*image->width+sx)*4,4,atlas.rgba.data()+target);
+            }
+        error.clear();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+const FrontendUiAtlas& RaceLoadingArt::atlas()const {return impl_->atlas;}
+void RaceLoadingArt::record(unsigned width,unsigned height,double seconds,FrontendUiFrame& frame)const {
+    frame={};const auto& p=*impl_;
+    if(p.atlas.rgba.empty()||!width||!height)return;
+    Canvas target{width,height,p.atlas,frame};
+    quad(target,p.black,{},-320,-240,640,480,{{0,0,1,1}},{{255,255,255,255}});
+    const auto parent=combine({},p.group,true);
+    for(unsigned i=0;i<3;++i) {
+        auto o=p.sprites[i];
+        if(i==2) {
+            const unsigned tick=std::isfinite(seconds)&&seconds>0?
+                static_cast<unsigned>(std::fmod(seconds*1200,1600)):0;
+            const unsigned slot=std::min(3U,tick/400),local=tick%400;
+            o.x=-37.F+37.F*float(slot)+(slot<3&&local>380?37.F*float(local-380)/20.F:0.F);o.z=-1;
+        }
+        const auto m=combine(i?parent:Transform{},o,false);
+        quad(target,p.textures[i],m,-o.w/2,-o.h/2,o.w,o.h,o.uv,o.color);
+    }
+}
+
 struct DialogArt {
     std::vector<Object> objects;
     std::map<unsigned,std::vector<unsigned char>> scripts;
@@ -716,7 +776,10 @@ struct FrontendArt::Impl {
         } scroller;
     };
     mutable CareerPanel career_panel;
-    std::array<DialogArt,6> dialogs;
+    std::array<DialogArt,8> dialogs;
+    std::array<std::string,27> magazine_names,magazine_blurbs;
+    std::string magazine_hot,magazine_locked;
+    void draw_magazine_menu(Canvas,const CareerProfile&,const CareerMagazineMenu&)const;
     mutable unsigned info_revision=~0U;mutable std::uint64_t info_started=0;
     void draw_dialog(Canvas,unsigned,const PostRaceValues&,unsigned,unsigned,unsigned fade_out=~0U)const;
     mutable unsigned dialog_key=~0U;mutable std::uint64_t dialog_started=0;
@@ -1362,6 +1425,7 @@ void FrontendArt::record_post_race(unsigned width,unsigned height,const PostRace
     impl_->draw_post_race(Canvas{width,height,impl_->atlas,frame},menu,values);
 }
 #include "career_ui.inc"
+#include "frontend_magazine_menu.inc"
 void FrontendArt::draw_free_drive(ScreenImage image,const CareerCatalog& catalog,const CareerProfile& profile,
     unsigned selection,unsigned course,const std::string& notice,const QuickRaceOptions* options,bool choose_mode)const {
     impl_->draw_free_drive(Canvas{image},catalog,profile,selection,course,notice,options,choose_mode);

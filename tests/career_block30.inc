@@ -95,6 +95,9 @@
         auto before=block;before.status[30]=0;
         for(unsigned category:{18U,19U,20U})check(!catalog.tuning().category_available(category,2,before.status),"level2 stays locked before tournament30");
         block.page=CareerPage::garage;block.customization_seen=true;block.bank+=100000;
+        // Winning unlocks the tier; the original shop still requires the
+        // previous installed level for a new purchase (native50AAC0).
+        for(unsigned field:{2U,6U,7U})check(catalog.buy_performance(block,field,1,error),"buy original prerequisite tier");
         check(catalog.buy_performance(block,2,2,error)&&catalog.buy_performance(block,6,2,error)&&
             catalog.buy_performance(block,7,2,error),"earned level2 packages can actually be purchased and installed");
         const auto high=block.style_high_water;block.style_points=0;
@@ -112,7 +115,7 @@
         const auto end=bytes.rfind("SHA256 ");check(end!=std::string::npos,"v8 checksum boundary");
         std::istringstream lines(bytes.substr(0,end));std::vector<std::string> fields;std::string line;
         while(std::getline(lines,line))fields.push_back(line);
-        check(fields.size()>48&&fields[0]=="NFSU_CAREER 12","new save schema12");
+        check(fields.size()>48&&fields[0]=="NFSU_CAREER 14","new save schema14");
         // Header0, state1, statuses2, style3, performance4, parts5,
         // ownership6..30, tournament31, standings32..39.
         const auto detailed=std::find_if(fields.begin(),fields.end(),[](const auto& value){return value.rfind("STATS ",0)==0;});

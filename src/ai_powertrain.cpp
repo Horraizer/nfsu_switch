@@ -418,7 +418,9 @@ bool ai_physics_advance(const VehicleHandling& h,const AiPowertrainTables& table
                 const PlayerRigidVector hub{{mount.longitudinal-h.centre_of_mass[0],
                     mount.lateral-h.centre_of_mass[1],
                     (mount.vertical-h.centre_of_mass[2])+w.compression}};
-                bump_impulse+=player_strut_bump_impulse(h,next.body,hub,w.normal);
+                const float impulse=player_strut_bump_impulse(h,next.body,hub,w.normal);
+                next.bottom_out_impulse[k]+=impulse; //4763F2..4763FC
+                bump_impulse+=impulse;
             }
             if(next.rest_state!=0||bump_impulse>0.F) {
                 //474CE8 refreshes components once after all impulses.

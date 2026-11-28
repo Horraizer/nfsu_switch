@@ -12,7 +12,7 @@ namespace nfsu {
 constexpr unsigned kCareerLastEvent=113;
 // Port-owned save schema; never reads or overwrites original PC profiles.
 enum class CareerPage : unsigned {
-    intro, intro_short, choose_car, intro_long, map, menu, customize_movie, garage, briefing, unique_reward, magazines
+    intro, intro_short, choose_car, intro_long, map, menu, customize_movie, garage, briefing, unique_reward, magazines, magazine_album
 };
 struct CareerRide {
     std::array<std::uint32_t,120> installed{};
@@ -21,6 +21,7 @@ struct CareerRide {
     //5A0350 fields0..8; aero fields follow the installed visual parts.
     std::array<unsigned,9> performance{};
     std::array<bool,9> unique{}; // Original separate item flags, never package level4.
+    int turbo_brand=-1; // Original customization+0x0c: sound identity, no power change.
 };
 struct CareerTournament {
     unsigned event=0,round=0;
@@ -49,6 +50,8 @@ struct CareerProfile {
     unsigned difficulty=1, selected_event=1;
     std::uint32_t bank=0,style_points=0,style_high_water=0;
     CareerRide ride;
+    // Original profile+0x1260 flags, shared by cars and retained after removal.
+    std::array<bool,kCareerSponsorCount> performance_sponsors{};
     std::vector<CareerMagazine> magazine_covers;
     std::uint32_t magazine_random=0,magazine_pending=0;
     std::string car;
@@ -141,12 +144,14 @@ public:
     CareerFinishRewards finish_rewards(const CareerProfile&,bool event_won)const;
     bool refresh_magazines(CareerProfile&,bool capture,std::string& error)const;
     bool dismiss_magazines(CareerProfile&,std::string& error)const;
+    bool enter_magazine_album(CareerProfile&,std::string& error)const;
     bool owns(const CareerProfile&,unsigned category,std::uint32_t key)const noexcept;
     //A purchased paint job permits later unlocked color changes without
     //buying every palette swatch. Access gates remain separate from cost.
     std::uint32_t part_price(const CareerProfile&,const CarPartRecord&)const noexcept;
     bool buy_part(CareerProfile&,unsigned target_slot,std::uint32_t part_hash,std::string& error)const;
     bool buy_performance(CareerProfile&,unsigned field,unsigned level,std::string& error)const;
+    bool buy_performance_package(CareerProfile&,unsigned field,unsigned level,unsigned number,std::string& error)const;
     // Race-confirm movies are withheld until difficulty is accepted.
     std::string pending_movie(const CareerProfile&,bool race_confirmed=false)const;
     bool movie_finished(CareerProfile&,std::string& error)const;

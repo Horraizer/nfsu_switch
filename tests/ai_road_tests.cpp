@@ -284,6 +284,22 @@ int main(){
     check(drag_lane_step(lane_track,lane_cursor,{1,3,0},lane_chain,available,0,10,lane_state)&&
           lane_state.category==14&&lane_state.mode==2,
           "right tap release must exclude the old lane even across a junction");
+    {
+        // Event80 reaches a four-lane road with the retained exclusion11..14.
+        // Actual45D800/45D920 publishes the no-candidate sentinel, then runs
+        // the common context update. It does not abort the controller frame.
+        auto exhausted=lane_track;
+        auto& road=exhausted.routes[0];road.lane_enabled.fill(false);
+        for(unsigned i=0;i<4;++i)road.lane_enabled[i]=true;
+        DragLaneState input;input.category=14;input.mode=2;
+        input.exclude_first=11;input.exclude_last=14;
+        check(drag_lane_step(exhausted,lane_cursor,{0,3,0},lane_chain,available,0,10,input)&&
+              input.category==-1&&input.mode==2&&input.exclude_first==11&&input.exclude_last==14,
+              "original manual stage admits lane exhaustion without discarding the exclusion");
+        check(drag_lane_step(exhausted,lane_cursor,{0,3,0},lane_chain,available,-1,10,input)&&
+              input.category==11&&input.mode==0,
+              "next held input can select a lane after the no-candidate sentinel");
+    }
     for(const auto& c:kNativeRoadHorizons) {
         AiRoadHorizons h;
         check(ai_road_horizons(real(c[0]),real(c[1]),real(c[2]),h)&&
