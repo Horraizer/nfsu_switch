@@ -193,7 +193,8 @@ enum class ChaseFovMode : std::uint8_t {
     // less above and below. The default: the Switch's screen is 16:9, and
     // this is the picture the game drew on its own 4:3 screen, widened.
     vertical_4_3,
-    // PC widescreen vertical framing with a square-pixel race projection.
+    // Original 4:3 vertical framing widened with square pixels. The caller
+    // supplies the original viewport aspect for split-screen layouts.
     retail_widescreen
 };
 
@@ -338,6 +339,9 @@ public:
     // False, with nothing changed, otherwise.
     bool set_pov(int pov) noexcept;
     int pov() const noexcept { return pov_; }
+    // Native47D680 selects the second CarTypeInfo list for view layout3.
+    // Only a local split world uses that list; network peers use full views.
+    bool set_shared_screen(bool enabled) noexcept;
     // The live retail view uses the published body and support history.
     void use_retail_race_mover() noexcept { retail_race_mover_ = true; }
     // The next POV of kChasePovs that the list names. The lag and the
@@ -401,6 +405,7 @@ private:
     bool valid_ = false;
     std::string error_;
     int pov_ = 1;
+    bool shared_screen_ = false;
     bool started_ = false;
     std::uint16_t target_ = 0;
     std::int16_t lag_ = 0;

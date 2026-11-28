@@ -1,14 +1,15 @@
-"""Bounded original road-start playlist and authored-lens witnesses.
+"""Bounded original road-start playlist, lens and NIS terrain witnesses.
 
 Runs authenticated x86 selection before its RNG call and the original lens
 conversion before camera submission. Supplied object storage; no hooks and no
-claim of a live retail race or retail RNG history.
+claim of a live retail race or retail RNG history. The terrain pass executes
+48E54B..48E5B3 after an explicit supplied-ground FPU trampoline, without hooks.
 """
-import argparse,hashlib,json,sys
+import argparse,hashlib,json,struct,sys
 from pathlib import Path
 sys.dont_write_bytecode=True
 from world_body_trace import Image
-from physics256_native import Machine,ACTOR,DRIVER,BODY,CONFIG,RIDE
+from physics256_native import Machine,ACTOR,DRIVER,BODY,CONFIG,RIDE,STACK,STOP
 ap=argparse.ArgumentParser(description=__doc__)
 ap.add_argument('--root',type=Path,required=True)
 ap.add_argument('--out',type=Path,required=True)
@@ -34,14 +35,25 @@ for focal in (12.,18.,24.,35.,50.,80.):
  m.run(0x48e62f,end=0x48e688,edx=BODY,ebx=ACTOR)
  assert not m.events
  lenses.append([int(focal),m.get(DRIVER+0xc4,'H')])
-report=dict(playlists=playlists,lenses=lenses,hooks=[],boundary=__doc__)
+terrain=[];m=Machine(im);trampoline=STOP+0x1000
+# Explicit supplied-ground FPU trampoline; authenticated camera bytes follow.
+m.uc.mem_write(trampoline,b'\xd9\x05'+struct.pack('<I',RIDE)+b'\xe9'+struct.pack('<i',0x48e54b-(trampoline+11)))
+m.allowed=[(trampoline,trampoline+11),(0x48e54b,0x48e5b7)]
+for ground,local in ((24.5,.5),(26.,.25),(27.5,1.25),(22.,.1),(0.,3.)):
+ m.put(RIDE,ground,'f');m.put(STACK+0x10,local,'f')
+ m.run(trampoline,end=0x48e5b7,ebx=ACTOR)
+ assert not m.events
+ terrain.append([ground,local,m.get(ACTOR+0x308,'f'),m.get(STACK+0x88,'f')])
+report=dict(playlists=playlists,lenses=lenses,terrain=terrain,hooks=[],boundary=__doc__)
 (out/'oracle.json').write_text(json.dumps(report,indent=2)+'\n',encoding='ascii')
 lines=['// Authenticated47BC63 playlist family and48E62F authored lens; no hooks.',
        'static constexpr unsigned kNativeStartPlaylist[][3]={']
 lines+=['    {%d,%d,%d},'%tuple(r) for r in playlists]
 lines+=['};','static constexpr unsigned kNativeStartLens[][2]={']
 lines+=['    {%d,%d},'%tuple(r) for r in lenses]
+lines+=['};','// Native48E54B terrain history and local authored height.','static constexpr float kNativeNisTerrain[][4]={']
+lines+=['    {'+','.join(format(v,'.9g')+('' if '.' in format(v,'.9g') or 'e' in format(v,'.9g') else '.')+'F' for v in row)+'},' for row in terrain]
 lines+=['};'];text='\n'.join(lines)+'\n';target=Path('tests/race_start_native.inc')
 if a.write_fixture:target.write_text(text,encoding='ascii')
 else:assert target.read_text(encoding='ascii')==text,'race start fixture stale'
-print('PASS original road startup playlist and authored lens; no hooks')
+print('PASS original road startup playlist, authored lens and NIS terrain; no hooks')

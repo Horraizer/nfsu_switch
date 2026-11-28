@@ -30,7 +30,7 @@ Saved read_slot(const std::filesystem::path& path,const CareerCatalog& catalog,s
     std::istringstream in(body);std::string magic,car,states,extra;unsigned version=0,page=0,seen=0;
     auto& p=out.profile;
     if(!(in>>magic>>version>>out.generation>>page>>p.difficulty>>p.bank>>p.selected_event>>seen>>car>>states) ||
-       magic!="NFSU_CAREER"||(version<1||version>12)||!out.generation||page>10||seen>1||states.size()!=256)return out;
+       magic!="NFSU_CAREER"||(version<1||version>14)||!out.generation||page>(version>=14?11U:10U)||seen>1||states.size()!=256)return out;
     out.version=version;
     if(version>=2 && !(in>>p.style_points))return out;
     p.style_high_water=p.style_points;
@@ -71,15 +71,27 @@ Saved read_slot(const std::filesystem::path& path,const CareerCatalog& catalog,s
     }else p.statistics.partial_history=true;
     if(version>=11&&!(in>>p.new_parts_event))return out;
     if(version>=12&&(!(in>>p.frontend_hints)||p.frontend_hints>=(career_hint_bit(88)<<1)))return out;
+    if(version>=13) {
+        std::string tag;if(!(in>>tag>>p.ride.turbo_brand)||tag!="PERFORMANCE_BRANDS")return out;
+        for(auto& flag:p.performance_sponsors){unsigned value=0;if(!(in>>value)||value>1)return out;flag=value!=0;}
+    }
     if(in>>extra)return out;
     p.page=static_cast<CareerPage>(page);p.car=car=="-"?"":car;p.customization_seen=seen!=0;
+    if(!p.magazine_covers.empty()) {
+        const bool unread=std::any_of(p.magazine_covers.begin(),p.magazine_covers.end(),[](const auto& c){return !c.seen;});
+        // V13 used page10 for both delivery and album. Viewed old collections
+        // remain album entries; a completed new delivery resumes at the menu.
+        if(p.page==CareerPage::magazines&&!unread)p.page=version<14?CareerPage::magazine_album:CareerPage::menu;
+        // Recover a partly delivered old batch that its photo callback dropped.
+        if(p.page==CareerPage::menu&&!p.pending_unique&&unread)p.page=CareerPage::magazines;
+    }
     // Older saves retain the garage tutorial milestone, but no individual
     // submenu visits. Preserve the pending introduction for that page.
     if(version<12&&p.customization_seen&&p.page!=CareerPage::customize_movie)
         p.frontend_hints=career_hint_bit(67);
     for(unsigned i=0;i<256;++i){if(states[i]<'0'||states[i]>'5')return out;p.status[i]=std::uint8_t(states[i]-'0');}
     std::string error;out.valid=catalog.valid(p,error);
-    if(out.valid&&version<12&&legacy_bytes)*legacy_bytes=std::move(bytes);
+    if(out.valid&&version<14&&legacy_bytes)*legacy_bytes=std::move(bytes);
     return out;
 }
 bool retain_migration_backup(const std::filesystem::path& backup,const CareerCatalog& catalog,const std::string& bytes) {
@@ -123,7 +135,7 @@ bool save_career(const std::filesystem::path& base,const CareerCatalog& catalog,
         const auto previous=std::max(a.valid?a.generation:0,b.valid?b.generation:0);
         if(previous==std::numeric_limits<std::uint64_t>::max())return refuse(error,"career save sequence exhausted");
         const unsigned target=!a.valid?0:!b.valid?1:a.generation<=b.generation?0:1;
-        std::ostringstream body;body<<"NFSU_CAREER 12\n"<<previous+1<<' '<<unsigned(p.page)<<' '<<p.difficulty<<' '<<p.bank<<' '
+        std::ostringstream body;body<<"NFSU_CAREER 14\n"<<previous+1<<' '<<unsigned(p.page)<<' '<<p.difficulty<<' '<<p.bank<<' '
             <<p.selected_event<<' '<<unsigned(p.customization_seen)<<' '<<(p.car.empty()?"-":p.car)<<'\n';
         for(auto s:p.status)body<<unsigned(s);
         body<<'\n'<<p.style_points<<' '<<p.style_high_water<<'\n';
@@ -152,10 +164,12 @@ bool save_career(const std::filesystem::path& base,const CareerCatalog& catalog,
             <<std::setprecision(17)<<s.metres<<'\n';
         for(const auto& mode:s.modes)body<<mode.starts<<' '<<mode.wins<<' '<<mode.style<<'\n';
         body<<p.new_parts_event<<'\n'<<p.frontend_hints<<'\n';
+        body<<"PERFORMANCE_BRANDS "<<p.ride.turbo_brand<<'\n';
+        for(auto flag:p.performance_sponsors)body<<unsigned(flag)<<' ';body<<'\n';
         const auto text=body.str();
         // Retain exact pre-upgrade slots for older NRO rollback.
         const Saved* previous_slots[]={&a,&b};
-        for(unsigned version:{9U,10U,11U,12U})for(unsigned i=0;i<2;++i)if(previous_slots[i]->valid&&previous_slots[i]->version<version) {
+        for(unsigned version:{9U,10U,11U,12U,13U,14U})for(unsigned i=0;i<2;++i)if(previous_slots[i]->valid&&previous_slots[i]->version<version) {
             auto backup=base;backup+=".before-v"+std::to_string(version)+"."+std::to_string(i);
             if(!retain_migration_backup(backup,catalog,legacy_bytes[i]))
                 return refuse(error,"migration backup verification failed; save retained");

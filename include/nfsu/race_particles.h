@@ -15,39 +15,43 @@
 namespace nfsu {
 
 // Visual state only. It is never encoded into RaceSession or fed into physics.
-// Smoke emission keeps a120Hz visual cadence while physics supplies its
-// own interval. Particle lifetimes use elapsed time, not a fixed slice count.
+// Authored vehicle emitters run once per visual world frame, independently
+// of solver slices. Particle lifetimes use the native1024Hz visual clock.
 enum class RaceParticleKind : std::uint8_t { smoke, spark };
-enum class RaceParticleAtlas : unsigned { smoke, sparks, dust, colored, water_spray, electrical, birds, fire, count };
+enum class RaceParticleAtlas : unsigned { smoke, sparks, dust, colored, water_spray, bottom_flash, electrical, birds, fire, count };
 
 struct RaceParticleAtlasInfo {
     const char* name;
     std::uint32_t hash;
     unsigned width, height, columns, rows, first_cell;
 };
-inline constexpr std::array<RaceParticleAtlasInfo,8> kRaceParticleAtlases{{
+inline constexpr std::array<RaceParticleAtlasInfo,9> kRaceParticleAtlases{{
     {"SMOKE_CS",       0x09DC04B3U, 128,128,4,4, 0},
     {"XE_SPARKSA",     0xA4C28190U, 256,128,4,2,16},
     {"SMOKEB_CS",      0x454D2975U, 256,256,4,4,24},
     {"SFX_SMOKE_A_CS", 0x0DE30D23U,  64, 64,2,2,40},
     {"DUSTA_CS",       0xA3C7BF15U, 256,128,4,2,44},
+    {"HEADLIGHTGLOW",  0x3394FE62U, 128,128,1,1,84},
     {"SFX_RJBSPARKS",  0x75B5D261U,  64, 32,4,2,52},
     {"FLOCKOFSEAGULLS",0x9F7A8CA3U, 128,128,4,4,60},
     {"FIREA_CS",       0xDD2BF79BU, 256,128,4,2,76},
 }};
-constexpr unsigned kRaceParticleAtlasCells = 84;
-constexpr std::size_t kRaceVehicleAtlasCount = 5;
+constexpr unsigned kRaceParticleAtlasCells = 85;
+constexpr std::size_t kRaceVehicleAtlasCount = 6;
 constexpr unsigned kRaceWaterPresetCount = 19;
 
 enum class RaceParticleEffect : unsigned {
     fixture, road, rough_road, dirt, grass, blue, yellow, red, wall,
     water_first, purge_first = water_first + kRaceWaterPresetCount,
-    purge_right, car_impact, road_spray, car_impact_smoke, count
+    purge_right, car_impact, road_spray, car_impact_smoke, bottom_flash, bottom_smoke, bottom_sparks, count
 };
 
 inline bool is_driving_water_effect(RaceParticleEffect effect) noexcept {
     return effect>=RaceParticleEffect::water_first && effect<RaceParticleEffect::purge_first;
 }
+
+// Negative burst budget, PC4030E0/40396A: round each subtraction to float.
+unsigned race_particle_burst_size(float strength,float interval) noexcept;
 
 struct RaceParticlePreset {
     std::array<std::array<float,4>,4> rgba{};
@@ -59,11 +63,13 @@ struct RaceParticlePreset {
     RaceParticleAtlas atlas = RaceParticleAtlas::smoke;
     unsigned frame_period=0;
     bool random_start_cell=true;
+    bool generic_draw=true; // Native40425E excludes one live road record.
+    bool planar=false; // Native18, retained for bottom-out birth directions.
 };
 
 struct RaceParticle {
     RaceParticleKind kind = RaceParticleKind::smoke;
-    std::uint8_t water_owner = 0;
+    std::uint8_t water_owner = 255; // Car0..3; pair and environment effects have no car owner.
     std::uint32_t water_node = 0;
     std::uint64_t born_step = 0;
     double solver_dt = kVehicleStepSeconds;
@@ -86,9 +92,10 @@ struct WaterParticleView {
     std::size_t count = 0;
 };
 constexpr std::size_t kRaceSparkLimit = 8;
-constexpr std::size_t kRaceParticleLimit = kRaceSmokeLimit + kRaceSparkLimit;
-// The slots retain insertion order within each kind. Expired particles are
-// removed before emitting; at the cap, a new one replaces the oldest.
+constexpr std::size_t kRaceParticleLimit = kRaceSmokeLimit + kRaceSparkLimit; // Asset-free fixture.
+constexpr std::size_t kRaceVehicleParticleDraws = 2; // Packed alpha and additive streams.
+// Authored sources share the native ceiling and drop new births at capacity.
+// The asset-free fixture alone retains its original small replacement pools.
 struct RacePairFrame;
 
 class RaceParticles {
@@ -128,20 +135,20 @@ public:
                  const VehicleVec3* second_eye = nullptr) noexcept;
     void emit_car_impact_sparks(const RacePairFrame&,const VehicleVec3& eye,const VehicleVec3* other_eye=nullptr) noexcept;
     std::uint64_t step() const noexcept { return step_; }
-    std::size_t smoke_count() const noexcept {
-        return purge_count_ + std::min(spray_count_+smoke_count_,kRaceSmokeLimit-purge_count_);
-    }
+    std::size_t smoke_count() const noexcept { return authored_?vehicle_alpha_count_:smoke_count_; }
+    std::uint64_t vehicle_bytes() const noexcept { return vehicle_.capacity()*sizeof(RaceParticle); }
     WaterParticleView visible_water(const CameraFrame& camera) const noexcept;
     std::size_t water_count() const noexcept { return water_count_; }
     const RaceParticle& water(std::size_t i) const noexcept { return water_[i]; }
-    std::size_t spark_count() const noexcept { return spark_count_; }
+    std::size_t spark_count() const noexcept { return authored_?vehicle_spark_count_:spark_count_; }
     const RaceParticle& smoke(std::size_t i) const noexcept {
-        if (i < purge_count_) return purge_[i];
-        i -= purge_count_;
-        return i < spray_count_ ? spray_[i] : smoke_[i-spray_count_];
+        return authored_?vehicle_[vehicle_order_[0][i]]:smoke_[i];
     }
-    const RaceParticle& spark(std::size_t i) const noexcept { return sparks_[i]; }
+    const RaceParticle& spark(std::size_t i) const noexcept {
+        return authored_?vehicle_[vehicle_order_[1][i]]:sparks_[i];
+    }
 private:
+    friend struct RaceParticleBirthProbe;
     struct EnvironmentPreset {
         RaceParticlePreset particle;
         VehicleVec3 offset, extent;
@@ -154,7 +161,7 @@ private:
         std::array<VehicleVec3,3> basis;
         unsigned preset = 0;
         std::uint32_t seed = 0, random = 0;
-        double remaining = 0, phase_time = 0;
+        float remaining = 0, phase_time = 0;
         unsigned children = 0, child_offset = 0;
         bool active = true, listed = false;
     };
@@ -164,13 +171,25 @@ private:
     void advance_water(double frame_dt) noexcept;
     void advance_vehicle(const VehicleTrackTelemetry&,const VehicleSpec&,float,unsigned,
         const TrackContactWorld*,const VehicleVec3*,const VehicleVec3*) noexcept;
-    void advance_purge(const RaceSession&) noexcept;
+    void advance_purge(const RaceSession&,unsigned actor=0) noexcept;
+    bool emit_vehicle(const RaceParticle&) noexcept;
+    void index_vehicle() noexcept;
+    void reset_driver(unsigned actor) noexcept;
+    void advance_track_events(const RaceSession&,float,const TrackContactWorld*,const VehicleVec3*,const VehicleVec3*,unsigned) noexcept;
+    void finish_vehicle_frame(double dt) noexcept;
+    void advance_authored_driver(const VehicleTrackTelemetry&,const VehicleSpec&,double,float,unsigned,
+        const TrackContactWorld*,const VehicleVec3*,const VehicleVec3*,std::array<float,4>&,unsigned,const VehicleState* current=nullptr) noexcept;
     void emit_wheel_smoke(const VehicleTrackTelemetry&,const VehicleSpec&,float,
-                          std::array<float,kVehicleWheelCount>&,std::uint64_t,bool,unsigned) noexcept;
+                          std::array<float,kVehicleWheelCount>&,std::uint64_t,bool,unsigned,double emission_dt=0) noexcept;
     std::array<VehicleVec3,2> purge_offsets_{};
-    std::array<RaceParticle,kRaceSmokeLimit> purge_{};
-    std::size_t purge_count_ = 0;
-    std::uint64_t purge_frame_ = 0;
+    std::vector<RaceParticle> vehicle_;
+    std::array<std::array<std::uint16_t,kRaceWaterPool>,2> vehicle_order_{};
+    std::size_t vehicle_count_=0,vehicle_alpha_count_=0,vehicle_spark_count_=0;
+    std::array<std::uint64_t,4> purge_frame_{},owner_resets_{},contact_steps_{};
+    std::uint64_t vehicle_frame_=0;
+    bool vehicle_frame_valid_=false;
+    double vehicle_sample_seconds_=0;
+    std::array<float,4> tyre_timers_{};
     std::vector<EnvironmentPreset> environment_presets_;
     std::vector<EnvironmentEmitter> emitters_;
     std::vector<unsigned> active_environment_sources_;
@@ -185,36 +204,40 @@ private:
     std::array<RaceParticle, kRaceSmokeLimit> smoke_{};
     std::array<RaceParticle, kRaceSparkLimit> sparks_{};
     std::array<float,kVehicleWheelCount> smoke_timers_{};
-    struct WaterEmitter {
+    struct CarEmitter {
         std::array<VehicleVec3,3> basis;
         VehicleVec3 offset, extent;
         unsigned marker = 0;
     };
-    std::array<WaterEmitter,kRaceWaterPresetCount> water_emitters_{};
+    std::array<CarEmitter,kRaceWaterPresetCount> water_emitters_{};
+    CarEmitter road_emitter_{};
+    std::array<CarEmitter,3> bottom_emitters_{};
+    RaceParticle spawn_bottom_particle(unsigned part,const VehicleVec3& body,const VehicleQuat&,
+        const VehicleVec3& anchor,const VehicleVec3& carrier,std::uint32_t random) const noexcept;
     std::array<unsigned,kRaceWaterPresetCount> water_placement_order_{};
     std::array<std::uint32_t,kRaceWaterPresetCount> cached_water_node_{};
     std::uint64_t water_frame_ = 0;
     double water_sample_seconds_ = 0;
     struct SpraySource {
         TrackGroundCache ground;
-        double next_road = 0;
         unsigned surface=0;
     };
     void emit_driving_spray(const VehicleTrackTelemetry&,const VehicleSpec&,float,unsigned,
         const TrackContactWorld*,SpraySource&,unsigned) noexcept;
+    void emit_bottom_out(const VehicleTrackTelemetry&,const VehicleSpec&,float,unsigned,
+        const TrackContactWorld*,SpraySource&,unsigned,const VehicleState* current=nullptr) noexcept;
     void emit_track_sparks(const VehicleTrackTelemetry&,float,const TrackContactWorld*,
-        const VehicleVec3*,const VehicleVec3*,std::uint64_t,unsigned) noexcept;
+        const VehicleVec3*,const VehicleVec3*,std::uint64_t,unsigned,
+        const VehicleContactObservation* event=nullptr,unsigned event_index=0) noexcept;
     struct RivalSmokeState {
         SpraySource spray;
         std::array<float,kVehicleWheelCount> timers{};
         std::uint64_t step=0;
     };
     std::array<RivalSmokeState,3> rival_smoke_{};
-    std::array<RaceParticle,kRaceSmokeLimit/2> spray_{};
     std::vector<RaceParticle> water_;
     std::size_t water_count_ = 0;
     SpraySource player_spray_;
-    std::size_t spray_count_ = 0;
     std::size_t smoke_count_ = 0;
     std::size_t spark_count_ = 0;
     std::uint64_t step_ = 0;
@@ -233,7 +256,9 @@ using RaceParticleTextures = std::array<RenderTexture,kRaceParticleAtlases.size(
 
 bool decode_race_particle_textures(const std::vector<unsigned char>& bytes,
                                    const TexturePackSet& packs, RaceParticleTextures& textures,
-                                   std::string& error, bool environment = false);
+                                   std::string& error, bool environment = false,
+                                   const std::vector<unsigned char>* global = nullptr,
+                                   const TexturePackSet* global_packs = nullptr);
 unsigned race_particle_atlas_cell(const RaceParticle& particle, std::uint64_t step) noexcept;
 
 // Procedural fixture texel for the asset-free CPU renderer tests.

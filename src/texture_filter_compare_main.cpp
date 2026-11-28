@@ -221,8 +221,12 @@ int run(int argc,char** argv) {
 #if defined(__SWITCH__)
     require(output.empty(),"console comparison is read-only");
 #else
+#if !defined(NFSU_TEXTURE_FILTER_SELECTION_ONLY)
     require(!output.empty(),"--out required on desktop");
     protect_retail_output(root,output);
+#else
+    require(output.empty(),"selection-only regression is read-only");
+#endif
 #endif
     RaceRun race; RaceGpuScene scene;
     require(scene.set_texture_filter(filter),"comparison filter refused");
@@ -247,11 +251,13 @@ int run(int argc,char** argv) {
     // Input identity and simulation identity are separate gates. A gameplay
     // recording edit cannot silently change this diagnostic, and a physics
     // edit must be attributed before changing its pose/image references.
+#if !defined(NFSU_TEXTURE_FILTER_SELECTION_ONLY)
     bool pose_pinned=false;
     for(const auto& reference : kTextureFilterPoseReferences)
         if(reference.step==step)
             pose_pinned=race.sequence_hash()==reference.sequence && race.steps_hash()==reference.steps;
     require(pose_pinned,"comparison v2 simulation differs from pinned pose");
+#endif
     std::printf("FIXTURE v2 input-sha256 %s sequence %s steps %s\n",
                 kTextureFilterFixtureHash,race.sequence_hash().c_str(),race.steps_hash().c_str());
     RaceGpuFrame frame; require(scene.frame(race.session(),frame,error),error);
@@ -274,20 +280,33 @@ int run(int argc,char** argv) {
     camera.near_plane=float(options.camera.near_plane); camera.far_plane=float(frame.far_plane);
     TrackFrustum frustum;
     require(track_frustum_look_at(camera,frustum),"comparison frustum failed");
-    TrackCullOptions visibility; visibility.instance_mask=kTrackMainViewInstanceMask;
+    TrackCullOptions visibility;
+    visibility.instance_mask=static_cast<std::uint8_t>(track_view_context_mask(0x2000U,1,
+        race.session().is_drift()?3U:race.session().is_time_trial()?4U:0U,
+        race.session().course().route.reverse?1U:0U));
     const auto visible=cull_track_region(scene.track().objects,frustum,visibility);
     require(visible.ok() && visible.policy_held,"comparison culling degraded");
     TrackDrawList list; TrackDrawListOptions order; order.order=TrackDrawOrder::retail_bucket;
     require(build_track_draw_list(scene.track().scene,visible,order,list,error),error);
     RecordedCommands checked;
     require(record_track_commands(scene.track().scene,list,options,{},checked,error),error);
-    require(checked.draw_count()==frame.track_draws,"CPU/GPU selected track count differs");
+    require(checked.draw_count()==frame.track_draws,"CPU/GPU selected track count differs: CPU="+
+        std::to_string(checked.draw_count())+" GPU="+std::to_string(frame.track_draws));
+    std::printf("SELECTION mask %u CPU %llu GPU %llu\n",unsigned(visibility.instance_mask),
+        static_cast<unsigned long long>(checked.draw_count()),static_cast<unsigned long long>(frame.track_draws));
     for(std::size_t i=0;i<frame.track_draws;++i) {
         const auto& a=checked.draw_view(i).definition;
         const auto b=frame.commands.draw_view(i);
         require(a.group==b.definition.group && a.instance==b.instance && a.program==b.definition.program,
                 "CPU/GPU selected track order/filter differs");
     }
+#if defined(NFSU_TEXTURE_FILTER_SELECTION_ONLY)
+    // This separate component gate checks the actual selector on the current
+    // simulation. The normal comparison retains its independent pose/image
+    // gates; a stale physics pin must not prevent testing scenery selection.
+    std::puts("PASS: native-context CPU/GPU instance order");
+    return 0;
+#endif
     std::vector<unsigned char> gpu;
 #if defined(__SWITCH__)
     double gpu_ms=0, readback_ms=0;

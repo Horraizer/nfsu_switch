@@ -391,6 +391,7 @@ bool driver_step(const AiDriverForwardInput& in,float dt,
     if((!signed_control&&(in.forward_speed<0 || in.desired_speed<0 || in.path.count<2)) ||
         !std::isfinite(in.desired_speed) || !std::isfinite(in.rear_drive_fraction) ||
         !std::isfinite(in.route_distance) || !std::isfinite(in.race_seconds) ||
+        !std::isfinite(state.handbrake_seconds) ||
         !std::isfinite(dt) || dt<=0 || !std::isfinite(yaw_scale)) return false;
     for(float s:in.wheel_slip) if(!std::isfinite(s))return false;
     AiDriverForwardState next=state;
@@ -442,7 +443,8 @@ bool driver_step(const AiDriverForwardInput& in,float dt,
     if(in.forward_speed<0)slip=-slip;
     next.slip.update(slip,dt);
     if(driven_contact) {
-        AiDriverPedalInput p;p.mode=traffic?4U:drag?1U:0U;
+        AiDriverPedalInput p;p.mode=next.forced_brake?6U:traffic?4U:drag?1U:0U;
+        p.special=next.forced_brake;
         p.desired_speed=in.desired_speed;p.absolute_speed=in.absolute_speed;
         p.throttle_cap=in.throttle_cap;p.speed_error=next.speed.error();p.slip_error=next.slip.error();
         p.slip_limit=ai_driver_slip_limit(false,traffic?3U:2U,in.race_seconds,true,in.racer_status);
@@ -470,6 +472,17 @@ bool driver_step(const AiDriverForwardInput& in,float dt,
         else next.nitrous_pedal_latch=false;
     }
     next.previous_desired_speed=in.desired_speed;
+    //45F9CF..45FA25 runs after the NOS latch, even when demand is disabled.
+    //45E9B0 loads Actor3D4, then signs it from Actor3D0. The late fabs
+    //gate therefore uses total speed, including lateral motion.
+    next.handbrake_seconds-=dt;
+    next.handbrake=0;
+    if(next.handbrake_seconds>0.F&&in.absolute_speed>8.940545082092285F) {
+        next.pedals={0,0};next.handbrake=1.F;
+    }
+    //45FA68 is the final brake override. Its Actor478/physics1 grip store
+    //is published by the real session adapter with the same retained flag.
+    if(next.forced_brake){next.pedals={0,1};next.handbrake=1.F;}
     //45FAC8..45FAE9, including the exact2.0 boundary (native witness).
     if(in.route_distance<=2)next.steering.word=0;
     state=next;return true;
@@ -497,6 +510,9 @@ void ai_driver_placement_reset(AiDriverForwardState& state) noexcept {
     state.steering.velocity_heading.clear_error_samples();
     state.speed.clear_error_samples();
     state.gear_request=-1;
+}
+void ai_driver_finish_cleanup(AiDriverForwardState& state) noexcept {
+    state.handbrake_seconds=-1.F;state.forced_brake=false;
 }
 bool ai_driver_recovery_reset(const AiDriverForwardInput& in,AiDriverForwardState& state) noexcept {
     if(!finite(state.target.point)||!finite(in.position)||!finite(in.velocity)||

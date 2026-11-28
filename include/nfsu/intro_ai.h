@@ -41,7 +41,9 @@ public:
     bool drag_human_snapshot(IntroDragSnapshot&)const;
     bool human_road_cursor(AiRoadCursor&)const noexcept;
     bool rail_snapshot(unsigned rival,IntroRailSnapshot&)const;
-    bool observe_human(const RaceSession&);
+    bool prepare_frame(const RaceSession&);
+    // One sample-timer step after this frame's controllers and physics.
+    bool sample_human_history(const RaceSession&,float dt);
     bool plan(RaceSession&,RaceRivalPlans&,int held_lane=0,const RaceSession* obstacle_world=nullptr);
     bool plan(RaceSession&,RaceRivalPlans&,int held_lane,const RaceSession*,IntroAiWorldObserver);
     // Diagnostic controller on a read-only world; never advances its solvers.

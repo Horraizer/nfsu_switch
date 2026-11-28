@@ -129,10 +129,23 @@ void runtime_base_grip() {
     using namespace nfsu;
     for(bool drift:{false,true})for(bool drag:{false,true}) {
         auto spec=stock_240sx_vehicle_spec();spec.drift_mode=drift;const VehicleModel model(spec);
-        VehicleState state;VehiclePose pose;VehicleTelemetry t;VehicleInput input;input.drag_mode=drag;
-        check(model.reset(state,pose)&&model.step(state,input,VehicleFlatGround{},t,0,1.F/240.F),"base grip context runs");
-        for(unsigned k=0;k<2;++k)check(state.wheels[k].owner_grip==(drift&&!drag?1.F:.85F),
-            "shared ordinary/drag baseline and assisted drift baseline reach both front wheels");
+        std::array<float,4> ordinary{};
+        // actor38 collision state is independent of actor400 driving style.
+        // The supported race context has driving style0, even after an impact.
+        for(unsigned collision:{0U,1U,2U}) {
+            VehicleState state;VehiclePose pose;VehicleTelemetry t;VehicleInput input;input.drag_mode=drag;
+            check(model.reset(state,pose),"base grip context resets");
+            state.collision_state=collision;
+            check(model.step(state,input,VehicleFlatGround{},t,0,1.F/240.F),"base grip context runs");
+            const float expected=drift&&!drag?1.F:.85F;
+            for(unsigned k=0;k<2;++k)check(state.wheels[k].owner_grip==expected,
+                "477775 normal driving style is independent of collision state");
+            for(unsigned k=0;k<4;++k) {
+                if(collision==0)ordinary[k]=state.wheels[k].owner_grip;
+                else check(state.wheels[k].owner_grip==ordinary[k],
+                    "collision state preserves all four normal-context grip coefficients");
+            }
+        }
     }
 }
 
@@ -339,6 +352,18 @@ void original_drag_engine() {
                   "original drag heating, cooling, grid hold and failure state");
         }
     }
+    // PC 1.4 46CA90, gear 3, 400 ticks after the previous update.
+    PlayerEngineState limit;
+    PlayerGearState box;
+    limit.angular_speed=7500.F*kPlayerRpmToRadS;
+    limit.heat_time=10.F;
+    limit.heat=1.F;
+    player_drag_heat_update(h,limit,box,3,40400,false);
+    check(limit.heat==1.F&&!limit.blown,"drag heating stops at exactly one");
+    limit.heat_time=10.F;
+    limit.heat=.99F;
+    player_drag_heat_update(h,limit,box,3,40400,false);
+    check(word(limit.heat)==0x3F833334U&&!limit.blown,"last drag heating step may cross one");
     for(const auto& v:drag_quality_cases)
         check(word(player_drag_shift_quality(real(v.rpm),real(v.up),v.category,v.gear,real(v.scale)))==v.quality,
               "original drag early, good, perfect and late shift quality");

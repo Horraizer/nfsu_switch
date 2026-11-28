@@ -20,8 +20,8 @@ struct RaceStartupRandom {
 };
 // Settings and four opponent-name draws before an authored Underground grid.
 std::uint32_t authored_race_roster_seed(std::uint32_t before_settings) noexcept;
-// 51CE40 copies the old global state to sound. 41F7C9 takes the next draw.
-RaceStartupRandom race_startup_random(std::uint32_t after_traffic_roster) noexcept;
+// TrackStreamer::Init precedes sound51CEAF and world41F7C9 initialization.
+RaceStartupRandom race_startup_random(std::uint32_t after_traffic_roster,unsigned track) noexcept;
 // Decodes only the authored fields used by57CFA0/57D000/4B3AC0.
 bool decode_traffic_model_record(const unsigned char*,std::size_t,TrafficModelRecord&) noexcept;
 // 57D000 / 57CFA0 and the duplicate/skin stages in 4B3AC0. Callers supply

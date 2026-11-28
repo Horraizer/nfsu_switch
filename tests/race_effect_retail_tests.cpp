@@ -2,12 +2,35 @@
 #include "nfsu/race_gpu_scene.h"
 #include "nfsu/posix_file_system.h"
 #include "nfsu/arg_path.h"
+#include "race_water_motion_native_cases.h"
+#include "race_water_birth_native_cases.h"
 #include <algorithm>
 #include <array>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <stdexcept>
+namespace nfsu {
+struct RaceParticleBirthProbe {
+    static unsigned native_water_index(const NativeWaterMotionCase& row) {
+        // Motion fixtures sort names; birth fixtures retain production preset order.
+        const auto birth=std::find_if(kNativeWaterBirthCases.begin(),kNativeWaterBirthCases.end(),
+            [&](const auto& item){return std::string(item.name)==row.name;});
+        if(birth==kNativeWaterBirthCases.end())throw std::runtime_error("native motion preset name not found");
+        return birth->effect;
+    }
+    static void initial_water_motion(RaceParticles& particles,const NativeWaterMotionCase& row) {
+        particles.reset();particles.water_count_=1;
+        auto& p=particles.water_[0];p={};
+        p.effect=static_cast<RaceParticleEffect>(unsigned(RaceParticleEffect::water_first)+native_water_index(row));
+        const auto& preset=particles.presets_[unsigned(p.effect)];
+        if(preset.gravity!=row.gravity || preset.drag!=row.drag)
+            throw std::runtime_error("named native motion operands differ from loaded retail preset");
+        p.origin=row.origin;p.velocity=row.velocity;p.life_ticks=32000;p.elapsed_seconds=0;
+        p.water_owner=3;p.water_node=123;p.initial_cell=7;
+    }
+};
+}
 namespace equations {
 inline float floor(float x) {return std::floor(x);}
 inline float clamp(float x,float low,float high) {return std::clamp(x,low,high);}
@@ -253,15 +276,15 @@ void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std
             material_frame(d,before,commands.frame,commands.resource_table(),images);
         }
         if(d.name.find("particle/")!=std::string::npos) {
-            if(d.name.find("particle/water/")!=std::string::npos || d.name.find("particle/environment/")!=std::string::npos) {
+            if(commands.resource_table().resources[d.vertex_resource].streamed_vertices) {
                 check(!marker && before.fallback[3]==9 && commands.resource_table().resources[d.vertex_resource].streamed_vertices,
-                      "water lost its packed world-color vertex stream");
+                      "particle lost its packed world-color vertex stream");
                 if(tick==0) {
                     const auto& resources=commands.resource_table().resources;
                     const auto& packed=resources.at(d.texture_resource);
                     check(packed.texture.width==512 && packed.texture.height==512,"water atlas dimensions");
-                    const std::array<std::array<unsigned,2>,8> origins{{
-                        {0,128},{0,256},{256,0},{0,384},{0,0},{64,384},{128,128},{256,256}
+                    const std::array<std::array<unsigned,2>,9> origins{{
+                        {0,128},{0,256},{256,0},{0,384},{0,0},{128,384},{64,384},{128,128},{256,256}
                     }};
                     for(std::size_t layer=0;layer<origins.size();++layer) {
                         const auto& layout=kRaceParticleAtlases[layer];
@@ -283,9 +306,9 @@ void inspect(const RecordedCommands& commands,std::uint64_t tick,bool shaded,std
                       "authored particle lost world.efx color and alpha modulation");
             } else check(marker==4,"empty particle lost unlit specialization");
             if(before.alpha[0]>0)++live;
-            if(race_effect_no_output(view)) {
-                ++skipped;if(d.name.find("smoke")!=std::string::npos)++smoke;else ++sparks;
-            }
+            if(race_effect_no_output(view))++skipped;
+            // A full live batch needs no extra empty per-puff slot.
+            if(d.name.find("smoke")!=std::string::npos)++smoke;else ++sparks;
         }
         if(d.name.find("race-glow/")==0) {++glows;check(marker==5,"glow flat shade was removed");}
         if(d.name.find("race-shadow/")==0)check(!marker && !race_effect_no_output(view),"ground shadow entered generic optimization");
@@ -402,10 +425,68 @@ int main(int argc,char** argv) {
                 auto dry_step=step;
                 dry_step.model.solver_dt=kDriveFrameSeconds/4;
                 std::vector<unsigned> lives;
-                for(std::size_t i=0;i<drying.water_count();++i)lives.push_back(drying.water(i).life_ticks);
+                // Native421012/403A60 precedes car402D30: first draw is the
+                // unaged birth point, followed by one17-tick world update.
+                std::vector<RaceParticle> newborns;
+                for(std::size_t i=0;i<drying.water_count();++i) {
+                    const auto& child=drying.water(i);
+                    check(child.elapsed_seconds==0 && child.displacement.x==0 &&
+                          child.displacement.y==0 && child.displacement.z==0,
+                          "new water did not retain its native first-draw birth state");
+                    lives.push_back(child.life_ticks);newborns.push_back(child);
+                }
+                // Compare the same public telemetry/world boundary directly
+                // with independent original403A60 outputs for all19 presets.
+                std::vector<const NativeWaterMotionCase*> native_first;
+                for(const auto& row:kNativeWaterMotionCases)if(row.frames==1 && row.dt<.02)native_first.push_back(&row);
+                unsigned native_updates=0;
+                for(unsigned order=0;order<2;++order) {
+                    if(order)std::sort(native_first.begin(),native_first.end(),[](const auto* a,const auto* b) {
+                        return RaceParticleBirthProbe::native_water_index(*a)<RaceParticleBirthProbe::native_water_index(*b);
+                    });
+                    std::array<bool,kRaceWaterPresetCount> seen{};
+                    for(const auto* answer:native_first) {
+                    const auto& row=*answer;const auto id=RaceParticleBirthProbe::native_water_index(row);
+                    check(id<seen.size() && !seen[id],"named native motion controls repeat or exceed a loaded preset");seen[id]=true;
+                    auto witness=scene.particles();
+                    RaceParticleBirthProbe::initial_water_motion(witness,row);
+                    VehicleTrackTelemetry next;next.step=1;next.model.solver_dt=row.dt;
+                    witness.advance(next,race.session().spec(),150,0);
+                    check(witness.water_count()==1,"native next-step witness expired or emitted");
+                    const auto& child=witness.water(0);
+                    const auto near=[](double a,double b){return std::abs(a-b)<.000008;};
+                    check(near(child.origin.x+child.displacement.x,row.point.x) &&
+                          near(child.origin.y+child.displacement.y,row.point.y) &&
+                          near(child.origin.z+child.displacement.z,row.point.z) &&
+                          near(child.velocity.x,row.final_velocity.x) &&
+                          near(child.velocity.y,row.final_velocity.y) &&
+                          near(child.velocity.z,row.final_velocity.z),
+                          "first public water update differs from original403A60");
+                    check(child.elapsed_seconds==17.0/1024 && child.life_ticks==32000 &&
+                          child.born_step==0 && child.water_owner==3 && child.water_node==123 && child.initial_cell==7,
+                          "first public update changed native lifetime or child identity");
+                    ++native_updates;
+                    }
+                    check(std::all_of(seen.begin(),seen.end(),[](bool value){return value;}),
+                          "native-name or production-order traversal missed a preset");
+                }
+                check(native_updates==2*kRaceWaterPresetCount,"next-step native controls missed either preset order");
                 for(unsigned frame=1;frame<=120;++frame) {
                     for(unsigned substep=0;substep<4;++substep,++dry_step.step)
                         drying.advance(dry_step,race.session().spec(),10,0);
+                    if(frame==1) {
+                        check(drying.water_count()==newborns.size(),"first dry world step changed the burst count");
+                        bool moved=false;
+                        for(std::size_t i=0;i<newborns.size();++i) {
+                            const auto& a=drying.water(i);const auto& b=newborns[i];
+                            check(a.elapsed_seconds==17.0/1024 && a.life_ticks==b.life_ticks &&
+                                  a.effect==b.effect && a.born_step==b.born_step && a.water_owner==b.water_owner &&
+                                  a.water_node==b.water_node && a.initial_cell==b.initial_cell,
+                                  "next world step changed birth identity or advanced its clock more than once");
+                            moved|=a.displacement.x!=0 || a.displacement.y!=0 || a.displacement.z!=0;
+                        }
+                        check(moved,"next world step did not move the actual canal birth");
+                    }
                     const auto expected=std::count_if(lives.begin(),lives.end(),[&](unsigned life){return life>17*frame;});
                     check(drying.water_count()==std::size_t(expected),"water lifetime changed with the number of solver steps");
                 }
@@ -469,8 +550,10 @@ int main(int argc,char** argv) {
             step.audio_contacts[0].point={3,4,5};
             step.audio_contacts[0].slide_mps=25;
             sparks.advance(step,race.session().spec(),10,0,&world);
+            ++step.step;sparks.advance(step,race.session().spec(),10,0,&world);
             step.audio_contacts[0].slide_mps=15;
             gentle.advance(step,race.session().spec(),10,0,&world);
+            ++step.step;gentle.advance(step,race.session().spec(),10,0,&world);
             check(sparks.spark_count()>2 && gentle.spark_count()==0,
                   "solid wall scrape lost its authored burst at zero post-contact speed");
             check(sparks.spark(0).origin.z==5,"wall spark lost the collision witness");
@@ -484,7 +567,7 @@ int main(int argc,char** argv) {
             gentle.emit_car_impact_sparks(contact,{100,0,0});
             check(gentle.spark_count()==0,"car sparks respect camera distance");
             gentle.emit_car_impact_sparks(contact,{});
-            check(gentle.spark_count()==kRaceSparkLimit&&
+            check(gentle.spark_count()==10&&
                   gentle.spark(0).effect==RaceParticleEffect::car_impact&&
                   gentle.spark(0).atlas==RaceParticleAtlas::sparks&&gentle.spark(0).origin.z==5,
                   "bumper impact must emit the authored bounded spark burst at the collision point");

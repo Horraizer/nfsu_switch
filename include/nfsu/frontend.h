@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 namespace nfsu {
+class CareerMagazineMenu;
 enum class FrontendAction { none, underground, free_drive, profiles, exit, multiplayer, options, statistics };
 bool open_underground(FrontendAction,const std::filesystem::path&,const CareerProfileEntry&,
                       CareerCatalog&,CareerProfile&,std::string& error);
@@ -164,10 +165,22 @@ public:
     bool load(const std::filesystem::path& root,std::string& error,unsigned tip=0);
     // Reference mode is for host diagnostics; runtime always uses the cache.
     void draw(ScreenImage image,double seconds,bool cached=true) const;
+    // The same generic package can cover the live GPU race during ending-NIS
+    // readiness. No software framebuffer or synthetic progress percentage.
+    bool prepare_overlay(std::string& error);
+    const FrontendUiAtlas& atlas() const;
+    void record(unsigned width,unsigned height,double seconds,FrontendUiFrame&) const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
+//422FE9: binary32 ticks*.00025 must be strictly greater than2 seconds.
+//PC_Loading.fng remains visible until both conditions hold, including slow I/O.
+inline bool race_finish_loading_ready(std::uint32_t phase_ticks,bool resources_ready) noexcept {
+    const float seconds=float(phase_ticks)*.00025F;
+    return seconds>2.F&&resources_ready;
+}
+
 enum class PostRaceAction { none, leave, restart, quit_tournament, restart_tournament, next_race };
 enum class PostRacePage { menu, statistics, results, style, reward, confirmation };
 // Original FE_SOUND notification IDs, not ABK entry ordinals.
@@ -183,6 +196,9 @@ public:
         page_=results?PostRacePage::results:style?PostRacePage::style:rewards?PostRacePage::reward:PostRacePage::menu;
     }
     void tournament(bool next) {tournament_=true;next_race_=next;}
+    // A port LAN room cannot restart an authoritative world from one console.
+    // It retains Continue/Statistics; local Quick Race keeps Restart Race.
+    void allow_restart(bool enabled) {restart_=enabled;if(selected_>=count())selected_=0;}
     void animate(bool enabled=true) {animated_=enabled;}
     PostRaceAction advance(double seconds) {
         if(!fading_||!std::isfinite(seconds)||seconds<=0||seconds>1)return PostRaceAction::none;
@@ -245,7 +261,7 @@ public:
     bool statistics()const{return page_==PostRacePage::statistics;}
     PostRacePage page()const{return page_;}
     unsigned reward_index()const{return reward_index_;}
-    unsigned count()const{return tournament_?(next_race_?5:4):3;}
+    unsigned count()const{return tournament_?(next_race_?5:4):restart_?3:2;}
     unsigned revision()const{return revision_;}
     bool tournament()const{return tournament_;}
     bool next_race()const{return next_race_;}
@@ -267,7 +283,7 @@ private:
         page_=page;reward_index_=reward;++revision_;return action;
     }
     unsigned selected_=0;
-    bool results_=false,style_=false,tournament_=false,next_race_=false,animated_=false;
+    bool results_=false,style_=false,tournament_=false,next_race_=false,animated_=false,restart_=true;
     bool fading_=false,confirm_=false,dialog_sound_=false;
     unsigned revision_=0,pending_reward_=0;double fade_ticks_=0;
     PostRaceCue cue_=PostRaceCue::none;
@@ -316,6 +332,9 @@ public:
     void draw_magazine(ScreenImage,const CareerMagazineRecipe&,const std::string& car,bool background)const;
     void record_magazine(unsigned width,unsigned height,const CareerMagazineRecipe&,
                          const std::string& car,FrontendUiFrame&)const;
+    void draw_magazine_menu(ScreenImage,const CareerProfile&,const CareerMagazineMenu&)const;
+    void record_magazine_menu(unsigned width,unsigned height,const CareerProfile&,
+                              const CareerMagazineMenu&,FrontendUiFrame&)const;
     bool load_statistics(const std::filesystem::path& root,bool& atlas_changed,std::string& error);
     bool load_career_pages(const std::filesystem::path& root,const CareerCatalog&,std::string& error);
     void draw_career_info(ScreenImage,const CareerCatalog&,const CareerProfile&,const CareerInfoMenu&)const;

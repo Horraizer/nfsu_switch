@@ -18,7 +18,10 @@ std::uint32_t authored_race_roster_seed(std::uint32_t global) noexcept {
     }
     return global;
 }
-RaceStartupRandom race_startup_random(std::uint32_t global) noexcept {
+RaceStartupRandom race_startup_random(std::uint32_t global,unsigned track) noexcept {
+    // TrackStreamer::Init: PC4445FC..44463C, GC8004313C..80043168.
+    // Its discarded variant draw still advances the shared RNG before sound.
+    if(track>=1103&&track<=1109)quick_rival_random(global,2);
     const auto sound=global;
     quick_rival_random(global,1);
     const auto before_world=global;

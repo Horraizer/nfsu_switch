@@ -151,6 +151,36 @@ int main() {
                   "missing follow target immediately returns to ordinary strategy");
         }
         if(special) {
+            // PC 453060 clears the crossing offset before the next goal is queried.
+            auto crossing_world=world;
+            auto crossing_plan=planner;
+            auto crossing_neighbors=n;
+            auto crossing=in;
+            auto& traffic=crossing_world.actors[1];
+            traffic.position={25,1.5F,0};
+            check(ai_traffic_prediction(traffic.position,traffic.velocity,traffic.heading,traffic.path),
+                  "predict crossing traffic for action exit");
+            crossing_plan.targets[0].target_path=traffic.path;
+            crossing_plan.targets[0].target.position=traffic.position;
+            crossing_plan.targets[0].target.distance=crossing_neighbors.entries[1].distance=25;
+            crossing_neighbors.entries[1].lateral=1.5F;
+            crossing.world=&crossing_world;crossing.neighbors=&crossing_neighbors;crossing.planner=&crossing_plan;
+            AiRivalActionController crossing_driver;AiRivalActionOutput crossing_result;
+            check(crossing_driver.step(crossing,crossing_result)&&crossing_result.action.kind==2&&
+                  crossing_result.maneuver.parameter!=0,"crossing action selects an offset to pass traffic");
+            crossing_world.eligible_count=0;
+            crossing_world.tick=crossing_plan.path.tick=crossing_plan.fitness.tick=++crossing.tick;
+            struct ExitProbe {const AiRivalActionController& driver;bool seen=false;};
+            ExitProbe exit_probe{crossing_driver};
+            crossing.obstacle_context=&exit_probe;
+            crossing.obstacle_read=[](void* ctx,WorldObstacleStatus& status) {
+                auto& probe=*static_cast<ExitProbe*>(ctx);
+                const auto& m=probe.driver.maneuver();
+                probe.seen=m.kind==1&&!m.target&&m.parameter==0&&!m.flag;
+                status={};return true;
+            };
+            check(crossing_driver.step(crossing,crossing_result)&&crossing_result.action.kind!=2&&exit_probe.seen,
+                  "cross-traffic exit restores straight driving before selecting the replacement action");
             //452D84 starts from scratch after44C850 publication if its target
             //has no neighborhood entry. The old Driver still predicts contact,
             //so the action remains alive for this update.

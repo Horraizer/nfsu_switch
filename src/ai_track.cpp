@@ -12,6 +12,7 @@ namespace nfsu {
 namespace {
 void publish(const AiPhysicsState& a,VehicleState& s) {
     s.body_rest_state=a.rest_state;s.body_gravity=a.body.gravity;
+    s.bottom_out_impulse=a.bottom_out_impulse;
     s.rigid_body=a.body;
     vehicle_publish_rigid(s);
     s.engine_rpm=a.engine.rpm;s.gear=a.engine.gear;s.published_gear=a.engine.gear;
@@ -39,6 +40,7 @@ void vehicle_effect_telemetry(const VehicleState& s, double frame_dt, VehicleTel
     t.simulation_seconds=s.simulation_seconds;
     t.solver_dt=frame_dt;
     t.owner_speeds=s.owner_speeds;
+    t.bottom_out_impulse=s.bottom_out_impulse;
     for(unsigned i=0;i<s.wheels.size();++i) {
         auto& w=t.wheels[i];
         w.contact=s.wheels[i].contact;
@@ -51,21 +53,29 @@ void vehicle_effect_telemetry(const VehicleState& s, double frame_dt, VehicleTel
 bool VehicleTrackSession::step_rival_path(const AiDriverPath& path,float desired_speed,float speed_duration,bool publication,
                                          const VehicleInput& input,VehicleTrackTelemetry& telemetry,
                                          bool& departure_predicted) {
+    if(publication||!rival_path_.path.count) {
+        AiPlannedPath resampled;resampled.path=path;
+        if(path.count<3||!ai_path_publish(resampled)||!(resampled.length>0.F))return false;
+        return step_rival_path_prepared(resampled.path,resampled.length,desired_speed,speed_duration,
+            publication,input,telemetry,departure_predicted);
+    }
+    return step_rival_path_prepared(path,0.F,desired_speed,speed_duration,publication,input,telemetry,departure_predicted);
+}
+bool VehicleTrackSession::step_rival_path_prepared(const AiDriverPath& path,float length,float desired_speed,float speed_duration,bool publication,
+                                         const VehicleInput& input,VehicleTrackTelemetry& telemetry,
+                                         bool& departure_predicted) {
     const float dt=input.world_frame_seconds;
     if(!started_||!ai_configured_||ai_active_||!std::isfinite(dt)||dt<=0||dt>.1F||
        !std::isfinite(desired_speed)||!std::isfinite(speed_duration))return false;
     const auto& h=model_->spec().handling;
     auto next=rival_path_;
     if(publication||!next.path.count) {
-        AiPlannedPath resampled;
-        resampled.path=path;
-        // 463B30 resamples the already published driver path again and
-        // 463910 uses that operation's length, before point redistribution.
-        if(path.count<3||!ai_path_publish(resampled)||!(resampled.length>0.F))return false;
-        next.path=resampled.path;
+        if(path.count<3||path.count>path.points.size()||!std::isfinite(length)||!(length>0.F))return false;
+        for(unsigned i=0;i<path.count;++i)for(float value:path.points[i])if(!std::isfinite(value))return false;
+        next.path=path;
         next.parameter=ai_path_body_project(next.path,
             {{float(state_.position.x),float(state_.position.y),float(state_.position.z)}});
-        next.points_per_metre=float(path.count-1)/resampled.length;
+        next.points_per_metre=float(path.count-1)/length;
         next.elapsed=0;
         ai_path_body_publish(next,{{float(state_.position.x),float(state_.position.y),float(state_.position.z)}},
             {{float(state_.velocity.x),float(state_.velocity.y),float(state_.velocity.z)}});
@@ -78,6 +88,7 @@ bool VehicleTrackSession::step_rival_path(const AiDriverPath& path,float desired
     const auto motion=ai_path_body_step(next,h,dt);
     const float new_speed=motion.speed;
     auto s=state_;
+    s.bottom_out_impulse={}; //47C916, path mover has no strut impact producer
     s.position={motion.position[0],motion.position[1],motion.position[2]};
     const auto heading=motion.heading;
     PlayerRigidMatrix axes;
@@ -275,7 +286,8 @@ void VehicleTrackSession::select_rival_physics(unsigned selector,std::int32_t cl
         state_=placed;
     } else {
         ai_started_=false;ai_import_={};
-        if(selector==1)reconstruct_full_physics(state_,clock);
+        if(selector==1&&!reconstruct_full_physics(state_,clock))
+            throw std::runtime_error("full mover construction refused");
     }
     ai_active_=ai_configured_&&selector==3;
     rival_path_={};
@@ -319,19 +331,27 @@ bool VehicleTrackSession::reconstruct_ai_physics(VehicleState& s,const VehicleIn
     ai_=next;ai_started_=true;return true;
 }
 
-void VehicleTrackSession::reconstruct_full_physics(VehicleState& s,std::int32_t clock) const noexcept {
+bool VehicleTrackSession::reconstruct_full_physics(VehicleState& state,std::int32_t clock) const {
+    auto s=state;
+    s.motion_before_first_move.reset();
     // 426110 constructs fresh components.478383/47839B restore only the
     // published RPM/gear, not the old solver's cutoff or clutch history.
     // This also applies to the human when47C9E0 releases the road NIS.
-    s.forces_prepared=false;
-    s.aero_ready=false;
+    s.forces_prepared=false;s.bottom_out_impulse={};
     const auto& h=model_->spec().handling;
+    // 476EA4..476EDF constructs the aero cache and loads the strut preloads.
+    // Driver throttle and wheel support first enter this cache at 477BED.
+    s.aero=PlayerAeroCache{};
+    s.aero.enabled=model_->spec().aero.enabled;
+    s.aero_preloads=player_aero_preloads(h,s.owner_speeds.forward,s.aero.enabled,s.collision_state);
+    s.aero_ready=true;
     //4782C0 imports published wheel speeds, but constructs new struts and
     //wheel torque history. Old compression rates must not damp the new body.
     for(auto& wheel:s.wheels) {
         const float spin=float(wheel.spin);
         const bool contact=wheel.contact; // published Actor350, read by Driver
         wheel={};wheel.spin=spin;wheel.contact=contact;
+        wheel.spin_direction=player_wheel_spin_direction(spin);
     }
     s.body_rest_state=0;s.body_gravity=true;s.grip_recovery=1.F;
     s.rigid_body={};s.alternate_yaw_active=false;
@@ -356,6 +376,24 @@ void VehicleTrackSession::reconstruct_full_physics(VehicleState& s,std::int32_t 
     // 476F13 refreshes the new engine before its first derivative.
     player_engine_cutoff_update(h,s.gear,s.engine,float(clock)*.00025F);
 
+    // PC 476F13..476F2F and GC 80080898..800808A0 refresh the newly
+    // constructed components before the driver's first steering input.
+    s.steer_angle=0;
+    s.steering_word=0;
+    s.steering_word_ready=false;
+    VehicleTelemetry telemetry;
+    VehicleInput initial;
+    initial.world_clock=clock;
+    initial.world_clock_valid=true;
+    if(!model_->step(s,initial,ground_,telemetry,0,0,false,true,true,true,0,0,
+                     VehicleSteeringState::before_first_command))return false;
+    // 476F13 prepares the mover. Only the following 4789D0 publishes motion.
+    s.velocity=state.velocity;
+    s.angular_velocity=state.angular_velocity;
+    s.motion_before_first_move=VehiclePublishedMotion{s.velocity,s.angular_velocity};
+    s.steering_word_ready=false;
+    state=s;
+    return true;
 }
 
 bool VehicleTrackSession::rival_nitrous_rpm_allowed(bool drag) const noexcept {
@@ -371,6 +409,19 @@ bool VehicleTrackSession::rival_nitrous_rpm_allowed(bool drag) const noexcept {
     // 95 percent of the way to the upper threshold.
     const float rpm=float(state_.engine_rpm);
     return rpm>=down&&rpm<=(up-down)*.949999988079071F+down;
+}
+
+bool VehicleTrackSession::construct_ai_body(VehicleState& external,const VehicleInput& input,int gear_request) {
+    if(!valid_||!ai_configured_||!input.road_steering||!input.road_angle_word_valid||
+       !std::isfinite(input.throttle)||input.throttle<0||input.throttle>1||
+       !std::isfinite(input.brake)||input.brake<0||input.brake>1||
+       (gear_request!=-1&&gear_request!=0))return false;
+    if(!started_&&!start(external))return false;
+    auto placed=external;VehicleTrackTelemetry telemetry;
+    const auto clock=input.world_clock_valid?input.world_clock:static_cast<std::int32_t>((ticks_*4000)/60);
+    if(!reconstruct_ai_physics(placed,input,gear_request,clock,telemetry))return false;
+    state_=placed;external=placed;last_component_interval_=0;
+    return true;
 }
 
 bool VehicleTrackSession::step_ai_body(VehicleState& external,const VehicleInput& input,
@@ -478,7 +529,8 @@ bool VehicleTrackSession::step_ai(const VehicleInput& input,VehicleTrackTelemetr
             //46B744 refreshes components without publishing actor fields or
             //running the outer policy. Preserve wheel history for the next
             //refresh after the impulse; do not advance time or normalize axes.
-            auto refreshed=state_;refreshed.rigid_body=next.body;vehicle_publish_rigid(refreshed);
+            auto refreshed=state_;refreshed.rigid_body=next.body;
+            refreshed.bottom_out_impulse=next.bottom_out_impulse;vehicle_publish_rigid(refreshed);
             ai_=next;ai_started_=true;ai_import_={};state_=refreshed;telemetry=t;return true;
         }
         latch_aero();
@@ -486,6 +538,8 @@ bool VehicleTrackSession::step_ai(const VehicleInput& input,VehicleTrackTelemetr
         latch_preloads();
         s.alternate_yaw_active=next.body.alternate_yaw;
     }
+    //474BBB follows any contact component refresh and clears on each outer call.
+    if(!refresh_only)next.bottom_out_impulse={};
     const float frame_dt=input.world_frame_seconds;
     if(!std::isfinite(frame_dt)||frame_dt<=0||frame_dt>.1F){error_="invalid selector3 frame interval";return false;}
     if(!ai_physics_advance(h,ai_tables_,spec.aero,continuation_dt>=0?continuation_dt:frame_dt,world,next)) {

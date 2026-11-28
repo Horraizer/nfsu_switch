@@ -85,6 +85,8 @@ public:
                        std::size_t draw_capacity=0);
     // Finish-screen transition after all race submissions have completed.
     bool set_frontend_overlay(const FrontendUiAtlas& atlas,std::string& error,bool final=true);
+    // Shared two-human results use the existing full-size targets/resources.
+    bool finish_split_presentation(std::string& error);
     bool restore_race_overlay(const RaceHudAtlas& atlas,std::string& error);
     bool present_frontend(const FrontendUiFrame& frame,std::string& error,DekoPresentTiming* timing=nullptr);
     // Mode changes replace the swapchain and its scene/depth images after

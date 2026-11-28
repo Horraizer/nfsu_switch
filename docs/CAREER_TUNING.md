@@ -131,8 +131,10 @@ This is not a completed whole-game garage. Trade In, installed and hypothetical
 performance ratings, and car-specific wide-body decal layouts are implemented;
 `nfsu_career_retail`, `nfsu_career_trade_retail` and
 `nfsu_career_garage_live_retail` cover these paths with retail inputs. The full original
-magazine browser, complete special whole-car vinyl award presentation and
-detailed performance brand/tuner screens still need separate acceptance. The special
+magazine browser and complete special whole-car vinyl award presentation
+still need separate acceptance. Performance brand/tuner selection is covered by `nfsu_performance_packages_retail`
+and the original-code witness `nfsu_performance_packages_native_retail`; see
+[PERFORMANCE_PACKAGES.md](PERFORMANCE_PACKAGES.md). The special
 award pages use the original unique performance and visual packages, separate
 from the regular shop; native eligibility and grant routines are tested.
 Their final presentation still requires hardware acceptance. Purchase

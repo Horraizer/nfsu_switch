@@ -78,6 +78,7 @@ bool LanRaceWorld::load_course(const std::filesystem::path& root,unsigned event,
     }
     host_hull_=std::move(hulls[0]);
     auto world=std::make_unique<RaceSession>(course_,specs[0],RaceSteering::recovered_predicate1,host_hull_);
+    world->set_player_name("PLAYER 1");
     if(!world->set_camera_table(cameras_[0],error)||(drag&&!world->set_drag(true,error,1.5F)))return false;
     RaceRivalSetup guest;guest.spec=specs[1];guest.hull=std::move(hulls[1]);guest.name="PLAYER 2";guest.car_type=models_[1];int marker=-1;
     const bool crash_cameras=split&&!drag&&!drift;
@@ -165,7 +166,9 @@ LanRaceFrame LanRaceWorld::snapshot()const {
         c.checkpoint=row.checkpoint;c.highest_checkpoint=row.highest_checkpoint;c.lap_start=row.crossing_ticks[0];
         const auto best=row.best_split_ticks[std::size_t(session_->course().route.finish)];
         c.best_lap=best==kRaceNoTime?0:best;c.finish_ticks=row.finish_ticks;c.finished=row.finish_valid;
-        c.status=std::uint8_t(row.status);c.place=std::uint8_t(session_->standings().position(i));c.braking=actor.animation().braking;
+        c.status=std::uint8_t(row.status);c.place=std::uint8_t(session_->result_positions().at(i));c.braking=actor.animation().braking;
+        std::copy(std::begin(row.lap_ticks),std::end(row.lap_ticks),c.lap_ticks.begin());
+        std::copy(std::begin(row.lap_total_ticks),std::end(row.lap_total_ticks),c.lap_total_ticks.begin());
         const auto nitrous=actor.nitrous();c.nitrous_capacity=nitrous.capacity;
         c.nitrous_remaining=nitrous.remaining;c.nitrous_active=nitrous.active;
     }
@@ -213,8 +216,11 @@ bool LanRaceView::apply(const LanRaceFrame& frame,double seconds,std::string& er
         telemetry.forward={1-2*(q.y*q.y+q.z*q.z),2*(q.x*q.y+q.w*q.z),2*(q.x*q.z-q.w*q.y)};
         telemetry.position=s.position;telemetry.velocity=s.velocity;telemetry.forward_speed=s.owner_speeds.forward;
         auto& row=world.timing_.racers[i];row.status=static_cast<RacerStatus>(c.status);row.lap=c.lap;row.highest_lap=c.highest_lap;
-        row.checkpoint=c.checkpoint;row.highest_checkpoint=c.highest_checkpoint;row.position=c.finished?c.place:0;
+        // A terminal failure owns its assigned place without a timed finish.
+        row.checkpoint=c.checkpoint;row.highest_checkpoint=c.highest_checkpoint;row.position=c.place;
         row.crossing_ticks[0]=c.lap_start;row.crossing_valid[0]=frame.go;row.finish_valid=c.finished;row.finish_ticks=c.finish_ticks;
+        std::copy(c.lap_ticks.begin(),c.lap_ticks.end(),std::begin(row.lap_ticks));
+        std::copy(c.lap_total_ticks.begin(),c.lap_total_ticks.end(),std::begin(row.lap_total_ticks));
         row.best_split_ticks[std::size_t(world.course_.route.finish)]=c.best_lap?c.best_lap:kRaceNoTime;
         actor.timing_.step=frame.step;actor.timing_.now_ticks=actor.timing_.step_ticks=frame.world_ticks;
         actor.timing_.race_ticks=frame.race_ticks;actor.timing_.race_start_ticks=frame.start_ticks;actor.timing_.race_start_valid=frame.go;
@@ -245,40 +251,205 @@ LanRaceFrame lan_interpolate(const LanRaceFrame& old,const LanRaceFrame& latest,
         double norm=0;for(unsigned j=0;j<4;++j){const float start=dot<0?-a.orientation[j]:a.orientation[j];c.orientation[j]=start+(b.orientation[j]-start)*t;norm+=double(c.orientation[j])*c.orientation[j];}
         if(norm>0){const auto scale=float(1/std::sqrt(norm));for(auto& q:c.orientation)q*=scale;}
         c.steering=a.steering+(b.steering-a.steering)*t;c.rpm=a.rpm+(b.rpm-a.rpm)*t;
-        for(unsigned j=0;j<4;++j)c.compression[j]=a.compression[j]+(b.compression[j]-a.compression[j])*t;
+        for(unsigned j=0;j<4;++j){
+            c.compression[j]=a.compression[j]+(b.compression[j]-a.compression[j])*t;
+            // The authority wraps wheel angles at +/- pi. Linear interpolation
+            // of the raw values would reverse almost one turn at that seam.
+            constexpr double tau=6.28318530717958647692;
+            const double turn=std::remainder(double(b.wheel_phase[j])-a.wheel_phase[j],tau);
+            c.wheel_phase[j]=float(std::remainder(a.wheel_phase[j]+turn*t,tau));
+        }
     }
     return result;
 }
 
+void LanSnapshotBuffer::reset_playback(double delay){
+    recovery_delay_=std::clamp(delay,3.,double(entries_->size()-1));
+    playing_=false;have_observed_=false;recovering_=true;
+    phase_next_=phase_count_=0;delay_steps_=recovery_delay_;delay_age_steps_=0;
+    gap_headroom_=0;pending_new_=false;starved_steps_=0;
+}
+
+void LanSnapshotBuffer::observe_delivery(double steps){
+    delivery_intervals_[delivery_next_]=std::max(1.,steps);
+    delivery_next_=(delivery_next_+1)%delivery_intervals_.size();
+    delivery_count_=std::min(delivery_count_+1,delivery_intervals_.size());
+    auto sorted=delivery_intervals_;
+    std::sort(sorted.begin(),sorted.begin()+delivery_count_);
+    // The largest repeatedly observed interval admits a variable cadence,
+    // while a single isolated pause cannot redefine the expected cadence.
+    normal_interval_=sorted[delivery_count_>1?delivery_count_-2:0];
+}
+
 void LanSnapshotBuffer::push(const LanRaceFrame& frame,std::uint32_t input_ack){
-    if(count_&&frame.step<=at(count_-1).frame.step)return;
-    if(count_==entries_.size()){
-        first_=(first_+1)%entries_.size();
+    if(count_&&frame.step<=at(count_-1).frame.step) {
+        // The final reliable UI handoff may be retried without another world
+        // step. A duplicate/older race sample still cannot move the timeline.
+        if(frame.step==at(count_-1).frame.step&&frame.finish_ready&&!at(count_-1).frame.finish_ready)
+            (*entries_)[(first_+count_-1)%entries_->size()]={frame,input_ack};
+        return;
+    }
+    if(!pending_new_){prior_gap_headroom_=gap_headroom_;prior_gap_step_=last_gap_step_;}
+    // A gap larger than our entire history is an outage, not clock drift.
+    // Refill a short current history rather than replaying stale time or
+    // increasing latency for seconds after the connection recovers.
+    const auto gap=count_?frame.step-at(count_-1).frame.step:0;
+    if(gap>1&&gap<entries_->size()){
+        const double reserve=std::min(3.,double(gap-1));
+        // Only an equally large gap renews the age of the largest reserve.
+        // Continuing small losses cannot keep a one-off larger margin alive.
+        if(reserve>=gap_headroom_||frame.step-last_gap_step_>=60){
+            gap_headroom_=reserve;last_gap_step_=frame.step;
+        }
+    }
+    if(count_&&gap>=entries_->size()){
+        first_=(first_+count_-1)%entries_->size();count_=1;
+        refilling_=true;reset_playback(delay_steps_);
+    }
+    if(!pending_new_){pending_first_step_=frame.step;pending_new_=true;}
+    if(count_==entries_->size()){
+        first_=(first_+1)%entries_->size();
         --count_;
     }
-    entries_[(first_+count_)%entries_.size()]={frame,input_ack};
+    (*entries_)[(first_+count_)%entries_->size()]={frame,input_ack};
     ++count_;
 }
 
 bool LanSnapshotBuffer::sample(double seconds,LanRaceFrame& frame,std::uint32_t& input_ack){
     if(!count_)return false;
-    constexpr double delay_steps=3;
+    const double advance=std::clamp(seconds,0.,.1)*60;
+    elapsed_steps_+=advance;
+    fractional_age_steps_+=advance;
+    // A materially fractional display phase can sample just before the next
+    // group, beyond its last integer step. Keep one extra step of history.
+    const double clock_advance=advance*clock_rate_;
+    if(std::abs(clock_advance-std::round(clock_advance))>.01)fractional_age_steps_=0;
+    if(at(count_-1).frame.finish_ready) {
+        const auto& terminal=at(count_-1);frame=terminal.frame;input_ack=terminal.input_ack;
+        cursor_=frame.step;playing_=true;return true;
+    }
+    bool isolated_pause=false;
+    const double arrived=at(count_-1).frame.step;
+    if(have_observed_&&arrived>observed_step_){
+        const double interval=arrived-observed_step_;
+        const bool outlier=interval>normal_interval_+std::max(1.,normal_interval_*.5);
+        // An isolated starved receipt must not train the normal cadence.
+        // Consecutive wider receipts can establish a slower delivery stream.
+        isolated_pause=outlier&&!previous_pause_&&delivery_count_==delivery_intervals_.size()&&starved_steps_>.25;
+        previous_pause_=outlier;
+        if(!isolated_pause)observe_delivery(interval);
+        if(isolated_pause){
+            // A one-off silence is not evidence of a future loss cadence.
+            gap_headroom_=prior_gap_headroom_;last_gap_step_=prior_gap_step_;
+        }
+        const double familiar_delay=std::max(3.,normal_interval_-1)+gap_headroom_+
+            (fractional_age_steps_<60?1.:0.);
+        const bool overwritten=interval>=entries_->size()&&cursor_+advance*rate_+.001<at(0).frame.step;
+        const bool exhausted=starved_steps_>.25&&(isolated_pause||familiar_delay>delay_steps_+.5);
+        if(playing_&&(overwritten||exhausted)){
+            const double resume_delay=isolated_pause?delay_steps_:std::max(delay_steps_,familiar_delay);
+            std::size_t old=0;
+            while(old<count_&&at(old).frame.step<=observed_step_)++old;
+            refilling_=old!=0;
+            if(old){first_=(first_+old-1)%entries_->size();count_-=old-1;}
+            reset_playback(resume_delay);
+        }
+    }
+    if(refilling_){
+        if(count_<2||at(count_-1).frame.step-at(1).frame.step<recovery_delay_){
+            // Keep rendering the last authority state while a short current
+            // history refills. This is a held frame, never extrapolation.
+            frame=at(0).frame;input_ack=at(0).input_ack;
+            pending_new_=false;++underrun_frames_;return true;
+        }
+        first_=(first_+1)%entries_->size();--count_;refilling_=false;
+    }
+    constexpr double minimum_delay=3;
     const double oldest=at(0).frame.step,newest=at(count_-1).frame.step;
+    const bool received_new=!have_observed_||newest>observed_step_;
+    delay_age_steps_+=advance;
+    if(received_new){
+        const double leading_gap=have_observed_&&pending_new_&&pending_first_step_>observed_step_?
+            pending_first_step_-observed_step_-1:0;
+        const double initial_span=pending_new_?newest-pending_first_step_:newest-oldest;
+        if(!delivery_count_)observe_delivery(initial_span+1);
+        const double span=recovering_?recovery_delay_:isolated_pause?normal_interval_-1:
+            have_observed_?newest-observed_step_-1-leading_gap:initial_span;
+        pending_new_=false;
+        if(newest-last_gap_step_>=60)gap_headroom_=0;
+        // Missing an endpoint does not lengthen the sender's group interval.
+        // One recent missing step instead earns one stable step of headroom.
+        const double margin=recovering_?0:gap_headroom_+(fractional_age_steps_<60?1.:0.);
+        const double needed=std::min(double(entries_->size()-1),std::max(minimum_delay,span)+margin);
+        if(needed>=delay_steps_){delay_steps_=needed;delay_age_steps_=0;}
+        else if(delay_age_steps_>=60){delay_steps_=std::max(needed,delay_steps_-1);delay_age_steps_=0;}
+        observed_step_=std::uint32_t(newest);have_observed_=true;
+        phases_[phase_next_]={newest-elapsed_steps_,elapsed_steps_};
+        phase_next_=(phase_next_+1)%phases_.size();phase_count_=std::min(phase_count_+1,phases_.size());
+        if(phase_count_>=8){
+            double earliest=elapsed_steps_;
+            for(std::size_t i=0;i<phase_count_;++i)
+                if(elapsed_steps_-phases_[i].at<=60)earliest=std::min(earliest,phases_[i].at);
+            const double middle=(earliest+elapsed_steps_)*.5;
+            const Phase* older=nullptr;const Phase* younger=nullptr;
+            for(std::size_t i=0;i<phase_count_;++i){
+                const auto& phase=phases_[i];if(elapsed_steps_-phase.at>60)continue;
+                auto*& peak=phase.at<=middle?older:younger;
+                if(!peak||phase.offset>peak->offset)peak=&phase;
+            }
+            if(older&&younger&&younger->at-older->at>=8){
+                const double rate=1+(younger->offset-older->offset)/(younger->at-older->at);
+                // Queue-age differences of a frame are not oscillator drift.
+                if(rate>=.995&&rate<=1.005){
+                    unsigned agreeing=0;bool above=false;
+                    for(std::size_t i=0;i<phase_count_;++i){
+                        const auto& phase=phases_[i];if(elapsed_steps_-phase.at>60)continue;
+                        const double residual=phase.offset-older->offset-(rate-1)*(phase.at-older->at);
+                        above|=residual>.002;agreeing+=std::abs(residual)<.002;
+                    }
+                    if(!above&&agreeing>=3)clock_rate_=rate;
+                }
+            }
+        }
+        // A packet can wait between two unequal display intervals. Its
+        // newest step is then older than the current host clock. Use the
+        // freshest recent clock phase, not that varying queue age. The
+        // bounded recent window also expires real sender/display drift.
+        clock_phase_=newest-elapsed_steps_;
+        for(std::size_t i=0;i<phase_count_;++i)
+            if(elapsed_steps_-phases_[i].at<=60)clock_phase_=std::max(clock_phase_,
+                phases_[i].offset+(clock_rate_-1)*(elapsed_steps_-phases_[i].at));
+    }
+    const double target=elapsed_steps_+clock_phase_-delay_steps_;
     if(!playing_){
-        if(newest-oldest<delay_steps)return false;
-        cursor_=newest-delay_steps;
-        playing_=true;
+        if(newest-oldest<minimum_delay)return false;
+        cursor_=std::clamp(target,oldest,newest);
+        rate_=clock_rate_;delay_age_steps_=0;fast_until_=elapsed_steps_+60;
+        playing_=true;recovering_=false;starved_steps_=0;
     }else{
-        const double advance=std::clamp(seconds,0.,.1)*60;
-        // Small pacing adjustments absorb clock drift and rebuild the delay
-        // after a late burst. They do not warp time by the packet gap.
-        const double rate=1+std::clamp((newest-cursor_-advance-delay_steps)*.05,-.10,.10);
-        if(cursor_+advance*rate>newest&&at(count_-1).frame.outcome==unsigned(RaceOutcome::running))
+        if(received_new){
+            // Between receipts newest is stationary even when the sender's
+            // clock is perfectly steady. Re-evaluating this error every
+            // render frame would pulse playback at the packet-group cadence.
+            // Startup may rebuild headroom promptly. Once playing, a noisy
+            // phase estimate only trims the clock gently; it must not become
+            // a visible acceleration every time the polling phase changes.
+            const double correction=elapsed_steps_<fast_until_?.10:.01;
+            rate_=clock_rate_+std::clamp((target-cursor_-advance*clock_rate_)*.1,-correction,correction);
+        }
+        double next=cursor_+advance*rate_;
+        // Convergence below float pose precision must not leave discrete
+        // state one step behind a body that has already rounded to that step.
+        if(received_new&&target>=cursor_&&std::abs(next-target)<.001){next=target;rate_=clock_rate_;}
+        if(next>newest&&at(count_-1).frame.outcome==unsigned(RaceOutcome::running))
             ++underrun_frames_;
-        cursor_=std::clamp(cursor_+advance*rate,oldest,newest);
+        const double deficit=next-newest;
+        if(deficit>.001)starved_steps_+=std::min(deficit,advance*clock_rate_);
+        else starved_steps_=0;
+        cursor_=std::clamp(next,oldest,newest);
     }
     while(count_>1&&at(1).frame.step<=cursor_){
-        first_=(first_+1)%entries_.size();
+        first_=(first_+1)%entries_->size();
         --count_;
     }
     const auto& start=at(0);

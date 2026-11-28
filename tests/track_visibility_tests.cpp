@@ -1,6 +1,7 @@
 #include "nfsu/track_visibility.h"
 
 #include "nfsu/track_objects.h"
+#include "track_view_mask_native.inc"
 
 #include <algorithm>
 #include <cmath>
@@ -1255,6 +1256,19 @@ void test_broken_trees_degrade() {
     }
 }
 
+void test_original_view_contexts() {
+    for(const auto& row:kNativeTrackInstanceGates)
+        check(nfsu::track_instance_masked_out(row.flags,static_cast<std::uint8_t>(row.mask))==!row.accepted,
+            "original445EE9 executed conditional branch");
+    for(const auto& row:kNativeTrackViewMasks) {
+        const auto actual=nfsu::track_view_context_mask(row.supplied,row.view,row.type,row.direction);
+        check(actual==row.result,"original53E290 full context mask");
+        for(unsigned flags=0;flags<256;++flags)
+            check(nfsu::track_instance_masked_out(flags,static_cast<std::uint8_t>(actual))==
+                (((flags^0x60U)&static_cast<unsigned char>(row.result))!=0),
+                "original445EE9 low-byte flag gate for native context");
+    }
+}
 void test_instance_mask() {
     // 0x00445EE6 biases the flags word by 0x60 before the context byte is
     // applied to its low byte. The bias is the whole content of the rule, so
@@ -1911,6 +1925,7 @@ int main() {
     test_containment_failure_changes_the_answer();
     test_containment_entry_count_guard();
     test_broken_trees_degrade();
+    test_original_view_contexts();
     test_instance_mask();
     test_screen_size_level();
     test_screen_size_gate();

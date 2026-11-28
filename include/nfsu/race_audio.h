@@ -167,9 +167,9 @@ static_assert(98+2*3<=kMixVoices,"rival shift range exceeds mixer");
 static_assert(104+2*3<=kMixVoices,"rival Turbo range exceeds mixer");
 class RaceTurboSound {
 public:
-    bool load(const std::filesystem::path&,const std::string&,int,std::string&);
+    bool load(const std::filesystem::path&,const std::string&,int,std::string&,int variant=-1);
     void update(const RaceAudioSnapshot&,const HumanTurboFeedback&,Mixer&,int,TrafficAudioRandom&);
-    bool load_remote(const std::filesystem::path&,const std::string&,int,unsigned,std::string&);
+    bool load_remote(const std::filesystem::path&,const std::string&,int,unsigned,std::string&,int variant=-1);
     void update_remote(const RaceAudioSnapshot&,const RaceAudioSnapshot::Rival&,
                        const HumanTurboFeedback&,Mixer&,int,TrafficAudioRandom&);
     void stop(Mixer&)noexcept;
@@ -282,7 +282,7 @@ private:
 
 // Reads retail audio and drives the platform output. Missing banks or a
 // missing device leave the race running with an explicit diagnostic.
-struct RaceRemoteEngineBinding {std::string car;int engine_upgrade=0,induction_upgrade=0;bool turbo_installed=false;};
+struct RaceRemoteEngineBinding {std::string car;int engine_upgrade=0,induction_upgrade=0;bool turbo_installed=false;int turbo_brand=-1;};
 struct MenuSong;
 class RaceAudioService {
 public:
@@ -309,7 +309,7 @@ public:
                int nitrous_upgrade = 1,int tyre_upgrade = 0,
                const std::vector<RaceRemoteEngineBinding>& rivals = {},int induction_upgrade = 0,
                unsigned traffic_count = 16,std::uint32_t prop_materials = 1,
-               unsigned track = 0,std::optional<std::uint32_t> sound_seed=std::nullopt);
+               unsigned track = 0,std::optional<std::uint32_t> sound_seed=std::nullopt,int turbo_brand=-1);
     void on_tick(const RaceAudioSnapshot& snapshot,std::uint32_t* world_random=nullptr);
     void set_suspended(bool suspended) noexcept;
     void fade_music_for_finish() noexcept;

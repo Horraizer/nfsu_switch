@@ -9,7 +9,7 @@ import tempfile
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tool',choices=['race_actor_retirement_native','camera_presentation_native',
-        'camera_surge_native','career_unique_reward_native','career_tournament_native','career_magazine_native','career_magazine_tasks_native','frontend_magazine_camera_native','race_effect_audio_native_check','engine_audio_native_check','career_fixed_native'],required=True)
+        'camera_surge_native','career_unique_reward_native','career_tournament_native','career_magazine_native','career_magazine_tasks_native','frontend_magazine_camera_native','race_effect_audio_native_check','engine_audio_native_check','career_fixed_native','ai_driver_wiring_native'],required=True)
     parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--work',type=Path,required=True)
     parser.add_argument('--probe',type=Path)

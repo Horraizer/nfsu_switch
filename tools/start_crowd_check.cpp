@@ -5,6 +5,7 @@
 #include "nfsu/drive_session.h"
 #include "nfsu/player_powertrain.h"
 #include "nfsu/track_ground.h"
+#include "nfsu/nis_camera_ground.h"
 #include "../tests/race_start_native.inc"
 #include <fstream>
 #include <iomanip>
@@ -40,6 +41,47 @@ std::uint64_t crowd_pose_hash(const nfsu::RecordedCommands& commands) {
 int main(int argc,char** argv) {
     if(argc!=2)return 1;
     CrowdIoFiles files;nfsu::StartCrowd crowd;std::string error;
+    nfsu::NisCameraGround terrain;
+    for(unsigned i=0;i<sizeof(kNativeNisTerrain)/sizeof(kNativeNisTerrain[0]);++i) {
+        const auto& native=kNativeNisTerrain[i];
+        const auto height=terrain.sample(native[0],i);
+        if(std::abs(height-native[2])>4e-6F || std::abs((height+native[1])-native[3])>4e-6F ||
+           terrain.sample(native[0]+10,i)!=height) {
+            std::cerr<<"FAIL: native NIS terrain history or duplicate render update\n";return 1;
+        }
+    }
+    if(terrain.sample(12,0)!=12) {std::cerr<<"FAIL: NIS timeline restart\n";return 1;}
+    // Event32 ends on a rising road. Native48E534..48E5B3 grounds the
+    // animated eye, not only the start-line anchor or the staged cars.
+    {
+        const auto root=std::filesystem::u8path(argv[1]);
+        auto& terrain_files=nfsu::posix_file_system();
+        nfsu::VehicleTrackCourse course;
+        if(!nfsu::load_vehicle_track_course(root/"Tracks/TRACKB1008.LZC",3,0,0,0,course,error)) {
+            std::cerr<<"FAIL: event32 finish course "<<error<<"\n";return 1;
+        }
+        for(unsigned variant=0;variant<3;++variant) {
+            unsigned scene=0;nfsu::StartCrowd ending;
+            if(!nfsu::select_race_finish_scene(terrain_files,root,4,1,1008,variant,scene,error)||
+               !ending.load_finish_camera(terrain_files,root,scene,"L1RA",course,error)) {
+                std::cerr<<"FAIL: event32 ending load "<<error<<"\n";return 1;
+            }
+            for(unsigned step=0;step<=1200;++step) {
+                const auto seconds=double(step)/60;
+                nfsu::OrbitCamera camera,repeated;
+                if(!ending.finish_camera(seconds,camera,640,480)||
+                   !ending.finish_camera(seconds,repeated,640,480))return 1;
+                const auto eye=nfsu::orbit_eye(camera),again=nfsu::orbit_eye(repeated);
+                nfsu::TrackGroundCache cache;nfsu::TrackContact contact;
+                if(!nfsu::query_track_ground(course.world,{eye.x,-eye.z,eye.y},cache,contact)||
+                   eye.y<contact.point[2]-.02 || eye.y!=again.y || eye.x!=again.x || eye.z!=again.z) {
+                    std::cerr<<"FAIL: event32 ending camera below road or repeated frame changed scene="<<scene
+                             <<" step="<<step<<" eye_z="<<eye.y<<" road_z="<<contact.point[2]<<"\n";return 1;
+                }
+            }
+        }
+        std::cout<<"PASS: event32 finish eye follows rising road through each winning scene and loop\n";
+    }
     if(!crowd.load(files,std::filesystem::u8path(argv[1]),error)) {std::cerr<<"FAIL: "<<error<<"\n";return 1;}
     if(files.tiny_stream_reads || files.stream_reads>2048) {
         std::cerr<<"FAIL: crowd metadata reopened stream for tiny headers\n";return 1;

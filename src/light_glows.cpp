@@ -312,8 +312,10 @@ void place_original_car_glows(const CarGlowAnchors& anchors,
             const auto& n=anchor.normal;const auto* m=instance->transform;
             const double normal[3]={n.x*m[0]+n.y*m[4]+n.z*m[8],n.x*m[1]+n.y*m[5]+n.z*m[9],n.x*m[2]+n.y*m[6]+n.z*m[10]};
             const double facing=toward[0]*normal[0]+toward[1]*normal[1]+toward[2]*normal[2];
-            // Original ordinary-owner base gains and service-axis response.
-            const float gain=head?1.0F:float(std::min(1.0,double(.699999988079071F)+
+            //56D9C0: owner kind3 uses the traffic tail base. Its authored
+            // emitters belong to BODY rather than separate racer lamp parts.
+            const float tail_base=body_markers?.8500000238418579F:.699999988079071F;
+            const float gain=head?1.0F:float(std::min(1.0,double(tail_base)+
                 (service_brake>double(.05000000074505806F)?16.0*service_brake:0.0)));
             FrontendRoadGlow quad;
             if(!frontend_car_glow(point,toward,right,up,float(std::max(0.,facing)),

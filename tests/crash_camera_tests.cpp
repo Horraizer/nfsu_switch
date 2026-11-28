@@ -44,6 +44,14 @@ struct RaceWorldContactProbe {
         check(s.vehicle_.start(c),"airborne session placement accepted");
         s.crash_camera_.contact(35,true,s.timing_.now_ticks,true,c,0,r,s.camera_world_);
     }
+    static void split_flight(RaceSession& s) {
+        for(auto* driver:{&s,s.rivals_[0].get()}) {
+            auto c=driver->car();c.position.z+=40;c.velocity={40,0,10};
+            c.collision_state=0;c.published_support=0;c.rigid_body_ready=false;
+            c.owner_speeds.magnitude=41;
+            check(driver->vehicle_.start(c),"split airborne actor placement accepted");
+        }
+    }
 };
 }
 int main(){
@@ -185,6 +193,27 @@ int main(){
         check(impact.advance({},error),"actual contact queue advances");
         std::cout<<"CONTACT_CAMERA event="<<impact.crash_camera_event()<<" pairs="<<impact.pair_contacts().count<<" state="<<impact.car().collision_state<<'\n';
         check(impact.pair_impulses()>0&&impact.crash_camera_event()==6,"real car-pair response requests cinematic without a supplied trigger");
+    }
+    for(unsigned scenario=0;scenario<2;++scenario) {
+        RaceSession local(course);const auto table=stock_240sx_chase_camera_table();
+        RaceRivalSetup human;human.spec=stock_240sx_vehicle_spec();human.hull=stock_240sx_hull();
+        human.pose=course.start;human.pose.ground.y+=12;human.name="HUMAN TWO";
+        check(local.set_camera_table(table,error)&&local.set_human_rival(human,error,&table)&&
+              local.set_local_crash_cameras(road,road,1003,error)&&local.start(error),"split camera gate fixture starts");
+        std::array<GamepadFrame,2> pads{};for(auto& pad:pads)pad.pads[0].connected=true;
+        while(race_car_held(local.timing()))check(local.advance_humans(pads,error),"split camera gate countdown");
+        if(scenario==0)RaceWorldContactProbe::impact_placement(local);
+        else RaceWorldContactProbe::split_flight(local);
+        bool normal=true;
+        for(unsigned frame=0;frame<(scenario?16U:1U);++frame) {
+            check(local.advance_humans(pads,error),"split camera gate advances the physical world");
+            normal=normal&&local.crash_camera_event()==0&&local.rival(0).crash_camera_event()==0;
+        }
+        if(!scenario)check(local.pair_impulses()>0,"split camera gate includes a real eligible car-pair impulse");
+        // PC42DA40 and retail GC8002D494 reject NumPlayers==2 before
+        // accepting an event. Neither player may replace a local split view.
+        check(normal,scenario?"two local players reject the periodic airborne cinematic":
+                              "two local players reject the car-impact cinematic");
     }
     {
         RaceParticles particles;VehicleTrackTelemetry t;t.velocity={10,0,0};t.orientation.w=1;

@@ -62,7 +62,7 @@ void verify_paint_isolation(const std::filesystem::path& root,const CareerCatalo
         }
         check(marked!=0,"neon reward marks actual parts");
     }
-    check(catalog.buy_performance(p,2,3,error),error);
+    for(unsigned level=1;level<=3;++level)check(catalog.buy_performance(p,2,level,error),error);
     std::vector<unsigned char> globals;std::vector<RaceTableIssue> issues;
     check(load_race_image(root/"Global/GLOBALB.BUN",globals,issues),"global read failed");
     FrontendGpuScene scene;

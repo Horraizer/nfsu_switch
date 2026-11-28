@@ -12,6 +12,7 @@ struct CareerRideSetup {
     VehicleUpgradeLevels performance;
     float reputation=0;
     unsigned garage_paint_slot=0;
+    int turbo_brand=-1;
 };
 bool resolve_career_ride(const std::vector<unsigned char>& globals,
     const CareerCatalog&,const CareerProfile&,CareerRideSetup&,std::string& error);

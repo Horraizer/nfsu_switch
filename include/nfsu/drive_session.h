@@ -147,21 +147,28 @@ constexpr const char* kDrivePinnedDemoSha256 =
 // OrbitCamera is set so that its eye is the view's eye to rounding and it
 // looks along the view's forward vector: yaw 180 - heading, pitch the
 // view's pitch, both in degrees, which are exact for 16-bit angles. The
-// vertical field of view follows the camera's ChaseFovMode. False, with
+// vertical field of view follows the camera's ChaseFovMode. Widescreen
+// retains the original viewport's vertical focal: 4:3 for a whole screen,
+// 8:3 stacked, 2:3 side by side. False, with
 // error set, for a frame size of 0 or a camera the renderer refuses.
 bool drive_render_camera(const ChaseCameraView& view,
                          ChaseFovMode fov_mode,
                          std::uint32_t width,
                          std::uint32_t height,
                          OrbitCamera& out,
-                         std::string& error);
+                         std::string& error,
+                         double reference_aspect = 4.0 / 3.0);
+
+// Original40DCB0 uses the main display width, including in split views.
+float drive_view_pixel_scale(std::uint16_t horizontal_fov, std::uint32_t display_width) noexcept;
 
 // The vertical field of view, degrees, for a POV's angle in `units` on a
 // width x height frame. Exposed for tests.
 double drive_vertical_fov_degrees(std::uint16_t units,
                                   ChaseFovMode fov_mode,
                                   std::uint32_t width,
-                                  std::uint32_t height) noexcept;
+                                  std::uint32_t height,
+                                  double reference_aspect = 4.0 / 3.0) noexcept;
 
 struct CarAnimationState {
     // Integrated visual phase in radians, one value per wheel. It is never

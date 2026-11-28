@@ -103,6 +103,7 @@ struct AiPhysicsState {
     bool collision_context_valid=false;
     AiCollisionContext collision_context;
     unsigned rest_state=0;
+    std::array<float,4> bottom_out_impulse{}; //4763F2, visual-only; caller clears per outer
     // Last component interval (original6F0738). External contact refreshes
     // retain it; only constructor completion starts with zero time.
     float component_interval = 0;

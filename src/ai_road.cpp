@@ -345,7 +345,10 @@ bool drag_lane_step(const RacingLineTrack& track,const AiRoadCursor& raw,const A
     }
     next.category=next.mode==2?ai_road_nearest_lane(*route,raw.point,position,next.exclude_first,next.exclude_last):
         shifted(next.mode==0?-1:1);
-    if(next.category<11)return false;
+    //45D920 stores456E90's -1 when the retained exclusion covers every
+    //enabled lane.45D800 still runs the common context update afterwards.
+    //A failed shifted-lane calculation remains an unsupported input.
+    if(next.category<11&&next.mode!=2)return false;
     state=next;return true;
 }
 bool ai_road_extend(const RacingLineTrack& track,const std::vector<AiRoadEvent>& events,

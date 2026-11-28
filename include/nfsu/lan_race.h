@@ -61,11 +61,26 @@ public:
     std::uint64_t underrun_frames()const noexcept{return underrun_frames_;}
 private:
     struct Entry {LanRaceFrame frame;std::uint32_t input_ack=0;};
-    const Entry& at(std::size_t index)const{return entries_[(first_+index)%entries_.size()];}
-    std::array<Entry,12> entries_{};
+    void reset_playback(double delay);
+    void observe_delivery(double steps);
+    const Entry& at(std::size_t index)const{return (*entries_)[(first_+index)%entries_->size()];}
+    // Retain group cadence plus fractional/loss margins without consuming
+    // the Switch application stack. Allocated once before the frame loop.
+    std::unique_ptr<std::array<Entry,24>> entries_=std::make_unique<std::array<Entry,24>>();
     std::size_t first_=0,count_=0;
-    double cursor_=0;
+    double cursor_=0,rate_=1,delay_steps_=3,delay_age_steps_=0;
+    struct Phase {double offset=0,at=0;};
+    std::array<Phase,16> phases_{};
+    std::size_t phase_next_=0,phase_count_=0;
+    double elapsed_steps_=0,clock_phase_=0,clock_rate_=1,fast_until_=0;
+    std::uint32_t observed_step_=0;
+    std::uint32_t pending_first_step_=0,last_gap_step_=0;
+    double gap_headroom_=0,fractional_age_steps_=60;
+    double prior_gap_headroom_=0,recovery_delay_=3,starved_steps_=0,normal_interval_=1;
+    std::uint32_t prior_gap_step_=0;
+    std::array<double,16> delivery_intervals_{};
+    std::size_t delivery_next_=0,delivery_count_=0;
     std::uint64_t underrun_frames_=0;
-    bool playing_=false;
+    bool playing_=false,refilling_=false,have_observed_=false,pending_new_=false,recovering_=false,previous_pause_=false;
 };
 }

@@ -8,9 +8,18 @@
 #include "gyro_steering.h"
 #include "split_diagnostics.h"
 #include "nfsu/lan_scene.h"
+#include "nfsu/frontend.h"
+#include "nfsu/frontend_music.h"
+#include "nfsu/race_result.h"
+#include "nfsu/race_finish_flow.h"
+#include "race_presentation_clock.h"
+#include <future>
+#include <chrono>
 #include "nfsu/deko_scene_target.h"
 #include "nfsu/memory_budget.h"
 #include "nfsu/lan_link.h"
+#include "nfsu/lan_frame_stats.h"
+#include "nfsu/lan_results.h"
 #include "nfsu/stock_view.h"
 #include "nfsu/screen_text.h"
 #include "nfsu/race_audio.h"
@@ -76,6 +85,7 @@ private:
     bool opened_=false;
 };
 struct RoomExit {};
+#include "multiplayer_finish.inc"
 struct InputTiming {
     struct Sample {std::uint32_t sequence=0;std::uint64_t sent_at=0;};
     struct Measurement {
@@ -124,7 +134,7 @@ bool choose(PadState& pad,LanScreen& screen,std::string& ip){
 LanRide chosen_ride(const std::string& car,const std::map<std::string,CareerRide>& rides){
     LanRide result;result.car=bin_hash(car);
     const auto installed=rides.find(car);
-    if(installed!=rides.end())result.installed=installed->second.installed;
+    if(installed!=rides.end()){result.installed=installed->second.installed;result.turbo_brand=installed->second.turbo_brand;}
     return result;
 }
 using LocalPads=std::array<PadState,2>;
@@ -344,7 +354,7 @@ void update_multiplayer_audio(audio::RaceAudioService& sound,const RaceSession& 
     sound.on_tick(snapshot);
 }
 
-void run_local(const std::string& root,bool metric_speed,const std::map<std::string,CareerRide>& rides,
+void run_local(const std::string& root,bool metric_speed,const FrontendArt& post_art,const std::map<std::string,CareerRide>& rides,
                std::string& error,bool use_assigned,std::uint32_t race_height,const LanGarageEditor& edit,LocalRides& edited_rides) {
     LanScreen screen;
     struct RestorePads {
@@ -364,6 +374,7 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
         auto layout=SplitLayout::stacked;
         SplitEffects effects;
         require(local_lobby(root,pads,screen,rides,options,course,mode,traffic_density,gyro_enabled,layout,effects,edit,edited_rides,error),error);
+        for(;;) {
         screen.show({"QUICK RACE / SPLIT SCREEN","","Loading "+course.name+
             (course.direction?" (Reverse)":"")+"..."});
         auto world=std::make_unique<LanRaceWorld>();
@@ -399,13 +410,14 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
         const auto levels=lan_performance_levels(options.tier);
         const auto& induction=world->session().rival(0).spec().induction;
         const std::vector<audio::RaceRemoteEngineBinding> other{{world->models()[1],levels.engine_a,
-            levels.induction,std::any_of(induction.begin(),induction.end(),[](float value){return value>0;})}};
+            levels.induction,std::any_of(induction.begin(),induction.end(),[](float value){return value>0;}),options.rides[1].turbo_brand}};
         const auto audio_core=svcGetCurrentProcessorNumber()==2?1:2;
         sound.start(root,audio_note,{},[audio_core]{
             return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),audio_core,1U<<audio_core))&&
                 R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(),0x30));
         },true,world->models()[0],levels.engine_a,levels.nitrous,levels.tyres,other,levels.induction,
-                    unsigned(traffic.physics.size()),world->session().props()?world->session().props()->sound_materials():0);
+                    unsigned(traffic.physics.size()),world->session().props()?world->session().props()->sound_materials():0,
+                    0,std::nullopt,options.rides[0].turbo_brand);
         require(scene->check_local_budget(world->session(),sound.resident_bytes(),error),error);
         if(profile)require(profile->open(course,options,traffic_density,layout,effects,scene_height,
                                           renderer,sound.resident_bytes(),error),error);
@@ -417,6 +429,10 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
         const auto release_gyro=[&]{for(auto& steering:gyro)steering.release();};
         bool reset_drag_input=true;
         auto last=micros();std::uint64_t debt=0;
+        auto& ui_clock=race_presentation_clock();ui_clock.resume();
+        RaceFinishHold finish_hold;RaceResultStatistics result_stats;
+        std::future<std::unique_ptr<RaceLoadingArt>> loading_job;
+        bool ready_for_results=false,completed=false;
         const DekoRenderer::SplitViewSource render_view=[&,profile](unsigned player,const RecordedCommands*& commands,
                                                            const RaceHudFrame*& view_hud,std::string& frame_error){
             auto& player_hud=(*hud)[player];
@@ -429,7 +445,7 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
             if(appletGetFocusState()!=AppletFocusState_InFocus){
                 release_gyro();
                 if(profile)profile->suspend();
-                last=micros();debt=0;pending_buttons={};reset_drag_input=true;continue;
+                last=micros();debt=0;pending_buttons={};reset_drag_input=true;ui_clock.resume();continue;
             }
             const bool now_docked=appletGetOperationMode()==AppletOperationMode_Console;
             if(now_docked!=docked) {
@@ -441,23 +457,24 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
                                                         next_height,&scene->atlas(),true),error);
                     scene_height=next_height;
                 }
-                last=micros();debt=0;pending_buttons={};reset_drag_input=true;
+                last=micros();debt=0;pending_buttons={};reset_drag_input=true;ui_clock.resume();
                 continue;
             }
             const auto input_begin=profile?micros():0;
             for(auto& pad:pads)padUpdate(&pad);
             const auto buttons=local_buttons(pads[0],padGetButtonsDown(&pads[0]))|
                 local_buttons(pads[1],padGetButtonsDown(&pads[1]));
-            if(buttons&HidNpadButton_Plus)break;
+            if((buttons&HidNpadButton_Plus)&&world->session().timing().outcome==RaceOutcome::running)break;
             if(!padIsConnected(&pads[0])||!padIsConnected(&pads[1])) {
                 sound.set_suspended(true);
                 release_gyro();
                 if(!choose_local_controllers(pads,error))break;
                 sound.set_suspended(false);
-                last=micros();debt=0;pending_buttons={};reset_drag_input=true;continue;
+                last=micros();debt=0;pending_buttons={};reset_drag_input=true;ui_clock.resume();continue;
             }
             const auto now=micros();
             if(profile)profile->begin((now-last)/1000.0);
+            scene->advance_presentation(ui_clock.sample(now));
             debt+=std::min<std::uint64_t>(now-last,133333)*60;
             last=now;
             for(unsigned i=0;i<pads.size();++i) {
@@ -475,7 +492,8 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
             if(profile)profile->input_ms=(micros()-input_begin)/1000.0;
             while(debt>=1000000) {
                 debt-=1000000;
-                if(world->session().timing().outcome!=RaceOutcome::running)continue;
+                if(world->session().timing().outcome!=RaceOutcome::running&&
+                   world->session().timing().outcome!=RaceOutcome::finished)continue;
                 auto sampled=input;
                 for(unsigned i=0;i<pads.size();++i) {
                     if(drag)sampled[i]=drag_input[i].take(world->session().timing().step);
@@ -489,6 +507,12 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
                 step.detailed_contacts=bool(profile);
                 auto stage=profile?micros():0;
                 require(world->advance(sampled,error,profile?&step:nullptr,profile),error);
+                result_stats.observe(world->session());
+                const std::array<unsigned,4> ending_events{{world->session().crash_camera_event(),world->session().rival(0).crash_camera_event(),0,0}};
+                ready_for_results=finish_hold.observe(world->session().timing(),2,ending_events);
+                finish_hold.advance(world->session().world_frame_seconds());
+                if(world->session().timing().outcome==RaceOutcome::finished&&!loading_job.valid())
+                    loading_job=prepare_multiplayer_loading(root);
                 if(profile) {
                     const auto done=micros();profile->simulation_ms+=(done-stage)/1000.0;stage=done;
                     profile->add_simulation(step);
@@ -502,9 +526,28 @@ void run_local(const std::string& root,bool metric_speed,const std::map<std::str
             require(renderer.present_split(render_view,error,layout,profile?&present:nullptr),error);
             if(profile)require(profile->write(world->session(),scene_height,present,renderer),
                                "Cannot write the split diagnostics CSV");
+            if(ready_for_results&&loading_job.valid()&&loading_job.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+                completed=true;break;
+            }
+        }
+        release_gyro();
+        PostRaceAction ending_action=PostRaceAction::leave;
+        if(completed) {
+            MultiplayerFinishInput controls;controls.poll=[]{};
+            controls.sample=[&] {
+                u64 down=0;for(auto& controller:pads){padUpdate(&controller);down|=local_buttons(controller,padGetButtonsDown(&controller));}
+                FrontendInput input;
+                input.up=down&(HidNpadButton_Up|HidNpadButton_StickLUp);input.down=down&(HidNpadButton_Down|HidNpadButton_StickLDown);
+                input.left=down&(HidNpadButton_Left|HidNpadButton_StickLLeft);input.right=down&(HidNpadButton_Right|HidNpadButton_StickLRight);
+                input.accept=down&HidNpadButton_A;input.back=down&(HidNpadButton_B|HidNpadButton_Plus);return input;
+            };
+            ending_action=show_multiplayer_finish(root,*scene,world->session(),world->models(),frame,renderer,sound,
+                post_art,result_stats,loading_job,controls,error);
         }
         sound.stop();
         require(renderer.close(error),error);
+        if(ending_action!=PostRaceAction::restart)break;
+        }
     } catch(const RoomExit&) {
         return;
     }
@@ -571,7 +614,7 @@ void room_lobby(PadState& pad,LanScreen& screen,LanLink& link,bool host,
     }
     throw RoomExit{};
 }
-void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::string ip,bool write_logs,
+void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::string ip,bool write_logs,const FrontendArt& post_art,
              const std::map<std::string,CareerRide>& rides,const LanGarageEditor& edit){
     StartupJournal journal;char path[96]{};
     for(unsigned i=0;write_logs&&i<10000;++i){
@@ -581,7 +624,8 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
     }
     struct JournalScope {~JournalScope(){diagnostic_journal=nullptr;}} journal_scope;
     LanScreen screen;
-    char timeline_summary[512]{};
+    char timeline_summary[512]{},frame_summary[256]{};
+    std::unique_ptr<LanFrameStats> frame_timing;
     trace("lan_run_enter",NFSU_RACE_BUILD_TAG);
     try {
         std::string error;LanSocket bootstrap;require(bootstrap.open(0,error),error);
@@ -615,22 +659,40 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
         const auto& remote_induction=view.session().rival(0).spec().induction;
         const std::vector<audio::RaceRemoteEngineBinding> remote_audio{{world->models()[1-local],
             levels.engine_a,levels.induction,std::any_of(remote_induction.begin(),remote_induction.end(),
-                [](float value){return value>0.F;})}};
+                [](float value){return value>0.F;}),options.rides[1-local].turbo_brand}};
         const bool audio_started=sound.start(root,audio_note,{},[audio_core]{
             return R_SUCCEEDED(svcSetThreadCoreMask(threadGetCurHandle(),audio_core,1U<<audio_core))&&
                 R_SUCCEEDED(svcSetThreadPriority(threadGetCurHandle(),0x30));
-        },true,world->models()[local],levels.engine_a,levels.nitrous,levels.tyres,remote_audio,levels.induction,0,0);
+        },true,world->models()[local],levels.engine_a,levels.nitrous,levels.tyres,remote_audio,levels.induction,0,0,
+            0,std::nullopt,options.rides[local].turbo_brand);
         trace("lan_audio_result",audio_started?"started":audio_note.c_str());
         link.set_ready();trace("lan_room_ready");
+        frame_timing=std::make_unique<LanFrameStats>();
         LanSnapshotBuffer snapshot_buffer;InputTiming input_timing;
         std::uint64_t last=micros(),debt=0,stats_at=last,simulations=0,last_presentation=last,last_audio_step=~std::uint64_t(0);
         double simulation_ms=0,sim_max=0;bool was_connected=false;std::uint32_t previous_buttons=0;
         unsigned diagnostic_frames=0;bool first_simulation=true;
+        RaceFinishHold finish_hold;RaceResultStatistics result_stats;
+        std::future<std::unique_ptr<RaceLoadingArt>> loading_job;
+        bool completed=false,transport_open=true;
+        auto& ui_clock=race_presentation_clock();ui_clock.resume();
         while(appletMainLoop()){
-            padUpdate(&pad);if(padGetButtonsDown(&pad)&HidNpadButton_Plus)break;
+            padUpdate(&pad);
+            if((padGetButtonsDown(&pad)&HidNpadButton_Plus)&&latest.outcome!=unsigned(RaceOutcome::finished))break;
             const auto now=micros();auto input=sample(pad);
             if(diagnostic_frames<2){trace("lan_poll_begin");}
-            require(link.poll(now,error),error);
+            if(!link.poll(now,error)) {
+                // poll may accept a final snapshot and then read bye in the
+                // same datagram batch. Recover it before deciding the room
+                // closed without results. Frames after bye stay rejected.
+                if(!lan_recover_completed_results(link,latest))require(false,error);
+                // Both results are already authoritative. Peer loss must not
+                // replace that completed table with a room-error screen.
+                transport_open=false;latest.finish_ready=true;presented=latest;
+                require(view.apply(latest,1./60,error),error);
+                if(!read_lan_statistics(latest,local,result_stats))result_stats.observe(view.session());
+                completed=true;break;
+            }
             if(diagnostic_frames<2){trace("lan_poll_ready");}
             if(link.connected()){
                 if(!was_connected){trace("lan_connected",host?"host":"guest");last=now;debt=0;was_connected=true;std::printf("LAN_CONNECTED role=%s\n",host?"host":"guest");}
@@ -642,13 +704,20 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
                     unsigned steps=0;
                     while(debt>=1000000&&steps++<8){
                         debt-=1000000;
-                        if(world->session().timing().outcome==RaceOutcome::running){
+                        if(world->session().timing().outcome==RaceOutcome::running||world->session().timing().outcome==RaceOutcome::finished){
                             std::array<GamepadFrame,2> pads{};pads[0].pads[0]=input;pads[1].pads[0]=link.remote_input(now);
                             if(first_simulation)trace("lan_simulation_begin");
                             const auto begin=micros();require(world->advance(pads,error),error);
                             if(first_simulation){trace("lan_simulation_ready");first_simulation=false;}
                             const double cost=double(micros()-begin)*.001;simulation_ms+=cost;sim_max=std::max(sim_max,cost);++simulations;
+                            result_stats.observe(world->session());
                             latest=world->snapshot();
+                            write_lan_statistics(latest,result_stats);
+                            const std::array<unsigned,4> ending_events{{world->session().crash_camera_event(),world->session().rival(0).crash_camera_event(),0,0}};
+                            const bool ending=finish_hold.observe(world->session().timing(),2,ending_events);
+                            finish_hold.advance(world->session().world_frame_seconds());
+                            if(latest.outcome==unsigned(RaceOutcome::finished)&&!loading_job.valid())loading_job=prepare_multiplayer_loading(root);
+                            latest.finish_ready=ending&&loading_job.valid()&&loading_job.wait_for(std::chrono::seconds(0))==std::future_status::ready;
                             if(latest.outcome==unsigned(RaceOutcome::running))require(link.publish(latest,error),error);
                         }
                     }
@@ -660,13 +729,16 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
                     // can skip a frame at a nominal 60 Hz even on a perfect link.
                     std::uint32_t sent_sequence=0;
                     require(link.send_input(input,error,&sent_sequence),error);input_timing.send(sent_sequence,now);
-                    LanRaceFrame incoming;
-                    if(link.take_snapshot(incoming)&&incoming.step>latest.step){
-                        latest=incoming;snapshot_buffer.push(latest,link.input_ack());
-                        input_timing.measure(input_timing.received,link.input_ack(),now);
+                    LanRaceFrame incoming;std::uint32_t incoming_ack=0;
+                    while(link.take_snapshot(incoming,&incoming_ack)){
+                        if(incoming.step<latest.step||(incoming.step==latest.step&&
+                           !(incoming.finish_ready&&!latest.finish_ready)))continue;
+                        latest=incoming;snapshot_buffer.push(latest,incoming_ack);
+                        input_timing.measure(input_timing.received,incoming_ack,now);
                     }
                 }else last=now;
             }else last=now;
+            if(latest.outcome==unsigned(RaceOutcome::finished)&&!loading_job.valid())loading_job=prepare_multiplayer_loading(root);
             const auto camera=gamepad_button_bit(GamepadButton::face_north);
             const auto rear=gamepad_button_bit(GamepadButton::stick_right);
             const double presentation_dt=std::clamp(double(now-last_presentation)*.000001,.001,.1);last_presentation=now;
@@ -675,19 +747,28 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
             const bool guest_sample=!host&&snapshot_buffer.sample(presentation_dt,presented,presented_ack);
             require(view.apply(presented,presentation_dt,error,(input.buttons&rear)!=0,(input.buttons&camera)&&!(previous_buttons&camera)),error);
             previous_buttons=input.buttons;
+            if(!host&&!read_lan_statistics(presented,local,result_stats))result_stats.observe(view.session());
             if(audio_started&&was_connected&&presented.step!=last_audio_step){update_multiplayer_audio(sound,view.session(),*audio_snapshot);last_audio_step=presented.step;}
             if(diagnostic_frames<2){trace("lan_frame_begin");}
+            scene->advance_presentation(ui_clock.sample(now));
             require(scene->frame(view,frame,*hud,error),error);
             if(diagnostic_frames<2){trace("lan_update_begin");}
             require(renderer.update(frame.commands,error),error);
             if(diagnostic_frames<2){trace("lan_present_begin");}
             require(renderer.present(error,nullptr,nullptr,hud.get()),error);
+            const auto completed_at=micros();
+            frame_timing->presented(completed_at,link.connected()&&
+                presented.outcome==unsigned(RaceOutcome::running)&&(host?simulations>0:guest_sample));
             if(guest_sample)input_timing.measure(input_timing.presented,presented_ack,micros());
             if(diagnostic_frames<2){trace("lan_present_ready");++diagnostic_frames;}
+            if(presented.finish_ready&&loading_job.valid()&&loading_job.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+                completed=true;break;
+            }
             if(now-stats_at>=5000000){
                 std::printf("LAN_METRICS role=%s step=%u sent=%llu received=%llu invalid=%llu sim_mean_ms=%.3f sim_max_ms=%.3f\n",host?"host":"guest",latest.step,
                     (unsigned long long)link.sent_bytes(),(unsigned long long)link.received_bytes(),(unsigned long long)link.invalid_packets(),
                     simulations?simulation_ms/double(simulations):0,sim_max);
+                frame_timing->summary(frame_summary,sizeof frame_summary,host);std::puts(frame_summary);
                 if(!host){
                     std::snprintf(timeline_summary,sizeof timeline_summary,
                         "LAN_TIMELINE received_step=%u presented_step=%u underrun_frames=%llu ack_samples=%llu ack_mean_ms=%.3f ack_max_ms=%.3f presented_samples=%llu presented_mean_ms=%.3f presented_max_ms=%.3f",
@@ -698,6 +779,27 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
                 }
                 std::fflush(stdout);stats_at=now;
             }
+        }
+        if(completed) {
+            MultiplayerFinishInput controls;controls.restart=false;
+            controls.sample=[&] {
+                padUpdate(&pad);const auto down=padGetButtonsDown(&pad);FrontendInput input;
+                input.up=down&(HidNpadButton_Up|HidNpadButton_StickLUp);input.down=down&(HidNpadButton_Down|HidNpadButton_StickLDown);
+                input.left=down&(HidNpadButton_Left|HidNpadButton_StickLLeft);input.right=down&(HidNpadButton_Right|HidNpadButton_StickLRight);
+                input.accept=down&HidNpadButton_A;input.back=down&(HidNpadButton_B|HidNpadButton_Plus);return input;
+            };
+            controls.poll=[&] {
+                if(!transport_open)return;
+                if(!link.poll(micros(),error)){transport_open=false;trace("lan_results_peer_closed",error.c_str());return;}
+                // Retain normal packet sequence/input acknowledgements and
+                // retry the final handoff throughout loading and results.
+                const bool okay=host?link.publish(latest,error):link.send_input(sample(pad),error);
+                if(!okay){transport_open=false;trace("lan_results_peer_closed",error.c_str());return;}
+                if(!host){LanRaceFrame acknowledged;while(link.take_snapshot(acknowledged)){}}
+            };
+            const std::array<std::string,2> post_models{{world->models()[local],world->models()[1-local]}};
+            show_multiplayer_finish(root,*scene,view.session(),post_models,frame,renderer,sound,
+                post_art,result_stats,loading_job,controls,error);
         }
         trace("lan_shutdown_begin");link.leave();sound.stop();require(renderer.close(error),error);trace("lan_shutdown_ready");
     }catch(const RoomExit&){
@@ -710,19 +812,23 @@ void run_lan(const std::string& root,PadState& pad,bool selected,bool host,std::
             if(padGetButtonsDown(&pad)&(HidNpadButton_B|HidNpadButton_Plus))break;
         }
     }
+    if(frame_timing){
+        frame_timing->summary(frame_summary,sizeof frame_summary,host);std::puts(frame_summary);
+    }
     if(diagnostic_journal){
+        if(frame_summary[0])journal.mark("lan_frames",frame_summary,false);
         if(timeline_summary[0])journal.mark("lan_timeline",timeline_summary,false);
         if(!journal.close())std::fprintf(stderr,"LAN_TRACE_CLOSE_FAILED %s\n",journal.error());
     }
 }
 }
 
-void run_switch_lan(const std::string& root,PadState& pad,bool write_logs,
+void run_switch_lan(const std::string& root,PadState& pad,bool write_logs,const nfsu::FrontendArt& post_art,
                     const std::map<std::string,CareerRide>& rides,const LanGarageEditor& edit){
-    run_lan(root,pad,false,false,{},write_logs,rides,edit);
+    run_lan(root,pad,false,false,{},write_logs,post_art,rides,edit);
 }
 
-void run_switch_multiplayer(const std::string& root,PadState& pad,bool write_logs,bool metric_speed,std::uint32_t race_height,
+void run_switch_multiplayer(const std::string& root,PadState& pad,bool write_logs,bool metric_speed,std::uint32_t race_height,const nfsu::FrontendArt& post_art,
                             const std::map<std::string,CareerRide>& rides,const LanGarageEditor& edit) {
     LanScreen screen;
     std::string notice;
@@ -743,7 +849,7 @@ void run_switch_multiplayer(const std::string& root,PadState& pad,bool write_log
         if(buttons&(HidNpadButton_A|HidNpadButton_Y)) {
             screen.close();notice.clear();
             try {
-                run_local(root,metric_speed,rides,notice,(buttons&HidNpadButton_A)==0,race_height,edit,edited_rides);
+                run_local(root,metric_speed,post_art,rides,notice,(buttons&HidNpadButton_A)==0,race_height,edit,edited_rides);
             } catch(const std::exception& e) {
                 notice=e.what();
             }
@@ -753,7 +859,7 @@ void run_switch_multiplayer(const std::string& root,PadState& pad,bool write_log
             }
             armed=false;
         } else if(buttons&HidNpadButton_X) {
-            screen.close();run_switch_lan(root,pad,write_logs,rides,edit);
+            screen.close();run_switch_lan(root,pad,write_logs,post_art,rides,edit);
             armed=false;
         }
     }
@@ -774,7 +880,9 @@ int main(int argc,char** argv){
     LanSocket bootstrap;std::string error;
     const int log=__nxlink_host.s_addr&&bootstrap.open(0,error)?nxlinkStdio():-1;
     PadState pad;padConfigureInput(1,HidNpadStyleSet_NpadStandard);padInitializeDefault(&pad);
-    run_lan(root,pad,selected,host,ip,true,{},{});
+    FrontendArt post_art;
+    if(!post_art.load(root,error,false)||!post_art.load_post_race(root,error))return 1;
+    run_lan(root,pad,selected,host,ip,true,post_art,{},{});
     if(log>=0)::close(log);
     return 0;
 }

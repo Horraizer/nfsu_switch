@@ -16,6 +16,32 @@ RaceChunkPayload chunk(const std::vector<unsigned char>& bytes,std::uint32_t id)
         throw std::runtime_error("career tuning chunk unavailable: "+std::to_string(id));
     return span;
 }
+struct Sponsor {std::array<std::uint32_t,3> aliases;std::uint32_t icon;};
+constexpr Sponsor sponsors[]={
+#include "career_decal_icons.inc"
+};
+static_assert(std::size(sponsors)==kCareerSponsorCount,"original sponsor table extent");
+unsigned u16(const unsigned char* p){return unsigned(p[0])|(unsigned(p[1])<<8);}
+}
+int CareerTuningCatalog::sponsor_index(std::uint32_t brand)noexcept {
+    if(!brand||brand==~0U)return -1;
+    for(unsigned i=0;i<std::size(sponsors);++i)
+        for(auto alias:sponsors[i].aliases)if(alias==brand)return int(i);
+    return -1;
+}
+std::uint32_t CareerTuningCatalog::sponsor_icon(std::uint32_t brand)noexcept {
+    // Preserve the original first-match alias lookup, including its sentinel.
+    for(const auto& row:sponsors)for(auto alias:row.aliases)if(alias==brand)return row.icon;
+    return 0;
+}
+const CareerPerformancePackage* CareerTuningCatalog::performance_package(unsigned field,unsigned level,unsigned number)const noexcept {
+    for(const auto& p:packages_)if(p.field==field&&p.level==level&&p.number==number)return &p;
+    return nullptr;
+}
+const std::string& CareerTuningCatalog::sponsor_name(unsigned index)const {return sponsor_names_.at(index);}
+int CareerTuningCatalog::turbo_brand(const CareerPerformancePackage& p)noexcept {
+    if(p.field!=3||p.brands.empty())return -1;
+    switch(p.brands.back()){case 6:return 0;case 20:return 1;case 22:return 2;case 46:return 3;case 50:return 4;default:return -1;}
 }
 int CareerTuningCatalog::slot_category(int slot)noexcept {
     // Original5A03D0 compressed switch, not a menu-position assumption.
@@ -35,7 +61,8 @@ int CareerTuningCatalog::performance_category(unsigned field)noexcept {
     return field<11?categories[field]:-1;
 }
 bool CareerTuningCatalog::load(const std::vector<unsigned char>& front,
-    const std::vector<unsigned char>& global,const RaceEventTable& events,std::string& error) {
+    const std::vector<unsigned char>& global,const RaceEventTable& events,
+    const std::vector<unsigned char>& language,std::string& error) {
     try {
         if(!events.ok())throw std::runtime_error("career tuning event table invalid");
         CareerTuningCatalog next;
@@ -53,6 +80,53 @@ bool CareerTuningCatalog::load(const std::vector<unsigned char>& front,
         }
         for(unsigned category=0;category<25;++category)if(!next.prices_[category].present)
             throw std::runtime_error("career tuning price category missing");
+        // Original5A0270/5A02C0 align both table payloads to16 bytes.
+        const auto groups=chunk(front,0x34a09),packages=chunk(front,0x34a0a);
+        const auto group_first=(groups.begin+15)&~std::uint64_t(15);
+        const auto package_first=(packages.begin+15)&~std::uint64_t(15);
+        if(group_first>groups.end||groups.end-group_first!=9*16||package_first>packages.end||
+           (packages.end-package_first)%16)throw std::runtime_error("performance package table bounds");
+        std::array<std::array<unsigned,3>,9> counts{},seen{};
+        for(unsigned field=0;field<9;++field) {
+            const auto* row=front.data()+group_first+16*field;
+            if(u32(row)!=field)throw std::runtime_error("performance package group order invalid");
+            for(unsigned level=0;level<3;++level) {
+                counts[field][level]=u32(row+4+4*level);
+                if(!counts[field][level]||counts[field][level]>36)throw std::runtime_error("performance package count invalid");
+            }
+        }
+        for(auto at=package_first;at<packages.end;at+=16) {
+            const auto* row=front.data()+at;CareerPerformancePackage package;
+            package.field=u16(row);package.level=u16(row+2);package.number=u16(row+4);
+            if(package.field>=9||package.level<1||package.level>3||!row[6]||row[6]>9||
+               package.number!=++seen[package.field][package.level-1])
+                throw std::runtime_error("performance package identity invalid");
+            for(unsigned b=0;b<row[6];++b) {
+                if(row[7+b]>=kCareerSponsorCount)throw std::runtime_error("performance package sponsor invalid");
+                package.brands.push_back(row[7+b]);
+            }
+            next.packages_.push_back(std::move(package));
+        }
+        if(counts!=seen)throw std::runtime_error("performance package variants missing");
+        if(language.size()<24)throw std::runtime_error("performance sponsor language missing");
+        const auto language_count=u32(language.data()+12);
+        const auto table=8ULL+u32(language.data()+16),strings=8ULL+u32(language.data()+20);
+        if(table>language.size()||language_count>(language.size()-table)/8||strings>language.size())
+            throw std::runtime_error("performance sponsor language bounds");
+        for(unsigned index=0;index<kCareerSponsorCount;++index) {
+            const auto hash=bin_hash("BRAND_"+std::to_string(index));
+            for(unsigned i=0;i<language_count;++i)if(u32(language.data()+table+8*i)==hash) {
+                const auto at=strings+u32(language.data()+table+8*i+4);
+                for(auto p=at;p<language.size()&&language[p];++p) {
+                    if(language[p]<32||language[p]>126)throw std::runtime_error("performance sponsor name invalid");
+                    next.sponsor_names_[index]+=char(language[p]);
+                }
+                break;
+            }
+            if(next.sponsor_names_[index].empty()&&std::any_of(next.packages_.begin(),next.packages_.end(),
+               [&](const auto& p){return std::find(p.brands.begin(),p.brands.end(),index)!=p.brands.end();}))
+                throw std::runtime_error("performance sponsor label absent");
+        }
         //5A1550 searches the original event pointer table by event number,
         // and uses the first matching kind0 category/level reward.
         for(unsigned id=0;id<256;++id) {
@@ -199,7 +273,8 @@ bool CareerTuningCatalog::wheel_fits(const std::string& car,const CarPartRecord&
            static_cast<signed char>(tire&255)==outer;
 }
 bool CareerTuningCatalog::part_available(const CarPartRecord& part,
-    const std::array<std::uint8_t,256>& status,std::uint32_t earned_high_water)const {
+    const std::array<std::uint8_t,256>& status,std::uint32_t earned_high_water,
+    const std::array<bool,kCareerSponsorCount>* unlocked_sponsors)const {
     if(part.part_name_hash==kKrVinylPart)return ready_;
     const int category=slot_category(part.slot);
     if(category<0)return false;
@@ -223,6 +298,8 @@ bool CareerTuningCatalog::part_available(const CarPartRecord& part,
         //51BEB0 baseline sponsors bypass earned-brand flags. Others use
         //the original kind2 brand unlock, not the display record hash.
         const auto name=part.hash_0c;
+        const auto sponsor=sponsor_index(name);
+        if(unlocked_sponsors&&sponsor>=0&&(*unlocked_sponsors)[unsigned(sponsor)])return true;
         for(const char* baseline:{"ALPINE","AUDIOBAHN","KENWOOD","ABS","JSP","EXTREMEDIMENSION","PIAA","EUROLITE","PLASMAGLOW","STREETGLOW","TYC"})
             if(name==bin_hash(baseline))return true;
         return style_available(2,name,earned_high_water);

@@ -133,6 +133,7 @@ void player_wheel_limit(const VehicleHandling& setup, std::size_t wheel,
 float player_wheel_acceleration(const VehicleHandling& setup, std::size_t wheel,
                                 PlayerWheelWork& state, float solver_dt,
                                 float rolling_input = 0.0F) noexcept;
+int player_wheel_spin_direction(float spin) noexcept;
 void player_wheel_integrate(PlayerWheelWork& state, float acceleration,
                             float solver_dt) noexcept;
 

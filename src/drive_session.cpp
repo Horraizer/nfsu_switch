@@ -27,20 +27,21 @@ namespace {
 constexpr double kPi = 3.14159265358979311600e+00;
 // 564B10 scalar sine, also used by the recovered frontend projection.
 // 40DD00 truncates each scaled half-angle before invoking this polynomial.
+double retail_scalar_sine(std::uint16_t angle) noexcept {
+    double x=double(angle)*double(9.58738019107841e-5F),sign=1;
+    if(x>=double(4.71238899230957F))x-=double(6.2831854820251465F);
+    else if(x>=double(1.5707963705062866F)){x-=double(3.1415927410125732F);sign=-1;}
+    const double x2=x*x,x5=x2*x*x2,x7=x5*x2;
+    return (x7*x2*double(2.7557318844628753e-6F)+
+        ((x5*double(.008333333767950535F)+(x-x2*x*double(.1666666716337204F)))-
+        x7*double(.00019841270113829523F)))*sign;
+}
 double retail_cotangent(double phase) noexcept {
-    const auto sine=[](std::uint16_t angle) {
-        double x=double(angle)*double(9.58738019107841e-5F),sign=1;
-        if(x>=double(4.71238899230957F))x-=double(6.2831854820251465F);
-        else if(x>=double(1.5707963705062866F)){x-=double(3.1415927410125732F);sign=-1;}
-        const double x2=x*x,x5=x2*x*x2,x7=x5*x2;
-        return float((x7*x2*double(2.7557318844628753e-6F)+
-            ((x5*double(.008333333767950535F)+(x-x2*x*double(.1666666716337204F)))-
-            x7*double(.00019841270113829523F)))*sign);
-    };
     const auto half=static_cast<std::uint16_t>(static_cast<unsigned>(phase));
     // 40DE9D stores sin as binary32, divides by the extended cos result,
     // then stores the reciprocal focal scale as binary32.
-    return double(float(double(sine(std::uint16_t(half+0x4000U)))/sine(half)));
+    return double(float(double(float(retail_scalar_sine(std::uint16_t(half+0x4000U))))/
+                        float(retail_scalar_sine(half))));
 }
 
 
@@ -308,19 +309,20 @@ std::vector<GamepadFrame> drive_demo_recording() {
 // ---------------------------------------------------------------------------
 
 namespace {
-double retail_widescreen_vertical_focal(std::uint16_t units) noexcept {
-    const double phase = double(units) * double(1.100000023841858F) /
+double retail_widescreen_vertical_focal(std::uint16_t units, double reference_aspect) noexcept {
+    const double phase = double(units) / reference_aspect * double(1.100000023841858F) /
                          double(.9090908765792847F) * .5;
-    return double(float(retail_cotangent(phase) * double(1.28F)));
+    return double(float(retail_cotangent(phase)));
 }
 } // namespace
 
 double drive_vertical_fov_degrees(std::uint16_t units,
                                   ChaseFovMode fov_mode,
                                   std::uint32_t width,
-                                  std::uint32_t height) noexcept {
+                                  std::uint32_t height,
+                                  double reference_aspect) noexcept {
     if (fov_mode == ChaseFovMode::retail_widescreen && units) {
-        return 2 * chase_atan(1 / retail_widescreen_vertical_focal(units)) * (180 / kPi);
+        return 2 * chase_atan(1 / retail_widescreen_vertical_focal(units,reference_aspect)) * (180 / kPi);
     }
     if(fov_mode==ChaseFovMode::retail && width && height && units) {
         const double focal=retail_cotangent(double(units)*double(height)/double(width)*
@@ -336,17 +338,30 @@ double drive_vertical_fov_degrees(std::uint16_t units,
     return 2.0 * chase_atan(tangent * ratio) * (180.0 / kPi);
 }
 
+float drive_view_pixel_scale(std::uint16_t horizontal_fov,std::uint32_t display_width) noexcept {
+    const auto half=static_cast<std::uint16_t>(horizontal_fov>>1);
+    const double tangent=double(float(retail_scalar_sine(half)))/
+        retail_scalar_sine(static_cast<std::uint16_t>(half+0x4000U));
+    return static_cast<float>(tangent!=0 ? double(display_width/2)/tangent : 10.0);
+}
+
 bool drive_render_camera(const ChaseCameraView& view,
                          ChaseFovMode fov_mode,
                          std::uint32_t width,
                          std::uint32_t height,
                          OrbitCamera& out,
-                         std::string& error) {
+                         std::string& error,
+                         double reference_aspect) {
     if (width == 0 || height == 0) {
         error = "frame dimensions must be positive";
         return false;
     }
+    if(!std::isfinite(reference_aspect)||reference_aspect<=0) {
+        error="reference camera aspect must be finite and positive";
+        return false;
+    }
     OrbitCamera camera;
+    camera.native_fov=view.fov;
     camera.yaw_deg = 180.0 - chase_angle_degrees(view.heading);
     camera.pitch_deg =
         static_cast<double>(static_cast<std::int16_t>(view.pitch)) * (360.0 / 65536.0);
@@ -380,11 +395,11 @@ bool drive_render_camera(const ChaseCameraView& view,
     const Vec3 eye{view.eye.x, view.eye.z, -view.eye.y};
     camera.target = {eye.x - camera.distance * cp * cy, eye.y - camera.distance * sp,
                      eye.z - camera.distance * cp * sy};
-    camera.fov_y_deg = drive_vertical_fov_degrees(view.fov, fov_mode, width, height);
+    camera.fov_y_deg = drive_vertical_fov_degrees(view.fov, fov_mode, width, height,reference_aspect);
     if (fov_mode == ChaseFovMode::retail_widescreen) {
-        // Preserve the PC widescreen vertical framing. Derive X from that
-        // focal and the viewport so the projection has square pixels.
-        camera.focal_y_override = retail_widescreen_vertical_focal(view.fov);
+        // Widen the original viewport, retaining its vertical lens. Do not
+        // substitute the third-party PC widescreen fix's different FOV.
+        camera.focal_y_override = retail_widescreen_vertical_focal(view.fov,reference_aspect);
         camera.focal_x_override = camera.focal_y_override * double(height) / double(width);
     } else if(fov_mode==ChaseFovMode::retail) {
         camera.focal_x_override=retail_cotangent(double(view.fov)*double(1.100000023841858F)*.5);

@@ -43,6 +43,8 @@ using namespace nfsu;
 #include "career_trade_live.inc"
 #include "car_shadow_roster_retail.inc"
 #include "career_garage_original_tests.inc"
+#include "performance_packages_retail.inc"
+#include "reward_rims_motion.inc"
 #include "career_info_tests.inc"
 #include "free_drive_retail.inc"
 #include "custom_vinyl_retail.inc"
@@ -58,6 +60,12 @@ int main(int argc,char** argv) {
         if(argc==3&&std::string(argv[2])=="--quick-race"){verify_quick_race(argv[1]);return 0;}
         if(argc>=3&&std::string(argv[2])=="--free-drive"){verify_free_drive(argv[1],argc==4?argv[3]:"");return 0;}
         CareerCatalog catalog;std::string error;if(!catalog.load(argv[1],error))throw std::runtime_error(error);
+        if(argc>=3&&std::string(argv[2])=="--reward-rims-motion") {
+            verify_reward_rims_motion(argv[1],catalog,argc==4?argument_path(argv[3]):std::filesystem::path{});return 0;
+        }
+        if(argc>=3&&std::string(argv[2])=="--performance-packages") {
+            verify_performance_packages(argv[1],catalog,argc==4?argument_path(argv[3]):std::filesystem::path{});return 0;
+        }
         if(argc==4&&std::string(argv[2])=="--info") {
             verify_career_info(argv[1],catalog,std::string(argv[3])=="verify"?std::filesystem::path{}:std::filesystem::u8path(argv[3]));return 0;
         }

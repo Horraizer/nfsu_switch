@@ -5,10 +5,10 @@ An experimental native Nintendo Switch port / engine reimplementation of
 The engine and deko3d renderer are rebuilt in C++; the Windows executable
 is not run on the console.
 
-**[Download R99-R72 prerelease](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r99-r72)** |
+**[Download the November 28 playthrough build](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-playthrough-20261128)** |
 **[LAN r7 archive](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-lan-r7)** |
 **[Install, controls and build](docs/GETTING_STARTED.md)** |
-**[R99-R72 changes and limits](docs/RELEASE_0_2_R99_R72.md)** |
+**[November 28 changes and checks](docs/RELEASE_20261128.md)** |
 **[Historical 0.1 release](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.1)**
 
 ## Bring your own game
@@ -40,11 +40,11 @@ not supported inputs. See the installation guide for the required SD layout.
 - National Rail has animated channel water and revised spray. Testing against
   the originals also covers the placement and motion of scenery particles.
 
-The R99-R72 download and tagged sources are on the same release page.
+The November 28 release includes the playable NRO, SD archive and tagged sources.
 The full desktop test suites have known failures. Opponent behavior after
 collisions and frame pacing in demanding scenes are still under investigation.
 The previous downloadable build remains available in the
-[r42 archive](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r42).
+[R99-R72 archive](https://github.com/Horraizer/nfsu_switch/releases/tag/v0.2-r99-r72).
 
 ## Progress images
 
@@ -87,6 +87,19 @@ repository-wide license grant yet; do not assume an MIT or GPL license.
 [AGENTS.md](AGENTS.md) and [Work recovery](docs/WORK_RECOVERY.md) document the
 project workflow. Source publication does not retroactively mark open
 research, independent review or console acceptance criteria complete.
+
+## Reading the source by subsystem
+
+Run this command from the checkout root to export the current commit to a new ZIP.
+
+```sh
+python tools/export_source_review.py source-review.zip
+```
+
+Open `00-index.txt` for the subsystem volumes, or search `source-map.tsv`
+for a particular original path. Each entry gives its starting line and byte
+range. Tests and supporting tools keep their original paths under `support/`.
+Use `--revision <commit>` to inspect the same game code as a particular build.
 
 ## Run
 

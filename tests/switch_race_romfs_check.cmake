@@ -20,11 +20,20 @@ if(performance_found LESS 0)
 endif()
 message(STATUS "race NRO contains the exact performance1 recording")
 
-file(READ "${ELF}" elf_hex HEX)
+# Check the read-only segment loaded by the Switch. A newly linked ELF can
+# sit beside an older NRO if only the executable target was built.
+nfsu_le("${hex}" 40 4 ro_offset)
+nfsu_le("${hex}" 44 4 ro_size)
+file(READ "${NRO}" ro_hex OFFSET ${ro_offset} LIMIT ${ro_size} HEX)
 string(HEX "${BUILD_TAG}" tag_hex)
-string(FIND "${elf_hex}" "${tag_hex}" tag_position)
+string(FIND "${ro_hex}" "${tag_hex}00" tag_position)
 if(BUILD_TAG STREQUAL "" OR BUILD_TAG STREQUAL "local" OR tag_position LESS 0)
-    message(FATAL_ERROR "race ELF is missing its configured build tag")
+    message(FATAL_ERROR "packaged NRO is missing its configured build tag: ${BUILD_TAG}")
+endif()
+file(READ "${ELF}" elf_hex HEX)
+string(FIND "${elf_hex}" "${tag_hex}00" elf_tag_position)
+if(elf_tag_position LESS 0)
+    message(FATAL_ERROR "race ELF is missing its configured build tag: ${BUILD_TAG}")
 endif()
 message(STATUS "race build tag: ${BUILD_TAG}")
 

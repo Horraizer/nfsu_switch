@@ -2,6 +2,7 @@
 #include "nfsu/part_placement.h"
 #include "nfsu/arg_path.h"
 #include "traffic_model_native.inc"
+#include "launch_startup_random_native.inc"
 #include <fstream>
 #include <iostream>
 #include <vector>
@@ -40,9 +41,16 @@ int main(int argc,char** argv) {
             if(choice.id!=model)throw std::runtime_error("recorded career traffic roster");
             used.push_back(choice.id);
         }
-        const auto startup=nfsu::race_startup_random(random);
+        const auto startup=nfsu::race_startup_random(random,1001);
         if(startup.sound_seed!=0x3599f063U||startup.before_world%0x7fffffffU!=0x5940f6daU||
            startup.next_global!=0xa6263eecU)throw std::runtime_error("career sound/world startup draws");
+        // TrackStreamer::Init runs after the roster, before sound/world.
+        // Native fixture: tools/launch_startup_random.py, no function hooks.
+        for(const auto& row:kNativeLaunchRandom) {
+            const auto actual=nfsu::race_startup_random(row[1],row[0]);
+            if(actual.sound_seed!=row[2]||actual.before_world!=row[3]||actual.next_global!=row[4])
+                throw std::runtime_error("native track startup RNG: track "+std::to_string(row[0])+" seed "+std::to_string(row[1]));
+        }
         std::cout<<"PASS original weighted traffic, duplicate retries, skin/RNG: "<<index<<" rows\n";
         return 0;
     } catch(const std::exception& e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}

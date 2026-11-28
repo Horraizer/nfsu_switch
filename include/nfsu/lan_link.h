@@ -1,6 +1,7 @@
 #pragma once
 #include "nfsu/lan_protocol.h"
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace nfsu {
@@ -42,7 +43,9 @@ public:
     bool send_input(const GamepadState&,std::string&,std::uint32_t* sequence=nullptr);
     bool publish(const LanRaceFrame&,std::string&);
     GamepadState remote_input(std::uint64_t now)const noexcept;
-    bool take_snapshot(LanRaceFrame&);
+    // Drain all accepted host steps after poll. Each acknowledgement belongs
+    // to that exact snapshot, rather than the newest packet in the batch.
+    bool take_snapshot(LanRaceFrame&,std::uint32_t* input_ack=nullptr);
     void leave() noexcept;
     bool is_host()const noexcept{return host_;}
     std::uint16_t port()const noexcept{return socket_.port();}
@@ -54,9 +57,13 @@ public:
 private:
     bool send(LanMessage,std::string&);
     bool send_room(std::string&);
+    bool accept_hello(const LanAddress&,const LanMessage&,std::uint64_t,std::string&);
+    void retire_peer(const LanAddress&,std::uint32_t,std::uint64_t)noexcept;
+    bool retired_peer(const LanAddress&,std::uint32_t,std::uint64_t)const noexcept;
+    void release_lobby_peer(std::uint64_t)noexcept;
     LanSocket socket_;LanAddress peer_;
     bool host_=false,peer_known_=false,local_ready_=false,remote_ready_=false,closed_=false;
-    bool have_input_=false,have_snapshot_=false,unread_snapshot_=false;
+    bool have_input_=false,have_snapshot_=false;
     LanRaceOptions race_options_;
     LanRide guest_ride_;
     bool race_launched_=false,guest_ride_ready_=false;
@@ -64,6 +71,18 @@ private:
     std::uint32_t nonce_=0,peer_nonce_=0,session_=0,input_sequence_=0,snapshot_sequence_=0,send_sequence_=0;
     std::uint64_t opened_=0,last_receive_=0,last_heartbeat_=0,last_input_=0;
     std::uint64_t invalid_=0,received_bytes_=0,sent_bytes_=0;
-    GamepadState remote_;LanRaceFrame snapshot_;
+    struct RetiredPeer {LanAddress address;std::uint32_t nonce=0;std::uint64_t at=0;};
+    std::array<RetiredPeer,8> retired_{};
+    std::size_t retire_next_=0;
+    struct Snapshot {LanRaceFrame frame;std::uint32_t input_ack=0;};
+    // At most one full bounded poll. Storage lives on the heap, not on the
+    // Switch application stack. A stalled consumer retains the newest batch.
+    static constexpr std::size_t snapshot_capacity_=64;
+    std::unique_ptr<Snapshot[]> snapshots_;
+    std::size_t snapshot_first_=0,snapshot_count_=0;
+    GamepadState remote_;
 };
+// After poll reports peer closure, consume a valid snapshot that it accepted
+// before that bye. A datagram after bye is never accepted by the closed link.
+bool lan_recover_completed_results(LanLink&,LanRaceFrame& latest);
 }

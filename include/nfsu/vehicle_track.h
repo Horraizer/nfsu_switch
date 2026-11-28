@@ -512,6 +512,9 @@ struct VehicleContactObservation {
     VehicleVec3 impulse, forward, up, normal, point;
     double slide_mps = 0;
     std::uint32_t audio_order = 0;
+    // Observer-only stamp, fitting the prior64-bit layout's trailing padding.
+    // Unordered fan: solver step. Ordered world queue: visual world frame.
+    std::uint32_t event_step = 0;
 };
 
 struct VehiclePropContactFrame {
@@ -624,13 +627,15 @@ public:
     // authored scene releases it. Other held stages only advance the engine.
     bool step_grid_engine(const VehicleInput&, VehicleTrackTelemetry& telemetry,
                           double publication_dt, double solver_dt,
-                          bool drag=false, std::int32_t clock=0, bool advance_chassis=false);
+                          bool drag=false, std::int32_t clock=0, bool advance_chassis=false,
+                          bool first_slice=true);
     bool release_grid_engine(bool drag=false,unsigned category=3,float window_scale=1.F);
     // Port pre-race adapter: settle a stationary grid on its actual terrain
     // before the first visible countdown frame. No race/route clock advances.
     bool prepare_grid(unsigned frames);
     void publish_start_car_speeds(bool animated) noexcept;
     void place_start_car(const VehicleVec3&,const PlayerRigidMatrix&,bool animated);
+    void place_start_car(const VehicleVec3&,const PlayerRigidMatrix&,bool animated,double steering);
     void initialize_gearbox_offsets(std::uint32_t& world_random) noexcept;
     bool rival_nitrous_rpm_allowed(bool drag) const noexcept;
 
@@ -639,8 +644,15 @@ public:
     // and selected low-slip scale. This is not complete retail world behavior.
     bool configure_ai(float low_slip);
     bool set_ai_scale(float scale) noexcept;
+    //45FA72..45FABE writes Actor478 and the current selector1 scale.
+    void publish_driver_forced_grip() noexcept {state_.owner_grip_scale=1.3999999761581421F;}
     void select_rival_physics(unsigned selector,std::int32_t clock=0);
     bool step_rival_path(const AiDriverPath&,float desired_speed,float speed_duration,bool publish,
+                         const VehicleInput&,VehicleTrackTelemetry&,bool& departure_predicted);
+    const AiDriverPath& retained_rival_path() const noexcept {return rival_path_.path;}
+    //Already prepared by463B30 on the live Driver buffer. A nonpositive
+    //length refuses a new publication; retained motion does not republish.
+    bool step_rival_path_prepared(const AiDriverPath&,float length,float desired_speed,float speed_duration,bool publish,
                          const VehicleInput&,VehicleTrackTelemetry&,bool& departure_predicted);
     // Ordinary processed driver1D4: -1 automatic,0 reverse. This is a held
     // AI command, not a player's one-shot shift edge.
@@ -648,6 +660,9 @@ public:
                  const VehicleState* published_actor=nullptr,bool refresh_only=false,bool contact_refreshed=false,float refresh_interval=0);
     // Traffic collision activation (583E80 -> selector3). Import external
     // pair impulses, retain component history, and omit racer route resets.
+    //426110 replaces selector2 with fresh components at the live actor pose.
+    //Preserve the owner clock/road cache; do not reuse spawn-time strut forces.
+    bool construct_ai_body(VehicleState&,const VehicleInput&,int gear_request=-1);
     bool step_ai_body(VehicleState&,const VehicleInput&,VehicleTrackTelemetry&,float continuation_dt=-1,
                       const VehicleState* published_actor=nullptr,bool refresh_only=false,bool contact_refreshed=false,float refresh_interval=0,int gear_request=-1);
     const AiPhysicsState& ai_physics() const noexcept { return ai_; }
@@ -716,7 +731,7 @@ private:
     float ai_gearing_speed_limit_=0.F;
     bool resolve_body(VehicleState& s, VehicleTrackTelemetry& t) const;
     void run_tick(VehicleState& s, const VehicleInput& input, VehicleTrackTelemetry& t, unsigned selector=1);
-    void reconstruct_full_physics(VehicleState& s, std::int32_t clock) const noexcept;
+    bool reconstruct_full_physics(VehicleState& state, std::int32_t clock) const;
     bool reconstruct_ai_physics(VehicleState&,const VehicleInput&,int,std::int32_t,VehicleTrackTelemetry&);
     bool ground_under(double x, double y, double& z) const;
     // The road-preferring column reset placements use; see its definition.

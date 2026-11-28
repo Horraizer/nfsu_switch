@@ -453,9 +453,9 @@ std::size_t RaceRemoteShiftSound::resident_bytes()const noexcept {
 }
 
 bool RaceTurboSound::load(const std::filesystem::path& root,const std::string& car,
-    int induction,std::string& error) {
+    int induction,std::string& error,int variant) {
     try {
-        RaceTurboSound next;const auto bytes=bank_bytes(root/turbo_sound_bank(induction));
+        RaceTurboSound next;const auto bytes=bank_bytes(root/turbo_sound_bank(induction,variant));
         next.spool_.graph.load_effect(bytes);next.release_.graph.load_effect(bytes);
         next.spool_.parameters.assign(6,0);next.release_.parameters.assign(6,0);
         next.spool_.slots={85,0,0,0};next.release_.slots={86,0,0,0};
@@ -492,9 +492,9 @@ void RaceTurboSound::update(const RaceAudioSnapshot& s,const HumanTurboFeedback&
     publish(output,mixer);tick_=s.tick;have_tick_=true;
 }
 bool RaceTurboSound::load_remote(const std::filesystem::path& root,const std::string& car,
-    int induction,unsigned ordinal,std::string& error) {
+    int induction,unsigned ordinal,std::string& error,int variant) {
     if(ordinal>=3){error="remote Turbo ordinal exceeds roster";return false;}
-    if(!load(root,car,induction,error))return false;
+    if(!load(root,car,induction,error,variant))return false;
     remote_=true;spool_.slots[0]=104+2*ordinal;release_.slots[0]=105+2*ordinal;return true;
 }
 void RaceTurboSound::update_remote(const RaceAudioSnapshot& s,const RaceAudioSnapshot::Rival& actor,
@@ -995,7 +995,7 @@ bool RaceAudioService::start(const std::filesystem::path& root,
                              std::string& diagnostic,
                              const std::function<void(const char*)>& progress,
                              const std::function<bool()>& decoder_thread_setup,
-                             bool original_ig_playlist,const std::string& car,int engine_upgrade,int nitrous_upgrade,int tyre_upgrade,const std::vector<RaceRemoteEngineBinding>& rivals,int induction_upgrade,unsigned traffic_count,std::uint32_t prop_materials,unsigned track,std::optional<std::uint32_t> sound_seed) {
+                             bool original_ig_playlist,const std::string& car,int engine_upgrade,int nitrous_upgrade,int tyre_upgrade,const std::vector<RaceRemoteEngineBinding>& rivals,int induction_upgrade,unsigned traffic_count,std::uint32_t prop_materials,unsigned track,std::optional<std::uint32_t> sound_seed,int turbo_brand) {
     auto& p = *impl_;
     if (p.active) { diagnostic = "audio already running"; return false; }
     if(rivals.size()>p.remote_engines.size()){diagnostic="remote sound roster exceeds capacity";return false;}
@@ -1012,7 +1012,7 @@ bool RaceAudioService::start(const std::filesystem::path& root,
     p.has_effects=p.effects.load(root,car,engine_upgrade,nitrous_upgrade,tyre_upgrade,effect_error);
     if(!p.has_effects)notes<<"effects: "<<effect_error<<"; ";
     if(progress)progress("audio turbo spool and release");
-    std::string turbo_error;p.has_turbo=p.turbo.load(root,car,induction_upgrade,turbo_error);
+    std::string turbo_error;p.has_turbo=p.turbo.load(root,car,induction_upgrade,turbo_error,turbo_brand);
     if(!p.has_turbo)notes<<"turbo: "<<turbo_error<<"; ";
     if(progress)progress("audio engine and exhaust");
     std::string engine_error;
@@ -1026,7 +1026,7 @@ bool RaceAudioService::start(const std::filesystem::path& root,
         p.has_remote_shifts[i]=p.remote_shifts[i].load(root,rivals[i].engine_upgrade,i,remote_error);
         if(!p.has_remote_shifts[i])notes<<"remote shift"<<i<<": "<<remote_error<<"; ";
         if(rivals[i].turbo_installed) {
-            p.has_remote_turbos[i]=p.remote_turbos[i].load_remote(root,rivals[i].car,rivals[i].induction_upgrade,i,remote_error);
+            p.has_remote_turbos[i]=p.remote_turbos[i].load_remote(root,rivals[i].car,rivals[i].induction_upgrade,i,remote_error,rivals[i].turbo_brand);
             if(!p.has_remote_turbos[i])notes<<"remote Turbo"<<i<<": "<<remote_error<<"; ";
         }
     }

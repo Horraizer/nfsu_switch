@@ -190,10 +190,25 @@ int track_screen_size_level(
     const float position[3],
     float radius) noexcept;
 
-// 0x0053E290 adds bit2 for player views1/2; 0x005450F0 derives those
-// indices from the view table. Keep this recovered exclusion separate from
-// capture/reflection masks: alternate scenery can be valid in those views.
+// The player-view component only. A live render context also includes the
+// direction, race kind, common runtime exclusion and pass-specific bits below.
 constexpr std::uint8_t kTrackMainViewInstanceMask = 0x02U;
+
+// Retail53E290. The caller's pass bits survive; only the low byte is read
+// by445EE9. Player views are1/2, wet-road view4 uses supplied0x800, and
+// environment views10..15 use supplied0x1000 (408F00..40908C).
+inline std::uint32_t track_view_context_mask(std::uint32_t supplied,
+    unsigned view,unsigned race_type,unsigned direction) noexcept {
+    auto mask=supplied|0x10U;
+    if(view==1||view==2)mask|=0x02U;
+    if(race_type==3||race_type==4)mask|=0x01U;
+    if(view>=10&&view<=15)mask|=0x100U;
+    if(direction==0)mask|=0x08U;
+    else if(direction==1)mask|=0x04U;
+    if(mask&0x800U)mask|=0x40U;
+    else if(mask&0x1000U)mask|=0x20U;
+    return mask;
+}
 
 // 0x00445EDA to 0x00445EEB: `mov dl, byte ptr [edi + 0x84]` then
 // `test dl, al` on the low byte of (flags ^ 0x60), and a non-zero result

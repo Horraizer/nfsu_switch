@@ -611,10 +611,14 @@ the 350Z and CELICA second-layer windows draw WINDOW2 rather than WINDOW
 CELICA and SUPRA and requires the same zero unresolved groups plus the
 viewer/frame hash equivalence on CELICA (round 4 F2).
 
+The pixel-size path is now recovered in
+[CAR_SHADOW_SILHOUETTE.md](CAR_SHADOW_SILHOUETTE.md): `40DF15` writes
+`[view+0xC]` from the original display-width/FOV scale in `40DCB0`.
+`545180` uses radial distance less radius, a near-camera cap and a rear
+sphere test. `nfsu_car_shadow_projection_tests` pins native witnesses.
+
 ### Still open after this slice
 
-- The pixel size itself: `[view+0xC]` in 0x545180 was not traced to a
-  writer, so "pixels" is the unit by inference.
 - The LOD 3 to 2 clamp at 0x56e103 depends on a car field (+0x3CC) and a
   cullable-part flag that were not decoded.
 - Whether a car's solids are always loaded before its CarRenderInfo is

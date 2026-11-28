@@ -5,12 +5,7 @@
 #include <stdexcept>
 namespace nfsu {
 std::uint32_t career_decal_brand_icon(std::uint32_t brand) noexcept {
-    struct Row {std::array<std::uint32_t,3> aliases;std::uint32_t icon;};
-    static constexpr Row rows[]={
-#include "career_decal_icons.inc"
-    };
-    for(const auto& row:rows)for(auto alias:row.aliases)if(alias==brand)return row.icon;
-    return 0;
+    return CareerTuningCatalog::sponsor_icon(brand);
 }
 // Original4E24A0 and its per-type frontend icon table.
 std::uint32_t career_vinyl_icon(unsigned type) noexcept {
@@ -91,18 +86,20 @@ std::vector<std::uint32_t> career_decal_menu_icons() {
     }
     return result;
 }
-void CareerGarage::reset(const CareerCatalog& c,const CareerProfile& p,bool appearance_only){
+void CareerGarage::reset(const CareerCatalog& c,const CareerProfile& p,bool fixed_performance){
     dialog_=GarageDialog::none;dialog_selection_=trade_review_=0;
-    state_={};parents_.clear();confirm_=false;unique_intro_=false;appearance_only_=appearance_only;build(c,p);
+    rim_reward_preview_=false;
+    state_={};parents_.clear();confirm_=false;unique_intro_=false;fixed_performance_=fixed_performance;build(c,p);
 }
 void CareerGarage::refresh(const CareerCatalog& c,const CareerProfile& p){confirm_=false;build(c,p);}
 void CareerGarage::reset_unique(const CareerCatalog& c,const CareerProfile& p) {
     dialog_=GarageDialog::none;dialog_selection_=trade_review_=0;
-    state_={};parents_.clear();confirm_=false;unique_intro_=true;appearance_only_=false;
+    state_={};parents_.clear();confirm_=false;unique_intro_=true;fixed_performance_=false;
     const auto* media=c.media(p.pending_unique);
     const bool performance=media&&!media->unique_categories.empty()&&media->unique_categories.front()>=16;
     state_.page=performance?GaragePage::unique_performance:GaragePage::unique_parts;
     const auto category=media&&!media->unique_categories.empty()?media->unique_categories.front():25U;
+    rim_reward_preview_=p.pending_unique&&category==3;
     state_.slot=category==12?8:category==3?17:category==7?31:category==8?11:category==15?6:0;build(c,p);
 }
 void CareerGarage::move(int direction) {
@@ -113,6 +110,9 @@ void CareerGarage::move(int direction) {
     if(trade_review_) {
         if(confirm_)dialog_selection_=unsigned(std::clamp(int(dialog_selection_)+direction,0,1));
         return;
+    }
+    if(confirm_&&state_.page==GaragePage::performance_brands) {
+        dialog_selection_=unsigned(std::clamp(int(dialog_selection_)+direction,0,1));return;
     }
     if(unique_intro_)return;
     confirm_=false;if(entries_.empty())return;
@@ -242,7 +242,7 @@ void CareerGarage::open_page(State next,const CareerCatalog& c,const CareerProfi
     }
 }
 bool CareerGarage::previewing()const {
-    if(state_.page==GaragePage::packages)return state_.field==1||state_.field==8;
+    if(state_.page==GaragePage::packages||state_.page==GaragePage::performance_brands)return state_.field==1||state_.field==8;
     return state_.page==GaragePage::trade_in||state_.page==GaragePage::unique_parts||state_.page==GaragePage::decals_brands||state_.page==GaragePage::parts||state_.page==GaragePage::rim_styles||state_.page==GaragePage::rim_sizes||state_.page==GaragePage::colors;
 }
 std::string CareerGarage::installed_signature(const CareerProfile& p) {
@@ -254,8 +254,8 @@ std::string CareerGarage::installed_signature(const CareerProfile& p) {
 }
 std::string CareerGarage::preview_signature(const CareerProfile& p)const {
     std::string result=p.car+(p.bonus_preset.empty()?"":":bonus:"+p.bonus_preset)+":"+std::to_string(previewing()?slot():120);
-    if(state_.page==GaragePage::packages&&previewing())
-        result+=":package:"+std::to_string(state_.field);
+    if((state_.page==GaragePage::packages||state_.page==GaragePage::performance_brands)&&previewing())
+        result+=":package:"+std::to_string(state_.field)+":"+std::to_string(state_.page==GaragePage::performance_brands?state_.group:0);
     if(state_.page==GaragePage::trade_in) {
         // Car selection changes resident draws, not the asset-job identity.
         // Every unlocked candidate in this bank shares the owned ride input.
@@ -319,6 +319,9 @@ bool CareerGarage::prepare_previews(const std::vector<unsigned char>& globals,co
 }
 float CareerGarage::road_target()const {
     // Native50CD34/50CD39 reads6B6B30=1. Generic505C29/39 reads6B6B2C=20.
+    // PC unique mode4 requests20; awarded rims reuse the ordinary inspection
+    // preset so their designs remain readable during selection.
+    if(rim_reward_preview_)return 1.F;
     return state_.page==GaragePage::rims||state_.page==GaragePage::rim_styles||state_.page==GaragePage::rim_sizes||(state_.page==GaragePage::colors&&state_.slot==41)?1.F:20.F;
 }
 unsigned CareerGarage::focus_slot()const {
@@ -328,7 +331,7 @@ unsigned CareerGarage::focus_slot()const {
     if(state_.page==GaragePage::body||state_.page==GaragePage::accessories)return 0;
     if(state_.page==GaragePage::parts||state_.page==GaragePage::unique_parts)return state_.slot>=59&&state_.slot<=114?19+(state_.slot-59)/8:state_.slot;
     // 5046D0 routes the brake package through 4B0150 with slot 16.
-    if(state_.page==GaragePage::packages&&state_.field==8)return 16;
+    if((state_.page==GaragePage::packages||state_.page==GaragePage::performance_brands)&&state_.field==8)return 16;
     if(state_.page==GaragePage::decals_zones)return 0;
     if(state_.page==GaragePage::decals_sizes||state_.page==GaragePage::decals_slots)return 19+state_.group;
     if(state_.page==GaragePage::decals_brands)return 19+(state_.slot-59)/8;
@@ -351,6 +354,10 @@ CareerProfile CareerGarage::preview(const CareerProfile& p,unsigned index)const 
     // Installed parts and the durable bank stay unchanged until confirmation.
     if(state_.page==GaragePage::packages&&index<entries_.size()&&entries_[index].value<4)
         next.ride.performance[state_.field]=static_cast<unsigned char>(entries_[index].value);
+    if(state_.page==GaragePage::performance_brands&&index<entries_.size()) {
+        next.ride.performance[state_.field]=state_.group;
+        if(state_.field==3)next.ride.turbo_brand=entries_[index].turbo_brand;
+    }
     if(state_.page==GaragePage::colors&&state_.slot>=42&&state_.slot<=57) {
         const auto base=state_.slot-state_.channel;
         for(unsigned i=0;i<state_.channels;++i)if(draft_colors_[i])next.ride.installed[base+i]=draft_colors_[i];
@@ -375,6 +382,7 @@ std::size_t CareerGarage::fng()const {
     case GaragePage::unique_parts:return 0xbd0d0c;
     case GaragePage::performance:return 0xb80a8c;
     case GaragePage::packages:return 0xb8180c;
+    case GaragePage::performance_brands:return 0xb82d8c;
     case GaragePage::rims:return 0xb72f8c;
     case GaragePage::rim_styles:return 0xb73c0c;
     case GaragePage::rim_sizes:return 0xb74c0c;
@@ -428,8 +436,9 @@ void CareerGarage::build(const CareerCatalog& c,const CareerProfile& p) {
         break;
     case GaragePage::root:
         title_="CUSTOMIZE";add("Visual","BROWSER_VISUAL",0);
-        if(!appearance_only_)add("Performance","BROWSER_PERFORMANCE",1);
-        if(!appearance_only_&&!c.free_drive())add("Trade In","BROWSER_TRADE_IN",2);
+        if(!fixed_performance_||std::any_of(p.ride.performance.begin(),p.ride.performance.end(),[](auto level){return level!=0;}))
+            add("Performance","BROWSER_PERFORMANCE",1);
+        if(!fixed_performance_&&!c.free_drive())add("Trade In","BROWSER_TRADE_IN",2);
         break;
     case GaragePage::trade_in:
         title_="TRADE IN";
@@ -463,7 +472,7 @@ void CareerGarage::build(const CareerCatalog& c,const CareerProfile& p) {
         const char* names[]={"Engine / Exhaust Package","Drivetrain Packages","Tires","E.C.U. & Fuel System","Turbo Package","Brake Kits","Weight Reduction Kits","Suspension Package","Nitrous Oxide"};
         const char* icons[]={"PERFORMANCE_ENGINE","PERFORMANCE_TRANSMISSION","PERFORMANCE_TIRES","PERFORMANCE_ECU","PERFORMANCE_TURBO","PERFORMANCE_BRAKES","PERFORMANCE_WEIGHT_REDUCTION","PERFORMANCE_SUSPENSION","PERFORMANCE_NITROUS"};
         constexpr unsigned fields[]={2,6,7,5,3,8,0,1,4};
-        for(unsigned i=0;i<9;++i)add(names[i],icons[i],fields[i]);break;
+        for(unsigned i=0;i<9;++i)if(!fixed_performance_||p.ride.performance[fields[i]])add(names[i],icons[i],fields[i]);break;
     }
     case GaragePage::packages:
         title_="PERFORMANCE PACKAGE";
@@ -479,6 +488,23 @@ void CareerGarage::build(const CareerCatalog& c,const CareerProfile& p) {
             add(p.ride.unique[state_.field]?"Unique upgrade: ON":"Unique upgrade: OFF","BROWSER_PERFORMANCE",4);
             entries_.back().owned=true;entries_.back().installed=p.ride.unique[state_.field];
         }break;
+    case GaragePage::performance_brands: {
+        title_="CHOOSE BRANDS";
+        const auto category=unsigned(CareerTuningCatalog::performance_category(state_.field));
+        for(const auto& package:t.performance_packages())if(package.field==state_.field&&package.level==state_.group) {
+            add(("Package "+std::to_string(package.number)).c_str(),("GENERIC_LEVEL"+std::to_string(package.number)).c_str(),package.number);
+            auto& entry=entries_.back();entry.upgrade_level=package.level;
+            entry.turbo_brand=CareerTuningCatalog::turbo_brand(package);
+            entry.owned=c.owns(p,category,package.level);
+            entry.available=entry.owned||t.category_available(category,package.level,p.status);
+            entry.price=entry.owned?0:t.price(category,package.level);
+            for(auto brand:package.brands) {
+                if(!entry.detail.empty())entry.detail+='^';
+                entry.detail+=t.sponsor_name(brand);
+            }
+        }
+        break;
+    }
     case GaragePage::paint:
         title_="PAINT";add("Base","PAINT_MOD_BASE",30);add("Rims","PAINT_MOD_PART_RIMS",41);add("Spoiler","PAINT_MOD_PART_SPOILER",38);
         add("Engine Accent","PAINT_MOD_PART_ENGINE_ACCENT",37);add("Brake Calipers","PAINT_MOD_PART_BRAKE_CALIPERS",39);
@@ -551,7 +577,7 @@ void CareerGarage::build(const CareerCatalog& c,const CareerProfile& p) {
             else for(const char* letter=suffix;*letter;++letter)key=key*33+static_cast<unsigned char>(*letter);
             if(key!=part.part_name_hash)continue;
             const auto icon=career_decal_brand_icon(part.hash_0c);
-            const bool unlocked=c.free_drive()||t.part_available(part,p.status,p.style_high_water);
+            const bool unlocked=c.free_drive()||t.part_available(part,p.status,p.style_high_water,&p.performance_sponsors);
             if(!icon||!unlocked)continue;
             auto name=part.name;
             if(name.size()>=8&&(name.compare(name.size()-8,8," (White)")==0||
@@ -740,6 +766,7 @@ bool CareerGarage::accept(const CareerCatalog& c,CareerProfile& p,bool& purchase
         if(unique_intro_){unique_intro_=false;return true;}
         if(!confirm_){confirm_=true;return true;}
         if(!c.award_unique(p,e.value,e.part,error))return false;
+        rim_reward_preview_=false;
         purchased=true;confirm_=false;return true;
     case GaragePage::root:
         if(e.value==2){next.page=GaragePage::trade_in;break;}
@@ -761,7 +788,11 @@ bool CareerGarage::accept(const CareerCatalog& c,CareerProfile& p,bool& purchase
         }
         next.page=GaragePage::colors;next.slot=e.value;
         next.group=e.value==37?0x0016BDCEU:e.value==39?0xD6640DFFU:e.value==40?0x066350F0U:e.value==41?0x0000DA27U:0x02DAAB07U;break;
-    case GaragePage::performance:next.page=GaragePage::packages;next.field=e.value;break;
+    case GaragePage::performance:
+        next.field=e.value;
+        if(fixed_performance_){next.page=GaragePage::performance_brands;next.group=p.ride.performance[e.value];}
+        else next.page=GaragePage::packages;
+        break;
     case GaragePage::rims:next.page=GaragePage::rim_styles;next.slot=17;next.group=e.value;break;
     case GaragePage::rim_styles:
         if(!e.available){error="This upgrade is locked";return false;}
@@ -814,7 +845,18 @@ bool CareerGarage::accept(const CareerCatalog& c,CareerProfile& p,bool& purchase
         if(dialog_selection_){confirm_=false;dialog_selection_=0;return true;}
         if(!c.trade(p,e.name,error))return false;
         purchased=true;confirm_=false;trade_review_=0;state_={};parents_.clear();build(c,p);return true;
-    case GaragePage::packages:case GaragePage::parts:case GaragePage::rim_sizes:case GaragePage::colors:case GaragePage::decals_brands:
+    case GaragePage::packages:
+        if(!e.available){error="This upgrade is locked";return false;}
+        if(e.value<4&&e.installed){dialog_=GarageDialog::already_installed;dialog_selection_=0;return true;}
+        if(e.value>=1&&e.value<=3) {
+            if(!e.owned&&!c.free_drive()) {
+                if(e.price>p.bank){error="Insufficient career funds";return false;}
+                if(p.ride.performance[state_.field]+1!=e.value){error="Install the previous performance level first";return false;}
+            }
+            next.page=GaragePage::performance_brands;next.group=e.value;break;
+        }
+        [[fallthrough]];
+    case GaragePage::performance_brands:case GaragePage::parts:case GaragePage::rim_sizes:case GaragePage::colors:case GaragePage::decals_brands:
         if(!e.available){error="This upgrade is locked";return false;}
         if(state_.page==GaragePage::parts&&state_.slot>=31&&state_.slot<=34&&e.installed) {
             dialog_=GarageDialog::already_installed;dialog_selection_=0;return true;
@@ -825,9 +867,16 @@ bool CareerGarage::accept(const CareerCatalog& c,CareerProfile& p,bool& purchase
             restore_color_cursor();
             return true;
         }
-        if(!confirm_){confirm_=true;return true;}
+        if(!confirm_){confirm_=true;dialog_selection_=0;return true;}
+        if(state_.page==GaragePage::performance_brands&&dialog_selection_) {
+            confirm_=false;dialog_selection_=0;return true;
+        }
         if(state_.page==GaragePage::packages) {
             if(!c.buy_performance(p,state_.field,e.value,error))return false;
+        }else if(state_.page==GaragePage::performance_brands) {
+            if(!c.buy_performance_package(p,state_.field,state_.group,e.value,error))return false;
+            // Original50BC10 closes the brand picker after confirmation.
+            state_=parents_.back();parents_.pop_back();
         }else {
             auto next_profile=p;
             if(state_.slot>=31&&state_.slot<=34&&e.part!=p.ride.installed[state_.slot])

@@ -139,6 +139,24 @@ int main(int argc,char** argv) {
                 final.update({true});final.update({true});final.update(accept);final.update(left);
                 check(final.update(accept)==PostRaceAction::restart_tournament,"Restart Tournament is distinct from Restart Race");
             }
+            {
+                FrontendInput accept;accept.accept=true;FrontendInput down;down.down=true;
+                FrontendInput left;left.left=true;FrontendInput back;back.back=true;
+                PostRaceMenu network(true,false,0,2,1);network.allow_restart(false);network.animate();
+                check(network.count()==2&&network.racer()==1,"LAN joint results contain two humans and safe Continue/Statistics actions");
+                network.update(accept);network.advance(.17);
+                check(network.page()==PostRacePage::menu,"Quick Race skips campaign style and reward pages");
+                network.update(down);network.update(accept);
+                check(network.statistics()&&network.racer()==1,"LAN Statistics starts on this console's result row");
+                FrontendInput right;right.right=true;network.update(right);
+                check(network.racer()==1,"two-human Statistics has no virtual third or fourth row");
+                network.update(back);network.update(down);
+                check(network.selected()==0,"LAN action wrap cannot select an unsupported authoritative restart");
+                network.update(accept);network.update(left);
+                check(network.update(accept)==PostRaceAction::leave,"LAN Continue remains usable after automatic joint results");
+                PostRaceMenu local(false,false,0,2);local.update(down);local.update(accept);local.update(left);
+                check(local.update(accept)==PostRaceAction::restart,"local Quick Race retains confirmed Restart Race");
+            }
             for(const auto& native:kNativePostSpeech) {
                 check(audio::post_race_speech(native.event,true)==native.request,"original4CD3E0 event/speech request table");
                 check(audio::post_race_speech(native.event,false)==-1,"native49BA10 never requests victory speech after a loss");
@@ -748,7 +766,9 @@ int main(int argc,char** argv) {
                 ++floor_glows;if(!native_floor_glow)native_floor_glow=&draw;
             }
             for(const auto& draw:cube_commands.owning_draws())if(draw.frontend_sprite_kind==0 && draw.frontend_sprite_view && draw.material.alpha[0]>0)++primary_glows;
-            check(floor_glows==5 && primary_glows==0,"initial native primary point/floor box culling, not mode suppression");
+            // Original544CA3/40DB20 with the displayed original4:3 lens
+            // widened to square-pixel16:9; frontend66_flare_native.py.
+            check(floor_glows==5 && primary_glows==7,"adapted primary point/native floor box culling");
             check(native_floor_glow && native_floor_glow->instance==6,"native first visible floor marker and segment");
             if(native_floor_glow) {
                 const auto& resource=cube_commands.resource_table().resources.at(native_floor_glow->texture_resource);
@@ -822,8 +842,8 @@ int main(int argc,char** argv) {
                     std::abs(entry_frame.forward[axis]-native_forward[axis])<1e-5,
                     "main entry native camera basis preserves original roll");
             }
-            // Preserve the genuine 40DD00 primary view1 vertical focal.
-            check(std::abs(entry_frame.projection[1]-2.32236385345459)<1e-6 &&
+            // Preserve genuine40DD00 at original4:3 before widening the view.
+            check(std::abs(entry_frame.projection[1]-1.660086750984192)<1e-6 &&
                 std::abs(entry_frame.projection[0]*1280-entry_frame.projection[1]*720)<.001F,
                 "main entry retains original vertical framing with square pixels");
             const auto initial_commands=gpu_scene.commands().owning_draws();

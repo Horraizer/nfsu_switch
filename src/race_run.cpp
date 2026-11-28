@@ -328,8 +328,9 @@ bool RaceRun::start(const std::filesystem::path& root, const TrackSlice& track, 
         if(!session_->prepare_leaderboard(root,car_,error))return false;
         if(!session_->prepare_style(root,error,event_number_))return false;
     }
+    if(quick_race_&&!free_drive_)session_->enable_finish_driver();
     if(rivals_.empty()&&(race_type_==RaceType::drag||session_->has_finish_driver())) {
-        // Solo drag needs lane steering. Drift and time trials need a road
+        // Solo drag needs lane steering. Every solo event needs a road
         // context for the human's finish driver (43531A, action17).
         std::array<const VehicleHull*,4> hulls{};hulls[3]=&hull;
         if(!intro_ai_.load(root,rival_contexts_,hulls,true,track_number_,direction_,race_type_==RaceType::drag,catchup_weight_,laps_,course_.route.point_to_point,catchup_traffic_selector_,true,ai_decision_start_)) {
@@ -420,16 +421,21 @@ bool RaceRun::arm_finish_probe(std::string& error) {
 }
 bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
                        RaceSimulationProfile* profile,TimingService* timer) {
+    return simulate_frame(pad,kDriveFrameSeconds,error,profile,timer);
+}
+bool RaceRun::simulate_frame(const GamepadFrame& pad,double real_seconds,std::string& error,
+                             RaceSimulationProfile* profile,TimingService* timer) {
+    if(!(real_seconds>=1./3600 && real_seconds<=1)) {error="invalid measured race interval";return false;}
     if(profile && !timer){error="simulation profiling requires a clock";return false;}
     if(profile)*profile={};
     if (!session_ || pending_) { error = "race simulation/commit order violated"; return false; }
     if(session_->timing().outcome!=RaceOutcome::running&&
        !(session_->timing().outcome==RaceOutcome::finished&&session_->has_finish_driver())) {error="race session is not running";return false;}
+    session_->real_frame_seconds_=real_seconds;
     session_->update_start_stage();
     AiRoadCursor human_road;
     if(!session_->recycle_traffic_before_controllers(
         intro_ai_.human_road_cursor(human_road)?&human_road:nullptr,error))return false;
-    if(!rivals_.empty()&&!intro_ai_.observe_human(*session_)){error="human difficulty history refused";return false;}
     int held_lane=0;
     if(race_type_==RaceType::drag) {
         drag_controls_.update(pad);const auto& f=drag_controls_.frame_state();
@@ -438,7 +444,8 @@ bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
         held_lane=steer<0?-1:steer>0?1:0;
     }
     const bool finishing=session_->timing().outcome==RaceOutcome::finished;
-    if((!rivals_.empty()||race_type_==RaceType::drag||finishing)&&(!race_car_held(session_->timing())||race_type_==RaceType::drag)) {
+    const bool has_planner=!rivals_.empty()||race_type_==RaceType::drag||finishing;
+    if(has_planner&&(!race_car_held(session_->timing())||race_type_==RaceType::drag)) {
         RaceRivalPlans plans;
         const auto before=profile?timer->now_us():0;
         if(!intro_ai_.plan(*session_,plans,held_lane)) {error="intro path planner refused";return false;}
@@ -448,7 +455,15 @@ bool RaceRun::simulate(const GamepadFrame& pad, std::string& error,
             plans.cars[i].throttle_cap=std::min(plans.cars[i].throttle_cap,rival_throttle_cap_);
         if(profile)profile->planner=(timer->now_us()-before)/1000.0;
         if(!session_->advance_planned(pad,plans,error,profile,timer))return false;
-    } else if (!session_->advance(pad, error,profile,timer)) return false;
+    } else {
+        if(has_planner&&!intro_ai_.prepare_frame(*session_)){error="held-grid AI preparation refused";return false;}
+        if(!session_->advance(pad,error,profile,timer))return false;
+    }
+    // PC 421137 samples the controller road and the speed published by
+    // this world step, after the physics/contact loops. Rivals read it next frame.
+    if(has_planner&&!intro_ai_.sample_human_history(*session_,float(session_->world_frame_seconds()))) {
+        error="human difficulty history refused";return false;
+    }
     pending_ = true; return true;
 }
 bool RaceRun::commit(std::string& error) {
@@ -544,6 +559,15 @@ bool RaceReplay::next(std::uint64_t tick, GamepadFrame& pad, std::string& error)
     pad = race_input_frame(runs_[index_], tick);
     if (++used_ == runs_[index_].ticks) { ++index_; used_ = 0; }
     ++tick_; return true;
+}
+double RaceLiveClock::advance(std::uint64_t microseconds) {
+    constexpr float period=1.F/display_hz;
+    const float measured=std::clamp(float(double(microseconds)/1000000.)+remainder_,
+                                    period,3.F*period);
+    const int units=int(measured*3600.F+.5F);
+    const int world_ticks=int(float(units)*(4000.F/3600.F)+.5F);
+    remainder_=measured-float(world_ticks)*.00025F;
+    return float(units)*(1.F/3600.F);
 }
 void RaceTickDebt::add(std::uint64_t us) {
     const auto room = std::numeric_limits<std::uint64_t>::max() - units_;

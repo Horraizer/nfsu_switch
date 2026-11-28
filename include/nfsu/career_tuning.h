@@ -8,6 +8,11 @@
 #include <utility>
 
 namespace nfsu {
+constexpr unsigned kCareerSponsorCount=68;
+struct CareerPerformancePackage {
+    unsigned field=0,level=0,number=0;
+    std::vector<unsigned> brands;
+};
 struct CareerTuningPrice {
     bool present=false;
     std::array<std::uint32_t,3> purchase{};
@@ -24,12 +29,18 @@ class CareerTuningCatalog {
 public:
     bool load(const std::vector<unsigned char>& front,
               const std::vector<unsigned char>& global,
-              const RaceEventTable&,std::string& error);
+              const RaceEventTable&,const std::vector<unsigned char>& language,std::string& error);
     bool ready()const{return ready_;}
     const CarPartDatabase& parts()const{return parts_;}
     const std::vector<CareerStyleUnlock>& style_rewards()const{return style_;}
     static int slot_category(int slot)noexcept;
     static int performance_category(unsigned field)noexcept;
+    static int sponsor_index(std::uint32_t brand)noexcept;
+    static std::uint32_t sponsor_icon(std::uint32_t brand)noexcept;
+    const std::vector<CareerPerformancePackage>& performance_packages()const{return packages_;}
+    const CareerPerformancePackage* performance_package(unsigned field,unsigned level,unsigned number)const noexcept;
+    const std::string& sponsor_name(unsigned index)const;
+    static int turbo_brand(const CareerPerformancePackage&)noexcept;
     std::uint32_t price(unsigned category,unsigned level)const noexcept;
     std::uint32_t part_price(const CarPartRecord&)const noexcept;
     std::uint32_t ownership_key(const CarPartRecord&)const noexcept;
@@ -41,7 +52,7 @@ public:
     const std::array<unsigned char,16>* decal_fitment(std::uint32_t car)const noexcept;
     bool wheel_fits(const std::string& car,const CarPartRecord& part,bool default_rim=true)const noexcept;
     bool part_available(const CarPartRecord&,const std::array<std::uint8_t,256>& status,
-                        std::uint32_t earned_high_water)const;
+                        std::uint32_t earned_high_water,const std::array<bool,kCareerSponsorCount>* sponsors=nullptr)const;
     std::uint32_t visual_points(unsigned category,unsigned level)const noexcept;
     float reputation(const InstalledPartSelection&)const noexcept;
     int required_event(unsigned category,unsigned level)const noexcept;
@@ -57,5 +68,7 @@ private:
     std::array<CareerTuningPrice,32> prices_{};
     std::array<std::array<int,5>,32> events_{};
     std::vector<CareerStyleUnlock> style_;
+    std::vector<CareerPerformancePackage> packages_;
+    std::array<std::string,kCareerSponsorCount> sponsor_names_;
 };
 }

@@ -1,6 +1,7 @@
 #include "nfsu/race_session.h"
 #include "nfsu/platform.h"
 #include "nfsu/ai_powertrain.h"
+#include "nfsu/ai_path.h"
 #include "nfsu/player_powertrain.h"
 #include "nfsu/track_zones.h"
 #include "nfsu/prop_settling.h"
@@ -16,8 +17,8 @@
 namespace nfsu {
 float RaceSession::next_world_frame_seconds()const noexcept {
     if(external_frame_seconds_>0)return float(external_frame_seconds_);
-    if(shared_local_camera_)return float(kDriveFrameSeconds);
-    return float(kDriveFrameSeconds)*crash_camera_.scale(float(kDriveFrameSeconds));
+    const float real_dt=float(real_frame_seconds_);
+    return shared_local_camera_?real_dt:real_dt*crash_camera_.scale(real_dt);
 }
 bool RaceSession::set_crash_camera(const CrashCameraRoadSource* source,unsigned intensity,unsigned track,std::string& error) {
     if(started_||intensity>255){error="crash camera must be configured before start, intensity 0..255";return false;}
@@ -282,6 +283,9 @@ bool RaceSession::set_human_rival(const RaceRivalSetup& setup,std::string& error
         }
         guest.drag_shift_scale_=drag_shift_scale_;
         if(!guest.set_camera_table(*local_camera,error))return false;
+        if(!chase_.set_shared_screen(true)||!guest.chase_.set_shared_screen(true)) {
+            error="local shared-screen camera anchor missing";return false;
+        }
         use_retail_race_camera();guest.use_retail_race_camera();
         shared_local_camera_=guest.shared_local_camera_=true;
     } else guest.presentation_=RacePresentation::none;
@@ -402,7 +406,7 @@ void RaceSession::begin_rival_controller(unsigned slot,std::uint32_t* random,flo
             static_cast<std::int32_t>(world_dt*kRaceTicksPerSecond));
 }
 
-void RaceSession::end_rival_controller(unsigned slot,const RaceRivalPlan& plan) {
+void RaceSession::end_rival_controller(unsigned slot,RaceRivalPlan& plan) {
     if(!planned_rivals_||slot>=rivals_.size()||race_car_held(timing_))return;
     auto& r=*rivals_[slot];
     if(r.rival_controller_end_==timing_.step)return;
@@ -411,6 +415,7 @@ void RaceSession::end_rival_controller(unsigned slot,const RaceRivalPlan& plan) 
     // resource state later; do not defer this beyond the path-solver change.
     r.update_rival_nitrous(plan.nitrous,*this,slot+1);
     if(!switch_rival_physics_||!plan.physics_full_update)return;
+    plan.path_physics_prepared=false;plan.path_physics_length=0;
     const auto& state=r.car();
     const auto& human=car().position;
     const float dx=float(state.position.x)-float(human.x);
@@ -428,6 +433,16 @@ void RaceSession::end_rival_controller(unsigned slot,const RaceRivalPlan& plan) 
         timing_.race_ticks>=30*kRaceTicksPerSecond;
     if(path)r.select_rival_physics(4);
     else if(r.physical_selector()==4)r.select_rival_physics(3);
+    if(r.physical_selector()==4) {
+        //44BA94 ->463B30 ->459980 mutates Driver+10 before420DA7
+        //updates Driver. Preserve a refused publication for the existing
+        //same-frame body fallback, without exposing a half-written path.
+        AiPlannedPath publication;publication.path=plan.path;
+        plan.path_physics_prepared=true;
+        if(ai_path_publish(publication)&&publication.length>0.F) {
+            plan.path=publication.path;plan.path_physics_length=publication.length;
+        }
+    }
 }
 
 void RaceSession::update_rival_nitrous(const RaceRivalNitrousPlan& plan,const RaceSession& world,
@@ -518,7 +533,7 @@ bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& err
     const auto& v=s.owner_motion.velocity;
     SteeringContext context;
     context.raw = float(input.steer);
-    context.seconds = float(1+(crash_source_?steering_seconds_:double(steering_steps_)/60));
+    context.seconds = float(1+steering_seconds_);
     context.dt = static_cast<float>(frame_seconds_);
     // 460A80 uses the published longitudinal speed, velocity and heading.
     context.forward_speed=s.owner_speeds.forward;
@@ -535,7 +550,9 @@ bool RaceSession::steer_input(VehicleInput& input, int substep, std::string& err
     if(steering_contact_tick_!=0&&steering_contact_tick_!=0x7FFFFFFFU)
         context.shift_elapsed=prop_clock_age(std::uint32_t(timing_.now_ticks),steering_contact_tick_);
     context.predicate = steering_mode_ == RaceSteering::recovered_predicate1;
-    if (!steering_step(context,steering_state_,steering_result_)) {
+    // RealDriver 461674 (GC 800668C4) retains the wheel command and skips
+    // the steering histories until the actor has travelled more than two metres.
+    if (travelled_distance_>2.F && !steering_step(context,steering_state_,steering_result_)) {
         error = "recovered steering context refused at substep "+std::to_string(substep); return false;
     }
     input.road_steering = true;
@@ -692,7 +709,7 @@ bool RaceSession::start_scene_finished(unsigned post_go_frames) const noexcept {
 
 bool RaceSession::start(std::string& error,const VehiclePose* pose,float countdown_step,float cinematic_seconds,
                         unsigned road_scene_slots,float road_scene_end_seconds) {
-    crash_camera_.reset();camera_shake_.reset();frame_seconds_=kDriveFrameSeconds;steering_seconds_=visual_frames_=0;
+    crash_camera_.reset();camera_shake_.reset();real_frame_seconds_=frame_seconds_=kDriveFrameSeconds;steering_seconds_=visual_frames_=0;
     prop_contacts_={};
     if (started_) { error = "race session is one-shot"; return false; }
     crash_windows_damaged_=false;
@@ -832,8 +849,12 @@ void RaceSession::visit_actor_pairs(unsigned actor,void* context,
 
 bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direct,std::string& error,int ai_gear_request,
                                const RaceRivalPlans* plans,RaceSimulationProfile* profile,TimingService* timer,
-                               const GamepadFrame* remote_pad,const RaceRivalPlan* rival_plan,
+                               const GamepadFrame* remote_pad,RaceRivalPlan* rival_plan,
                                const RaceRivalPlans* remote_drag) {
+    //Direct callers may supply an immutable batch. The controller's second
+    //publication must still reach both Driver and the same body's step.
+    RaceRivalPlans prepared_plans;
+    if(plans){prepared_plans=*plans;plans=&prepared_plans;}
     if(profile && !timer){error="simulation profiling requires a clock";return false;}
     auto profile_start=profile?timer->now_us():0;
     const auto stage=[&](double RaceSimulationProfile::*field) {
@@ -850,10 +871,10 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     if (!started_ || (timing_.outcome != RaceOutcome::running&&!finished_ai&&!finished_human&&!finished_lan)) {
         error = "race session is not running"; return false;
     }
-    crash_camera_.begin_frame(float(kDriveFrameSeconds));
+    crash_camera_.begin_frame(float(real_frame_seconds_));
     if(crash_camera_.consume_damage_reset())crash_windows_damaged_=false;
     frame_seconds_=external_frame_seconds_>0?external_frame_seconds_:
-        (!shared_local_camera_&&crash_camera_.event()?double(float(kDriveFrameSeconds)*.4F):kDriveFrameSeconds);
+        (!shared_local_camera_&&crash_camera_.event()?double(float(real_frame_seconds_)*.4F):real_frame_seconds_);
     const float world_dt=float(frame_seconds_);
     const unsigned solver_slices=unsigned(world_dt/.004399999976158142F)+1;
     const double solver_dt=frame_seconds_/solver_slices;
@@ -882,10 +903,11 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                 error="invalid rival catch-up scale";return false;
             }
         auto next_drivers=original_drivers_;
+        auto next_paths=original_driver_paths_;
         for(std::size_t i=0;i<rivals_.size();++i) {
             auto& r=*rivals_[i];
             if(r.timing().outcome!=RaceOutcome::running&&r.timing().outcome!=RaceOutcome::finished)continue;
-            const auto& p=plans->cars[i];
+            auto& p=prepared_plans.cars[i];
             // Direct plan callers still enter the physical lifecycle once.
             // IntroAiPlanner performs these phases around each action instead.
             if(r.rival_controller_step_!=timing_.step) {
@@ -896,6 +918,12 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             r.vehicle_.set_road_reset_source(p.road_reset);
             if(p.reset_car)rivals_[i]->vehicle_.request_reset();
             AiDriverForwardInput in;in.path=p.path;in.desired_speed=p.desired_speed;
+            //44B754 retains Driver+10 on a non-full4 tick, even when a
+            //placement has reconstructed an empty physical spline.
+            if(r.physical_selector()==4&&!p.physics_full_update) {
+                if(next_paths[i].count)in.path=next_paths[i];
+                else if(r.vehicle_.retained_rival_path().count)in.path=r.vehicle_.retained_rival_path();
+            }
             in.throttle_cap=p.throttle_cap;in.route_distance=p.route_distance;in.category=p.driver_category;in.enabled=p.enabled;
             in.position={float(s.position.x),float(s.position.y),float(s.position.z)};
             in.velocity=s.owner_motion.velocity;
@@ -911,13 +939,16 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             in.physical_selector=r.physical_selector();
             in.recent_wall_contact=driver_wall_contact(unsigned(i+1)).recent_strong;
             for(unsigned k=0;k<4;++k){in.contact[k]=s.wheels[k].contact;in.wheel_slip[k]=s.published_wheel_slip[k][0];}
+            if(p.finish_driver_cleanup)ai_driver_finish_cleanup(next_drivers[i]);
             if((p.recovery_cleanup&&!ai_driver_recovery_reset(in,next_drivers[i]))||
                !(drag_?ai_driver_drag_step(in,world_dt,next_drivers[i]):
                        ai_driver_ordinary_step(in,world_dt,next_drivers[i]))) {
                 error="original rival driver refused slot "+std::to_string(i);return false;
             }
+            next_paths[i]=in.path;p.path=in.path;
             auto& control=rival_controls[i];const auto& driver=next_drivers[i];
             control.throttle=driver.pedals.throttle;control.brake=driver.pedals.brake;
+            control.handbrake=driver.handbrake!=0.F;
             control.nitrous_active=r.nitrous_engine_.active;
             control.nitrous_clock=r.nitrous_clock_;
             control.nitrous_activation_seconds=r.nitrous_engine_.activation_seconds;
@@ -935,7 +966,9 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             !rivals_[i]->vehicle_.set_ai_scale(plans->cars[i].physical_scale)) {
             error="rival catch-up physical publication refused";return false;
         }
-        original_drivers_=next_drivers;
+        original_drivers_=next_drivers;original_driver_paths_=next_paths;
+        for(std::size_t i=0;i<rivals_.size();++i)if(next_drivers[i].forced_brake)
+            rivals_[i]->vehicle_.publish_driver_forced_grip();
     }
     if(held_grid&&planned_rivals_) {
         if(drag_&&(!plans||plans->step!=timing_.step||plans->count!=rivals_.size())) {
@@ -1012,13 +1045,15 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
     }
     const auto advance_rival=[&](std::size_t i) {
         auto& r=*rivals_[i];r.external_frame_seconds_=frame_seconds_;
+        r.real_frame_seconds_=real_frame_seconds_;
         if(r.timing().outcome==RaceOutcome::running ||
            ((planned_rivals_||human_rival_)&&r.timing().outcome==RaceOutcome::finished)) {
             bool ok;
             if(planned_rivals_) {
                 ok=r.advance_impl(nullptr,&rival_controls[i],error,
                     drag_?-1:original_drivers_[i].gear_request,nullptr,nullptr,nullptr,nullptr,
-                    held_grid?nullptr:&plans->cars[i]);
+                    held_grid?nullptr:&prepared_plans.cars[i]);
+                if(ok&&!held_grid)original_driver_paths_[i]=prepared_plans.cars[i].path;
                 if(!held_grid)++work_.rival_driver_updates;
             } else if(human_rival_) {
                 r.external_human_drafting_=float(rival_controls[i].drafting);
@@ -1122,9 +1157,24 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         if(first.shift!=VehicleShift::none) held.shift=first.shift;
         held.world_frame_seconds=world_dt;held.world_clock_valid=true;held.world_clock=timing_.now_ticks;
         if(physical_selector()==4) {
+            //463F2C..463F3A calls463B30 after Driver when a placement left the
+            //spline empty. This mutates Driver+10 again, unlike an ordinary
+            //retained move or the already prepared full-controller path.
+            if(rival_plan&&!rival_plan->physics_full_update&&!vehicle_.retained_rival_path().count) {
+                AiPlannedPath cold;cold.path=rival_plan->path;
+                rival_plan->path_physics_prepared=true;rival_plan->path_physics_length=0;
+                if(ai_path_publish(cold)&&cold.length>0.F) {
+                    rival_plan->path=cold.path;rival_plan->path_physics_length=cold.length;
+                }
+            }
             bool departure=false;
-            if(!rival_plan||!vehicle_.step_rival_path(rival_plan->path,rival_plan->desired_speed,
-                    rival_plan->speed_duration,rival_plan->physics_full_update,held,track_telemetry_.back(),departure)) {
+            const bool moved=rival_plan&&(rival_plan->path_physics_prepared?
+                vehicle_.step_rival_path_prepared(rival_plan->path,rival_plan->path_physics_length,
+                    rival_plan->desired_speed,rival_plan->speed_duration,rival_plan->physics_full_update,
+                    held,track_telemetry_.back(),departure):
+                vehicle_.step_rival_path(rival_plan->path,rival_plan->desired_speed,
+                    rival_plan->speed_duration,rival_plan->physics_full_update,held,track_telemetry_.back(),departure));
+            if(!moved) {
                 rival_path_block_ticks_=2*kRaceTicksPerSecond;
                 select_rival_physics(3);
             } else if(departure) {
@@ -1202,8 +1252,8 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
             world_dt);
         // Consume countdown shift edges without carrying them through GO.
         if(!direct) controls_.step(0,kVehicleGearNeutral,VehicleGearbox::manual);
-        const unsigned slices=road_scene_end_>0?solver_slices:kDriveStepsPerFrame;
-        const auto duration=road_scene_end_>0?frame_seconds_:kDriveFrameSeconds;
+        const unsigned slices=solver_slices;
+        const auto duration=frame_seconds_;
         const bool advance_chassis=countdown && road_scene_end_>0 && !road_scene_release_pending_ && !drag_;
         for (std::size_t k = 0; k < slices; ++k) {
             const auto sample=std::min(k,track_telemetry_.size()-1);
@@ -1221,7 +1271,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                     input.drag_mode=drag_;
                 }
                 if(!vehicle_.step_grid_engine(input,track_telemetry_[sample],
-                    k+1==slices?duration:0.0,duration/slices,drag_,timing_.now_ticks,advance_chassis)) {
+                    k+1==slices?duration:0.0,duration/slices,drag_,timing_.now_ticks,advance_chassis,k==0)) {
                     started_=false;error="grid engine update refused";return false;
                 }
             } else {
@@ -1307,6 +1357,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         //426930 runs once after the shared contact branch, with the saved
         //pre-world velocity. Nested rival advances do not publish early.
         const auto publish_acceleration=[&](RaceSession& actor,unsigned i) {
+            actor.track_telemetry_.back().model.bottom_out_impulse=actor.car().bottom_out_impulse;
             const bool reset=actor.telemetry().resets!=previous_resets[i];
             actor.vehicle_.publish_world_acceleration(reset?actor.car().velocity:
                 previous_poses[i].velocity,world_dt);
@@ -1390,6 +1441,7 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
         if(!external_contact_owner_) {
             const auto update_placement=[&](RaceSession& actor,unsigned slot) {
                 RoadReleasePose pose;
+                double steering=actor.car().steer_angle;
                 if(release && actor.road_release_pose_) {
                     pose=*actor.road_release_pose_;
                     actor.road_release_pose_.reset();
@@ -1397,12 +1449,12 @@ bool RaceSession::advance_impl(const GamepadFrame* pad,const VehicleInput* direc
                     // 47C580 advances the half-speed car channels before grounding
                     // the actor. The next world frame observes this placement.
                     if(!road_start_motion_->sample(slot,road_scene_seconds_+world_dt,actor.spec_,
-                                                   pose.position,pose.axes,error))return false;
+                                                   pose.position,pose.axes,error,&actor.animation_,&steering))return false;
                 } else {
                     actor.vehicle_.publish_start_car_speeds(!release);
                     return true;
                 }
-                actor.vehicle_.place_start_car(pose.position,pose.axes,!release);
+                actor.vehicle_.place_start_car(pose.position,pose.axes,!release,steering);
                 ++actor.cinematic_placements_;
                 return true;
             };
@@ -1454,7 +1506,10 @@ bool RaceSession::update_race_camera(bool reset,bool finishing,std::string& erro
         camera_shake_.observe(car().owner_motion.acceleration,crash_camera_.event()==7);
     bool cinematic_active=false;
     if(crash_source_) {
-        const bool allowed=timing_.stage==RaceStage::racing&&timing_.outcome==RaceOutcome::running&&!spec_.drift_mode;
+        // PC42DA40 / GC8002D494 reject two local Player views. Ordinary
+        // impact shake above remains active for each split participant.
+        const bool allowed=timing_.stage==RaceStage::racing&&timing_.outcome==RaceOutcome::running&&
+            !spec_.drift_mode&&!shared_local_camera_;
         // 42C2FB extends the finish hold when a roadside shot is active.
         // 42DA40 permits the follow-up while the world is still driving.
         // A terminal session with no post-finish driver must release the view.
@@ -1503,7 +1558,7 @@ bool RaceSession::update_race_camera(bool reset,bool finishing,std::string& erro
             reset;
         //47D070 receives73AD38, not scaled73457C. Keep simulation and view
         //motion clocks distinct during the roadside slow-motion sequence.
-        camera_motion_.update({{float(view_.eye.x),float(view_.eye.y),float(view_.eye.z)}},float(kDriveFrameSeconds),cut);
+        camera_motion_.update({{float(view_.eye.x),float(view_.eye.y),float(view_.eye.z)}},float(real_frame_seconds_),cut);
         presented_crash_=event;presented_pov_=view_.pov;presented_look_back_=rear;
     }
     return true;
@@ -1892,6 +1947,9 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                 actor.rival_path_block_ticks_=2*kRaceTicksPerSecond;
             if(other==0||timing_.racers[id].status!=RacerStatus::not_finished) {
                 actor.rival_full_ticks_=5*kRaceTicksPerSecond;
+                // 476ECE clears the shared interval when constructing the full
+                // mover, before the contact refreshes either participant.
+                if(actor.physical_selector()!=1)contact_component_interval_=0;
                 actor.select_rival_physics(1,timing_.now_ticks,world_random_?world_random_:&contact_seed_);
             } else {
                 // 44C860 leaves the existing selector1 timer armed.
@@ -1974,6 +2032,7 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                 if(contact.applied)++t.impulses;
                 if(t.audio_contact_count<t.audio_contacts.size()) {
                     auto& audio=t.audio_contacts[t.audio_contact_count++];audio.polygon=std::uint32_t(pair.polygon);audio.audio_order=++audio_order;
+                    audio.event_step=static_cast<std::uint32_t>(timing_.step+1); // Timing commits after the queue.
                     const auto basis=race_contact_axes(published_a);
                     audio.forward={basis[0][0],basis[0][1],basis[0][2]};audio.up={basis[2][0],basis[2][1],basis[2][2]};
                     audio.normal={-job.track.geometry.normal[0],-job.track.geometry.normal[1],-job.track.geometry.normal[2]};
@@ -2089,7 +2148,8 @@ bool RaceSession::resolve_world_contacts(const std::array<RaceContactPose,4>& pr
                     // 42C4B0 and 42C6D0 read the published actor transform and
                     // velocity inside 465D00, before either body continues.
                     if(driver.crash_camera_.contact(magnitude,before.collision_state==0&&driver.car().collision_state==1,tick,
-                        driver.timing_.stage==RaceStage::racing&&driver.timing_.outcome==RaceOutcome::running&&!driver.spec_.drift_mode,
+                        driver.timing_.stage==RaceStage::racing&&driver.timing_.outcome==RaceOutcome::running&&
+                            !driver.spec_.drift_mode&&!driver.shared_local_camera_,
                         before,driver.progress().coordinate.fraction*100.F,*driver.crash_source_,driver.camera_world_)) {
                         // 466300 calls 58DBE0 only after the collision shot is accepted.
                         driver.crash_windows_damaged_=true;

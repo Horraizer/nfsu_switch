@@ -19,11 +19,15 @@ bool draw_road_start_scene(FileSystemService&,const std::filesystem::path&,
                           unsigned racers,unsigned grid,std::uint32_t& world_random,unsigned&,std::string&);
 bool select_race_finish_scene(FileSystemService&,const std::filesystem::path&,
                               unsigned racers,unsigned place,unsigned track,
-                              unsigned variant,unsigned&,std::string&);
+                              unsigned variant,unsigned&,std::string&,unsigned local_humans=1);
 struct RoadStartCarTransform {
     std::array<float,3> position{},forward{};
 };
 struct RoadStartCarKeys;
+// Original NIS wheel accumulator, in radians; retains each wheel's own phase.
+float road_start_wheel_phase(float previous,float distance,float radius) noexcept;
+// Half-speed native controller; true is the final, non-rolling placement.
+bool advance_road_start_car(float& frame,float seconds,unsigned key_count) noexcept;
 struct RaceStartClock {
     unsigned release=0,go=0,end=0,animated_slots=0;
     std::array<RoadStartCarTransform,4> release_cars{};
@@ -60,7 +64,7 @@ public:
 private:
     bool load_camera_clip(FileSystemService&,const std::filesystem::path&,unsigned scene,
                           const std::string& region,RaceStartClock&,bool finish,std::string&);
-    bool sample_camera(double frame,OrbitCamera&,unsigned width,unsigned height) const;
+    bool sample_camera(double frame,double clock,OrbitCamera&,unsigned width,unsigned height) const;
     struct Data;
     std::unique_ptr<Data> data_;
 };

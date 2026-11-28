@@ -211,6 +211,8 @@ void bump_stop() {
         state.aero.enabled=false;
         check(ai_physics_advance(h,tables,{},0,ground,state,true),"selector3 fully compressed struts");
         check(state.engine.wheels[0].excess>0.F,"bump-stop scenario has excess travel");
+        for(const auto impulse:state.bottom_out_impulse)
+            check(impulse==(speed<0.F?(.2F*-speed)*h.mass:0.F),"4763F2 preserves each native bump scalar for visual publication");
         if(speed<0.F) {
             check(state.body.momentum[2]>speed*h.mass,"476240 opposes inward motion");
             check(state.ground_queries==8,"474CE8 refreshes once after bump-stop impulses");

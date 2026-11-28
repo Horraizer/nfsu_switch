@@ -23,6 +23,7 @@
 #include "nfsu/drive_controls.h"
 #include "nfsu/drive_session.h"
 #include "nfsu/input.h"
+#include "nfsu/split_layout.h"
 #include "nfsu/render.h"
 #include "nfsu/sha256.h"
 #include "nfsu/vehicle.h"
@@ -1464,20 +1465,33 @@ void test_native_race_camera() {
     };
     check_projection(kNativeRaceProjection,nfsu::ChaseFovMode::retail,
                      "original 40DD00 primary race projection");
-    // The PC hook supplies the vertical focal. Its independent horizontal
-    // operand stretches the live picture, especially when the camera cuts.
-    const auto check_live_projection=[](unsigned fov,unsigned width,unsigned height,double expected_y) {
+    // Widen the unmodified original 4:3 picture, preserving its vertical
+    // focal. The third-party PC widescreen hook uses a different lens.
+    const auto check_live_projection=[](unsigned fov,unsigned width,unsigned height,double expected_y,
+                                       double reference_aspect=4./3.) {
         nfsu::ChaseCameraView view;view.fov=std::uint16_t(fov);
         nfsu::OrbitCamera camera;std::string error;nfsu::CameraFrame frame;
-        check(nfsu::drive_render_camera(view,nfsu::ChaseFovMode::retail_widescreen,width,height,camera,error) &&
+        check(nfsu::drive_render_camera(view,nfsu::ChaseFovMode::retail_widescreen,width,height,camera,error,reference_aspect) &&
               nfsu::make_camera_frame(camera,width,height,frame,error) &&
               (expected_y==0.0 || near(frame.focal_y,expected_y,2e-6)) &&
               near(frame.focal_x*width,frame.focal_y*height,2e-6),
               "live race projection preserves vertical framing and square pixels");
     };
-    for(const auto& row:kNativeRaceWidescreenProjection) {
+    for(const auto& row:kNativeRaceProjection) {
         float fy;std::memcpy(&fy,&row[4],4);
-        check_live_projection(row[0],row[1],row[2],-double(fy));
+        if(row[1]==640 && row[2]==480) {
+            for(const auto& size:std::array<std::array<unsigned,2>,3>{{{{640,480}},{{1280,720}},{{960,540}}}})
+                check_live_projection(row[0],size[0],size[1],-double(fy));
+        }
+        for(const auto layout:{nfsu::SplitLayout::stacked,nfsu::SplitLayout::side_by_side}) {
+            const auto reference=nfsu::split_viewport(640,480,layout,0);
+            if(row[1]!=reference.width || row[2]!=reference.height)continue;
+            for(unsigned player=0;player<2;++player) {
+                const auto target=nfsu::split_viewport(1280,720,layout,player);
+                check_live_projection(row[0],target.width,target.height,-double(fy),
+                                      double(reference.width)/reference.height);
+            }
+        }
     }
     // 20 degrees is the first roadside crash shot, and the alternate shot
     // narrows the lens. Verify both at each supported driving resolution.
@@ -1488,6 +1502,23 @@ void test_native_race_camera() {
 }
 
 void test_native_race_chase() {
+    {
+        nfsu::ChaseCamera bumper;bumper.use_retail_race_mover();
+        nfsu::ChaseCameraOpenWorld empty;nfsu::ChaseCameraSubject fixed;
+        nfsu::ChaseCameraView result;bool first=true;
+        check(bumper.set_pov(2),"native fixed-view witness selects bumper");
+        const auto real=[](unsigned bits){float v;std::memcpy(&v,&bits,4);return double(v);};
+        for(const auto& row:kNativeRaceBumperRear) {
+            fixed.centre_of_mass={real(row[1]),real(row[2]),real(row[3])};
+            if(first)check(bumper.reset(fixed,empty,result),"native fixed-view witness resets");
+            first=false;
+            check(bumper.update(fixed,1./60.,empty,result,row[0]!=0),"native fixed-view look-back advances");
+            check(near(result.eye.x,real(row[4]),2e-5)&&near(result.eye.y,real(row[5]),2e-5)&&
+                  near(result.eye.z,real(row[6]),2e-5),"483370 bumper look-back mirrors the eye as well as its direction");
+            check(near(result.forward.x,real(row[7]),.0002)&&near(result.forward.y,real(row[8]),.0002)&&
+                  near(result.forward.z,real(row[9]),.0002),"483370 fixed-view direction matches original");
+        }
+    }
     nfsu::ChaseCamera chase, control;
     nfsu::ChaseCameraOpenWorld world;
     nfsu::ChaseCameraSubject subject;
@@ -1525,6 +1556,11 @@ void test_native_race_chase() {
         float x;
         std::memcpy(&x, &expected[1], sizeof(x));
         check(near(view.eye.x, x, 2e-5), "48BCB0 native eye position across acceleration step");
+        const auto& native_basis=kNativeRaceAccelerationBasis[step_sample];
+        float up[3];
+        for(unsigned axis=0;axis<3;++axis)std::memcpy(&up[axis],&native_basis[axis+4],4);
+        check(near(view.up.x,up[0],2e-5)&&near(view.up.y,up[1],2e-5)&&near(view.up.z,up[2],2e-5),
+              "48BCB0 chase basis carries original world up into impact and purge effects");
         ++step_sample;
     }
 
@@ -1633,6 +1669,13 @@ void test_car_animation() {
 } // namespace
 
 int main(int argc, char** argv) {
+    if(argc==2&&std::string(argv[1])=="--camera-check") {
+        test_camera_tables();test_angles();test_target_heading();test_lag();
+        test_camera_place();test_camera_follow();test_camera_collision();test_render_camera();
+        test_native_camera_surge();test_native_race_camera();test_native_race_chase();
+        std::cout<<"SUMMARY camera failures="<<g_failures<<'\n';
+        return g_failures?1:0;
+    }
     if(argc==2&&std::string(argv[1])=="--candidate-check") {
         test_session();
         std::cout<<"SUMMARY ordinary drive candidate failures="<<g_failures<<'\n';
@@ -1648,7 +1691,7 @@ int main(int argc, char** argv) {
             nfsu::format_drive_controls_config(nfsu::default_drive_controls_config()));
     }
     if (argc != 1) {
-        std::cerr << "usage: nfsu_drive_tests [--write-demo FILE | --write-controls FILE]\n";
+        std::cerr << "usage: nfsu_drive_tests [--camera-check | --write-demo FILE | --write-controls FILE]\n";
         return 1;
     }
     test_config_round_trip();

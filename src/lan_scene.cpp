@@ -36,6 +36,7 @@ bool LanScene::load_course(const std::filesystem::path& root,unsigned event,unsi
                            std::vector<IntroGridActor> traffic,SplitEffects effects){
     SupportedRaceSelection race;
     if(!supported_race_selection(event,round,race)){error="two-player course unavailable";return false;}
+    finish_phases_={};region_=race.region;
     const auto global=root/"Global/GLOBALB.BUN";
     auto catalog=std::make_unique<CareerCatalog>();
     if(!catalog->load_free_drive(root,error))return false;
@@ -49,6 +50,7 @@ bool LanScene::load_course(const std::filesystem::path& root,unsigned event,unsi
         if(!catalog->free_profile(models[actor],profile,error)||!load_car_assets(global,models[actor],cars[actor],error))return false;
         profile.ride.installed=options.rides[actor].installed;
         profile.ride.performance.fill(options.tier);
+        profile.ride.turbo_brand=options.rides[actor].turbo_brand;
         if(!resolve_career_ride(globals,*catalog,profile,rides[actor],error))return false;
     }
     const auto bind=[](StockFrame& frame,const StockFrameInputs& inputs,const StockSceneRequest& request,std::string& error,void*){
@@ -58,6 +60,7 @@ bool LanScene::load_course(const std::filesystem::path& root,unsigned event,unsi
     scene_.set_particles_enabled(split&&effects.particles);
     scene_.set_wet_road_reflections(split&&effects.reflections);
     scene_.set_race_visuals(split);scene_.set_start_scenes_enabled(false);
+    scene_.set_widescreen_camera(true);
     scene_.set_local_second_player(split);
     if(!scene_.set_original_draw_distance(true)||!scene_.set_texture_filter(TextureFilterMode::linear)){
         error="LAN scene already loaded";return false;
@@ -92,6 +95,12 @@ bool LanScene::load_course(const std::filesystem::path& root,unsigned event,unsi
         if(!load_race_vehicle_spec(global,models[i],levels,specs[i],error))return false;
     return load_race_drag_hud(root,models[0],specs[0].handling,atlas_,error,&models[1],&specs[1].handling);
 }
+bool LanScene::load_finish(const std::filesystem::path& root,const RaceSession& world,unsigned variant,std::string& error) {
+    return scene_.load_finish_scene(posix_file_system(),root,world,region_,variant,error);
+}
+bool LanScene::finish_frame(const RaceSession& world,double seconds,RaceGpuFrame& frame,std::string& error) {
+    scene_.set_finish_scene_seconds(seconds);return scene_.frame(world,frame,error);
+}
 bool LanScene::check_local_budget(const RaceSession& world,std::uint64_t audio_bytes,std::string& error)const {
     const RacePersistentPayload payload{scene_.car_bytes(),world.course().world.memory.resident_bytes,
         scene_.track().contacts.memory.resident_bytes,scene_.cache_bytes(),audio_bytes,atlas_.rgba.size()};
@@ -99,9 +108,11 @@ bool LanScene::check_local_budget(const RaceSession& world,std::uint64_t audio_b
 }
 bool LanScene::frame(const LanRaceView& view,RaceGpuFrame& frame,RaceHudFrame& hud,std::string& error){
     if(!scene_.frame(view.session(),frame,error))return false;
-    build_race_hud_frame(view.session(),atlas_,1280,720,hud);
-    if(view.session().timing().racers[0].finish_valid)
-        append_race_over(atlas_,1.,1280,720,hud,view.session().timing().racers[0].position==1?"You Win":"Race Over");
+    const auto& local=view.session().timing().racers[0];
+    const bool terminal=local.finish_valid||local.status!=RacerStatus::not_finished;
+    const auto seconds=finish_phases_[0].observe(terminal);
+    if(terminal)build_race_over_frame(atlas_,seconds,1280,720,hud,race_over_message(local,view.session().is_drag(),atlas_));
+    else build_race_hud_frame(view.session(),atlas_,1280,720,hud);
     return true;
 }
 bool LanScene::split_frame(const RaceSession& world,unsigned player,RaceGpuFrame& frame,
@@ -109,25 +120,18 @@ bool LanScene::split_frame(const RaceSession& world,unsigned player,RaceGpuFrame
                            TimingService* timer){
     if(!scene_.frame_split_view(world,player,frame,error,layout,profile,timer))return false;
     const auto view=split_viewport(frame.commands.width,frame.commands.height,layout,player);
-    build_race_hud_frame(world,atlas_,view.width,view.height,hud,metric,player);
-    if(atlas_.map.valid&&!append_race_minimap(world,atlas_,view.width,view.height,minimaps_.at(player),hud,player)) {
-        error="split-screen minimap geometry refused";return false;
-    }
     const auto& local=world.timing().racers[player];
-    if(world.is_drag()) {
-        const char* failure=nullptr;
-        if(local.status==RacerStatus::blown_engine)failure=atlas_.drag_failure_labels[0].c_str();
-        if(local.status==RacerStatus::totalled)failure=atlas_.drag_failure_labels[1].c_str();
-        if(failure)append_race_over(atlas_,1.,view.width,view.height,hud,failure);
-        else if(local.finish_valid)
-            append_race_over(atlas_,1.,view.width,view.height,hud,drag_finish_message(atlas_,local.position,local.finish_ticks));
-    } else if(world.spec().drift_mode&&local.finish_valid) {
-        const bool done=world.timing().outcome==RaceOutcome::finished;
-        const auto p1=world.style().item(0).total,p2=world.rival(0).style().item(0).total;
-        const char* message=!done?"Finished":p1==p2?"Draw":(p1>p2)==(player==0)?"You Win":"Race Over";
-        append_race_over(atlas_,1.,view.width,view.height,hud,message);
-    } else if(local.finish_valid)
-        append_race_over(atlas_,1.,view.width,view.height,hud,local.position==1?"You Win":"Race Over");
+    const bool terminal=local.finish_valid||local.status!=RacerStatus::not_finished;
+    const auto seconds=finish_phases_.at(player).observe(terminal);
+    if(terminal) {
+        const auto finish_layout=layout==SplitLayout::stacked?(player?RaceOverLayout::split_bottom:RaceOverLayout::split_top):RaceOverLayout::split_side;
+        build_race_over_frame(atlas_,seconds,view.width,view.height,hud,race_over_message(local,world.is_drag(),atlas_),finish_layout);
+    } else {
+        build_race_hud_frame(world,atlas_,view.width,view.height,hud,metric,player);
+        if(atlas_.map.valid&&!append_race_minimap(world,atlas_,view.width,view.height,minimaps_.at(player),hud,player)) {
+            error="split-screen minimap geometry refused";return false;
+        }
+    }
     return true;
 }
 }

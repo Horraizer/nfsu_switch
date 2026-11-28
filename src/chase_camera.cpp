@@ -571,11 +571,19 @@ ChaseCamera::ChaseCamera(const ChaseCameraTable& table,
 
 bool ChaseCamera::set_pov(int pov) noexcept {
     ChaseCameraAnchor anchor;
-    if (!valid_ || !(chase_pov(pov) || pov == 2) || !find_chase_anchor(table_, false, pov, anchor)) {
+    if (!valid_ || !(chase_pov(pov) || pov == 2) || !find_chase_anchor(table_, shared_screen_, pov, anchor)) {
         return false;
     }
     if (retail_race_mover_ && chase_pov(pov_) != chase_pov(pov)) race_pov_cut_ = true;
     pov_ = pov;
+    return true;
+}
+
+bool ChaseCamera::set_shared_screen(bool enabled) noexcept {
+    ChaseCameraAnchor anchor;
+    if(!valid_||!find_chase_anchor(table_,enabled,pov_,anchor))return false;
+    if(shared_screen_!=enabled)race_pov_cut_=true;
+    shared_screen_=enabled;
     return true;
 }
 
@@ -824,7 +832,7 @@ bool ChaseCamera::place_race_chase(const ChaseCameraSubject& subject,
         view.forward = normalized(sub(sub(base, scale(right, dot(to_actor, initial_right) / depth)),
                                       scale(base_up, dot(to_actor, initial_up) / depth)), base);
     }
-    view.up = cross(normalized(cross(vertical, view.forward), left), view.forward);
+    view.up = cross(view.forward, normalized(cross(vertical, view.forward), left));
     view.heading = chase_angle(view.forward.x, view.forward.y);
     view.target = chase_angle(frame.x, frame.y);
     if (look_back) view.target = std::uint16_t(view.target + 0x8000U);
@@ -851,7 +859,7 @@ bool ChaseCamera::place(const ChaseCameraSubject& subject,
         return false;
     }
     ChaseCameraAnchor anchor;
-    if (!find_chase_anchor(table_, false, pov_, anchor)) {
+    if (!find_chase_anchor(table_, shared_screen_, pov_, anchor)) {
         return false;
     }
     if (pov_ == 2) {
@@ -871,9 +879,9 @@ bool ChaseCamera::place(const ChaseCameraSubject& subject,
         // for the fixed view; 48B87A uses +50 only for the chase views.
         const auto& origin = retail_race_mover_ ? subject.centre_of_mass : subject.origin;
         view={};view.pov=pov_;view.pivot=origin;
+        if (look_back) {forward=scale(forward,-1);left=scale(left,-1);}
         view.eye=add(add(add(origin,scale(forward,anchor.along)),
             scale(up,anchor.height)),scale(left,anchor.across));
-        if (look_back) {forward=scale(forward,-1);left=scale(left,-1);}
         view.forward=sub(scale(forward,cp),scale(up,sp));
         view.up=add(scale(forward,sp),scale(up,cp));
         view.heading=chase_angle(view.forward.x,view.forward.y);
